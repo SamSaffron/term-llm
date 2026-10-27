@@ -16,6 +16,7 @@ import { Modals, preloadDeferredModals } from './Modals';
 import { Sidebar } from './Sidebar';
 import { LONG_PRESS_MS } from './useReorderableList';
 import { Header } from './Header';
+import { Icon, type IconName } from './Icon';
 import { DiffSidebar, PlanSurface } from './Panels';
 import { preloadCompanionPanels } from './CompanionPanels';
 import { ChipPicker } from './ChipPicker';
@@ -359,7 +360,7 @@ describe('Preact-owned chat surfaces', () => {
     expect(result).toHaveClass('markdown-body');
     expect(within(result as HTMLElement).getByText('Done.')).toBeVisible();
     expect(within(result as HTMLElement).queryByText('developer')).not.toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Open subagent' })).toBeVisible();
+    expect(screen.getByRole('button', { name: 'Open developer' })).toBeVisible();
     store.dispose();
   });
 
@@ -587,6 +588,8 @@ describe('Preact-owned chat surfaces', () => {
   it.each([false, true])(
     'links an in-flight spawn from child provenance before any result (grouped: %s)',
     async (grouped) => {
+      // The spawn names its agent, so the link does too.
+      const openName = 'Open developer';
       const store = createStore();
       store.sessions.value = [
         {
@@ -616,7 +619,7 @@ describe('Preact-owned chat surfaces', () => {
           <Transcript />
         </StoreContext.Provider>,
       );
-      expect(screen.queryByRole('button', { name: 'Open subagent' })).not.toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: openName })).not.toBeInTheDocument();
 
       const child = {
         session_id: 'live-child',
@@ -641,14 +644,14 @@ describe('Preact-owned chat surfaces', () => {
           { ...child, session_id: 'wrong-call', parent_spawn_call_id: 'another-call' },
         ];
       });
-      expect(screen.queryByRole('button', { name: 'Open subagent' })).not.toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: openName })).not.toBeInTheDocument();
       act(() => {
         store.childSessionStore.children.value = [
           ...store.childSessionStore.children.peek(),
           child,
         ];
       });
-      await userEvent.click(await screen.findByRole('button', { name: 'Open subagent' }));
+      await userEvent.click(await screen.findByRole('button', { name: openName }));
       expect(store.resolveAndSelectSession).toHaveBeenCalledWith('live-child', false, {
         prepend: false,
       });
@@ -712,12 +715,12 @@ describe('Preact-owned chat surfaces', () => {
         <Transcript />
       </StoreContext.Provider>,
     );
-    expect(await screen.findByRole('button', { name: 'Open subagent' })).toBeVisible();
+    expect(await screen.findByRole('button', { name: 'Open developer' })).toBeVisible();
 
     act(() => store.childSessionStore.childrenChanged('s1'));
     await waitFor(() => expect(store.endpoints.sessionChildren).toHaveBeenCalledTimes(2));
     await waitFor(() => expect(store.childSessionStore.children.value[0]?.state).toBe('complete'));
-    await userEvent.click(screen.getByRole('button', { name: 'Open subagent' }));
+    await userEvent.click(screen.getByRole('button', { name: 'Open developer' }));
     expect(store.resolveAndSelectSession).toHaveBeenCalledWith('handoff-child', false, {
       prepend: false,
     });
@@ -790,9 +793,54 @@ describe('Preact-owned chat surfaces', () => {
     await userEvent.type(textbox, 'stay focused');
     await userEvent.click(screen.getByRole('button', { name: 'Steer' }));
     expect(store.steer).toHaveBeenCalledWith('stay focused');
+    act(() => {
+      store.prompt.value = '';
+    });
     await userEvent.click(screen.getByRole('button', { name: 'Stop' }));
     expect(store.cancel).toHaveBeenCalledOnce();
     store.dispose();
+  });
+
+  it('puts Stop in the send button’s place until there is a steer to send', async () => {
+    const store = createStore();
+    try {
+      store.runs.value = {
+        s1: initialProjection({
+          responseId: 'r1',
+          sessionId: 's1',
+          epoch: 1,
+          status: 'streaming',
+          lastSequence: 1,
+          startedRev: 0,
+          reconnects: 0,
+        }),
+      };
+      store.runEngine.markResponseTransportActive('s1', 'r1');
+      store.cancel = vi.fn(async () => undefined);
+      render(
+        <StoreContext.Provider value={store}>
+          <Composer />
+        </StoreContext.Provider>,
+      );
+      const textbox = screen.getByRole('textbox', { name: 'Message' });
+      const actions = document.querySelector('.composer-actions')!;
+      const stop = () => screen.queryByRole('button', { name: 'Stop' });
+
+      expect(actions.lastElementChild).toBe(stop());
+      expect(stop()).toHaveClass('send-btn');
+      expect(document.querySelector('#sendBtn')).toBeNull();
+
+      await userEvent.type(textbox, 'try the other file');
+      expect(actions.lastElementChild).toBe(screen.getByRole('button', { name: 'Steer' }));
+      expect(stop()).not.toBeInTheDocument();
+
+      await userEvent.clear(textbox);
+      expect(actions.lastElementChild).toBe(stop());
+      await userEvent.click(stop()!);
+      expect(store.cancel).toHaveBeenCalledOnce();
+    } finally {
+      store.dispose();
+    }
   });
 
   it('does not offer a composer after a delegated response finishes', () => {
@@ -3050,7 +3098,8 @@ describe('Preact-owned chat surfaces', () => {
     });
     const initialText = initial.querySelector('.streaming-indicator-text');
     expect(initial).toHaveTextContent('Implement the semantic activity label');
-    expect(initial.querySelectorAll('span')).toHaveLength(1);
+    expect(initial.querySelectorAll('.streaming-indicator-text')).toHaveLength(1);
+    expect(initial.querySelector('.working-mark')).toHaveAttribute('aria-hidden', 'true');
 
     act(() => {
       store.currentPlan.value = {
@@ -3074,7 +3123,9 @@ describe('Preact-owned chat surfaces', () => {
         s1: { ...current, run: { ...current.run, status: 'cancelling' } },
       };
     });
-    expect(screen.getByRole('status', { name: 'Stopping response' })).toHaveTextContent('Stopping');
+    const stopping = screen.getByRole('status', { name: 'Stopping response' });
+    expect(stopping).toHaveTextContent('Stopping');
+    expect(stopping.querySelector('.working-mark')).toBeNull();
   });
 
   it('hides the generic working activity once assistant text starts streaming', () => {
@@ -3163,7 +3214,7 @@ describe('Preact-owned chat surfaces', () => {
       expect(
         screen.queryByRole('status', { name: 'Response status is unknown' }),
       ).not.toBeInTheDocument();
-      expect(screen.getByRole('button', { name: 'Response is running' })).toBeEnabled();
+      expect(screen.queryByRole('button', { name: 'Response is running' })).not.toBeInTheDocument();
     } finally {
       store.dispose();
     }
@@ -3194,7 +3245,7 @@ describe('Preact-owned chat surfaces', () => {
       );
 
       expect(screen.getByRole('button', { name: 'Stop' })).toBeInTheDocument();
-      expect(screen.getByRole('button', { name: 'Response is running' })).toBeEnabled();
+      expect(screen.queryByRole('button', { name: 'Response is running' })).not.toBeInTheDocument();
       expect(screen.getByPlaceholderText('Steer conversation…')).toBeInTheDocument();
       expect(
         screen.getByRole('status', { name: 'Assistant is responding: Working' }),
@@ -3207,6 +3258,7 @@ describe('Preact-owned chat surfaces', () => {
       await userEvent.type(screen.getByRole('textbox', { name: 'Message' }), 'steer this run');
       const steer = screen.getByRole('button', { name: 'Steer' });
       expect(steer).toBeEnabled();
+      expect(screen.queryByRole('button', { name: 'Stop' })).not.toBeInTheDocument();
       await userEvent.click(steer);
       expect(store.steer).toHaveBeenCalledWith('steer this run');
       act(() => {
@@ -3735,6 +3787,7 @@ describe('Preact-owned chat surfaces', () => {
       expect(status?.textContent).toBe(expected);
       expect(status).toHaveAttribute('aria-label', 'Running');
       expect(status).not.toHaveClass('done');
+      expect(status).toHaveClass('running');
     },
   );
 
@@ -3782,7 +3835,7 @@ describe('Preact-owned chat surfaces', () => {
         await vi.advanceTimersByTimeAsync(18_000);
       });
       expect(status).toHaveTextContent('20s');
-      expect(status).not.toHaveTextContent('✓');
+      expect(status?.querySelector('use')).toBeNull();
       expect(container.querySelector('[data-message-id="answer"]')).toBe(unrelated);
     } finally {
       unmount();
@@ -3791,10 +3844,10 @@ describe('Preact-owned chat surfaces', () => {
   });
 
   it.each([
-    { status: 'done' as const, durationMs: 1_999, expected: '✓' },
-    { status: 'done' as const, durationMs: 2_000, expected: '2s ✓' },
-    { status: 'done' as const, durationMs: 20_000, expected: '20s ✓' },
-    { status: 'error' as const, durationMs: 20_000, expected: '20s ✕' },
+    { status: 'done' as const, durationMs: 1_999, expected: '#check' },
+    { status: 'done' as const, durationMs: 2_000, expected: '2s #check' },
+    { status: 'done' as const, durationMs: 20_000, expected: '20s #check' },
+    { status: 'error' as const, durationMs: 20_000, expected: '20s #close' },
     { status: 'cancelled' as const, durationMs: 20_000, expected: '20s stopped' },
   ])(
     'freezes shell duration on $status after $durationMs ms',
@@ -3825,11 +3878,19 @@ describe('Preact-owned chat surfaces', () => {
       );
       try {
         const label = container.querySelector('.tool-status');
-        expect(label?.textContent?.trim()).toBe(expected);
+        // The text, then the icon's symbol (a check, an x) if it draws one.
+        const shown = () =>
+          [
+            label?.textContent?.trim(),
+            label?.querySelector('use')?.getAttribute('href')?.replace(/^.*#/, '#'),
+          ]
+            .filter(Boolean)
+            .join(' ');
+        expect(shown()).toBe(expected);
         await act(async () => {
           await vi.advanceTimersByTimeAsync(5_000);
         });
-        expect(label?.textContent?.trim()).toBe(expected);
+        expect(shown()).toBe(expected);
       } finally {
         unmount();
         vi.useRealTimers();
@@ -4116,6 +4177,124 @@ describe('Preact-owned chat surfaces', () => {
     }
   });
 
+  it('names the agent on collapsed delegation lines', () => {
+    const store = createStore();
+    store.childSessionStore.children.value = [
+      {
+        session_id: 'child-reviewer',
+        parent_session_id: store.activeSessionId.value,
+        title: 'Review',
+        agent: 'reviewer',
+        state: 'idle',
+        attention: false,
+        revision: 1,
+      } as never,
+    ];
+    store.sessions.value[0].messages = [
+      {
+        id: 'named-delegations',
+        role: 'tool-group',
+        content: '',
+        created: Date.now(),
+        tools: [
+          {
+            id: 'continue-1',
+            name: 'continue_agent',
+            arguments: '{"agent_id":"child-reviewer"}',
+            status: 'running',
+            agentSessionIds: ['child-reviewer'],
+            subagentProgress: {
+              seq: 1,
+              state: 'running',
+              phase: 'running_tools',
+              callsStarted: 11,
+              callsActive: 0,
+            },
+          },
+          {
+            id: 'spawn-1',
+            name: 'spawn_agent',
+            arguments: '{"agent_name":"dev"}',
+            status: 'done',
+            subagentProgress: { seq: 2, state: 'completed', callsStarted: 62, callsActive: 0 },
+          },
+        ],
+      },
+    ];
+    const { container } = render(
+      <StoreContext.Provider value={store}>
+        <Transcript />
+      </StoreContext.Provider>,
+    );
+    const lines = Array.from(container.querySelectorAll('.tool-group-card > .tool-progress'));
+    expect(lines.map((line) => line.querySelector('strong')?.textContent)).toEqual([
+      'Continuing reviewer: ',
+      'Spawned dev: ',
+    ]);
+    expect(lines[0]).toHaveClass('named');
+    expect(lines[0]).not.toHaveTextContent('· Open');
+    expect(screen.getByRole('button', { name: 'Open reviewer' })).toHaveTextContent(/^Open$/);
+  });
+
+  it('names the agent on a single continue call from the spawn that made the child', () => {
+    const store = createStore();
+    store.childSessionStore.children.value = [
+      {
+        session_id: 'child-advocate',
+        parent_session_id: store.activeSessionId.value,
+        parent_spawn_call_id: 'spawn-advocate',
+        title: 'Advocate',
+        state: 'idle',
+        attention: false,
+        revision: 1,
+      } as never,
+    ];
+    store.sessions.value[0].messages = [
+      {
+        id: 'spawned',
+        role: 'tool-group',
+        content: '',
+        created: 1,
+        tools: [
+          {
+            id: 'spawn-advocate',
+            name: 'spawn_agent',
+            arguments: '{"agent_name":"advocate"}',
+            status: 'done',
+          },
+        ],
+      },
+      { id: 'u2', role: 'user', content: 'Run that by the advocate', created: 2 },
+      {
+        id: 'continued',
+        role: 'tool-group',
+        content: '',
+        created: 3,
+        tools: [
+          {
+            id: 'continue-advocate',
+            name: 'continue_agent',
+            arguments: '{"agent_id":"child-advocate"}',
+            status: 'done',
+            agentSessionIds: ['child-advocate'],
+          },
+        ],
+      },
+    ];
+    const { container } = render(
+      <StoreContext.Provider value={store}>
+        <Transcript />
+      </StoreContext.Provider>,
+    );
+    const line = container.querySelector('[data-message-id="continued"] .tool-progress');
+    expect(line).toHaveClass('named');
+    // The line names the agent, so the header shows neither its name nor its ID.
+    expect(container.querySelector('[data-tool-id="continue-advocate"] .tool-summary')).toBeNull();
+    expect(container.querySelector('[data-tool-id="spawn-advocate"] .tool-summary')).toBeNull();
+    expect(line?.querySelector('strong')).toHaveTextContent(/^Continued advocate$/);
+    expect(screen.getAllByRole('button', { name: 'Open advocate' })).toHaveLength(2);
+  });
+
   it('keeps collapsed delegation previews chronological as running statuses transition', async () => {
     const store = createStore();
     const tools: ToolCall[] = [
@@ -4286,9 +4465,9 @@ describe('Preact-owned chat surfaces', () => {
         <Transcript />
       </StoreContext.Provider>,
     );
-    expect(container.querySelector('[data-tool-id="spawn-1"] .tool-status')).toHaveTextContent(
-      '1m30s ✓',
-    );
+    const spawnStatus = container.querySelector('[data-tool-id="spawn-1"] .tool-status');
+    expect(spawnStatus).toHaveTextContent('1m30s');
+    expect(spawnStatus?.querySelector('use')?.getAttribute('href')).toMatch(/#check$/);
   });
 
   it('groups completed tool calls compactly and omits redundant role labels', async () => {
@@ -4325,7 +4504,7 @@ describe('Preact-owned chat surfaces', () => {
     );
     const group = screen.getByRole('button', { name: /2 tool calls · read_file, shell/ });
     expect(group).toHaveAttribute('aria-expanded', 'false');
-    expect(group.querySelector('.tool-status')).toHaveTextContent('✓');
+    expect(group.querySelector('.tool-status use')?.getAttribute('href')).toMatch(/#check$/);
     expect(group.querySelector('.tool-status')).not.toHaveTextContent('done');
     expect(screen.queryByText('Assistant')).not.toBeInTheDocument();
     expect(screen.getByText('now')).toBeInTheDocument();
@@ -4334,7 +4513,7 @@ describe('Preact-owned chat surfaces', () => {
     expect(screen.getByText('path: main.go')).toBeInTheDocument();
   });
 
-  it('uses a search icon for grep and omits redundant per-tool chevrons', async () => {
+  it('draws a line icon for each kind of tool and omits redundant per-tool chevrons', async () => {
     const store = createStore();
     store.sessions.value[0].messages = [
       {
@@ -4357,6 +4536,14 @@ describe('Preact-owned chat surfaces', () => {
             status: 'done',
             result: 'content',
           },
+          {
+            id: 'mcp',
+            name: 'github__create_issue',
+            arguments: '{}',
+            status: 'done',
+            result: 'ok',
+          },
+          { id: 'other', name: 'update_goal', arguments: '{}', status: 'done', result: 'ok' },
         ],
       },
     ];
@@ -4366,8 +4553,17 @@ describe('Preact-owned chat surfaces', () => {
       </StoreContext.Provider>,
     );
 
-    await userEvent.click(screen.getByRole('button', { name: /2 tool calls · grep, read_file/ }));
-    expect(container.querySelector('.tool-entry-icon')).toHaveTextContent('🔍');
+    await userEvent.click(
+      screen.getByRole('button', { name: /4 tool calls · grep, read_file, github__create_issue…/ }),
+    );
+    const drawing = (name: IconName) => render(<Icon name={name} />).container.innerHTML;
+    expect(
+      [...container.querySelectorAll('.tool-entry-icon')].map((icon) => icon.innerHTML),
+    ).toEqual((['text-search', 'file-text', 'plug', 'wrench'] as const).map(drawing));
+    // The count stays in the text colour; the list of tools is muted.
+    expect(container.querySelector('.tool-group-names')).toHaveTextContent(
+      /^grep, read_file, github__create_issue…$/,
+    );
     expect(container.querySelector('.tool-toggle .tool-arrow')).toBeNull();
     expect(container.querySelector('.tool-group-toggle .tool-arrow')).not.toBeNull();
   });
@@ -4464,7 +4660,7 @@ describe('Preact-owned chat surfaces', () => {
     );
     const group = screen.getByRole('button', { name: /2 tool calls · read_file, shell/ });
     expect(group).toHaveAttribute('aria-expanded', 'false');
-    expect(group.querySelector('.tool-status')).toHaveTextContent('✓');
+    expect(group.querySelector('.tool-status use')?.getAttribute('href')).toMatch(/#check$/);
     expect(group.querySelector('.tool-status')).not.toHaveTextContent('error');
     expect(document.querySelectorAll('.tool-toggle')).toHaveLength(0);
     fireEvent.click(group);
@@ -4473,7 +4669,7 @@ describe('Preact-owned chat surfaces', () => {
     toolToggles.forEach((toggle) => expect(toggle).toHaveAttribute('aria-expanded', 'false'));
     expect(document.querySelector('.tool-failure-reason')).not.toBeInTheDocument();
     const failed = document.querySelector('.tool-status.error');
-    expect(failed).toHaveTextContent('✕');
+    expect(failed?.querySelector('use')?.getAttribute('href')).toMatch(/#close$/);
     expect(failed).not.toHaveTextContent('error');
   });
 
@@ -4543,6 +4739,38 @@ describe('Preact-owned chat surfaces', () => {
       if (clipboardDescriptor) Object.defineProperty(navigator, 'clipboard', clipboardDescriptor);
       else Object.defineProperty(navigator, 'clipboard', { configurable: true, value: undefined });
       vi.useRealTimers();
+    }
+  });
+
+  it('puts a copy button after the time under a user message', async () => {
+    const clipboardDescriptor = Object.getOwnPropertyDescriptor(navigator, 'clipboard');
+    const writeText = vi.fn(async () => undefined);
+    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText } });
+    try {
+      const store = createStore();
+      store.sessions.value[0].messages = [
+        { id: 'u1', role: 'user', content: 'Question\nwith two lines', created: 1 },
+        { id: 'a1', role: 'assistant', content: 'Answer', created: 2 },
+      ];
+      const { container } = render(
+        <StoreContext.Provider value={store}>
+          <Transcript />
+        </StoreContext.Provider>,
+      );
+      const button = screen.getByRole('button', { name: 'Copy message' });
+      expect(container.querySelector('.message.user .message-meta time + .turn-copy-btn')).toBe(
+        button,
+      );
+      await act(async () => {
+        fireEvent.click(button);
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+      expect(writeText).toHaveBeenCalledWith('Question\nwith two lines');
+      expect(button).toHaveAttribute('aria-label', 'Copied');
+    } finally {
+      if (clipboardDescriptor) Object.defineProperty(navigator, 'clipboard', clipboardDescriptor);
+      else Object.defineProperty(navigator, 'clipboard', { configurable: true, value: undefined });
     }
   });
 
@@ -5129,35 +5357,41 @@ describe('Preact-owned chat surfaces', () => {
     );
   });
 
-  it('keeps the running-response indicator instead of the live button while a turn streams', () => {
+  it('keeps the live button out of the send button’s place while a turn streams', () => {
     const store = createStore();
     store.liveStore.enabled.value = true;
     store.liveStore.capability.value = { supported: true, reason: '' };
-    store.runs.value = {
-      s1: initialProjection({
-        responseId: 'r1',
+    const projection = (responseId: string) =>
+      initialProjection({
+        responseId,
         sessionId: 's1',
         epoch: 1,
-        status: 'streaming',
-        lastSequence: 1,
+        status: 'connecting',
+        lastSequence: 0,
         startedRev: 0,
         reconnects: 0,
-      }),
-    };
-    store.runEngine.markResponseTransportActive('s1', 'r1');
+      });
+    store.runs.value = { s1: projection('pending_r1') };
     render(
       <StoreContext.Provider value={store}>
         <Composer />
       </StoreContext.Provider>,
     );
 
+    // Until the server has the response, it cannot be stopped; send shows progress.
     const send = screen.getByRole('button', { name: 'Response is running' });
     expect(send).toHaveClass('loading');
     expect(send).not.toHaveClass('live');
+
+    act(() => {
+      store.runs.value = { s1: projection('r1') };
+    });
+    expect(screen.getByRole('button', { name: 'Stop' })).not.toHaveClass('live');
+    expect(screen.queryByRole('button', { name: 'Response is running' })).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Start live voice' })).not.toBeInTheDocument();
   });
 
-  it('morphs the send icon into the steering icon while streaming with a draft', async () => {
+  it('morphs Stop into the steering button while streaming with a draft', async () => {
     const store = createStore();
     store.runs.value = {
       s1: initialProjection({
@@ -5177,12 +5411,12 @@ describe('Preact-owned chat surfaces', () => {
       </StoreContext.Provider>,
     );
 
-    const send = screen.getByRole('button', { name: 'Response is running' });
-    const sendIcon = send.querySelector('.arrow')?.innerHTML;
-    expect(send).toBeEnabled();
-    expect(send).toHaveClass('loading');
-    expect(send.querySelector('.spinner')).toBeInTheDocument();
-    expect(send).not.toHaveClass('steer');
+    const stop = screen.getByRole('button', { name: 'Stop' });
+    expect(stop).toBeEnabled();
+    expect(stop).toHaveClass('send-btn');
+    expect(stop).toHaveAttribute('title', 'Stop');
+    expect(stop.querySelector('svg use')?.getAttribute('href')).toMatch(/#stop$/);
+    expect(screen.queryByRole('button', { name: 'Response is running' })).not.toBeInTheDocument();
 
     await userEvent.type(screen.getByRole('textbox', { name: 'Message' }), 'change course');
 
@@ -5191,8 +5425,8 @@ describe('Preact-owned chat surfaces', () => {
     expect(steer).not.toHaveClass('loading');
     expect(steer).toHaveClass('steer');
     expect(steer).toHaveAttribute('title', 'Steer');
-    expect(steer.querySelector('.arrow')?.innerHTML).not.toBe(sendIcon);
-    expect(steer.querySelector('.arrow path')).toHaveAttribute('d', 'M5 6v7a2 2 0 0 0 2 2h12');
+    expect(steer.querySelector('.arrow use')?.getAttribute('href')).toMatch(/#steer$/);
+    expect(screen.queryByRole('button', { name: 'Stop' })).not.toBeInTheDocument();
   });
 
   it('drives send from public composer UI and opens attachment picker behavior', async () => {
@@ -9092,11 +9326,126 @@ describe('Preact-owned chat surfaces', () => {
     act(() => {
       store.approval.value = null;
     });
-    expect(screen.getByRole('heading', { name: 'Answer question' })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'The agent has a question' })).toBeInTheDocument();
     act(() => {
       store.askUser.value = null;
     });
     expect(screen.getByRole('heading', { name: 'Settings' })).toBeInTheDocument();
+  });
+
+  it('keeps declining apart from the way on, and minimizes questions to answer later', async () => {
+    const store = createStore();
+    store.activeSessionId.value = 's1';
+    store.askUser.value = {
+      sessionId: 's1',
+      callId: 'ask-1',
+      questions: [
+        { question: 'First?', options: [{ label: 'Yes' }] },
+        { question: 'Second?', options: [{ label: 'No' }] },
+      ],
+    };
+    store.answerAskUser = vi.fn(async () => {});
+    store.dismissInteraction = vi.fn();
+    render(
+      <StoreContext.Provider value={store}>
+        <Modals />
+      </StoreContext.Provider>,
+    );
+    const actions = () =>
+      [...screen.getByRole('dialog').querySelectorAll('.modal-actions button')].map(
+        (button) => button.textContent,
+      );
+    expect(actions()).toEqual(['Decline', 'Next']);
+    await userEvent.click(screen.getByRole('radio', { name: /Yes/ }));
+    await userEvent.click(screen.getByRole('button', { name: 'Next' }));
+    expect(actions()).toEqual(['Decline', 'Back', 'Send answers']);
+    await userEvent.click(screen.getByRole('button', { name: 'Minimize' }));
+    expect(store.dismissInteraction).toHaveBeenCalledWith('ask-user', store.askUser.value);
+    expect(store.answerAskUser).not.toHaveBeenCalled();
+    await userEvent.click(screen.getByRole('button', { name: 'Decline' }));
+    expect(store.answerAskUser).toHaveBeenCalledWith([], true, store.askUser.value);
+  });
+
+  it('shows question progress as named steps and puts focus on each answer', async () => {
+    const store = createStore();
+    store.activeSessionId.value = 's1';
+    store.askUser.value = {
+      sessionId: 's1',
+      callId: 'ask-2',
+      questions: [
+        {
+          header: 'Language',
+          question: 'Which language?',
+          options: [{ label: 'Go' }, { label: 'Rust' }],
+        },
+        { question: 'Which database?', options: [{ label: 'SQLite' }, { label: 'Redis' }] },
+      ],
+    };
+    render(
+      <StoreContext.Provider value={store}>
+        <Modals />
+      </StoreContext.Provider>,
+    );
+    const step = (name: string) => screen.getByRole('button', { name });
+    expect(screen.getByRole('heading', { name: 'The agent has 2 questions' })).toBeInTheDocument();
+    expect(screen.getByText('1 of 2')).toBeInTheDocument();
+    expect(screen.getByRole('group', { name: 'Language Which language?' })).toBeInTheDocument();
+    expect(step('Question 1: Language')).toHaveAttribute('aria-current', 'step');
+    expect(step('Question 2')).not.toHaveAttribute('aria-current');
+    await vi.waitFor(() => expect(screen.getByRole('radio', { name: /Go/ })).toHaveFocus());
+    await userEvent.click(screen.getByRole('radio', { name: /Rust/ }));
+    await userEvent.click(screen.getByRole('button', { name: 'Next' }));
+    expect(step('Question 2')).toHaveAttribute('aria-current', 'step');
+    expect(step('Question 1: Language')).toHaveClass('completed');
+    expect(screen.getByRole('radio', { name: /SQLite/ })).toHaveFocus();
+    await userEvent.click(step('Question 1: Language'));
+    expect(screen.getByRole('radio', { name: /Rust/ })).toHaveFocus();
+  });
+
+  it('names the asking agent and the conversation it paused', () => {
+    const store = createStore();
+    const parent = store.sessions.value[0];
+    store.sessions.value = [
+      ...store.sessions.value,
+      {
+        ...parent,
+        id: 'child-1',
+        title: 'Review the change',
+        agent: 'reviewer',
+        parentSessionId: parent.id,
+      },
+    ];
+    store.activeSessionId.value = 'child-1';
+    store.askUser.value = {
+      sessionId: 'child-1',
+      callId: 'ask-4',
+      questions: [{ question: 'Ship it?', options: [{ label: 'Yes' }] }],
+    };
+    render(
+      <StoreContext.Provider value={store}>
+        <Modals />
+      </StoreContext.Provider>,
+    );
+    expect(screen.getByRole('heading', { name: 'reviewer has a question' })).toBeInTheDocument();
+    expect(screen.getByText(`Paused in ${parent.title}`)).toBeInTheDocument();
+  });
+
+  it('shows no progress for a single question', () => {
+    const store = createStore();
+    store.activeSessionId.value = 's1';
+    store.askUser.value = {
+      sessionId: 's1',
+      callId: 'ask-3',
+      questions: [{ question: 'Only?', options: [{ label: 'Yes' }] }],
+    };
+    render(
+      <StoreContext.Provider value={store}>
+        <Modals />
+      </StoreContext.Provider>,
+    );
+    expect(document.querySelector('.ask-user-steps')).toBeNull();
+    expect(screen.queryByText(/ of 1$/)).toBeNull();
+    expect(screen.getByRole('heading', { name: 'The agent has a question' })).toBeInTheDocument();
   });
 
   it('shows pending goal saves and keeps failures visible for retry', async () => {

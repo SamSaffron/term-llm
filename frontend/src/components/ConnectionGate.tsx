@@ -72,7 +72,7 @@ export function ConnectionGate({ store }: { store: AppStore }) {
           </p>
           <div class="connection-terminal" aria-label="Example server output">
             <div class="connection-terminal-title">
-              <span aria-hidden="true">● ● ●</span> SERVER OUTPUT · EXAMPLE
+              <span aria-hidden="true">● ● ●</span> Server output · example
             </div>
             <pre>
               <span>auth: bearer required</span>

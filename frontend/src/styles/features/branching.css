@@ -8,8 +8,7 @@
 }
 
 .message.path-note details {
-  border: 1px dashed var(--border);
-  border-radius: 0.6rem;
+  border-radius: var(--radius-md);
   padding: 0.55rem 0.7rem;
   background: var(--surface-2);
 }
@@ -67,8 +66,8 @@
   width: 100%;
   min-height: 2.35rem;
   padding: 0.55rem 2rem 0.55rem 2.25rem;
-  border: 1px solid var(--border);
-  border-radius: 0.65rem;
+  border: 1px solid transparent;
+  border-radius: var(--radius-md);
   background: var(--surface-2);
   color: var(--text);
   font: inherit;
@@ -77,23 +76,8 @@
 }
 
 .branch-tree-modal .branch-tree-search input:focus {
-  border-color: var(--border-strong);
-  outline: 2px solid color-mix(in srgb, var(--text) 12%, transparent);
-  outline-offset: 1px;
-}
-
-.branch-tree-search-icon {
-  position: absolute;
-  left: 0.72rem;
-  z-index: var(--z-local-raised);
-  display: inline-flex;
-  color: var(--text-muted);
-  pointer-events: none;
-}
-
-.branch-tree-search-icon svg {
-  width: 1rem;
-  height: 1rem;
+  border-color: var(--focus-edge);
+  outline: none;
 }
 
 .branch-tree-list {
@@ -120,10 +104,10 @@
   padding: 0.3rem 0.25rem 0.2rem;
   background: var(--surface);
   color: var(--text-muted);
-  font-size: 0.72rem;
-  font-weight: 700;
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
+  font-size: 0.78rem;
+  font-weight: 600;
+  letter-spacing: 0;
+  text-transform: none;
 }
 
 .branch-tree-section-count {
@@ -143,10 +127,10 @@
   gap: 0.6rem;
   align-items: start;
   width: 100%;
-  border: 1px solid transparent;
-  border-radius: 0.55rem;
+  border: 0;
+  border-radius: var(--radius-md);
   padding: 0.55rem 0.65rem;
-  background: transparent;
+  background: var(--surface-2);
   color: var(--text);
   text-align: left;
   cursor: default;
@@ -175,14 +159,17 @@
 
 .branch-tree-item:hover,
 .branch-tree-item:focus-visible {
-  background: var(--surface-2);
-  border-color: var(--border);
+  background: var(--surface-3);
+}
+
+/* Inset, so the scrolling list can't clip the ring. */
+.branch-tree-item:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
 }
 
 .branch-tree-item.active {
-  border-color: color-mix(in srgb, var(--accent) 45%, var(--border));
-  background: var(--surface-2);
-  box-shadow: inset 3px 0 0 var(--accent);
+  background: var(--accent-tint);
 }
 
 .branch-tree-item small {
@@ -201,8 +188,8 @@
 .branch-tree-more {
   width: 100%;
   min-height: 2.5rem;
-  border: 1px dashed var(--border);
-  border-radius: 0.55rem;
+  border: 0;
+  border-radius: var(--radius-md);
   background: transparent;
   color: var(--text-muted);
   font: inherit;
@@ -213,7 +200,6 @@
 
 .branch-tree-more:hover,
 .branch-tree-more:focus-visible {
-  border-color: var(--border-strong);
   background: var(--surface-2);
   color: var(--text);
 }
@@ -222,8 +208,6 @@
   display: flex;
   flex-direction: column;
   gap: 0.25rem;
-  border: 1px dashed var(--border);
-  border-radius: 0.65rem;
   padding: 0.9rem;
   color: var(--text-muted);
   font-size: 0.85rem;
@@ -245,9 +229,9 @@
   display: block;
   width: 100%;
   padding: 0.7rem 0.75rem;
-  border: 1px solid var(--border);
-  border-radius: 0.6rem;
-  background: transparent;
+  border: 0;
+  border-radius: var(--radius-md);
+  background: var(--surface-2);
   color: var(--text);
   text-align: left;
   cursor: pointer;
@@ -255,8 +239,12 @@
 
 .branch-context-choices button:hover:not(:disabled),
 .branch-context-choices button:focus-visible:not(:disabled) {
-  background: var(--surface-2);
-  border-color: var(--accent);
+  background: var(--surface-3);
+}
+
+.branch-context-choices button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
 }
 
 .branch-context-choices button:disabled,
@@ -291,11 +279,16 @@
   width: 100%;
   min-height: 5.5rem;
   padding: 0.65rem;
-  border: 1px solid var(--border);
-  border-radius: 0.55rem;
+  border: 1px solid transparent;
+  border-radius: var(--radius-md);
   background: var(--surface-2);
   color: var(--text);
   font: inherit;
+}
+
+.branch-context-focus textarea:focus {
+  outline: none;
+  border-color: var(--focus-edge);
 }
 
 @media (width <= 767px) {

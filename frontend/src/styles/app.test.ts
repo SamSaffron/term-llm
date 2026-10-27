@@ -81,7 +81,8 @@ describe('running conversation status styles', () => {
     );
     expect(statusCSS).not.toContain('background-clip');
     expect(statusCSS).not.toContain('background-position');
-    expect(statusCSS).not.toContain('infinite');
+    // The activity indicator's 14px cursor is the only continuous animation here.
+    expect(statusCSS.replace(/\.working-mark-cursor\s*\{[^}]*\}/, '')).not.toContain('infinite');
     expect(statusCSS).not.toMatch(/\.streaming-indicator-text\s*\{[^}]*animation:/);
     // A short entrance is fine; it must still respect reduced motion.
     expect(statusCSS).toContain('streaming-status-enter 180ms ease-out both');
@@ -321,7 +322,6 @@ describe('touch affordances', () => {
       '.session-menu-trigger',
       '.session-group-chevron',
       '.code-copy-btn',
-      '.math-copy-btn',
       '.diff-file-actions',
       '.diff-comment-affordance',
     ]) {

@@ -24,7 +24,7 @@
    opaque and sits above their menu buttons, which touch screens always show. */
 .project-group.is-dragging {
   z-index: var(--z-local-dragging);
-  border-radius: 0.5rem;
+  border-radius: var(--radius-md);
   background: var(--surface);
   box-shadow:
     0 0 0 1px var(--border),
@@ -57,7 +57,7 @@
   height: 2.15rem;
   padding: 0.48rem 0.75rem;
   border: 0;
-  border-radius: 0.4rem;
+  border-radius: var(--radius-md);
   background: transparent;
   color: var(--text-muted);
   font: inherit;
@@ -105,7 +105,7 @@
   color: var(--text-muted);
   min-width: 2rem;
   min-height: 2rem;
-  border-radius: 0.4rem;
+  border-radius: var(--radius-md);
   cursor: pointer;
   opacity: 0;
   transition:
@@ -133,7 +133,7 @@
 }
 
 .project-group.unavailable .project-group-toggle {
-  color: var(--danger, #c65f5f);
+  color: var(--danger);
 }
 
 .project-group.archived {
@@ -257,9 +257,8 @@
   display: grid;
   gap: 0.42rem;
   padding: 0.82rem 0.9rem;
-  border: 1px solid color-mix(in srgb, var(--accent-green) 30%, var(--border));
-  border-radius: 0.7rem;
-  background: color-mix(in srgb, var(--accent-green) 6%, var(--surface-2));
+  border-radius: var(--radius-md);
+  background: var(--accent-tint);
 }
 
 .project-assign-upgrade[hidden] {
@@ -276,14 +275,13 @@
 
 .project-choice-recommended {
   flex: 0 0 auto;
-  padding: 0.15rem 0.42rem;
-  border-radius: 999px;
-  background: color-mix(in srgb, var(--accent-green) 13%, transparent);
-  color: var(--accent-green);
-  font-size: 0.61rem;
-  font-weight: 750;
-  letter-spacing: 0.025em;
-  text-transform: uppercase;
+  padding: 0.14rem 0.4rem;
+  border-radius: var(--radius-sm);
+  background: var(--accent-tint);
+  color: var(--accent-strong);
+  font-size: 0.68rem;
+  font-weight: 600;
+  line-height: 1.2;
 }
 
 .project-assign-upgrade-controls {
@@ -318,21 +316,17 @@
   width: 100%;
   min-height: 3.5rem;
   padding: 0.62rem 0.72rem;
-  border: 1px solid var(--border);
-  border-radius: 0.65rem;
-  background: var(--bg);
+  border: 0;
+  border-radius: var(--radius-md);
+  background: var(--surface-2);
   color: var(--text);
   text-align: left;
   cursor: pointer;
-  transition:
-    border-color 0.12s ease,
-    background 0.12s ease,
-    box-shadow 0.12s ease;
+  transition: background 0.12s ease;
 }
 
 .project-choice:hover:not(:disabled) {
-  border-color: var(--border-strong);
-  background: var(--surface-2);
+  background: var(--surface-3);
 }
 
 .project-choice:focus-visible {
@@ -341,13 +335,7 @@
 }
 
 .project-choice.is-selected {
-  border-color: color-mix(in srgb, var(--accent) 48%, var(--border));
-  background: color-mix(in srgb, var(--accent) 5%, var(--surface-2));
-  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 12%, transparent);
-}
-
-.project-choice.is-recommended:not(.is-selected) {
-  border-color: color-mix(in srgb, var(--accent-green) 35%, var(--border));
+  background: var(--accent-tint);
 }
 
 .project-choice:disabled {
@@ -355,12 +343,14 @@
   cursor: wait;
 }
 
+/* The dot sits inside the ring with a gap, so it reads on any card tone. */
 .project-choice-check {
   width: 0.92rem;
   height: 0.92rem;
+  padding: 0.15rem;
   border: 1.5px solid var(--border-strong);
-  border-radius: 999px;
-  box-shadow: inset 0 0 0 0.2rem var(--bg);
+  border-radius: var(--radius-sm);
+  background-clip: content-box;
   transition:
     background 0.12s ease,
     border-color 0.12s ease;
@@ -368,7 +358,7 @@
 
 .project-choice.is-selected .project-choice-check {
   border-color: var(--accent);
-  background: var(--accent);
+  background-color: var(--accent);
 }
 
 .project-choice-content {
@@ -411,7 +401,7 @@
 }
 
 .project-choice-impact {
-  color: var(--accent-green);
+  color: var(--accent-strong);
   font-size: 0.68rem;
   line-height: 1.35;
 }
@@ -429,8 +419,6 @@
   justify-content: center;
   gap: 0.25rem;
   padding: 1rem;
-  border: 1px dashed var(--border);
-  border-radius: 0.65rem;
   color: var(--text-muted);
   text-align: center;
   font-size: 0.75rem;
@@ -447,38 +435,32 @@
   height: 2.65rem;
   box-sizing: border-box;
   padding: 0.66rem 0.75rem;
-  border: 1px solid var(--border);
-  border-radius: 0.62rem;
-  background: var(--bg);
+  border: 1px solid transparent;
+  border-radius: var(--radius-md);
+  background: var(--surface-2);
   color: var(--text);
   font: inherit;
-  transition:
-    border-color 0.12s ease,
-    box-shadow 0.12s ease,
-    background 0.12s ease;
+  transition: border-color 0.12s ease;
 }
 
 .project-input::placeholder {
   color: color-mix(in srgb, var(--text-muted) 72%, transparent);
 }
 
-.project-input:hover {
-  border-color: var(--border-strong);
-}
-
 .project-input:focus {
   outline: none;
-  border-color: var(--border-strong);
-  box-shadow: 0 0 0 3px color-mix(in srgb, var(--text) 8%, transparent);
+  border-color: var(--focus-edge);
 }
 
+/* The path and Browse are two tonal segments with a sliver between them. */
 .project-path-control {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
+  gap: 2px;
 }
 
 .project-path-control .project-input {
-  border-radius: 0.62rem 0 0 0.62rem;
+  border-radius: var(--radius-md) 0 0 var(--radius-md);
 }
 
 .project-path-input {
@@ -490,9 +472,8 @@
 .project-browse-button {
   min-width: 5.15rem;
   padding: 0 0.8rem;
-  border: 1px solid var(--border);
-  border-left: 0;
-  border-radius: 0 0.62rem 0.62rem 0;
+  border: 0;
+  border-radius: 0 var(--radius-md) var(--radius-md) 0;
   background: var(--surface-2);
   color: var(--text);
   font:
@@ -505,12 +486,11 @@
   background: var(--surface-3);
 }
 
+/* The folder browser is outlined, with hairlines above and below its list. */
 .project-directory-browser {
   overflow: hidden;
   border: 1px solid var(--border);
-  border-radius: 0.7rem;
-  background: var(--bg);
-  box-shadow: inset 0 1px rgb(255 255 255 / 1.5%);
+  border-radius: var(--radius-md);
 }
 
 .project-directory-browser[hidden] {
@@ -525,7 +505,6 @@
   gap: 0.18rem;
   padding: 0.32rem 0.4rem;
   border-bottom: 1px solid var(--border);
-  background: var(--surface-2);
 }
 
 .project-browser-icon-button {
@@ -535,7 +514,7 @@
   height: 1.9rem;
   padding: 0;
   border: 0;
-  border-radius: 0.42rem;
+  border-radius: var(--radius-md);
   background: transparent;
   color: var(--text-muted);
   font:
@@ -545,7 +524,7 @@
 }
 
 .project-browser-icon-button:hover:not(:disabled) {
-  background: var(--surface-3);
+  background: var(--surface-2);
   color: var(--text);
 }
 
@@ -574,7 +553,7 @@
   white-space: nowrap;
   padding: 0.35rem 0.45rem;
   border: 0;
-  border-radius: 0.38rem;
+  border-radius: var(--radius-md);
   background: transparent;
   color: var(--text-muted);
   font: 500 0.75rem/1 var(--font-mono);
@@ -590,7 +569,7 @@
 }
 
 .project-browser-breadcrumbs button:hover {
-  background: var(--surface-3);
+  background: var(--surface-2);
   color: var(--text);
 }
 
@@ -632,7 +611,7 @@
   min-height: 2.35rem;
   padding: 0.35rem 0.48rem;
   border: 0;
-  border-radius: 0.48rem;
+  border-radius: var(--radius-md);
   background: transparent;
   color: var(--text);
   text-align: left;
@@ -669,31 +648,18 @@
   gap: 0.35rem;
 }
 
-.project-browser-row-arrow {
-  color: var(--text-muted);
-  font-size: 1.05rem;
-  opacity: 0.55;
-}
-
+/* Small sentence-case label: a tone, no outline. */
 .project-browser-badge {
   display: inline-flex;
   align-items: center;
   min-height: 1.15rem;
-  padding: 0.12rem 0.38rem;
-  border: 1px solid color-mix(in srgb, var(--accent-green) 30%, transparent);
-  border-radius: 999px;
-  background: color-mix(in srgb, var(--accent-green) 10%, transparent);
-  color: var(--accent-green);
-  font-size: 0.62rem;
-  font-weight: 700;
-  letter-spacing: 0.025em;
-  text-transform: uppercase;
-}
-
-.project-browser-badge.is-added {
-  border-color: var(--border);
+  padding: 0.12rem 0.4rem;
+  border-radius: var(--radius-sm);
   background: var(--surface-3);
   color: var(--text-muted);
+  font-size: 0.68rem;
+  font-weight: 600;
+  line-height: 1.2;
 }
 
 .project-browser-skeleton {
@@ -707,7 +673,7 @@
 
 .project-browser-skeleton span {
   height: 0.72rem;
-  border-radius: 999px;
+  border-radius: var(--radius-sm);
   background: var(--surface-2);
   animation: project-skeleton-pulse 1.2s ease-in-out infinite alternate;
 }
@@ -715,11 +681,10 @@
 .project-browser-skeleton span:first-child {
   width: 1rem;
   height: 1rem;
-  border-radius: 0.25rem;
+  border-radius: var(--radius-sm);
 }
 
-.project-browser-empty,
-.project-browser-error {
+.project-browser-empty {
   min-height: 100%;
   display: flex;
   flex-direction: column;
@@ -732,24 +697,9 @@
   font-size: 0.78rem;
 }
 
-.project-browser-empty strong,
-.project-browser-error strong {
+.project-browser-empty strong {
   color: var(--text);
   font-size: 0.84rem;
-}
-
-.project-browser-empty-icon {
-  font-size: 1.2rem;
-  opacity: 0.55;
-}
-
-.project-browser-error {
-  color: var(--danger);
-}
-
-.project-browser-error .btn {
-  margin-top: 0.35rem;
-  padding: 0.4rem 0.7rem;
 }
 
 .project-browser-footer {
@@ -760,7 +710,6 @@
   min-height: 2.8rem;
   padding: 0.4rem 0.48rem 0.4rem 0.72rem;
   border-top: 1px solid var(--border);
-  background: var(--surface-2);
 }
 
 .project-browser-status {
@@ -783,9 +732,8 @@
   gap: 0.42rem;
   margin: 0 1.25rem 1rem;
   padding: 0.8rem 0.85rem;
-  border: 1px solid color-mix(in srgb, var(--accent-green) 28%, var(--border));
-  border-radius: 0.65rem;
-  background: color-mix(in srgb, var(--accent-green) 7%, var(--surface-2));
+  border-radius: var(--radius-md);
+  background: var(--accent-tint);
 }
 
 .project-resolution-summary[hidden] {
@@ -840,11 +788,11 @@
 }
 
 .modal .project-path-control input {
-  border-radius: 8px 0 0 8px;
+  border-radius: var(--radius-md) 0 0 var(--radius-md);
 }
 
 .modal .project-browse-button {
-  border-radius: 0 8px 8px 0;
+  border-radius: 0 var(--radius-md) var(--radius-md) 0;
 }
 
 .modal .project-resolution-summary {
@@ -862,10 +810,6 @@
 
 .project-modal-status.is-error {
   color: var(--danger);
-}
-
-.project-modal-status.is-muted {
-  color: var(--text-muted);
 }
 
 .header-title-context {

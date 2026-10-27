@@ -8,9 +8,9 @@
   width: min(900px, calc(100% - 2.2rem));
   margin: 0.7rem auto 0;
   padding: 0.65rem 0.8rem;
-  border: 1px solid var(--border);
-  border-radius: 12px;
-  background: var(--surface);
+  border: 1px solid transparent;
+  border-radius: var(--radius-md);
+  background: var(--surface-2);
   color: var(--text);
   font-size: 0.83rem;
   box-sizing: border-box;
@@ -42,7 +42,11 @@
   z-index: var(--z-local-raised);
 }
 
+/* --message-gap is the space between messages (more on phones); calls that join
+   into one block take it back. */
 .messages {
+  --message-gap: 0.85rem;
+
   width: 100%;
   max-width: 900px;
   min-width: 0;
@@ -50,19 +54,7 @@
   box-sizing: border-box;
   display: flex;
   flex-direction: column;
-  gap: 0.85rem;
-}
-
-.empty-state {
-  margin: 2.5rem auto;
-  text-align: center;
-  color: var(--text-muted);
-  padding: 1.3rem 1.4rem;
-  max-width: 520px;
-}
-
-.empty-state-title {
-  font-size: 1rem;
+  gap: var(--message-gap);
 }
 
 .new-chat-pickers {
@@ -87,7 +79,7 @@
   max-width: 100%;
   padding: 0.48rem 0.6rem 0.48rem 0.72rem;
   border: 1px solid transparent;
-  border-radius: 0.65rem;
+  border-radius: var(--radius-md);
   background: var(--surface);
   color: var(--text);
   font: inherit;
@@ -100,14 +92,12 @@
 
 .new-chat-project-trigger:hover,
 .new-chat-project-trigger[aria-expanded='true'] {
-  border-color: var(--border-strong);
   background: var(--surface-2);
 }
 
 .new-chat-project-trigger:focus-visible {
-  outline: none;
-  border-color: var(--border-strong);
-  box-shadow: 0 0 0 2px color-mix(in srgb, var(--text) 10%, transparent);
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
 }
 
 .new-chat-project-label {
@@ -136,6 +126,20 @@
   transform: rotate(180deg);
 }
 
+/* Status marks and small chevrons are line icons at the size of the text. */
+.new-chat-project-chevron svg,
+.tool-status svg,
+.interrupt-badge svg,
+.ask-user-result-value svg,
+.voice-status-mark svg,
+.chip-popover-check svg,
+.diff-chevron svg,
+.diff-comment-send-more svg {
+  width: 1em;
+  height: 1em;
+  vertical-align: -0.125em;
+}
+
 .message {
   width: min(100%, 820px);
   max-width: 100%;
@@ -155,6 +159,23 @@
   width: min(78%, 820px);
 }
 
+/* Your bubble fits its text, up to that width; a new question gets a little more room
+   above it than the parts of an answer get between them. */
+.chat-scroll .message.user {
+  width: auto;
+  max-width: min(78%, 820px);
+}
+
+@media (width <= 767px) {
+  .chat-scroll .message.user {
+    max-width: min(88%, 820px);
+  }
+}
+
+.messages > .message.user:not(:first-child) {
+  margin-top: 0.9rem;
+}
+
 .message.assistant,
 .message.tool,
 .message.skill-run,
@@ -170,62 +191,10 @@
 }
 
 .message.skill-run .message-body {
-  background: rgb(125 211 252 / 6%);
-  border-color: rgb(125 211 252 / 24%);
+  background: transparent;
+  border-color: var(--border);
   color: var(--text);
   white-space: normal;
-}
-
-.skill-run-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 0.75rem;
-  color: var(--accent-strong);
-}
-
-.skill-run-detail {
-  margin-top: 0.35rem;
-  color: var(--text-muted);
-  font-size: 0.82rem;
-}
-
-.skill-run-output {
-  margin: 0.75rem 0 0;
-  max-height: 28rem;
-  overflow: auto;
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
-  color: var(--text);
-  font: inherit;
-}
-
-.skill-run-error {
-  margin-top: 0.6rem;
-  color: var(--error-text);
-}
-
-.skill-run-action {
-  display: inline-block;
-  margin-top: 0.6rem;
-  border: 1px solid var(--border-strong);
-  border-radius: 999px;
-  padding: 0.2rem 0.6rem;
-  background: transparent;
-  color: var(--accent-strong);
-  font: inherit;
-  font-size: 0.78rem;
-  text-decoration: none;
-  cursor: pointer;
-}
-
-.skill-run-header .skill-run-action {
-  margin-top: 0;
-}
-
-.skill-run-action:disabled {
-  cursor: default;
-  opacity: 0.6;
 }
 
 .message-body {
@@ -233,7 +202,7 @@
   min-width: 0;
   box-sizing: border-box;
   border: 1px solid var(--border);
-  border-radius: 12px;
+  border-radius: var(--radius-md);
   padding: 0.85rem 1rem;
   line-height: 1.6;
   font-size: 0.96rem;
@@ -252,18 +221,85 @@
 
 .message.user .message-body {
   background: var(--surface-2);
-  border-color: var(--border-strong);
+  border-color: transparent;
   color: var(--text);
   white-space: pre-wrap;
 }
 
+@media (width >= 768px) {
+  .message.user .message-body {
+    padding: 0.75rem 1rem;
+  }
+}
+
 .message.assistant .message-body {
-  background: var(--surface);
+  background: transparent;
+  border-width: 0;
+  border-radius: 0;
+  padding-inline: 0;
+  padding-block: 0.15rem;
+}
+
+/* Without the card, a reply's first and last blocks keep no outer margin, so its
+   buttons sit just under the text. */
+.message.assistant .message-body > .markdown-body > :first-child {
+  margin-top: 0;
+}
+
+.message.assistant .message-body > .markdown-body > :last-child {
+  margin-bottom: 0;
+}
+
+/* A reply sits on the page, with its buttons and time on one line under it; with a
+   mouse the buttons are at half strength until you point at the reply. */
+.message.assistant {
+  flex-flow: row wrap;
+  column-gap: 0.5rem;
+}
+
+.message.assistant > :not(.turn-action-panel, .message-meta) {
+  flex: 1 0 100%;
+}
+
+.message.assistant > .turn-action-panel,
+.message.assistant > .message-meta {
+  align-self: center;
+}
+
+/* The buttons' own padding already sets them off from the text. The row starts
+   where the text does, so the first button's hover tone lines up with it. */
+.message.assistant > .turn-action-panel {
+  gap: 0.2rem;
+  margin-top: 0;
+  padding-inline: 0;
+}
+
+/* A user message has the same copy button, after its time, its hover tone
+   ending at the bubble's edge. */
+.message.user > .message-meta {
+  gap: 0.45rem;
+  margin-top: -0.35rem;
+  padding-inline-end: 0;
+}
+
+@media (hover: hover) {
+  .message.assistant .turn-action-panel,
+  .message.user .turn-copy-btn {
+    opacity: 0.5;
+    transition: opacity 0.15s;
+  }
+
+  .message.assistant:hover .turn-action-panel,
+  .message.assistant .turn-action-panel:focus-within,
+  .message.user:hover .turn-copy-btn,
+  .message.user .turn-copy-btn:focus-visible {
+    opacity: 1;
+  }
 }
 
 .message.error .message-body {
-  background: rgb(248 113 113 / 8%);
-  border-color: rgb(248 113 113 / 25%);
+  background: var(--danger-tint);
+  border-color: transparent;
   color: var(--error-text);
 }
 
@@ -337,59 +373,77 @@
 
 .message.compaction .message-body,
 .message.compaction-boundary .message-body {
-  background: rgb(229 162 16 / 8%);
-  border-color: rgb(229 162 16 / 22%);
+  background: var(--amber-tint);
+  border-color: transparent;
   color: var(--text-muted);
   font-size: 0.9rem;
   white-space: normal;
 }
 
+/* A compaction is a divider, like a model switch: a hairline either side of its button. */
+.message.compaction-boundary .message-body {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.75rem;
+  background: transparent;
+  border: 0;
+  border-radius: 0;
+  padding: 0;
+}
+
+.message.compaction-boundary .message-body::before,
+.message.compaction-boundary .message-body::after {
+  content: '';
+  flex: 1;
+  min-width: 1.5rem;
+  border-top: 1px solid var(--border-strong);
+}
+
+.message.compaction-boundary .message-body::after {
+  order: 2;
+}
+
+.message.compaction-boundary .compaction-raw {
+  order: 3;
+  flex: 1 0 100%;
+}
+
+/* Phase lines ("Compacting: summarize history") are quiet status lines. */
+.message.phase {
+  color: var(--text-muted);
+  font-size: 0.82rem;
+}
+
+.message.phase .message-body {
+  background: transparent;
+  border: 0;
+  padding: 0;
+  color: inherit;
+  font-size: inherit;
+}
+
+.message.tool,
 .message.job-notice {
   width: min(100%, 820px);
 }
 
 .message.job-notice .message-body {
-  background: var(--surface);
-  border-color: var(--border);
+  background: transparent;
   color: var(--text-muted);
   font-size: 0.9rem;
   white-space: normal;
-}
-
-.message.job-notice-failed .message-body {
-  background: rgb(248 113 113 / 8%);
-  border-color: rgb(248 113 113 / 28%);
-}
-
-.job-notice-toggle {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.4rem;
-  border: 0;
-  background: transparent;
-  color: var(--text);
   padding: 0;
-  font: inherit;
-  font-size: 0.88rem;
-  cursor: pointer;
+  overflow: hidden;
+  border: 1px solid color-mix(in srgb, var(--tool) 20%, transparent);
+  border-radius: var(--radius-sm);
 }
 
-.job-notice-icon {
-  width: 1rem;
-  height: 1rem;
-  flex: none;
-  color: var(--accent-green);
-}
-
-.job-notice-failed .job-notice-icon {
-  color: var(--danger);
-}
-
-.job-notice-chevron {
-  width: 0.9rem;
-  height: 0.9rem;
-  flex: none;
-  color: var(--text-muted);
+/* A queued job's notice is drawn like a group of tool calls (it uses their toggle,
+   arrow and status); its title is in the text colour. */
+.message.job-notice .job-notice-toggle {
+  color: var(--text);
+  line-height: normal;
 }
 
 .job-notice-label {
@@ -398,33 +452,21 @@
   margin-bottom: 0.3rem;
 }
 
-.compaction-summary-row {
-  display: flex;
-  align-items: center;
-  gap: 0.5rem;
-  flex-wrap: wrap;
-}
-
-.compaction-label {
-  color: var(--accent-amber);
-  font-weight: 600;
-}
-
-.compaction-detail {
-  color: var(--text-muted);
+.message.job-notice .message-body > div {
+  padding: 0 0.75rem 0.7rem;
 }
 
 .compaction-toggle {
   display: inline-flex;
   align-items: center;
   gap: 0.35rem;
-  border: 1px solid var(--border-strong);
-  border-radius: 999px;
+  border: 0;
+  border-radius: var(--radius-sm);
   background: transparent;
-  color: var(--text);
-  padding: 0.15rem 0.55rem;
+  color: var(--text-muted);
+  padding: 0.15rem 0.4rem;
   font: inherit;
-  font-size: 0.82rem;
+  font-size: 0.78rem;
   cursor: pointer;
 }
 
@@ -435,8 +477,8 @@
 }
 
 .compaction-toggle:hover {
-  border-color: var(--accent-amber);
-  color: var(--accent-strong);
+  color: var(--text);
+  background: var(--surface-2);
 }
 
 .compaction-raw {
@@ -444,9 +486,9 @@
   max-height: 24rem;
   overflow: auto;
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: var(--radius-md);
   padding: 0.75rem;
-  background: var(--surface);
+  background: transparent;
   color: var(--text);
   white-space: pre-wrap;
   font-family: var(--font-mono);
@@ -462,68 +504,153 @@
   white-space: normal;
 }
 
-.markdown-stream-stable:empty,
-.markdown-stream-tail:empty {
-  display: none;
-}
-
-.markdown-stream-tail.streaming-plain-text {
-  white-space: pre-wrap;
-}
-
-.markdown-stream-piece > :first-child {
-  margin-top: 0;
-}
-
-.markdown-stream-piece > :last-child {
-  margin-bottom: 0;
-}
-
 .markdown-body h1,
 .markdown-body h2,
 .markdown-body h3,
 .markdown-body h4,
 .markdown-body h5,
 .markdown-body h6 {
-  margin: 0.4em 0 0.3em;
-  line-height: 1.25;
+  line-height: 1.3;
+  font-weight: 650;
+  letter-spacing: -0.01em;
+  text-wrap: balance;
+}
+
+/* A calm scale, with much more room above a heading than below it. */
+.markdown-body h1 {
+  font-size: 1.5em;
+  margin: 1.5em 0 0.5em;
+}
+
+.markdown-body h2 {
+  font-size: 1.25em;
+  margin: 1.4em 0 0.45em;
+}
+
+.markdown-body h3 {
+  font-size: 1.08em;
+  margin: 1.3em 0 0.4em;
+}
+
+/* h4 keeps the text size. */
+.markdown-body :is(h4, h5, h6) {
+  margin: 1.2em 0 0.35em;
+}
+
+.markdown-body h5 {
+  font-size: 0.95em;
+}
+
+.markdown-body h6 {
+  font-size: 0.9em;
+  color: var(--text-muted);
+}
+
+.markdown-body > :is(h1, h2, h3, h4, h5, h6):first-child {
+  margin-top: 0;
+}
+
+.markdown-body :is(h1, h2, h3, h4, h5, h6) + :is(p, ul, ol, pre, table, blockquote) {
+  margin-top: 0.4em;
+}
+
+.markdown-body :is(h1, h2, h3, h4, h5, h6) + :is(h1, h2, h3, h4, h5, h6) {
+  margin-top: 0.7em;
 }
 
 .markdown-body p {
-  margin: 0.45em 0;
+  margin: 0.65em 0;
 }
 
 .markdown-body ul,
 .markdown-body ol {
-  margin: 0.45em 0 0.55em;
-  padding-left: 1.3rem;
+  margin: 0.65em 0;
+  padding-left: 1.5em;
+}
+
+.markdown-body li + li {
+  margin-top: 0.3em;
+}
+
+.markdown-body li > ul,
+.markdown-body li > ol {
+  margin: 0.3em 0 0.1em;
+}
+
+.markdown-body li > p {
+  margin: 0.3em 0;
+}
+
+.markdown-body li::marker {
+  color: var(--text-muted);
+}
+
+.markdown-body hr {
+  border: 0;
+  border-top: 1px solid var(--border);
+  margin: 1.6em 0;
 }
 
 .markdown-body blockquote {
-  margin: 0.7em 0;
-  padding: 0.15em 0.8em;
-  border-left: 3px solid var(--border-strong);
-  color: var(--text-muted);
-  background: var(--surface-2);
-  border-radius: 4px;
+  margin: 1em 0;
+  padding: 0.25em 0 0.25em 0.75em;
+  border-left: 3px solid var(--quote-rule);
+  color: color-mix(in srgb, var(--text) 80%, var(--text-muted));
+  background: transparent;
+  border-radius: 0;
+}
+
+.markdown-body blockquote > :first-child {
+  margin-top: 0;
+}
+
+.markdown-body blockquote > :last-child {
+  margin-bottom: 0;
 }
 
 .markdown-body pre {
   position: relative;
   max-width: 100%;
   box-sizing: border-box;
-  margin: 0.6em 0;
+  margin: 1em 0;
   padding: 0;
-  border-radius: 8px;
-  overflow: auto;
-  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+  border: 1px solid var(--border-strong);
 }
 
+/* Only the code scrolls, so the band and the copy button stay put. */
 .markdown-body pre code {
   display: block;
-  padding: 0.85rem;
-  line-height: 1.45;
-  font-size: 0.87rem;
+  padding: 0.9rem 1rem;
+  overflow: auto;
+  line-height: 1.55;
+  font-size: 0.86rem;
+}
+
+/* A block with a language gets a slim band naming it, which holds the copy button. */
+.markdown-body pre[data-lang]::before {
+  content: attr(data-lang);
+  display: block;
+  padding: 0.4rem 1rem;
+  font-family: var(--font-mono);
+  font-variant-ligatures: none;
+  font-size: 0.72rem;
+  letter-spacing: 0.04em;
+  color: var(--text-muted);
+  background: var(--surface-2);
+}
+
+.markdown-body pre[data-lang] .code-copy-btn {
+  top: 0.22rem;
+  right: 0.45rem;
+  width: 24px;
+  height: 24px;
+  opacity: 0.7;
+}
+
+.markdown-body pre[data-lang] .code-copy-btn:hover {
+  opacity: 1;
 }
 
 .code-copy-btn {
@@ -532,9 +659,9 @@
   right: 6px;
   width: 28px;
   height: 28px;
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  background: var(--surface);
+  border: 1px solid transparent;
+  border-radius: var(--radius-md);
+  background: transparent;
   color: var(--text-muted);
   display: inline-flex;
   align-items: center;
@@ -575,8 +702,7 @@
 }
 
 @media (hover: none), (pointer: coarse) {
-  .code-copy-btn,
-  .math-copy-btn {
+  .code-copy-btn {
     opacity: 0.72;
   }
 }
@@ -594,7 +720,7 @@
   width: 30px;
   height: 30px;
   border: 1px solid transparent;
-  border-radius: 8px;
+  border-radius: var(--radius-md);
   background: transparent;
   color: var(--text-muted);
   display: inline-flex;
@@ -635,14 +761,14 @@
 
 .turn-action-btn.copied {
   color: var(--accent-green);
-  background: rgb(52 211 153 / 8%);
+  background: var(--green-tint);
 }
 
 .turn-action-btn.copied::after {
   content: '';
   position: absolute;
   inset: 3px;
-  border-radius: 999px;
+  border-radius: var(--radius-sm);
   border: 1px solid currentcolor;
   pointer-events: none;
   opacity: 0;
@@ -697,10 +823,11 @@
   font-family: var(--font-mono);
   font-variant-ligatures: none;
   background: var(--surface-2);
-  border: 1px solid var(--border);
-  padding: 0.11rem 0.35rem;
-  border-radius: 4px;
-  font-size: 0.88em;
+  border: 1px solid transparent;
+  padding: 0.1em 0.35em;
+  border-radius: var(--radius-sm);
+  font-size: 0.87em;
+  color: var(--code);
 }
 
 .markdown-body pre,
@@ -714,30 +841,52 @@
 }
 
 .markdown-body table {
-  width: 100%;
+  width: max-content;
   max-width: 100%;
-  table-layout: fixed;
+  table-layout: auto;
   border-collapse: collapse;
-  margin: 0.6rem 0;
-  font-size: 0.9rem;
+  margin: 1em 0;
+  font-size: 0.92em;
+  display: block;
+  overflow-x: auto;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
 }
 
 .markdown-body th,
 .markdown-body td {
-  border: 1px solid var(--border);
-  padding: 0.35rem 0.5rem;
-  overflow-wrap: anywhere;
+  border: 0;
+  padding: 0.5em 0.9em;
+  overflow-wrap: break-word;
   text-align: left;
   vertical-align: top;
+  border-bottom: 1px solid var(--border);
 }
 
 .markdown-body th {
-  background: var(--surface-2);
+  background: color-mix(in srgb, var(--text) 4%, transparent);
+  font-weight: 650;
+  white-space: nowrap;
+}
+
+.markdown-body tbody tr:last-child td {
+  border-bottom: 0;
+}
+
+.markdown-body td {
+  font-variant-numeric: tabular-nums;
 }
 
 .markdown-body a {
   color: var(--link);
-  text-decoration: underline;
+  text-decoration-line: underline;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 0.18em;
+  text-decoration-color: color-mix(in srgb, currentcolor 45%, transparent);
+}
+
+.markdown-body a:hover {
+  text-decoration-color: currentcolor;
 }
 
 .markdown-body .katex {
@@ -755,55 +904,10 @@
   white-space: nowrap;
 }
 
-.math-copy-btn {
-  position: sticky;
-  right: 0;
-  float: right;
-  margin-left: 0.5rem;
-  border: 1px solid var(--border);
-  border-radius: 999px;
-  background: color-mix(in srgb, var(--surface) 92%, transparent);
-  color: var(--text-muted);
-  font-size: 0.68rem;
-  line-height: 1;
-  padding: 0.28rem 0.45rem;
-  cursor: pointer;
-  opacity: 0;
-  transition:
-    opacity 0.15s ease,
-    background 0.15s ease,
-    color 0.15s ease;
-  z-index: var(--z-local-raised);
-}
-
-.markdown-body .katex-display:hover .math-copy-btn,
-.math-copy-btn:focus-visible,
-.math-copy-btn.copied {
-  opacity: 1;
-}
-
-.math-copy-btn:hover,
-.math-copy-btn:focus-visible {
-  background: var(--surface-2);
-  color: var(--text);
-  outline: none;
-}
-
-.math-copy-btn:disabled {
-  cursor: default;
-  opacity: 0.45;
-}
-
-.math-copy-btn.copied {
-  color: var(--accent-green);
-}
-
 .message-meta {
   display: inline-flex;
   align-items: center;
-  gap: 0.45rem;
   color: var(--text-muted);
-  font-size: 0.74rem;
   padding: 0 0.2rem;
   align-self: flex-end;
 }
@@ -812,8 +916,8 @@
   display: inline-flex;
   align-items: center;
   gap: 0.32rem;
-  border: 1px solid var(--border);
-  border-radius: 999px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
   padding: 0.08rem 0.42rem;
   font-size: 0.69rem;
   line-height: 1.2;
@@ -825,7 +929,7 @@
 .interrupt-badge .interrupt-spinner {
   width: 0.62rem;
   height: 0.62rem;
-  border-radius: 999px;
+  border-radius: var(--radius-sm);
   border: 1.5px solid var(--border);
   border-top-color: var(--text);
   animation: spin 0.75s linear infinite;
@@ -834,35 +938,29 @@
 
 .interrupt-badge.pending {
   color: var(--text);
-  border-color: var(--border-strong);
   background: var(--surface-2);
 }
 
 .interrupt-badge.steer {
   color: var(--accent-green);
-  border-color: rgb(52 211 153 / 30%);
-  background: rgb(52 211 153 / 8%);
+  background: var(--green-tint);
 }
 
 .interrupt-badge.cancel {
   color: var(--danger);
-  border-color: rgb(248 113 113 / 30%);
-  background: rgb(248 113 113 / 8%);
+  background: var(--danger-tint);
 }
 
 .interrupt-badge.queue {
   color: var(--accent-amber);
-  border-color: var(--border);
-  background: var(--surface);
+  background: var(--surface-2);
 }
 
 .interrupt-badge.error {
   color: var(--danger);
-  border-color: rgb(248 113 113 / 30%);
-  background: rgb(248 113 113 / 6%);
+  background: var(--danger-tint);
 }
 
-.message.assistant .message-meta,
 .message.tool .message-meta,
 .message.error .message-meta {
   align-self: flex-start;
@@ -875,12 +973,41 @@
   padding: 0 0.2rem;
 }
 
+/* Your words are filled, the agent's activity is outlined: tool calls have an
+   edge in the tool colour (--tool) and no fill, so the colour has a place
+   without colouring their text. They run to the reply's full 820px measure,
+   and long summaries and commands truncate rather than widen the card. */
 .tool-card,
 .tool-group-card {
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  background: var(--surface);
+  max-width: 100%;
+  border: 1px solid color-mix(in srgb, var(--tool) 20%, transparent);
+  border-radius: var(--radius-sm);
   overflow: hidden;
+}
+
+/* Calls that follow each other join into one block, like the rows of a table: the
+   message gap is taken back, only the outer corners are round, and the call before
+   draws the line between two. */
+.messages > .message.tool + .message.tool,
+.messages > .message.tool + .tool-group,
+.messages > .tool-group + .message.tool,
+.messages > .tool-group + .tool-group {
+  margin-top: calc(-1 * var(--message-gap));
+}
+
+.messages > .message.tool:has(+ .message.tool, + .tool-group) > .tool-card,
+.messages > .tool-group:has(+ .message.tool, + .tool-group) > .tool-group-card {
+  border-bottom-left-radius: 0;
+  border-bottom-right-radius: 0;
+}
+
+.messages > .message.tool + .message.tool > .tool-card,
+.messages > .tool-group + .message.tool > .tool-card,
+.messages > .message.tool + .tool-group > .tool-group-card,
+.messages > .tool-group + .tool-group > .tool-group-card {
+  border-top-width: 0;
+  border-top-left-radius: 0;
+  border-top-right-radius: 0;
 }
 
 .tool-toggle,
@@ -889,7 +1016,7 @@
   border: 0;
   background: transparent;
   color: inherit;
-  padding: 0.65rem 0.75rem;
+  padding: 0.5rem 0.75rem;
   display: flex;
   gap: 0.6rem;
   cursor: pointer;
@@ -899,10 +1026,6 @@
 
 .tool-toggle {
   align-items: baseline;
-}
-
-.tool-toggle:hover {
-  background: var(--surface-2);
 }
 
 .tool-arrow {
@@ -941,12 +1064,14 @@
   min-width: 0;
   overflow: hidden;
   color: var(--text-muted);
-  font: 0.74rem var(--font-mono);
+  font: 0.8rem var(--font-mono);
   font-variant-ligatures: none;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
+/* Status by meaning: done, the usual case, is a quiet check; a failure is in
+   the danger colour, and a running call in the tool colour. */
 .tool-status {
   margin-left: auto;
   color: var(--text-muted);
@@ -954,12 +1079,12 @@
   flex-shrink: 0;
 }
 
-.tool-status.done {
-  color: var(--accent-green);
+.tool-status.running {
+  color: var(--tool);
 }
 
 .tool-status.error {
-  color: var(--accent-red, #ef4444);
+  color: var(--danger);
 }
 
 .tool-elapsed {
@@ -986,8 +1111,42 @@
   content: ' · ';
 }
 
+/* Opening a subagent is a link-like button in the accent, with an arrow. */
+.tool-progress .subagent-open {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.15em;
+  padding: 0;
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.tool-progress .subagent-open:hover,
+.tool-progress .subagent-open:focus-visible {
+  background: transparent;
+  color: var(--accent);
+  text-decoration: underline;
+  text-underline-offset: 0.18em;
+}
+
+.tool-progress .subagent-open svg {
+  width: 0.95em;
+  height: 0.95em;
+}
+
+/* Once the line names the agent, Open needs no bullet, only a little room. */
+.tool-progress.named .subagent-open {
+  margin-inline-start: 0.6em;
+}
+
+/* In an opened group the line starts under the tool name (the row is already
+   inset). */
+.tool-group-entry-body .tool-progress {
+  padding-inline: 0;
+}
+
 .tool-details {
-  border-top: 1px solid var(--border);
+  border-top: 1px solid color-mix(in srgb, var(--tool) 20%, transparent);
   padding: 0.58rem 0.75rem 0.72rem;
   display: none;
 }
@@ -1055,7 +1214,7 @@
 .tool-argument-structured {
   display: inline;
   padding: 0.08rem 0.28rem;
-  border-radius: 4px;
+  border-radius: var(--radius-sm);
   background: var(--surface-2);
 }
 
@@ -1074,13 +1233,6 @@
 .ask-user-questions {
   display: grid;
   gap: 0.65rem;
-}
-
-.ask-user-question {
-  padding: 0.65rem;
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  background: var(--surface-2);
 }
 
 .ask-user-question-heading {
@@ -1137,9 +1289,9 @@
   align-items: baseline;
   gap: 0.45rem;
   padding: 0.55rem 0.65rem;
-  border: 1px solid color-mix(in srgb, var(--accent-green) 30%, var(--border));
-  border-radius: 8px;
-  background: color-mix(in srgb, var(--accent-green) 7%, transparent);
+  border: 1px solid transparent;
+  border-radius: var(--radius-md);
+  background: var(--green-tint);
 }
 
 .ask-user-result-value > :first-child {
@@ -1150,9 +1302,9 @@
 .tool-details pre {
   margin: 0;
   padding: 0.65rem;
-  border-radius: 8px;
+  border-radius: var(--radius-sm);
   border: 1px solid var(--border);
-  background: var(--surface);
+  background: transparent;
   font-family: var(--font-mono);
   font-variant-ligatures: none;
   font-size: 0.83rem;
@@ -1160,14 +1312,22 @@
   word-break: break-word;
 }
 
+/* An opened call's result stops at about 18 lines and scrolls in its box. */
+.tool-details pre.tool-result {
+  max-height: 18rem;
+  overflow: auto;
+  font-size: 0.8rem;
+  line-height: 1.5;
+}
+
 .tool-failure-reason {
   display: grid;
   gap: 0.35rem;
   margin-top: 0.65rem;
   padding: 0.6rem 0.7rem;
-  border: 1px solid color-mix(in srgb, var(--danger) 32%, var(--border));
-  border-radius: 8px;
-  background: color-mix(in srgb, var(--danger) 6%, transparent);
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  background: var(--danger-tint);
   color: var(--danger);
   font-size: 0.78rem;
 }
@@ -1178,19 +1338,33 @@
   border: 0;
   background: transparent;
   color: var(--text);
+  max-height: 12rem;
+  overflow: auto;
 }
 
 .tool-group-toggle {
   align-items: center;
 }
 
-.tool-group-toggle:hover {
-  background: var(--surface-2);
+/* Pointing gives a faint wash; on a touch screen a tapped row keeps no band. */
+@media (hover: hover) {
+  .tool-toggle:hover,
+  .tool-group-toggle:hover {
+    background: color-mix(in srgb, var(--tool) 7%, transparent);
+  }
 }
 
 .tool-group-summary {
   font-weight: 600;
   min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tool-group-names {
+  color: var(--text-muted);
+  font-weight: 400;
 }
 
 .tool-group-details {
@@ -1213,10 +1387,15 @@
 .tool-entry-icon {
   flex-shrink: 0;
   width: 1.1rem;
-  padding-top: 0.5rem;
-  font-size: 0.85rem;
-  line-height: 1.2;
-  text-align: center;
+  padding-top: 0.45rem;
+  color: var(--tool);
+}
+
+.tool-entry-icon svg {
+  display: block;
+  width: 1rem;
+  height: 1rem;
+  margin-inline: auto;
 }
 
 .tool-group-entry-body {
@@ -1235,6 +1414,7 @@
   border: 0;
   border-radius: 0;
   background: transparent;
+  max-width: none;
 }
 
 /* Nested toggles drop the card padding so their status glyphs line up
@@ -1242,7 +1422,7 @@
 .tool-group-entry-body .tool-toggle {
   padding: 0.45rem 0;
   gap: 0.45rem;
-  border-radius: 6px;
+  border-radius: var(--radius-sm);
 }
 
 .tool-group-entry-body .tool-details {
@@ -1260,88 +1440,9 @@
   margin: 0.5rem 0 0;
 }
 
-.subagent-result-output {
-  margin: 0;
-  max-height: 16rem;
-  overflow: auto;
-  white-space: pre-wrap;
-  word-break: break-word;
-  font: 0.78rem/1.5 var(--font-mono);
-  font-variant-ligatures: none;
-  color: var(--text);
-}
-
-.subagent-result-error {
-  color: var(--accent-red, #ef4444);
-  font-size: 0.8rem;
-}
-
-.subagent-result-meta {
-  color: var(--text-muted);
-  font-size: 0.75rem;
-}
-
-.subagent-result-action {
-  color: var(--accent);
-  font-size: 0.78rem;
-  width: fit-content;
-}
-
-.tool-artifacts {
-  display: flex;
-  gap: 0.5rem;
-  flex-wrap: wrap;
-  padding: 0.7rem 0.75rem 0.7rem 2rem;
-  border-top: 1px solid var(--border);
-  background: var(--surface);
-}
-
-.tool-artifacts img {
-  max-width: min(360px, 100%);
-  max-height: 270px;
-  border-radius: 8px;
-  border: 1px solid var(--border);
-  object-fit: cover;
-  cursor: pointer;
-  transition: opacity 0.15s ease;
-  background: var(--surface-2);
-}
-
-.tool-artifacts img:hover {
-  opacity: 0.85;
-}
-
 .markdown-body img,
 .markdown-body video {
   max-width: 100%;
-  border-radius: 8px;
+  border-radius: var(--radius-md);
   margin: 0.5rem 0;
-}
-
-.deferred-video {
-  display: inline-flex;
-  flex-direction: column;
-  gap: 0.75rem;
-  margin: 0.5rem 0;
-  max-width: 100%;
-}
-
-.deferred-video-poster {
-  max-width: 100%;
-  border-radius: 8px;
-}
-
-.deferred-video-btn {
-  align-self: flex-start;
-  border: 1px solid var(--border);
-  border-radius: 999px;
-  background: var(--surface-elevated);
-  color: var(--text);
-  padding: 0.55rem 0.9rem;
-  cursor: pointer;
-  font: inherit;
-}
-
-.deferred-video-btn:hover {
-  background: color-mix(in srgb, var(--surface-elevated) 70%, var(--accent) 30%);
 }

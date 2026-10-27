@@ -28,7 +28,7 @@
   width: 32px;
   height: 19px;
   padding: 2px;
-  border-radius: 999px;
+  border-radius: var(--radius-sm);
   background: color-mix(in srgb, var(--text-muted) 30%, var(--surface-3));
   transition: background 0.16s ease;
 }

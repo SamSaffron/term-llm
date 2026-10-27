@@ -12,7 +12,8 @@ import { AudioMedia } from './AudioMedia';
 import { trustedPublishedMediaURL } from '../domain/audio-media';
 import { bindTranscriptMedia } from './transcript-media';
 import { ChipPicker } from './ChipPicker';
-import { Icon } from './Icon';
+import { Icon, type IconName } from './Icon';
+import { followChatGutter } from '../platform/page-chrome';
 import { attachmentIconName, formatAttachmentSize } from '../domain/attachments';
 import { copyText } from '../platform/clipboard';
 import { rebaseHubAssetURL } from '../app/config';
@@ -24,6 +25,7 @@ import {
   TRANSCRIPT_SCROLL_TO_TAIL_EVENT,
 } from './transcript-scroll';
 import { formatElapsedDuration, subscribeElapsedClock } from '../platform/elapsed-clock';
+import type { ComponentChildren } from 'preact';
 
 function publishedMediaURL(store: AppStore, value: string): string {
   return trustedPublishedMediaURL(rebaseHubAssetURL(store.config, value));
@@ -191,7 +193,7 @@ function AskUserAnswer({ answer }: { answer: string }) {
     <div class="ask-user-result">
       <div class="tool-details-label">Answer</div>
       <div class="ask-user-result-value">
-        <span aria-hidden="true">✓</span>
+        <Icon name="check" />
         <span>{answer}</span>
       </div>
     </div>
@@ -235,22 +237,31 @@ function toolSummary(tool: ToolCall): string {
     )
     .join('\n');
 }
-function toolIcon(name: string): string {
+function toolIcon(name: string): IconName {
+  const key = name.toLowerCase();
+  // MCP tools are named server__tool (the browser's own, webmcp__tool).
+  if (key.includes('__')) return 'plug';
   return (
     (
       {
-        shell: '💻',
-        bash: '💻',
-        read_file: '📄',
-        write_file: '✏️',
-        edit_file: '✏️',
-        web_search: '🔍',
-        grep: '🔍',
-        read_url: '🌐',
-        image_generate: '🎨',
-        spawn_agent: '🤖',
-      } as Record<string, string>
-    )[name.toLowerCase()] || '🔧'
+        shell: 'terminal',
+        bash: 'terminal',
+        read_file: 'file-text',
+        write_file: 'file-pen',
+        edit_file: 'file-pen',
+        web_search: 'search',
+        grep: 'text-search',
+        glob: 'folder-search',
+        read_url: 'globe',
+        image_generate: 'image',
+        spawn_agent: 'bot',
+        continue_agent: 'bot',
+        wait_agent: 'bot',
+        queue_agent: 'bot',
+        cancel_agent: 'bot',
+        ask_user: 'message-circle-question',
+      } as Record<string, IconName>
+    )[key] || 'wrench'
   );
 }
 function guardianReviewReason(message: string, outcome: string): string {
@@ -460,6 +471,60 @@ function subagentChildSessionIds(store: AppStore, tool: ToolCall): string[] {
   return [];
 }
 
+function spawnAgentName(tool: ToolCall): string {
+  try {
+    const args: unknown = JSON.parse(tool.arguments || 'null');
+    const name =
+      args && typeof args === 'object' ? (args as Record<string, unknown>).agent_name : '';
+    return typeof name === 'string' ? name.trim() : '';
+  } catch {
+    // Arguments may still be streaming.
+    return '';
+  }
+}
+
+// The agent each delegation is about, aligned with its child sessions: a spawn
+// names it in its arguments, and the others find it on the child they point at,
+// or on the spawn that made that child.
+function subagentNames(store: AppStore, tool: ToolCall, childSessionIds: string[]): string[] {
+  if (tool.name.toLowerCase() === 'spawn_agent') {
+    const name = spawnAgentName(tool);
+    if (name) return [name];
+  }
+  const children = store.childSessionStore.children.value;
+  // Spawn arguments never change, so the lookup needn't subscribe to the transcript.
+  const messages = store.activeSession.peek()?.messages || [];
+  return childSessionIds.map((id) => {
+    const child = children.find((candidate) => candidate.session_id === id);
+    const agent = String(child?.agent || '').trim();
+    if (agent || !child?.parent_spawn_call_id) return agent;
+    for (const message of messages) {
+      const spawn = message.tools?.find((candidate) => candidate.id === child.parent_spawn_call_id);
+      if (spawn) return spawnAgentName(spawn);
+    }
+    return '';
+  });
+}
+
+const delegationVerbs: Record<string, [running: string, done: string, failed: string]> = {
+  spawn_agent: ['Spawning', 'Spawned', 'spawn'],
+  continue_agent: ['Continuing', 'Continued', 'continue'],
+  wait_agent: ['Waiting on', 'Waited on', 'wait on'],
+};
+
+// A delegation line says what happened to whom ("Continuing reviewer"); without
+// a name for every agent it keeps the tool name.
+function delegationLabel(tool: ToolCall, names: string[]): string {
+  const verbs = delegationVerbs[tool.name.toLowerCase()];
+  if (!verbs || !names.length || names.some((name) => !name)) return '';
+  const who = [...new Set(names)].join(', ');
+  if (tool.status === 'running') return `${verbs[0]} ${who}`;
+  if (tool.status === 'error' || tool.resultStatus === 'error')
+    return `Couldn't ${verbs[2]} ${who}`;
+  if (tool.status === 'cancelled') return `Stopped ${who}`;
+  return `${verbs[1]} ${who}`;
+}
+
 function subagentActivity(tool: ToolCall): string {
   const progress = tool.subagentProgress;
   if (progress && ['completed', 'failed', 'cancelled'].includes(progress.state)) return '';
@@ -528,13 +593,22 @@ function SubagentProgressLine({
   const running =
     tool.status === 'running' &&
     (!progress || !['completed', 'failed', 'cancelled'].includes(progress.state));
-  return parts.length || childSessionIds.length ? (
-    <div class="tool-progress">
-      {labelled && (
+  const names = subagentNames(store, tool, childSessionIds);
+  const label = delegationLabel(tool, names);
+  return parts.length || childSessionIds.length || label ? (
+    <div class={`tool-progress ${label ? 'named' : ''}`}>
+      {label ? (
         <strong>
-          {name}
-          {tool.status === 'running' ? ' · running' : ''}:{' '}
+          {label}
+          {parts.length ? ': ' : ''}
         </strong>
+      ) : (
+        labelled && (
+          <strong>
+            {name}
+            {tool.status === 'running' ? ' · running' : ''}:{' '}
+          </strong>
+        )
       )}
       {parts.join(' · ')}
       <SubagentQuietPeriod
@@ -545,15 +619,23 @@ function SubagentProgressLine({
       />
       {childSessionIds.map((childSessionId, index) => (
         <span key={childSessionId}>
-          {(parts.length > 0 || index > 0) && ' · '}
+          {!label && (parts.length > 0 || index > 0) && ' · '}
           <button
-            class="text-action"
+            class="text-action subagent-open"
             type="button"
+            aria-label={label ? `Open ${names[index] || 'subagent'}` : undefined}
             onClick={() =>
               void store.resolveAndSelectSession(childSessionId, false, { prepend: false })
             }
           >
-            {childSessionIds.length > 1 ? `Open subagent ${index + 1}` : 'Open subagent'}
+            {label
+              ? childSessionIds.length > 1
+                ? `Open ${names[index]}`
+                : 'Open'
+              : childSessionIds.length > 1
+                ? `Open subagent ${index + 1}`
+                : 'Open subagent'}
+            <Icon name="chevron-right" />
           </button>
         </span>
       ))}
@@ -579,7 +661,11 @@ const Tool = memo(function Tool({
   const stopped = tool.status === 'cancelled';
   const [localExpanded, setLocalExpanded] = useState(false);
   const expanded = controlledExpanded ?? localExpanded;
-  const summary = toolSummary(tool);
+  // A named delegation line says which agent it is, so the header doesn't repeat it.
+  const delegationNamed = Boolean(
+    delegationLabel(tool, subagentNames(store, tool, subagentChildSessionIds(store, tool))),
+  );
+  const summary = delegationNamed ? '' : toolSummary(tool);
   const failureReason = failed ? String(tool.result || tool.subagent?.error || '').trim() : '';
   const spawnAgent = tool.name.toLowerCase() === 'spawn_agent';
   const shell = tool.name.toLowerCase() === 'shell';
@@ -610,7 +696,7 @@ const Tool = memo(function Tool({
             <ElapsedDuration durationMs={finalDurationMs} running={false} />{' '}
           </>
         )}
-        ✕
+        <Icon name="close" />
       </>
     ) : stopped ? (
       <>
@@ -628,7 +714,7 @@ const Tool = memo(function Tool({
             <ElapsedDuration durationMs={finalDurationMs} running={false} />{' '}
           </>
         )}
-        ✓
+        <Icon name="check" />
       </>
     );
   if (tool.name === 'update_plan' && tool.status === 'done' && tool.resultStatus !== 'error')
@@ -645,7 +731,7 @@ const Tool = memo(function Tool({
           <span class="tool-name">{tool.name}</span>
           {summary && <span class="tool-summary">{summary.split('\n')[0]}</span>}
           <span
-            class={`tool-status ${failed ? 'error' : tool.status === 'done' ? 'done' : ''}`}
+            class={`tool-status ${failed ? 'error' : tool.status === 'done' ? 'done' : tool.status === 'running' ? 'running' : ''}`}
             aria-label={
               failed
                 ? 'Failed'
@@ -767,11 +853,14 @@ function ToolGroup({
           <Icon name="chevron-right" />
         </span>
         <span class="tool-group-summary">
-          {visible.length} tool calls · {names.slice(0, 3).join(', ')}
-          {names.length > 3 ? '…' : ''}
+          {visible.length} tool calls ·{' '}
+          <span class="tool-group-names">
+            {names.slice(0, 3).join(', ')}
+            {names.length > 3 ? '…' : ''}
+          </span>
         </span>
         <span
-          class={`tool-status ${running || stopped ? '' : 'done'}`}
+          class={`tool-status ${running ? 'running' : stopped ? '' : 'done'}`}
           aria-label={running ? 'Running' : stopped ? 'Stopped' : 'Complete'}
         >
           {running ? (
@@ -791,7 +880,7 @@ function ToolGroup({
           ) : stopped ? (
             'stopped'
           ) : (
-            '✓'
+            <Icon name="check" />
           )}
         </span>
       </button>
@@ -811,7 +900,7 @@ function ToolGroup({
           visible.map((tool) => (
             <div class="tool-group-entry" key={tool.id}>
               <span class="tool-entry-icon" aria-hidden="true">
-                {toolIcon(tool.name)}
+                <Icon name={toolIcon(tool.name)} />
               </span>
               <div class="tool-group-entry-body">
                 <Tool tool={tool} tickElapsed={expanded} resolveMedia={resolveMedia} />
@@ -969,33 +1058,48 @@ function MessageTime({ created, clock }: { created: number; clock: ReadonlySigna
   );
 }
 
-function MessageMeta({ message, clock }: { message: Message; clock: ReadonlySignal<number> }) {
+function MessageMeta({
+  message,
+  clock,
+  children,
+}: {
+  message: Message;
+  clock: ReadonlySignal<number>;
+  children?: ComponentChildren;
+}) {
   const interrupt = (
     {
       evaluating: ['pending', '', 'evaluating…'],
-      checking_send: ['pending', '⏳', 'checking whether this was sent'],
-      unconfirmed_send: ['error', '⚠', 'send unconfirmed — it may still be running'],
-      pending_steer: ['pending', '⏳', 'will incorporate'],
-      steer: ['steer', '✓', 'injected'],
-      cancel: ['cancel', '⏹', 'cancelled + queued'],
-      queue: ['queue', '⏳', 'queued'],
-      error: ['error', '⚠', 'failed'],
-    } as Record<string, [string, string, string]>
+      checking_send: ['pending', 'clock', 'checking whether this was sent'],
+      unconfirmed_send: ['error', 'alert-circle', 'send unconfirmed — it may still be running'],
+      pending_steer: ['pending', 'clock', 'will incorporate'],
+      steer: ['steer', 'check', 'injected'],
+      cancel: ['cancel', 'stop', 'cancelled + queued'],
+      queue: ['queue', 'clock', 'queued'],
+      error: ['error', 'alert-circle', 'failed'],
+    } as Record<string, [string, IconName | '', string]>
   )[String(message.interruptState || '')];
   return (
     <div class="message-meta">
       {message.role === 'user' && interrupt && (
         <span class={`interrupt-badge ${interrupt[0]}`}>
-          {interrupt[1] || <span class="interrupt-spinner" />}
+          {interrupt[1] ? <Icon name={interrupt[1]} /> : <span class="interrupt-spinner" />}
           {interrupt[2]}
         </span>
       )}
       <MessageTime created={message.created} clock={clock} />
+      {children}
     </div>
   );
 }
 
-function TurnCopyButton({ text }: { text: string }) {
+function TurnCopyButton({
+  text,
+  label: idleLabel = 'Copy response',
+}: {
+  text: string;
+  label?: string;
+}) {
   const [feedback, setFeedback] = useState<'idle' | 'copying' | 'copied' | 'failed'>('idle');
   const resetTimer = useRef<number | undefined>(undefined);
   useEffect(
@@ -1006,7 +1110,7 @@ function TurnCopyButton({ text }: { text: string }) {
   );
   const copied = feedback === 'copied';
   const failed = feedback === 'failed';
-  const label = copied ? 'Copied' : failed ? 'Copy failed' : 'Copy response';
+  const label = copied ? 'Copied' : failed ? 'Copy failed' : idleLabel;
   const copy = async () => {
     setFeedback('copying');
     try {
@@ -1192,19 +1296,32 @@ const MessageRow = memo(function MessageRow({
         data-message-id={message.id}
         data-durable-id={message.durableRowId}
       >
+        {/* Drawn like a group of tool calls: the arrow, the title with its agent muted, the status. */}
         <div class="message-body">
           <button
             type="button"
-            class="job-notice-toggle"
+            class="job-notice-toggle tool-group-toggle"
             onClick={() => setExpanded(!expanded)}
             aria-expanded={expanded}
           >
-            <Icon name={failed ? 'alert-circle' : 'check'} class="job-notice-icon" />
-            <span>
-              Queued job {status}
-              {agent ? ` · ${agent}` : ''}
+            <span class="tool-arrow">
+              <Icon name="chevron-right" />
             </span>
-            <Icon name={expanded ? 'chevron-down' : 'chevron-right'} class="job-notice-chevron" />
+            <span class="tool-group-summary">
+              Job {status}
+              {agent && (
+                <>
+                  {' '}
+                  · <span class="tool-group-names">{agent}</span>
+                </>
+              )}
+            </span>
+            <span
+              class={`tool-status ${failed ? 'error' : 'done'}`}
+              aria-label={failed ? 'Failed' : 'Complete'}
+            >
+              <Icon name={failed ? 'close' : 'check'} />
+            </span>
           </button>
           {expanded && (
             <div>
@@ -1339,7 +1456,11 @@ const MessageRow = memo(function MessageRow({
           )}
         </div>
       )}
-      <MessageMeta message={message} clock={clock} />
+      <MessageMeta message={message} clock={clock}>
+        {message.role === 'user' && message.content && (
+          <TurnCopyButton text={message.content} label="Copy message" />
+        )}
+      </MessageMeta>
     </article>
   );
 });
@@ -1367,7 +1488,9 @@ function NewChatControls() {
               <>
                 <span class="new-chat-project-label">Agent</span>
                 <span class="new-chat-project-value">{selected.label}</span>
-                <span class="new-chat-project-chevron">⌄</span>
+                <span class="new-chat-project-chevron">
+                  <Icon name="chevron-down" />
+                </span>
               </>
             )}
           />
@@ -1395,7 +1518,9 @@ function NewChatControls() {
               <>
                 {selected.value && <span class="new-chat-project-label">Project</span>}
                 <span class="new-chat-project-value">{selected.label}</span>
-                <span class="new-chat-project-chevron">⌄</span>
+                <span class="new-chat-project-chevron">
+                  <Icon name="chevron-down" />
+                </span>
               </>
             )}
           />
@@ -1408,6 +1533,8 @@ function NewChatControls() {
 export function Transcript() {
   const store = useStore();
   const scroll = useRef<HTMLElement>(null);
+  // The message box sits exactly under the messages, which are centred left of this scrollbar.
+  useLayoutEffect(() => followChatGutter(scroll.current), []);
   const content = useRef<HTMLDivElement>(null);
   const stickToTail = useRef(true);
   const programmaticScrollTops = useRef<number[]>([]);
@@ -1782,6 +1909,12 @@ export function Transcript() {
                 : `Assistant is responding: ${activity.text}`
             }
           >
+            {activity.kind !== 'stopping' && (
+              <svg class="working-mark" viewBox="0 0 16 16" aria-hidden="true" focusable="false">
+                <path d="M2 3.5 6.5 8 2 12.5" />
+                <line class="working-mark-cursor" x1="9" y1="12.5" x2="14" y2="12.5" />
+              </svg>
+            )}
             <span class="streaming-indicator-text" key={`${activity.kind}:${activity.text}`}>
               {activity.text}
             </span>

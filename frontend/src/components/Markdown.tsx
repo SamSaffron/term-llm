@@ -45,6 +45,10 @@ function addCodeCopyButtons(root: HTMLElement): void {
     ? [root as HTMLPreElement, ...root.querySelectorAll('pre')]
     : [...root.querySelectorAll('pre')];
   blocks.forEach((pre) => {
+    // The language names the block in a band across its top (transcript.css).
+    const code = pre.querySelector(':scope > code');
+    const language = /(?:^|\s)language-([\w+#.-]+)/.exec(code?.className ?? '')?.[1];
+    if (language) pre.dataset.lang = language;
     if (pre.querySelector('.code-copy-btn')) return;
     const button = document.createElement('button');
     button.type = 'button';
@@ -366,7 +370,10 @@ class AssistantStreamRenderer {
     this.tailSource = '';
     const pre = document.createElement('pre');
     const code = document.createElement('code');
-    if (block.language) code.classList.add(`language-${block.language}`);
+    if (block.language) {
+      code.classList.add(`language-${block.language}`);
+      pre.dataset.lang = block.language;
+    }
     const text = document.createTextNode('');
     code.append(text);
     pre.append(code);

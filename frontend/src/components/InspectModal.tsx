@@ -19,6 +19,7 @@ import {
 import { errorMessage } from '../domain/text';
 import { copyText } from '../platform/clipboard';
 import { Overlay } from './Overlay';
+import { Icon } from './Icon';
 
 type BodyState = { body: InspectBody } | { error: string };
 
@@ -217,7 +218,7 @@ function InspectItem({
           aria-controls={regionId}
           onClick={toggle}
         >
-          <span aria-hidden="true">{expanded ? '▾' : '▸'}</span>
+          <Icon name={expanded ? 'chevron-down' : 'chevron-right'} />
           {heading}
         </button>
       ) : (

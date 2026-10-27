@@ -13,6 +13,7 @@ import { planSummary } from '../domain/plan';
 import { observePopoverPosition, positionPopover } from '../platform/browser';
 import { containPopoverScroll } from '../platform/popover-scroll';
 import { Icon } from './Icon';
+import { SelectControl } from './SelectControl';
 
 function EffortMeter() {
   return (
@@ -141,7 +142,7 @@ function RuntimePicker() {
       <div class="runtime-popover-fields">
         <label class="runtime-popover-field">
           <span class="runtime-popover-label">Provider</span>
-          <select
+          <SelectControl
             class="runtime-popover-select"
             aria-label="Provider"
             disabled={locked}
@@ -155,11 +156,11 @@ function RuntimePicker() {
                 {entry.is_default ? ' (default)' : ''}
               </option>
             ))}
-          </select>
+          </SelectControl>
         </label>
         <label class="runtime-popover-field">
           <span class="runtime-popover-label">Model</span>
-          <select
+          <SelectControl
             class="runtime-popover-select"
             aria-label="Runtime model"
             disabled={locked}
@@ -172,11 +173,11 @@ function RuntimePicker() {
                 {compactModelLabel(entry.name)}
               </option>
             ))}
-          </select>
+          </SelectControl>
         </label>
         <label class="runtime-popover-field">
           <span class="runtime-popover-label">Effort</span>
-          <select
+          <SelectControl
             class="runtime-popover-select"
             aria-label="Reasoning effort"
             value={store.selectedEffort.value}
@@ -187,7 +188,7 @@ function RuntimePicker() {
                 {entry || 'Auto (server default)'}
               </option>
             ))}
-          </select>
+          </SelectControl>
         </label>
         {fastSupported && !providerFast && (
           <div class="runtime-popover-fast-row">

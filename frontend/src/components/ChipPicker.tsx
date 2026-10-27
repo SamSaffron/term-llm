@@ -2,6 +2,7 @@ import type { ComponentChildren, TargetedKeyboardEvent } from 'preact';
 import { useId, useLayoutEffect, useMemo, useRef, useState } from 'preact/hooks';
 import { observePopoverPosition, positionPopover } from '../platform/browser';
 import { containPopoverScroll } from '../platform/popover-scroll';
+import { Icon } from './Icon';
 
 export interface ChipPickerOption {
   value: string;
@@ -203,6 +204,9 @@ export function ChipPicker({
                 onClick={() => choose(option.value)}
                 onKeyDown={handleItemKeys}
               >
+                <span class="chip-popover-check" aria-hidden="true">
+                  {option.value === value && <Icon name="check" />}
+                </span>
                 <span class="chip-popover-item-label">{option.label}</span>
                 {option.meta && <span class="chip-popover-item-meta">{option.meta}</span>}
               </button>

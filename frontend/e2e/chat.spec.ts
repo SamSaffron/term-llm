@@ -515,10 +515,10 @@ test('desktop shell uses authored controls, message hierarchy and diff rows', as
   await open(page);
   const sessionButton = page.getByRole('button', { name: 'First chat', exact: true });
   await expect(sessionButton).toHaveCSS('display', 'flex');
-  await expect(sessionButton).toHaveCSS('border-radius', '8px');
+  await expect(sessionButton).toHaveCSS('border-radius', '3px');
   await expect(page.locator('#newChatBtn svg')).toBeVisible();
   await expect(page.locator('#attachBtn svg')).toBeVisible();
-  await expect(page.locator('.message-body')).toHaveCSS('border-radius', '12px');
+  await expect(page.locator('.message-body')).toHaveCSS('border-radius', '6px');
   expect(
     await page
       .locator('.message-meta')
@@ -527,7 +527,7 @@ test('desktop shell uses authored controls, message hierarchy and diff rows', as
 
   const diffToggle = page.getByRole('button', { name: 'Toggle file changes' });
   await diffToggle.click();
-  await expect(diffToggle).toHaveCSS('width', '34px');
+  await expect(diffToggle).toHaveCSS('width', '32px');
   await expect(diffToggle.locator('.diff-toggle-file-icon')).toBeVisible();
   await expect(diffToggle.locator('.diff-toggle-stat-add')).toBeHidden();
   await expect(diffToggle.locator('.diff-toggle-stat-del')).toBeHidden();
@@ -548,7 +548,7 @@ test('collapses file-change counts to an icon at narrow widths', async ({ page }
   await open(page);
 
   const toggle = page.getByRole('button', { name: 'Toggle file changes' });
-  await expect(toggle).toHaveCSS('width', '34px');
+  await expect(toggle).toHaveCSS('width', '32px');
   await expect(toggle.locator('.diff-toggle-file-icon')).toBeVisible();
   await expect(toggle.locator('.diff-toggle-stat-add')).toBeHidden();
   await expect(toggle.locator('.diff-toggle-stat-del')).toBeHidden();
@@ -570,7 +570,8 @@ test('keeps running controls while a response transport reconnects', async ({ pa
   await page.getByRole('textbox', { name: 'Message' }).fill('Long request');
   await page.getByRole('button', { name: 'Send message' }).click();
   await expect(page.locator('#stopBtn')).toBeVisible();
-  await expect(page.getByRole('button', { name: 'Response is running' })).toBeEnabled();
+  // Stop has taken the send button's place.
+  await expect(page.locator('#sendBtn')).toHaveCount(0);
   await expect(page.getByPlaceholder('Steer conversation…')).toBeVisible();
   await expect(page.getByRole('status', { name: 'Response status is unknown' })).toBeHidden();
   expect(
@@ -674,7 +675,7 @@ test('mobile viewport opens a styled sidebar and returns to a usable composer', 
     false,
   );
   await expect(page.getByRole('textbox', { name: 'Message' })).toBeVisible();
-  await expect(page.locator('.composer-box')).toHaveCSS('border-radius', '22px');
+  await expect(page.locator('.composer-box')).toHaveCSS('border-radius', '6px');
   await expect(page.locator('#sendBtn svg')).toBeVisible();
 });
 
@@ -691,7 +692,7 @@ test('mobile floating surfaces dismiss from their outside area and restore inter
   await expect(runtime).toBeVisible();
   await expect(runtimeClose).toBeFocused();
   await expect(page.getByRole('combobox', { name: 'Provider' })).not.toBeFocused();
-  await expect(runtime).toHaveCSS('border-radius', '18px');
+  await expect(runtime).toHaveCSS('border-radius', '6px');
   await expect(page.getByRole('combobox', { name: 'Runtime model' })).toHaveCSS(
     'min-height',
     '48px',

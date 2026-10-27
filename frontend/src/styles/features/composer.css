@@ -2,10 +2,18 @@
 
 .composer {
   background: var(--bg);
-  padding: 0.75rem calc(1rem + var(--safe-right)) max(1rem, var(--safe-bottom))
-    calc(1rem + var(--safe-left));
+  padding: 0.75rem calc(1.1rem + var(--safe-right) + var(--chat-gutter))
+    max(1rem, var(--safe-bottom)) calc(1.1rem + var(--safe-left));
   position: relative;
   z-index: var(--z-local-raised);
+}
+
+/* On phones the box has the messages' side margin, so it lines up with the text above it. */
+@media (width <= 767px) {
+  .composer {
+    padding-inline: calc(1rem + var(--safe-left))
+      calc(1rem + var(--safe-right) + var(--chat-gutter));
+  }
 }
 
 .composer-inner {
@@ -14,6 +22,26 @@
   display: flex;
   flex-direction: column;
   gap: 0;
+  position: relative;
+}
+
+/* The conversation fades out over the 16px just above the box instead of ending at
+   a straight edge. */
+.composer-inner::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: calc(100% + 0.75rem);
+  height: 1rem;
+  background: linear-gradient(to bottom, transparent, var(--bg));
+  pointer-events: none;
+}
+
+@media (width <= 700px) {
+  .composer-inner::before {
+    bottom: calc(100% + 0.45rem);
+  }
 }
 
 .voice-status {
@@ -22,11 +50,11 @@
   flex-wrap: wrap;
   gap: 0.5rem 0.75rem;
   min-height: 50px;
-  margin: 0 0.3rem 0.45rem;
+  margin: 0 0 0.45rem;
   padding: 6px 8px 6px 12px;
-  border: 1px solid var(--border);
-  border-radius: 14px;
-  background: var(--surface);
+  border: 1px solid transparent;
+  border-radius: var(--radius-md);
+  background: var(--surface-2);
   color: var(--text);
 }
 
@@ -64,7 +92,7 @@
   width: 8px;
   height: 8px;
   border-radius: 50%;
-  background: var(--danger);
+  background: var(--accent);
 }
 
 .voice-status-spinner,
@@ -102,13 +130,13 @@
   margin-inline-start: auto;
 }
 
-/* Scoped so these win over the generic .btn rules loaded later (modals.css). */
+/* Scoped so these win over the shared .btn rules (base/buttons.css). */
 .voice-status .voice-status-actions .btn {
   flex: 0 0 auto;
   min-width: 44px;
   min-height: 36px;
   padding: 0.35rem 0.8rem;
-  border-radius: 8px;
+  border-radius: var(--radius-md);
   font-size: 0.875rem;
   font-weight: 600;
   line-height: 1.2;
@@ -125,13 +153,9 @@
   background: var(--surface-2);
 }
 
-.voice-status .btn:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: 2px;
-}
-
 .voice-status-failed {
-  border-color: color-mix(in srgb, var(--danger) 45%, var(--border));
+  border-color: transparent;
+  background: var(--danger-tint);
 }
 
 .voice-status-failed .voice-status-mark {
@@ -139,7 +163,7 @@
 }
 
 .voice-status-complete .voice-status-mark {
-  color: var(--success, #22c55e);
+  color: var(--accent-green);
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -154,12 +178,12 @@
   display: flex;
   flex-direction: column;
   gap: 0.7rem;
-  margin: 0 0.3rem 0.45rem;
+  margin: 0 0 0.45rem;
   padding: 0.65rem 0.85rem;
   min-height: 44px;
-  border: 1px solid color-mix(in srgb, var(--accent) 45%, var(--border));
-  border-radius: 14px;
-  background: color-mix(in srgb, var(--accent) 8%, var(--surface));
+  border: 1px solid transparent;
+  border-radius: var(--radius-md);
+  background: var(--accent-tint);
   color: var(--text);
 }
 
@@ -237,7 +261,7 @@
 .live-status-dot,
 .live-status-spinner {
   flex: 0 0 auto;
-  border-radius: 999px;
+  border-radius: var(--radius-sm);
 }
 
 .live-status-dot {
@@ -298,8 +322,8 @@
   gap: 0.5rem;
   min-width: 0;
   padding: 0.5rem 0.85rem;
-  border-radius: 12px;
-  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  border: 1px solid transparent;
   background: var(--surface-2);
 }
 
@@ -337,9 +361,9 @@
 
 .pending-steering-action {
   flex-shrink: 0;
-  border: 1px solid var(--border);
-  border-radius: 999px;
-  background: var(--surface);
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  background: transparent;
   color: var(--text);
   padding: 0.3rem 0.65rem;
   font: inherit;
@@ -351,24 +375,27 @@
 
 .pending-steering-action:hover {
   background: var(--surface-3);
-  border-color: var(--border-strong);
 }
 
+/* The input has the box's first row to itself; the controls share a toolbar
+   row under it. */
 .composer-box {
-  --composer-control-size: 36px;
-
-  display: grid;
-  grid-template-columns: auto minmax(0, 1fr) auto;
-  align-items: end;
-  border: 1px solid var(--border);
-  border-radius: 24px;
+  display: flex;
+  flex-direction: column;
+  border: 1px solid transparent;
+  border-radius: var(--radius-md);
   background: var(--surface-2);
-  padding: 6px;
+  padding: 8px;
   position: relative;
+
+  --prompt-inline: 8px;
+
+  /* Its buttons are 32px on every screen, close to ChatGPT's and Claude's. */
+  --control-size: 32px;
 }
 
 .composer-box:focus-within {
-  border-color: var(--border-strong);
+  border-color: var(--focus-edge);
 }
 
 .slash-command-menu,
@@ -377,7 +404,7 @@
   bottom: calc(100% + 8px);
   padding: 0.35rem;
   border: 1px solid var(--border);
-  border-radius: 12px;
+  border-radius: var(--radius-md);
   background: var(--surface);
   box-shadow: var(--shadow-strong);
   z-index: var(--z-floating-panel);
@@ -387,8 +414,8 @@
 }
 
 .slash-command-menu {
-  left: 46px;
-  right: 46px;
+  left: 6px;
+  right: 6px;
 }
 
 .slash-command-menu[hidden] {
@@ -403,7 +430,7 @@
   gap: 0.75rem;
   padding: 0.58rem 0.65rem;
   border: 0;
-  border-radius: 8px;
+  border-radius: var(--radius-md);
   background: transparent;
   color: var(--text);
   text-align: left;
@@ -439,13 +466,13 @@
   border: none;
   background: transparent;
   color: var(--text-muted);
-  width: var(--composer-control-size);
-  height: var(--composer-control-size);
+  width: var(--control-size);
+  height: var(--control-size);
   display: inline-flex;
   align-items: center;
   justify-content: center;
   cursor: pointer;
-  border-radius: 50%;
+  border-radius: var(--radius-md);
   flex-shrink: 0;
   transition:
     background 0.15s ease,
@@ -462,9 +489,9 @@
   margin-bottom: 0.45rem;
   padding: 0.55rem 0.75rem;
   color: var(--text);
-  background: color-mix(in srgb, var(--accent) 16%, var(--surface));
-  border: 1px solid var(--accent);
-  border-radius: 0.5rem;
+  background: var(--accent-tint);
+  border: 1px solid transparent;
+  border-radius: var(--radius-md);
 }
 
 .compaction-status {
@@ -478,16 +505,11 @@
   cursor: not-allowed;
 }
 
-.composer-icon-btn svg {
-  width: 20px;
-  height: 20px;
-}
-
 .approval-mode-chip,
 .goal-chip {
   align-self: flex-start;
-  border: 1px solid var(--border);
-  border-radius: 999px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
   background: var(--surface-2);
   color: var(--text);
   padding: 0.35rem 0.7rem;
@@ -502,13 +524,11 @@
 
 .approval-mode-chip {
   margin-bottom: 0.45rem;
-  border-color: rgb(245 158 11 / 45%);
-  background: rgb(245 158 11 / 13%);
+  background: var(--amber-tint);
 }
 
 .approval-mode-chip.approval-mode-yolo {
-  border-color: color-mix(in srgb, var(--danger) 45%, transparent);
-  background: color-mix(in srgb, var(--danger) 12%, transparent);
+  background: var(--danger-tint);
 }
 
 .approval-mode-chip-label,
@@ -521,34 +541,26 @@
 }
 
 .goal-chip.goal-active {
-  border-color: rgb(34 197 94 / 35%);
-  background: rgb(34 197 94 / 12%);
+  background: var(--green-tint);
 }
 
 .goal-chip.goal-paused,
 .goal-chip.goal-blocked,
 .goal-chip.goal-budget_limited {
-  border-color: rgb(245 158 11 / 38%);
-  background: rgb(245 158 11 / 13%);
+  background: var(--amber-tint);
 }
 
 .goal-objective-input {
   width: 100%;
   box-sizing: border-box;
-  border: 1px solid var(--border);
-  border-radius: 12px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-md);
   background: var(--surface-2);
   color: var(--text);
   padding: 0.75rem;
   font: inherit;
   resize: vertical;
   min-height: 120px;
-}
-
-.goal-modal-subtitle {
-  margin: 0 0 1rem;
-  color: var(--text-muted);
-  line-height: 1.4;
 }
 
 .goal-actions {
@@ -567,7 +579,7 @@
 .composer-add-menu button {
   width: 100%;
   border: 0;
-  border-radius: 8px;
+  border-radius: var(--radius-md);
   background: transparent;
   color: var(--text);
   padding: 0.58rem 0.65rem;
@@ -606,14 +618,15 @@
   outline: none;
 }
 
-.voice-btn.recording {
-  background: rgb(248 113 113 / 14%);
-  color: var(--danger);
-}
-
-.voice-btn.recording:hover {
-  background: rgb(248 113 113 / 20%);
-  color: var(--danger);
+/* The mic lights up while it records (it is disabled until the recording
+   ends, so it keeps full strength here); Stop in the strip is the one solid
+   accent button, and send waits. */
+.voice-btn.recording,
+.voice-btn.recording:hover,
+.voice-btn.recording:disabled {
+  background: transparent;
+  color: var(--accent);
+  opacity: 1;
 }
 
 .voice-btn.busy:not(.recording) {
@@ -629,7 +642,7 @@
   border: none;
   background: transparent;
   color: var(--text);
-  padding: 14px 8px;
+  padding: 6px var(--prompt-inline) 10px;
   line-height: 1.5;
   font-size: 1rem;
   overflow-y: auto;
@@ -642,49 +655,35 @@
   outline: none;
 }
 
-.composer-actions {
-  grid-column: 3;
-  display: inline-flex;
+/* Add on the left; the microphone and send on the right. While a response
+   runs, Stop takes the send button's place and look. */
+.composer-toolbar {
+  display: flex;
   align-items: center;
   gap: 4px;
-  flex-shrink: 0;
 }
 
-/* Center controls on the last line, including after the input grows. The
-   touch size changes without leaving Stop or the microphone off baseline. */
-.attach-btn,
+/* The + icon starts where the text does, by its stroke: the icon is 1.1rem and
+   its stroke starts a sixth of the way in. Its tappable square reaches into the
+   box's margin instead, as in ChatGPT. Linked devices have no +, and Send stays
+   right. */
+.composer-toolbar > .attach-btn {
+  margin-inline-start: calc(var(--prompt-inline) - (var(--control-size) - 1.1rem) / 2 - 1.1rem / 6);
+}
+
 .composer-actions {
-  margin-bottom: calc((1.5rem + 28px - var(--composer-control-size)) / 2);
-}
-
-.stop-btn {
-  border: 1px solid rgb(248 113 113 / 30%);
-  background: rgb(248 113 113 / 8%);
-  color: var(--stop-btn-text);
-  border-radius: 999px;
-  height: var(--composer-control-size);
-  padding: 0 14px;
-  cursor: pointer;
-  display: none;
-  font-weight: 600;
-  font-size: 0.85rem;
+  display: flex;
   align-items: center;
-  transition: background 0.15s ease;
-}
-
-.stop-btn:hover {
-  background: rgb(248 113 113 / 14%);
-}
-
-.stop-btn.visible {
-  display: inline-flex;
+  gap: 10px;
+  flex-shrink: 0;
+  margin-inline-start: auto;
 }
 
 .send-btn {
-  width: var(--composer-control-size);
-  height: var(--composer-control-size);
+  width: var(--control-size);
+  height: var(--control-size);
   border: none;
-  border-radius: 999px;
+  border-radius: var(--radius-md);
   background: var(--gradient-accent-strong);
   color: var(--btn-accent-text);
   display: inline-flex;
@@ -711,8 +710,9 @@
 }
 
 .send-btn:disabled {
-  opacity: 0.35;
+  opacity: 1;
   cursor: not-allowed;
+  background: color-mix(in srgb, var(--accent) 40%, transparent);
 }
 
 .send-btn .spinner {
@@ -770,15 +770,15 @@
 
 @media (width <= 700px) {
   .composer {
-    padding: 0.45rem calc(0.5rem + var(--safe-right)) max(1rem, var(--safe-bottom))
-      calc(0.5rem + var(--safe-left));
+    padding: 0.45rem calc(1rem + var(--safe-right) + var(--chat-gutter))
+      max(1rem, var(--safe-bottom)) calc(1rem + var(--safe-left));
   }
 
   .voice-status {
     min-height: 58px;
-    margin: 0 0.15rem 0.4rem;
+    margin: 0 0 0.4rem;
     padding: 6px 6px 6px 10px;
-    border-radius: 16px;
+    border-radius: var(--radius-md);
   }
 
   .voice-status .voice-status-actions .btn {
@@ -792,9 +792,9 @@
 
   .live-status {
     flex-wrap: wrap;
-    margin: 0 0.15rem 0.4rem;
+    margin: 0 0 0.4rem;
     padding: 0.65rem 0.75rem;
-    border-radius: 16px;
+    border-radius: var(--radius-md);
   }
 
   .live-status-transcript:not(.live-status-transcript-expanded) {
@@ -811,14 +811,9 @@
   }
 
   .composer-box {
-    --composer-control-size: 44px;
+    border-radius: var(--radius-md);
 
-    border-radius: 22px;
-    padding: 5px;
-  }
-
-  .prompt {
-    padding-inline: 6px;
+    --prompt-inline: 6px;
   }
 }
 

@@ -129,8 +129,17 @@ function AskUser({ interactionPrompt }: { interactionPrompt?: AskUserPrompt }) {
   const [tab, setTab] = useState(0);
   const [error, setError] = useState('');
   const [sending, setSending] = useState(false);
+  const [skipping, setSkipping] = useState(false);
+  const fieldset = useRef<HTMLFieldSetElement>(null);
+  // Each step puts focus on its answer (the chosen one, else the first), so the arrow
+  // keys work at once; on opening, the dialog finds the same input by its autofocus.
+  useLayoutEffect(() => {
+    const inputs = [...(fieldset.current?.querySelectorAll<HTMLInputElement>('input') || [])];
+    (inputs.find((input) => input.checked) || inputs[0])?.focus();
+  }, [tab]);
   if (!prompt) return null;
   const question = prompt.questions[tab];
+  const focusLabel = (answers[tab] || [])[0] ?? question.options?.[0]?.label;
   const validate = (item: (typeof prompt.questions)[number], index: number) => {
     const selected = answers[index] || [];
     const own = custom[index]?.trim();
@@ -150,18 +159,30 @@ function AskUser({ interactionPrompt }: { interactionPrompt?: AskUserPrompt }) {
   const submit = async (cancelled = false) => {
     setError('');
     setSending(true);
+    setSkipping(cancelled);
     try {
       await store.answerAskUser(cancelled ? [] : prompt.questions.map(validate), cancelled, prompt);
     } catch (value) {
       setError(errorMessage(value));
     } finally {
       setSending(false);
+      setSkipping(false);
     }
   };
-  const dismiss = () => {
-    if (tab > 0) setTab(tab - 1);
-    else store.dismissInteraction('ask-user', prompt);
-  };
+  // Who is asking and where: the asking session's agent, and the conversation it
+  // paused (a subagent's parent, whose title is the one you know).
+  const find = (id?: string) =>
+    id
+      ? store.sessions.value.find((item) => item.id === id) ||
+        (store.activeSession.value?.id === id ? store.activeSession.value : undefined)
+      : undefined;
+  const asking = find(prompt.sessionId);
+  const place = (find(asking?.parentSessionId) || asking)?.title;
+  const count = prompt.questions.length;
+  const title = `${asking?.agent || 'The agent'} has ${count > 1 ? `${count} questions` : 'a question'}`;
+  // Hiding the dialog is not an answer: the question waits, and the agent with it.
+  const later = () => store.dismissInteraction('ask-user', prompt);
+  const last = tab === prompt.questions.length - 1;
   const next = () => {
     try {
       validate(question, tab);
@@ -173,33 +194,59 @@ function AskUser({ interactionPrompt }: { interactionPrompt?: AskUserPrompt }) {
   };
   return (
     <Overlay
-      title={
-        prompt.questions.length > 1
-          ? `Question ${tab + 1} of ${prompt.questions.length}`
-          : 'Answer question'
-      }
+      title={title}
       close={false}
       onEscape={() => {
-        if (!sending) dismiss();
+        if (!sending) later();
       }}
+      titleActions={
+        <button
+          class="icon-btn close-button"
+          type="button"
+          aria-label="Minimize"
+          title="Minimize"
+          disabled={sending}
+          onClick={later}
+        >
+          <Icon name="chevron-down" />
+        </button>
+      }
     >
-      <p>The agent needs your input to continue.</p>
-      {prompt.questions.length > 1 && (
-        <div class="ask-user-steps">
-          {prompt.questions.map((_item, index) => (
-            <button
-              class={`ask-user-step ${index === tab ? 'active' : index < tab ? 'completed' : ''}`}
-              disabled={sending}
-              onClick={() => setTab(index)}
-            >
-              {index + 1}
-            </button>
-          ))}
+      <div class="ask-user-context">
+        <Icon name="pause" />
+        <span>{place ? `Paused in ${place}` : 'Paused until you answer'}</span>
+      </div>
+      {/* Progress through the questions: a segment each, the current one in the accent. */}
+      {count > 1 && (
+        <div class="ask-user-progress">
+          <div class="ask-user-steps">
+            {prompt.questions.map((item, index) => {
+              const label = `Question ${index + 1}${item.header ? `: ${item.header}` : ''}`;
+              return (
+                <button
+                  type="button"
+                  class={`ask-user-step ${index === tab ? 'active' : index < tab ? 'completed' : ''}`}
+                  aria-label={label}
+                  title={label}
+                  aria-current={index === tab ? 'step' : undefined}
+                  disabled={sending}
+                  onClick={() => setTab(index)}
+                />
+              );
+            })}
+          </div>
+          <span class="ask-user-count">
+            {tab + 1} of {count}
+          </span>
         </div>
       )}
-      <fieldset class="ask-user-question" disabled={sending} aria-busy={sending}>
+      <fieldset ref={fieldset} class="ask-user-question" disabled={sending} aria-busy={sending}>
         <legend class="ask-user-question-text">
-          {question.header && <strong>{question.header}: </strong>}
+          {question.header && (
+            <>
+              <span class="ask-user-label">{question.header}</span>{' '}
+            </>
+          )}
           {question.question}
         </legend>
         {question.options?.map((option) => (
@@ -210,6 +257,7 @@ function AskUser({ interactionPrompt }: { interactionPrompt?: AskUserPrompt }) {
                 : { type: 'radio' as const })}
               name={`question-${tab}`}
               value={option.label}
+              autoFocus={option.label === focusLabel}
               checked={(answers[tab] || []).includes(option.label)}
               onChange={(event) => {
                 const current = answers[tab] || [];
@@ -245,22 +293,31 @@ function AskUser({ interactionPrompt }: { interactionPrompt?: AskUserPrompt }) {
         )}
       </fieldset>
       {error && <div class="modal-error">{error}</div>}
+      {/* Declining answers the agent without your answers, so it sits apart from the way on. */}
       <div class="modal-actions">
-        <button class="btn" disabled={sending} onClick={dismiss}>
-          {tab > 0 ? 'Back' : 'Dismiss'}
+        <button
+          class="btn tertiary ask-user-skip"
+          disabled={sending}
+          onClick={() => void submit(true)}
+        >
+          {skipping ? 'Declining…' : 'Decline'}
         </button>
-        {tab === 0 && (
-          <button class="btn danger" disabled={sending} onClick={() => void submit(true)}>
-            {sending ? 'Cancelling…' : 'Cancel agent request'}
+        {tab > 0 && (
+          <button class="btn" disabled={sending} onClick={() => setTab(tab - 1)}>
+            Back
           </button>
         )}
-        {tab < prompt.questions.length - 1 ? (
-          <button class="btn primary" disabled={sending} onClick={next}>
-            Next
+        {last ? (
+          <button class="btn primary" disabled={sending} onClick={() => void submit()}>
+            {sending && !skipping
+              ? 'Sending…'
+              : prompt.questions.length > 1
+                ? 'Send answers'
+                : 'Send answer'}
           </button>
         ) : (
-          <button class="btn primary" disabled={sending} onClick={() => void submit()}>
-            {sending ? 'Sending…' : 'Continue'}
+          <button class="btn primary" disabled={sending} onClick={next}>
+            Next
           </button>
         )}
       </div>

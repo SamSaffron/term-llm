@@ -1,33 +1,88 @@
-/* Design tokens: color scheme, spacing, layout and syntax palettes. */
+/* Design tokens: color scheme, spacing, layout and syntax palettes.
+
+   Colours are a few seeds and what is mixed from them. A theme normally sets the
+   seeds and nothing else:
+
+     --bg      the page          --text    the text
+     --accent  the brand colour  --tint    the hue the neutrals lean toward
+                                           (the accent unless set)
+
+   Panels, borders, muted text, the accent's hover and the text on it are mixed
+   from those in OKLab, so they follow any seeds; a theme can still set any of
+   them outright. The default seeds are term-llm.com's, and the mixes are fitted
+   to its palette. Meaning colours (--accent-green, --accent-amber, --danger) are
+   seeds of their own. */
 
 :root {
-  --bg: #212121;
+  --bg: #151917;
+  --text: #e9eee9;
+  --accent: #98d5b2;
+  --tint: var(--accent);
   --bg-accent: rgb(255 255 255 / 3%);
   --bg-accent-2: rgb(255 255 255 / 2%);
-  --surface: #2f2f2f;
-  --surface-strong: #2f2f2f;
-  --surface-2: #373737;
-  --surface-3: #424242;
-  --border: rgb(255 255 255 / 8%);
-  --border-strong: rgb(255 255 255 / 15%);
-  --text: #ececec;
-  --text-muted: #9a9a9a;
-  --accent: #ececec;
-  --accent-strong: #fff;
+  --surface: color-mix(
+    in oklab,
+    color-mix(in oklab, var(--bg), var(--text) 1.5%),
+    var(--tint) 2.5%
+  );
+  --surface-strong: var(--surface);
+  --surface-2: color-mix(in oklab, var(--bg), var(--tint) 9.5%);
+  --surface-3: color-mix(in oklab, var(--bg), var(--tint) 16.5%);
+  --border: color-mix(in oklab, color-mix(in oklab, var(--bg), var(--text) 4.5%), var(--tint) 10%);
+  --border-strong: color-mix(
+    in oklab,
+    color-mix(in oklab, var(--bg), var(--text) 6.5%),
+    var(--tint) 17%
+  );
+  --text-muted: color-mix(in oklab, var(--text), var(--bg) 25%);
+
+  /* The accent: primary buttons, links, focus rings and other active states
+     follow it, so a theme sets one colour (links can still be set apart).
+     Its hover leans toward the text: lighter on dark, darker on light. */
+  --accent-strong: color-mix(in oklab, var(--accent), var(--text) 35%);
   --accent-green: #34d399;
   --accent-amber: #e5a210;
   --danger: #f87171;
   --backdrop: rgb(0 0 0 / 50%);
   --overlay: rgb(0 0 0 / 60%);
   --error-text: #fecaca;
-  --btn-accent-text: #212121;
-  --stop-btn-text: #fecaca;
+  --btn-accent-text: var(--bg);
   --spinner-ring: rgb(33 33 33 / 35%);
   --shadow-soft: 0 1px 2px rgb(0 0 0 / 10%);
   --shadow-strong: 0 2px 8px rgb(0 0 0 / 15%);
   --gradient-accent: var(--surface-2);
-  --gradient-accent-strong: var(--accent-strong);
-  --link: #60a5fa;
+  --gradient-accent-strong: var(--accent);
+  --link: var(--accent);
+
+  /* Tool calls take their outline, icons and running status from this colour;
+     their text keeps the text colours. */
+  --tool: var(--accent);
+
+  /* Status and selection speak in a tint, never an edge: one fill per colour. */
+  --accent-tint: color-mix(in srgb, var(--accent) 10%, transparent);
+  --danger-tint: color-mix(in srgb, var(--danger) 8%, transparent);
+  --amber-tint: color-mix(in srgb, var(--accent-amber) 10%, transparent);
+  --green-tint: color-mix(in srgb, var(--accent-green) 8%, transparent);
+
+  /* A focused text field keeps its tone and gains this edge; buttons and
+     choices show an accent ring for keyboard focus. */
+  --focus-edge: color-mix(in oklab, var(--accent) 40%, var(--surface-2));
+
+  /* Inline code, and the bar beside a block quote, so a theme can colour them.
+     Code is peach, term-llm.com's number colour, warm beside the green. */
+  --code: #e9be91;
+  --quote-rule: color-mix(in oklab, var(--accent) 45%, var(--bg));
+
+  /* Two corner sizes for the whole app. Medium: what you talk to and use, like
+     your messages, the message box, buttons, inputs, menus, dialogs and sheets.
+     Small: small things like chips and badges, and the machine's output: tool
+     calls, code and tables. Circles and hairline corners keep their own shape. */
+  --radius-sm: 3px;
+  --radius-md: 6px;
+
+  /* The chat's scrollbar width, measured by the transcript, so the message box
+     can sit exactly under the messages (0 where scrollbars float). */
+  --chat-gutter: 0px;
   --safe-top: env(safe-area-inset-top, 0px);
   --safe-right: env(safe-area-inset-right, 0px);
   --safe-bottom: env(safe-area-inset-bottom, 0px);
@@ -38,15 +93,20 @@
   --sidebar-rail-width: 56px;
   --diff-sidebar-width: clamp(300px, 28vw, 460px);
   --plan-sidebar-width: clamp(300px, 27vw, 430px);
-  --header-action-height: 34px;
-  --header-action-radius: 10px;
+
+  /* One size for icon buttons and header controls: the message box's, the
+     header's and the sidebar's. Larger on touch screens and narrow windows. */
+  --control-size: 32px;
+  --control-size-small: 28px;
+  --header-action-height: var(--control-size);
+  --header-action-radius: var(--radius-md);
   --header-action-padding-x: 0.65rem;
   --header-cluster-gap: 0.35rem;
   --header-action-bg: transparent;
   --header-action-bg-hover: var(--surface-2);
   --header-action-bg-active: var(--surface-3);
   --header-action-border: transparent;
-  --header-action-border-active: var(--border-strong);
+  --header-action-border-active: transparent;
   --header-action-shadow: none;
   --header-action-text: var(--text);
   --layout-transition-duration: 0.2s;
@@ -73,9 +133,7 @@
   --z-lightbox: 100;
   --z-blocking-overlay: 120;
   --z-toast: 900;
-  --z-popover-backdrop: 999;
   --z-popover: 1000;
-  --z-sheet-backdrop: var(--z-popover);
   --z-sheet: 1001;
   --z-runtime-popover: 10000;
   --diff-add-bg: rgb(46 160 67 / 18%);
@@ -99,35 +157,54 @@
   --syntax-bullet: #f2cc60;
 }
 
+@media (width <= 700px), (hover: none), (pointer: coarse) {
+  :root {
+    --control-size: 36px;
+    --control-size-small: 32px;
+  }
+}
+
 @media (prefers-color-scheme: light) {
   :root {
-    --bg: #fff;
+    --bg: #fcfcfa;
     --bg-accent: rgb(0 0 0 / 2%);
     --bg-accent-2: rgb(0 0 0 / 1%);
-    --surface: #fff;
-    --surface-strong: #fff;
-    --surface-2: #f7f7f8;
-    --surface-3: #ececec;
-    --border: rgb(0 0 0 / 8%);
-    --border-strong: rgb(0 0 0 / 15%);
-    --text: #0d0d0d;
-    --text-muted: #6e6e6e;
-    --accent: #0d0d0d;
-    --accent-strong: #0d0d0d;
+    --text: #222b28;
+    --surface: var(--bg);
+    --surface-strong: var(--surface);
+    --surface-2: color-mix(
+      in oklab,
+      color-mix(in oklab, var(--bg), var(--text) 2%),
+      var(--tint) 2%
+    );
+    --surface-3: color-mix(
+      in oklab,
+      color-mix(in oklab, var(--bg), var(--text) 2.5%),
+      var(--tint) 6.5%
+    );
+    --border: color-mix(
+      in oklab,
+      color-mix(in oklab, var(--bg), var(--text) 4.5%),
+      var(--tint) 5.5%
+    );
+    --border-strong: color-mix(
+      in oklab,
+      color-mix(in oklab, var(--bg), var(--text) 5.5%),
+      var(--tint) 9.5%
+    );
+    --text-muted: color-mix(in oklab, var(--text), var(--bg) 31%);
+    --accent: #16634e;
+    --code: #965015;
     --accent-green: #059669;
     --accent-amber: #b45309;
     --danger: #dc2626;
     --backdrop: rgb(0 0 0 / 30%);
     --overlay: rgb(0 0 0 / 40%);
     --error-text: #991b1b;
-    --btn-accent-text: #fff;
-    --stop-btn-text: #991b1b;
     --spinner-ring: rgb(255 255 255 / 45%);
     --shadow-soft: 0 1px 2px rgb(0 0 0 / 5%);
     --shadow-strong: 0 2px 8px rgb(0 0 0 / 8%);
     --gradient-accent: var(--surface-2);
-    --gradient-accent-strong: var(--accent-strong);
-    --link: #2563eb;
     --diff-add-bg: rgb(31 136 61 / 12%);
     --diff-add-ln-bg: rgb(31 136 61 / 22%);
     --diff-del-bg: rgb(207 34 46 / 10%);

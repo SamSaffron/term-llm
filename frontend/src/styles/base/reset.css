@@ -3,7 +3,17 @@
 * {
   box-sizing: border-box;
   scrollbar-width: thin;
-  scrollbar-color: var(--surface-2) transparent;
+  scrollbar-color: var(--border-strong) transparent;
+}
+
+/* Placeholders are in the muted colour, like the reply buttons and other quiet marks. */
+::placeholder {
+  color: var(--text-muted);
+  opacity: 1;
+}
+
+::selection {
+  background: color-mix(in srgb, var(--accent) 35%, transparent);
 }
 
 ::-webkit-scrollbar {

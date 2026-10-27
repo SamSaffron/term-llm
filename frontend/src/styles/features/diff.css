@@ -23,12 +23,6 @@
   pointer-events: auto;
 }
 
-.panel-swipe-dragging {
-  transition: none !important;
-  -webkit-user-select: none;
-  user-select: none;
-}
-
 .diff-resize-handle {
   left: 0;
 }
@@ -54,10 +48,6 @@
   font-weight: 600;
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-
-.diff-scope-select {
-  display: none;
 }
 
 .diff-sidebar-header .chip-trigger.diff-scope-trigger {
@@ -119,14 +109,11 @@
 }
 
 .diff-bulk-collapse-icon,
-.diff-bulk-toggle[data-action='collapse'] .diff-bulk-expand-icon,
-.diff-restore-icon,
-.diff-sidebar-maximize[data-action='restore'] .diff-maximize-icon {
+.diff-bulk-toggle[data-action='collapse'] .diff-bulk-expand-icon {
   display: none;
 }
 
-.diff-bulk-toggle[data-action='collapse'] .diff-bulk-collapse-icon,
-.diff-sidebar-maximize[data-action='restore'] .diff-restore-icon {
+.diff-bulk-toggle[data-action='collapse'] .diff-bulk-collapse-icon {
   display: inline;
 }
 
@@ -215,7 +202,7 @@
 .diff-queue-send,
 .diff-queue-discard {
   min-height: 34px;
-  border-radius: 6px;
+  border-radius: var(--radius-md);
   cursor: pointer;
   font: inherit;
   font-size: 0.75rem;
@@ -223,7 +210,7 @@
 
 .diff-queue-send {
   padding: 0.35rem 0.65rem;
-  border: 1px solid var(--accent);
+  border: 0;
   background: var(--accent);
   color: var(--btn-accent-text);
   font-weight: 650;
@@ -309,7 +296,7 @@
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  border-radius: 4px;
+  border-radius: var(--radius-sm);
   font-size: 0.68rem;
   font-weight: 700;
 }
@@ -373,19 +360,6 @@
   color: var(--text-muted);
 }
 
-.diff-note {
-  padding: 0.6rem 0.75rem;
-  color: var(--text-muted);
-  font-family:
-    Inter,
-    -apple-system,
-    BlinkMacSystemFont,
-    'Segoe UI',
-    Roboto,
-    sans-serif;
-  font-size: 0.8rem;
-}
-
 .diff-image-comparison {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -415,7 +389,6 @@
     sans-serif;
   font-size: 0.72rem;
   font-weight: 600;
-  text-transform: uppercase;
 }
 
 .diff-image-preview {
@@ -424,7 +397,7 @@
   max-height: 360px;
   object-fit: contain;
   border: 1px solid var(--border);
-  border-radius: 5px;
+  border-radius: var(--radius-sm);
   background: repeating-conic-gradient(var(--surface-2) 0 25%, var(--surface) 0 50%) 50% / 16px 16px;
   cursor: zoom-in;
 }
@@ -583,7 +556,7 @@
 }
 
 .markdown-body .hljs {
-  background: var(--surface-2);
+  background: transparent;
 }
 
 :is(.markdown-body, .diff-code)
@@ -680,7 +653,7 @@
   margin: 0 0.2rem;
   padding: 0;
   border: 0;
-  border-radius: 5px;
+  border-radius: var(--radius-sm);
   background: transparent;
   color: var(--text-muted);
   font:
@@ -774,16 +747,14 @@
   }
 }
 
+/* A comment is the user's, so it's a tonal card in the outlined diff. */
 .diff-comment-panel {
   position: relative;
   margin: 0.45rem 0.75rem 0.8rem 0.55rem;
   padding: 0.8rem;
-  border: 1px solid var(--border);
-  border-left: 3px solid color-mix(in srgb, var(--accent) 55%, var(--border));
-  border-radius: 10px;
+  border-radius: var(--radius-md);
   background: var(--surface-2);
   color: var(--text);
-  box-shadow: var(--shadow-soft);
   font-family:
     Inter,
     -apple-system,
@@ -793,7 +764,6 @@
     sans-serif;
   font-size: 0.875rem;
   line-height: 1.55;
-  white-space: normal;
   animation: diff-comment-panel-enter var(--panel-fade-duration) var(--panel-transition-easing);
 }
 
@@ -812,9 +782,8 @@
   align-items: center;
   min-height: 1.45rem;
   padding: 0.05rem 0.45rem;
-  border: 1px solid var(--border-strong);
-  border-radius: 999px;
-  background: var(--surface-strong);
+  border-radius: var(--radius-sm);
+  background: var(--surface-3);
   color: var(--text);
   font-family: var(--font-mono);
   font-variant-ligatures: none;
@@ -855,18 +824,18 @@
   gap: 0.25rem;
   min-height: 1.35rem;
   padding: 0.05rem 0.42rem;
-  border: 1px solid var(--border);
-  border-radius: 999px;
-  background: var(--surface-strong);
+  border-radius: var(--radius-sm);
+  background: var(--surface-3);
   font-weight: 600;
 }
 
 .diff-comment-status.sent {
+  background: var(--green-tint);
   color: var(--accent-green);
 }
 
 .diff-comment-status.queued {
-  border-style: dashed;
+  background: var(--amber-tint);
   color: var(--accent-amber);
 }
 
@@ -928,16 +897,14 @@
   resize: none;
   overflow-y: auto;
   padding: 0.625rem 0.75rem;
-  border: 1px solid var(--border);
-  border-radius: 8px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-md);
   outline: none;
-  background: var(--surface-strong);
+  background: var(--bg);
   color: var(--text);
   font: inherit;
   line-height: 1.5;
-  transition:
-    border-color 0.15s ease,
-    box-shadow 0.15s ease;
+  transition: border-color 0.15s ease;
 }
 
 .diff-comment-editor textarea::placeholder {
@@ -946,8 +913,7 @@
 }
 
 .diff-comment-editor textarea:focus {
-  border-color: var(--border-strong);
-  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 12%, transparent);
+  border-color: var(--focus-edge);
 }
 
 .diff-comment-editor-actions {
@@ -969,8 +935,7 @@
 .diff-comment-send-split {
   position: relative;
   display: inline-flex;
-  border-radius: 8px;
-  box-shadow: var(--shadow-soft);
+  border-radius: var(--radius-md);
 }
 
 .diff-comment-cancel,
@@ -982,11 +947,10 @@
   justify-content: center;
   min-height: 34px;
   padding: 0.35rem 0.75rem;
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  background: var(--surface-strong);
+  border: 0;
+  border-radius: var(--radius-md);
+  background: transparent;
   color: var(--text);
-  box-shadow: var(--shadow-soft);
   font: inherit;
   font-size: 0.78rem;
   font-weight: 600;
@@ -995,39 +959,30 @@
   cursor: pointer;
   transition:
     background 0.15s ease,
-    border-color 0.15s ease,
     color 0.15s ease,
     opacity 0.15s ease;
 }
 
-.diff-comment-cancel,
-.diff-comment-send {
-  padding-block: calc(0.35rem + 1px) calc(0.35rem - 1px);
-}
-
+/* Cancel is a tertiary button: quiet until hovered. */
 .diff-comment-cancel:hover {
-  border-color: var(--border-strong);
   background: var(--surface-3);
 }
 
 .diff-comment-send,
 .diff-comment-send-more {
-  border-color: var(--accent-strong);
-  background: var(--gradient-accent-strong);
+  background: var(--accent);
   color: var(--btn-accent-text);
-  box-shadow: none;
 }
 
 .diff-comment-send {
-  border-right: 0;
-  border-radius: 8px 0 0 8px;
+  border-radius: var(--radius-md) 0 0 var(--radius-md);
 }
 
 .diff-comment-send-more {
   min-width: 36px;
   padding-inline: 0.4rem;
-  border-left-color: color-mix(in srgb, var(--btn-accent-text) 28%, transparent);
-  border-radius: 0 8px 8px 0;
+  border-left: 1px solid color-mix(in srgb, var(--btn-accent-text) 28%, transparent);
+  border-radius: 0 var(--radius-md) var(--radius-md) 0;
 }
 
 .diff-comment-send:hover,
@@ -1059,7 +1014,7 @@
   min-width: 14rem;
   padding: 0.35rem;
   border: 1px solid var(--border);
-  border-radius: 10px;
+  border-radius: var(--radius-md);
   background: var(--surface-elevated, var(--surface));
   box-shadow: var(--shadow-strong);
 }
@@ -1075,7 +1030,7 @@
   min-height: 34px;
   padding: 0.55rem 0.65rem;
   border: 0;
-  border-radius: 7px;
+  border-radius: var(--radius-md);
   background: transparent;
   color: var(--text);
   font: inherit;
@@ -1100,42 +1055,6 @@
   font-size: 0.68rem;
 }
 
-.diff-comment-history-item.queued {
-  border-left: 2px dashed var(--accent);
-  padding-left: 0.45rem;
-}
-
-.diff-comment-history-actions {
-  display: flex;
-  gap: 0.45rem;
-  margin-top: 0.3rem;
-}
-
-.diff-comment-history-edit,
-.diff-comment-history-remove {
-  min-height: 34px;
-  padding: 0.2rem 0.35rem;
-  border: 0;
-  background: transparent;
-  color: var(--text-muted);
-  cursor: pointer;
-  font: inherit;
-  font-size: 0.7rem;
-  text-decoration: underline;
-}
-
-.diff-comment-history-edit:hover,
-.diff-comment-history-remove:hover {
-  color: var(--text);
-}
-
-.diff-comment-history-edit:disabled,
-.diff-comment-history-remove:disabled {
-  color: var(--text-muted);
-  cursor: default;
-  opacity: 0.55;
-}
-
 @media (hover: none), (pointer: coarse) {
   .diff-comment-affordance {
     opacity: 1;
@@ -1146,47 +1065,6 @@
   .diff-comment-shortcut {
     display: none;
   }
-}
-
-.diff-comment-message-body {
-  display: grid;
-  gap: 0.38rem;
-}
-
-.diff-comment-message-summary {
-  font-weight: 700;
-}
-
-.diff-comment-message-block {
-  display: grid;
-  gap: 0.38rem;
-}
-
-.diff-comment-message-block + .diff-comment-message-block {
-  margin-top: 0.45rem;
-  padding-top: 0.55rem;
-  border-top: 1px solid var(--border);
-}
-
-.diff-comment-message-heading {
-  color: var(--text-muted);
-  font-size: 0.78rem;
-  font-weight: 600;
-}
-
-.diff-comment-message-instruction {
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
-}
-
-.diff-comment-message-line {
-  display: block;
-  padding: 0.32rem 0.45rem;
-  border-radius: 5px;
-  background: var(--surface-2);
-  color: var(--text-muted);
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
 }
 
 .diff-row.add .diff-code::before {
@@ -1212,7 +1090,6 @@
 .diff-toggle {
   position: relative;
   gap: 0.4rem;
-  min-width: 92px;
   font-weight: 700;
   flex-shrink: 0;
 }
@@ -1221,7 +1098,6 @@
   width: var(--header-action-height);
   min-width: var(--header-action-height);
   padding-inline: 0;
-  border-color: var(--border-strong);
   background: var(--surface-3);
   color: var(--text);
 }
@@ -1253,18 +1129,6 @@
   white-space: nowrap;
 }
 
-.diff-toggle.has-queued .diff-toggle-badge::after {
-  content: '';
-  position: absolute;
-  top: 4px;
-  right: 4px;
-  width: 7px;
-  height: 7px;
-  border: 2px solid var(--surface);
-  border-radius: 50%;
-  background: var(--accent);
-}
-
 .diff-filter-row {
   padding: 0.45rem 0.75rem;
   border-bottom: 1px solid var(--border);
@@ -1278,8 +1142,8 @@
 .diff-filter-input {
   width: 100%;
   padding: 0.3rem 0.5rem;
-  border-radius: 6px;
-  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  border: 1px solid transparent;
   background: var(--surface-2);
   color: var(--text);
   font-size: 0.8rem;
@@ -1287,7 +1151,7 @@
 
 .diff-filter-input:focus {
   outline: none;
-  border-color: var(--border-strong);
+  border-color: var(--focus-edge);
 }
 
 .diff-file-actions {
@@ -1317,7 +1181,7 @@
   min-height: 32px;
   padding: 0.3rem;
   border: 0;
-  border-radius: 6px;
+  border-radius: var(--radius-md);
   background: transparent;
   color: var(--text-muted);
   cursor: pointer;
@@ -1334,18 +1198,17 @@
   color: var(--accent-green);
 }
 
-.diff-fullscreen-toggle.active {
-  background: color-mix(in srgb, var(--accent) 14%, transparent);
+.diff-fullscreen-toggle.active,
+.diff-markdown-toggle.active {
+  background: var(--accent-tint);
   color: var(--accent);
 }
 
 .diff-markdown-toggle {
   flex: none;
-  border: 1px solid transparent;
   transition:
     color 0.15s ease,
-    background 0.15s ease,
-    border-color 0.15s ease;
+    background 0.15s ease;
 }
 
 .diff-action-btn svg {
@@ -1357,12 +1220,6 @@
   fill: currentcolor;
   fill-opacity: 0;
   transition: fill-opacity 0.15s ease;
-}
-
-.diff-markdown-toggle.active {
-  border-color: color-mix(in srgb, var(--accent) 55%, var(--border));
-  background: color-mix(in srgb, var(--accent) 14%, transparent);
-  color: var(--accent);
 }
 
 .diff-markdown-toggle.active .icon-state-fill {
@@ -1413,10 +1270,10 @@
 }
 
 .diff-retry {
-  border: 1px solid var(--border);
+  border: 0;
   background: var(--surface-2);
   color: var(--text);
-  border-radius: 6px;
+  border-radius: var(--radius-md);
   padding: 0.15rem 0.6rem;
   cursor: pointer;
   font-size: 0.75rem;
@@ -1479,10 +1336,6 @@
 
 .diff-toggle-stat-del {
   color: var(--danger);
-}
-
-.diff-toggle-stat-neutral {
-  color: var(--text-muted);
 }
 
 @media (width <= 900px) {

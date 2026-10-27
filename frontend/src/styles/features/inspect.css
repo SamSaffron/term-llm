@@ -20,7 +20,7 @@
 
 .inspect-modal button:not(.close-button) {
   border: 1px solid var(--border-strong);
-  border-radius: 6px;
+  border-radius: var(--radius-md);
   background: var(--surface-2);
   color: var(--text);
   padding: 0.45rem 0.65rem;
@@ -88,7 +88,7 @@
 .inspect-block {
   min-width: 0;
   border: 1px solid var(--border);
-  border-radius: 6px;
+  border-radius: var(--radius-md);
   margin-block: 0.6rem;
   padding: 0.6rem;
 }
@@ -101,6 +101,13 @@
   gap: 0.4rem;
   width: 100%;
   min-width: 0;
+}
+
+.inspect-block-toggle svg {
+  flex: none;
+  align-self: center;
+  width: 0.9em;
+  height: 0.9em;
 }
 
 .inspect-block-heading {
@@ -194,8 +201,7 @@
 .inspect-model-panel,
 .inspect-model-change,
 .inspect-active-model {
-  border: 2px solid var(--border-strong);
-  border-radius: 6px;
+  border-radius: var(--radius-md);
   background: var(--surface-2);
   overflow-wrap: anywhere;
   padding: 0.65rem;

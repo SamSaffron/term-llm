@@ -199,11 +199,16 @@ func TestProductionBundleSizeBudgets(t *testing.T) {
 		// eager shell code: measured 558.6/164.4 kB raw/gzip. Same ~1% headroom.
 		// Deferring the changes/plan viewers until a panel opens reduces the entry
 		// to 528.7/155.0 kB raw/gzip. Tighten the budget with the same ~1% headroom.
-		"dist/app.js":           {raw: 534_000, gzip: 156_600},
+		// The new look's composer, dialogs and line icons, with the icons' shapes
+		// moved out to a cached SVG sprite, measure 528.1/155.1 kB, below main's
+		// 531.4/156.0. Tighten the raw budget with the same ~1% headroom.
+		"dist/app.js":           {raw: 533_400, gzip: 156_600},
 		"dist/chunks/Panels.js": {raw: 32_000, gzip: 11_000},
-		// Panel splitting adds a shared-import edge to Lightbox: measured 8.03/3.21 kB.
-		"dist/chunks/Lightbox.js":    {raw: 8_150, gzip: 3_300},
-		"dist/assets/Lightbox.css":   {raw: 4_000, gzip: 1_400},
+		// Panel splitting adds a shared-import edge to Lightbox; after the frontend
+		// dependency update it measures 8.16/3.27 kB (the same on main).
+		"dist/chunks/Lightbox.js": {raw: 8_250, gzip: 3_300},
+		// The viewer's controls on the shared corner tokens: 4.02/1.34 kB.
+		"dist/assets/Lightbox.css":   {raw: 4_100, gzip: 1_400},
 		"dist/chunks/StatsModal.js":  {raw: 8_000, gzip: 3_000},
 		"dist/assets/StatsModal.css": {raw: 5_000, gzip: 1_600},
 		// The MCP servers dialog (flat list, row menu, and the add-server sheet
@@ -217,7 +222,13 @@ func TestProductionBundleSizeBudgets(t *testing.T) {
 		// above: a cap that close to the measurement fails the next CSS change on
 		// arithmetic rather than on bloat. Shared splitter focus/drag styling
 		// and sidebar width limits measure 175.5/34.06 kB; retain ~1% gzip headroom.
-		"dist/app.css": {raw: 180_000, gzip: 34_400},
+		// The shared button language, the palette seeds and what is mixed from
+		// them, and the reply, tool-call, message-box and dialog styling, less
+		// ~7.4 kB of rules for markup that no longer exists and declarations a
+		// later rule always overrides, measure 179.7/34.45 kB: within the raw
+		// budget, and 100 B more gzip. Status marks as line icons (their size
+		// rules) bring it to 179.85/34.5 kB: another 100 B of gzip.
+		"dist/app.css": {raw: 180_000, gzip: 34_600},
 		// Measured after the completed standalone port: 67.7/21.5 KiB JS and
 		// 16.7/4.1 KiB CSS. These limits retain modest growth headroom without
 		// allowing chat-only rendering dependencies into the Hub graph. The
@@ -497,11 +508,15 @@ func TestLazyChunksReuseCanonicalEntryModuleURL(t *testing.T) {
 func TestRenderIndexHTMLPreservesBootstrapAndModuleContract(t *testing.T) {
 	const bootstrap = `<script>window.TERM_LLM_UI_PREFIX="/chat/nodes/alpha";</script>`
 	rendered := string(RenderIndexHTML("/chat/nodes/alpha", bootstrap))
+	if IconSprite() == "" {
+		t.Fatal("the build must emit the hashed icon sprite the entry draws from")
+	}
 	for _, want := range []string{
 		`<base href="/chat/nodes/alpha/">`,
 		bootstrap,
 		`href="` + ChatAssetManifest().EntryCSS[0] + `"`,
 		`type="module" src="` + ChatAssetManifest().EntryJS + `"`,
+		`rel="preload" href="` + IconSprite() + `" as="image"`,
 	} {
 		if !strings.Contains(rendered, want) {
 			t.Errorf("rendered index missing %q", want)

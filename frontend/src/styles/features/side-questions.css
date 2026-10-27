@@ -8,7 +8,7 @@
   height: min(46rem, calc(var(--app-height) - 2rem));
   max-height: calc(var(--app-height) - 2rem);
   overflow: hidden;
-  border-radius: 14px;
+  border-radius: var(--radius-md);
 }
 
 .side-question-modal .modal-title-row {
@@ -70,13 +70,11 @@
   font-size: inherit;
 }
 
+/* Answers sit on the page, as in the main transcript. */
 .side-question-transcript .message.assistant .message-body {
-  border: 1px solid var(--border);
-  background: color-mix(in srgb, var(--surface-2) 55%, transparent);
-}
-
-.side-question-transcript .message.user .message-body {
-  border-color: color-mix(in srgb, var(--border-strong) 65%, var(--border));
+  padding-inline: 0.1rem;
+  border: 0;
+  background: transparent;
 }
 
 .side-question-empty {
@@ -91,8 +89,7 @@
   height: 2.25rem;
   place-items: center;
   margin: 0 auto 0.7rem;
-  border: 1px solid var(--border);
-  border-radius: 11px;
+  border-radius: var(--radius-md);
   background: var(--surface-2);
   color: var(--text-muted);
   font-size: 1.05rem;
@@ -119,9 +116,9 @@
 
 .side-question-starters button {
   padding: 0.42rem 0.62rem;
-  border: 1px solid var(--border);
-  border-radius: 999px;
-  background: transparent;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
   color: var(--text-muted);
   font-size: 0.76rem;
   cursor: pointer;
@@ -129,8 +126,7 @@
 
 .side-question-starters button:hover,
 .side-question-starters button:focus-visible {
-  border-color: var(--border-strong);
-  background: var(--surface-2);
+  background: var(--surface-3);
   color: var(--text);
 }
 
@@ -163,9 +159,8 @@
   justify-content: space-between;
   gap: 0.75rem;
   padding: 0.55rem 0.65rem;
-  border: 1px solid color-mix(in srgb, var(--danger) 35%, var(--border));
-  border-radius: 9px;
-  background: color-mix(in srgb, var(--danger) 7%, transparent);
+  border-radius: var(--radius-md);
+  background: var(--danger-tint);
   color: var(--danger);
   font-size: 0.8rem;
 }
@@ -196,14 +191,14 @@
   align-items: center;
   gap: 0.35rem;
   padding: 0.28rem;
-  border: 1px solid var(--border);
-  border-radius: 22px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-md);
   background: var(--surface-2);
   transition: border-color var(--panel-fade-duration) ease;
 }
 
 .side-question-composer:focus-within {
-  border-color: var(--border-strong);
+  border-color: var(--focus-edge);
 }
 
 .side-question-modal .side-question-composer input {
@@ -222,12 +217,12 @@
 
 .side-question-send {
   display: grid;
-  width: 34px;
-  height: 34px;
+  width: var(--control-size);
+  height: var(--control-size);
   place-items: center;
   border: 0;
-  border-radius: 50%;
-  background: var(--gradient-accent-strong);
+  border-radius: var(--radius-md);
+  background: var(--accent);
   color: var(--btn-accent-text);
   cursor: pointer;
 }
@@ -246,8 +241,8 @@
   gap: 0.45rem;
   min-width: 8.5rem;
   padding: 0.58rem 0.85rem;
-  border: 1px solid var(--border);
-  border-radius: 999px;
+  border: 0;
+  border-radius: var(--radius-md);
   background: var(--surface-2);
   color: var(--text);
   font-size: 0.82rem;
@@ -263,8 +258,12 @@
 }
 
 .side-question-stop:hover {
-  border-color: var(--border-strong);
   background: var(--surface-3);
+}
+
+.side-question-stop:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
 }
 
 @keyframes side-question-pulse {
@@ -280,7 +279,7 @@
     height: min(78dvh, calc(var(--app-height) - var(--safe-top) - 0.5rem));
     max-height: calc(var(--app-height) - var(--safe-top) - 0.5rem);
     padding: 0.9rem 0.8rem calc(0.8rem + var(--safe-bottom));
-    border-radius: 16px 16px 0 0;
+    border-radius: var(--radius-md);
   }
 
   .side-question-transcript {

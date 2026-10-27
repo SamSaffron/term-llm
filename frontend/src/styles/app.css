@@ -6,6 +6,7 @@
 @import './base/typography.css';
 @import './base/reset.css';
 @import './base/shell.css';
+@import './base/buttons.css';
 @import './features/diff.css';
 @import './features/plan.css';
 @import './layout/sidebar.css';

@@ -178,16 +178,28 @@ const expectBanner = () => {
   );
 };
 
-/** Keyboard, button, store facade and engine entry points must all refuse. */
-const expectLocked = async (store: AppStore, input: HTMLElement, draft: string) => {
+/**
+ * Keyboard, button, store facade and engine entry points must all refuse. While a
+ * response runs, Stop holds the send button's place instead.
+ */
+const expectLocked = async (
+  store: AppStore,
+  input: HTMLElement,
+  draft: string,
+  running = false,
+) => {
   expectBanner();
-  const button = screen.getByRole('button', { name: BUTTON });
-  expect(button).toBeDisabled();
+  const button = running ? null : screen.getByRole('button', { name: BUTTON });
+  if (button) expect(button).toBeDisabled();
+  else {
+    expect(screen.queryByRole('button', { name: BUTTON })).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Stop' })).toBeEnabled();
+  }
   expect(input).not.toBeDisabled();
   expect(store.canSteer.value).toBe(false);
   expect(store.sendBlocked.value).toBe(true);
   await act(async () => {
-    fireEvent.click(button);
+    if (button) fireEvent.click(button);
     fireEvent.keyDown(input, { key: 'Enter' });
     await store.send();
     await store.steer('A follow-up');

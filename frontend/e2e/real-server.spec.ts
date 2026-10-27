@@ -307,12 +307,12 @@ test('recovers and resolves an ask-user request across real same-context tabs', 
   const question = 'Which path should the browser fixture take?';
   await expect(page.getByText(question)).toBeVisible();
   await expect(second.getByText(question)).toBeVisible();
-  await expect(page.getByRole('dialog', { name: 'Answer question' })).toBeVisible();
+  await expect(page.getByRole('dialog', { name: /has a question$/ })).toBeVisible();
   await page.keyboard.press('Escape');
   await expect(page.getByText('Decision waiting — Open')).toBeVisible();
   await second.getByRole('radio', { name: /Safe/ }).check();
-  await second.getByRole('button', { name: 'Continue' }).click();
-  await expect(second.getByRole('dialog', { name: 'Answer question' })).toBeHidden();
+  await second.getByRole('button', { name: /^Send answers?$/ }).click();
+  await expect(second.getByRole('dialog', { name: /has a question$/ })).toBeHidden();
   await expect
     .poll(
       () =>
@@ -466,7 +466,7 @@ test('reloading a running HTTPS session never presents it as idle', async ({
 
   const unknown = page.getByRole('status', { name: 'Response status is unknown' });
   await expect(page.locator('#stopBtn')).toBeVisible({ timeout: 5_000 });
-  await expect(page.getByRole('button', { name: 'Response is running' })).toBeEnabled();
+  await expect(page.locator('#sendBtn')).toHaveCount(0);
   await expect(page.getByPlaceholder('Steer conversation…')).toBeVisible();
   await expect(unknown).toBeHidden();
   await reconcileRunningResponse(page);

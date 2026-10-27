@@ -165,6 +165,7 @@ func RenderIndexHTML(basePath, headSnippet string) []byte {
 		{`href="manifest.webmanifest"`, `href="` + versioned("manifest.webmanifest") + `"`},
 		{`href="dist/app.css"`, `href="` + manifest.EntryCSS[0] + `"`},
 		{`src="dist/app.js"`, `src="` + manifest.EntryJS + `"`},
+		{`href="dist/icons.svg"`, `href="` + IconSprite() + `"`},
 	} {
 		html = bytes.ReplaceAll(html, []byte(replacement.old), []byte(replacement.new))
 	}

@@ -25,7 +25,7 @@
   width: min(320px, 100%);
   padding: 1.5rem 1.35rem;
   border: 1px solid var(--border);
-  border-radius: 16px;
+  border-radius: var(--radius-md);
   background: var(--surface);
   box-shadow: var(--shadow-strong);
   text-align: center;
@@ -37,11 +37,10 @@
   width: 52px;
   height: 52px;
   margin: 0 auto 0.9rem;
-  border-radius: 14px;
+  border-radius: var(--radius-md);
   display: grid;
   place-items: center;
   background: var(--surface-2);
-  border: 1px solid var(--border);
   font-size: 1.45rem;
   font-weight: 800;
 }

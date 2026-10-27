@@ -13,8 +13,8 @@
   align-items: center;
   gap: 0.35rem;
   background: var(--surface-2);
-  border: 1px solid var(--border);
-  border-radius: 4px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
   padding: 0.25rem 0.5rem;
   font-size: 0.82rem;
   max-width: 200px;
@@ -29,7 +29,7 @@
   overflow: hidden;
   padding: 0;
   border: 0;
-  border-radius: 4px;
+  border-radius: var(--radius-sm);
   background: none;
   cursor: zoom-in;
 }
@@ -96,9 +96,8 @@
 .drop-overlay {
   position: absolute;
   inset: 0;
-  background: rgb(255 255 255 / 4%);
   border: 2px dashed var(--border-strong);
-  border-radius: 8px;
+  border-radius: var(--radius-md);
   z-index: var(--z-drop-target);
   display: flex;
   align-items: center;
@@ -114,7 +113,6 @@
 }
 
 .drop-overlay.rejected {
-  background: color-mix(in srgb, var(--danger) 10%, var(--surface));
   border-color: var(--danger);
   color: var(--danger);
 }
@@ -123,20 +121,13 @@
   display: none;
 }
 
-.message-attachments {
-  display: flex;
-  gap: 0.5rem;
-  flex-wrap: wrap;
-  margin-bottom: 0.4rem;
-}
-
 .message-attachments img {
   /* Keep these caps coupled to app-render.js; TestAttachmentImageSizeLimitsStayCoupled enforces it. */
   display: block;
   max-width: min(360px, 100%);
   max-height: 270px;
   height: auto;
-  border-radius: 8px;
+  border-radius: var(--radius-md);
   border: 1px solid var(--border);
   object-fit: cover;
   cursor: pointer;
@@ -145,18 +136,6 @@
 
 .message-attachments img:hover {
   opacity: 0.85;
-}
-
-.message-attachments .att-file {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.3rem;
-  background: var(--surface-2);
-  border: 1px solid var(--border);
-  border-radius: 4px;
-  padding: 0.2rem 0.5rem;
-  font-size: 0.82rem;
-  color: var(--text-muted);
 }
 
 .markdown-body img {

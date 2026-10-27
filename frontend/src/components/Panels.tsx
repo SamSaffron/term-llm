@@ -793,7 +793,9 @@ function File({
           }
         }}
       >
-        <span class="diff-chevron">▸</span>
+        <span class="diff-chevron">
+          <Icon name="chevron-right" />
+        </span>
         <span class={`diff-kind-badge diff-kind-${legacyKind}`}>
           {legacyKind === 'create' ? 'A' : legacyKind === 'delete' ? 'D' : 'M'}
         </span>

@@ -43,8 +43,8 @@
 }
 
 .sidebar-rail-btn {
-  width: 36px;
-  height: 36px;
+  width: var(--control-size);
+  height: var(--control-size);
 }
 
 .sidebar-panel {
@@ -91,12 +91,12 @@
 }
 
 .icon-btn {
-  border: 1px solid var(--border);
-  background: var(--surface-2);
+  border: 1px solid transparent;
+  background: transparent;
   color: var(--text-muted);
-  border-radius: 8px;
-  width: 34px;
-  height: 34px;
+  border-radius: var(--radius-md);
+  width: var(--control-size);
+  height: var(--control-size);
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -108,7 +108,7 @@
 }
 
 .icon-btn:hover {
-  background: var(--surface-3);
+  background: var(--surface-2);
   color: var(--text);
 }
 
@@ -152,7 +152,7 @@
 .back-to-hub-link {
   width: calc(100% - 0.5rem);
   margin-inline: 0.25rem;
-  border-radius: 10px;
+  border-radius: var(--radius-md);
   border: 1px solid transparent;
   background: transparent;
   color: var(--text);
@@ -182,7 +182,6 @@
 .widgets-sidebar-btn:hover,
 .back-to-hub-link:hover {
   background: var(--surface-2);
-  border-color: var(--border);
 }
 
 .widgets-sidebar-btn.hidden {
@@ -250,7 +249,7 @@
   width: 28px;
   height: 28px;
   border: 1px solid transparent;
-  border-radius: 7px;
+  border-radius: var(--radius-md);
   background: transparent;
   color: var(--text-muted);
   cursor: pointer;
@@ -273,7 +272,6 @@
 .hub-agent-menu-trigger:focus-visible {
   background: var(--surface-3);
   color: var(--text);
-  border-color: var(--border);
 }
 
 .hub-agent-row.menu-open .session-menu {
@@ -284,7 +282,7 @@
   width: 100%;
   min-width: 0;
   box-sizing: border-box;
-  border-radius: 10px;
+  border-radius: var(--radius-md);
   border: 1px solid transparent;
   color: var(--text);
   display: grid;
@@ -303,7 +301,6 @@
 
 .hub-agent-link:hover {
   background: var(--surface-2);
-  border-color: var(--border);
 }
 
 .hub-agent-link:focus-visible {
@@ -338,9 +335,9 @@
   width: 0.48rem;
   height: 0.48rem;
   justify-self: center;
-  border-radius: 999px;
-  background: #22c55e;
-  box-shadow: 0 0 0 0.14rem rgb(34 197 94 / 12%);
+  border-radius: var(--radius-sm);
+  background: var(--accent-green);
+  box-shadow: 0 0 0 0.14rem var(--green-tint);
 }
 
 .sidebar-search-wrap {
@@ -353,7 +350,7 @@
   border: 1px solid transparent;
   background: var(--surface-2);
   color: var(--text);
-  border-radius: 10px;
+  border-radius: var(--radius-md);
   padding: 0.58rem 0.65rem;
   font: inherit;
   font-size: 0.9rem;

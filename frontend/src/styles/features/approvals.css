@@ -8,7 +8,7 @@
   max-height: 100%;
   overflow: hidden;
   padding: 0;
-  border-radius: 14px;
+  border-radius: var(--radius-md);
 }
 
 .approval-modal .modal-title-row {
@@ -57,8 +57,8 @@
   overflow: auto;
   overscroll-behavior: contain;
   scrollbar-gutter: stable;
-  border: 1px solid var(--border);
-  border-radius: 8px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-md);
   background: var(--surface-2);
 }
 
@@ -102,7 +102,7 @@
   color: var(--text-muted);
   font-size: 0.75rem;
   border: 1px solid var(--border);
-  border-radius: 4px;
+  border-radius: var(--radius-sm);
   padding: 0.1rem 0.35rem;
 }
 
@@ -131,61 +131,120 @@
   }
 }
 
-.ask-user-steps {
+/* Under the title: that the agent is paused, and in which conversation. */
+.ask-user-context {
   display: flex;
   align-items: center;
-  justify-content: center;
-  gap: 0;
+  gap: 0.4rem;
+  margin: -0.1rem 0 0.9rem;
+  font-size: 0.85rem;
+  color: var(--text-muted);
+}
+
+.ask-user-context svg {
+  flex: none;
+  width: 15px;
+  height: 15px;
+  color: var(--accent);
+}
+
+.ask-user-progress {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  margin-bottom: 0.9rem;
+}
+
+.ask-user-count {
+  font-size: 0.8rem;
+  color: var(--text-muted);
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+/* The steps are a thin segmented bar: answered segments in a soft accent, the
+   current one in the accent. Each segment is a button taller than the bar it
+   draws, so it is easy to tap. */
+.ask-user-steps {
+  flex: 1;
+  display: flex;
+  gap: 4px;
 }
 
 .ask-user-step {
-  width: 30px;
-  height: 30px;
-  border-radius: 50%;
-  border: 1.5px solid var(--border-strong);
-  background: transparent;
-  color: var(--text-muted);
-  font-size: 0.78rem;
-  font-weight: 700;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  cursor: pointer;
+  flex: 1;
+  min-width: 0;
+  height: 16px;
   padding: 0;
-  flex-shrink: 0;
-  transition:
-    background 0.15s ease,
-    border-color 0.15s ease,
-    color 0.15s ease;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  display: flex;
+  align-items: center;
+  cursor: pointer;
 }
 
-.ask-user-step:hover {
-  border-color: var(--text-muted);
+.ask-user-step::before {
+  content: '';
+  flex: 1;
+  height: 4px;
+  border-radius: 2px;
+  background: var(--border-strong);
+  transition: background 0.15s ease;
 }
 
-.ask-user-step.active {
-  border-color: var(--text);
-  background: var(--text);
-  color: var(--bg);
+.ask-user-step.completed::before {
+  background: color-mix(in oklab, var(--accent) 50%, var(--bg));
 }
 
-.ask-user-step.completed {
-  border-color: var(--text-muted);
+.ask-user-step.active::before {
+  background: var(--accent);
+}
+
+.ask-user-step:not(.active, .completed):hover::before {
   background: var(--text-muted);
-  color: var(--bg);
 }
 
 .ask-user-question {
-  border: 1px solid var(--border);
-  border-radius: 8px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-md);
   background: var(--surface-2);
   padding: 1rem;
 }
 
+/* In the dialog the question and its option cards sit on the dialog itself, with
+   no panel behind them. */
+fieldset.ask-user-question {
+  min-inline-size: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+}
+
+/* Declining sits apart, on the left, in the danger colour but quiet. */
+.modal-actions .ask-user-skip {
+  margin-inline-end: auto;
+  color: var(--danger);
+}
+
+.modal-actions .ask-user-skip:hover:not(:disabled) {
+  background: var(--danger-tint);
+}
+
+/* The question reads as body text, under its header as a small label. */
 .ask-user-question-text {
-  margin: 0 0 0.9rem;
-  font-size: 1.02rem;
-  font-weight: 700;
-  line-height: 1.45;
+  margin: 0 0 1rem;
+  font-size: 1rem;
+  font-weight: 400;
+  line-height: 1.5;
   color: var(--text);
+}
+
+.ask-user-label {
+  display: block;
+  margin-bottom: 0.25rem;
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: var(--text-muted);
 }

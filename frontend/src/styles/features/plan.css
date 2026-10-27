@@ -23,10 +23,6 @@
   min-height: var(--header-action-height);
 }
 
-.worktree-compact-icon {
-  display: none;
-}
-
 .plan-toggle {
   position: relative;
   gap: 0.28rem;
@@ -165,7 +161,7 @@
   align-items: start;
   gap: 0.5rem;
   padding: 0.52rem 0.48rem;
-  border-radius: 9px;
+  border-radius: var(--radius-md);
   color: var(--text-muted);
   transition:
     background-color var(--panel-fade-duration) ease,
@@ -181,8 +177,6 @@
 }
 
 .current-plan-step-marker svg {
-  width: 0.9rem;
-  height: 0.9rem;
   stroke-width: 2.6;
 }
 
@@ -239,19 +233,8 @@
   color: var(--accent-amber);
 }
 
-.plan-sheet,
-.plan-sheet-backdrop {
+.plan-sheet {
   display: none;
-}
-
-.plan-sheet-backdrop {
-  position: fixed;
-  inset: var(--app-offset-top) 0 0;
-  z-index: var(--z-sheet-backdrop);
-  background: rgb(0 0 0 / 44%);
-  opacity: 0;
-  backdrop-filter: blur(2px);
-  animation: plan-backdrop-in var(--panel-fade-duration) ease forwards;
 }
 
 .plan-sheet-handle {
@@ -267,7 +250,7 @@
 .plan-sheet-handle span {
   width: 42px;
   height: 4px;
-  border-radius: 999px;
+  border-radius: var(--radius-sm);
   background: var(--border-strong);
 }
 
@@ -281,12 +264,6 @@
   border: 0 !important;
   clip: rect(0, 0, 0, 0) !important;
   white-space: nowrap !important;
-}
-
-@keyframes plan-backdrop-in {
-  to {
-    opacity: 1;
-  }
 }
 
 @media (width <= 1099px) and (width >= 768px) {
@@ -327,10 +304,6 @@
     display: none;
   }
 
-  .plan-sheet-backdrop.open {
-    display: block;
-  }
-
   .plan-sheet {
     position: fixed;
     right: var(--safe-right);
@@ -342,7 +315,7 @@
     max-height: min(72dvh, calc(var(--app-height) - var(--safe-top) - 1rem));
     border: 1px solid var(--border);
     border-bottom: 0;
-    border-radius: 18px 18px 0 0;
+    border-radius: var(--radius-md) var(--radius-md) 0 0;
     box-shadow: 0 -10px 34px rgb(0 0 0 / 35%);
     transform: translateY(100%);
   }
@@ -379,24 +352,11 @@
   .worktree-trigger .chip-label {
     display: none;
   }
-
-  .worktree-compact-icon {
-    display: inline;
-  }
-
-  .header-context-actions .chip-sep {
-    display: none;
-  }
 }
 
 @media (prefers-reduced-motion: reduce) {
   .plan-surface,
   .plan-progress-track > span {
     transition: none;
-  }
-
-  .plan-sheet-backdrop {
-    animation: none;
-    opacity: 1;
   }
 }

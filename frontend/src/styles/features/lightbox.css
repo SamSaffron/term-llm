@@ -57,7 +57,7 @@
   max-width: 90vw;
   max-height: min(85dvh, calc(var(--app-height) * 0.85));
   object-fit: contain;
-  border-radius: 8px;
+  border-radius: var(--radius-md);
 }
 
 .lightbox.lightbox-maximized .lightbox-content {
@@ -80,7 +80,7 @@
   align-items: center;
   gap: 0.25rem;
   background: rgb(0 0 0 / 75%);
-  border-radius: 999px;
+  border-radius: var(--radius-sm);
   padding: 0.25rem;
   opacity: 0;
   transform: translateY(-8px);
@@ -134,7 +134,7 @@
   width: max-content;
   max-width: calc(100% - 1rem);
   box-sizing: border-box;
-  border-radius: 8px;
+  border-radius: var(--radius-md);
   background: #262626;
   color: #fff;
   font-size: 0.875rem;
@@ -244,7 +244,7 @@
   gap: 0.75rem;
   justify-items: center;
   padding: 1.5rem;
-  border-radius: 12px;
+  border-radius: var(--radius-md);
   background: var(--surface);
   color: var(--text);
 }

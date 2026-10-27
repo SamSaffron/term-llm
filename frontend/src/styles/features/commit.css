@@ -15,7 +15,7 @@
 .commit-error,
 .commit-warning {
   padding: 9px 11px;
-  border-radius: 8px;
+  border-radius: var(--radius-md);
   background: color-mix(in srgb, var(--accent) 10%, transparent);
 }
 
@@ -45,7 +45,7 @@
   max-height: 340px;
   overflow: auto;
   border: 1px solid var(--border);
-  border-radius: 9px;
+  border-radius: var(--radius-md);
 }
 
 .commit-file {

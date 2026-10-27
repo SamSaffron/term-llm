@@ -477,7 +477,7 @@ describe('render isolation', () => {
         state: { phase: 'transcribing', stage: 'stalled' },
         label: 'Upload stalled',
         indicator: 'mark',
-        mark: '!',
+        mark: 'alert-circle',
       },
       {
         state: { phase: 'transcribing', elapsedMs: 12_000 },
@@ -489,32 +489,35 @@ describe('render isolation', () => {
         state: { phase: 'complete' },
         label: 'Transcription inserted.',
         indicator: 'mark',
-        mark: '✓',
+        mark: 'check',
       },
       {
         state: { phase: 'cancelled' },
         label: 'Voice recording cancelled.',
         indicator: 'mark',
-        mark: '–',
+        mark: 'close',
       },
       {
         state: { phase: 'failed' },
         label: 'Voice transcription failed.',
         indicator: 'mark',
-        mark: '!',
+        mark: 'alert-circle',
       },
       {
         state: { phase: 'failed', error: 'Microphone unavailable' },
         label: 'Microphone unavailable',
         indicator: 'mark',
-        mark: '!',
+        mark: 'alert-circle',
       },
     ];
     for (const { state, label, copy, indicator, mark } of cases) {
       await act(() => publish({ ...snapshot, ...state }));
       const group = screen.getByRole('group', { name: 'Voice dictation' });
       expect(within(group).getByText(copy ?? label)).toBeInTheDocument();
-      expect(group.querySelector(`.voice-status-${indicator}`)).toHaveTextContent(mark ?? '');
+      expect(group.querySelector(`.voice-status-${indicator}`)).toBeInTheDocument();
+      expect(
+        group.querySelector(`.voice-status-${indicator} use`)?.getAttribute('href') ?? '',
+      ).toMatch(mark ? new RegExp(`#${mark}$`) : /^$/);
       expect(screen.getByRole(state.phase === 'failed' ? 'alert' : 'status')).toHaveTextContent(
         label,
       );
