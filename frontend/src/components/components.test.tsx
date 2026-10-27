@@ -4602,6 +4602,26 @@ describe('Preact-owned chat surfaces', () => {
     expect(store.openShare).toHaveBeenCalledWith(42);
   });
 
+  it('does not offer transcript publishing to a linked-device client', () => {
+    const store = createStore();
+    store.linkedDevicesMode.value = true;
+    store.sessions.value[0].messages = [
+      {
+        id: 'a1',
+        role: 'assistant',
+        content: 'Answer',
+        created: 2,
+        durableRowId: 42,
+      },
+    ];
+    render(
+      <StoreContext.Provider value={store}>
+        <Transcript />
+      </StoreContext.Provider>,
+    );
+    expect(screen.queryByRole('button', { name: 'Share…' })).toBeNull();
+  });
+
   it('pins a near-tail transcript immediately without smooth scrolling', () => {
     const store = createStore();
     const { container } = render(
@@ -4912,6 +4932,25 @@ describe('Preact-owned chat surfaces', () => {
     await waitFor(() =>
       expect(screen.getByRole('button', { name: 'Send message' })).toBeDisabled(),
     );
+  });
+
+  it('hides upload, voice, and live controls for a linked-device client', async () => {
+    const store = createStore();
+    store.linkedDevicesMode.value = true;
+    store.liveStore.enabled.value = true;
+    store.liveStore.capability.value = { supported: true, reason: '' };
+    render(
+      <StoreContext.Provider value={store}>
+        <Composer />
+      </StoreContext.Provider>,
+    );
+
+    expect(screen.queryByRole('button', { name: 'Add' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Record voice message' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Start live voice' })).toBeNull();
+    const input = screen.getByRole('textbox', { name: 'Message' });
+    await userEvent.type(input, 'peer message');
+    expect(screen.getByRole('button', { name: 'Send message' })).toBeEnabled();
   });
 
   it('routes typed text through an active live call and falls back to normal send on failure', async () => {
@@ -9019,7 +9058,7 @@ describe('Preact-owned chat surfaces', () => {
         <Modals />
       </StoreContext.Provider>,
     );
-    expect(screen.getAllByRole('tab')).toHaveLength(4);
+    expect(screen.getAllByRole('tab')).toHaveLength(5);
     expect(screen.getByRole('tab', { name: 'Model' })).toHaveAttribute('aria-selected', 'true');
     expect(fetchExtensions).not.toHaveBeenCalled();
     fireEvent.change(screen.getByLabelText('Effort'), { target: { value: 'high' } });

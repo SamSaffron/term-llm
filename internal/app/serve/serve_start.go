@@ -21,6 +21,7 @@ import (
 	guardian "github.com/samsaffron/term-llm/internal/app/runtime/guardian"
 	"github.com/samsaffron/term-llm/internal/app/serve/hubnode"
 	"github.com/samsaffron/term-llm/internal/config"
+	"github.com/samsaffron/term-llm/internal/linkeddevices"
 	"github.com/samsaffron/term-llm/internal/restart"
 	platform "github.com/samsaffron/term-llm/internal/serve"
 	"github.com/samsaffron/term-llm/internal/signal"
@@ -364,6 +365,9 @@ func runServeWith(parentCtx context.Context, deps serveDeps, opts *Options, args
 				sess, getErr := store.Get(context.Background(), sessionID)
 				return getErr == nil && sess != nil
 			}),
+		}
+		if s.linkedDevices, err = linkeddevices.NewServeHost(hasWeb, ctx, store, agentName, opts.BasePath, requireAuth || browserAuth != nil, resolvedTitle, resolvedApproval.Mode.String(), cfg); err != nil {
+			return err
 		}
 		if hasWeb {
 			s.extensions, err = newServeExtensions(opts.ExtensionsDir, opts.ExtensionIDs, deps.Flags.Extensions, opts.DisableExtensions)

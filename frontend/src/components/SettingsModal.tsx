@@ -14,12 +14,30 @@ const LazyExtensionSettings = lazyComponent(
   <p>Loading extension settings…</p>,
 );
 
+const LazyLinkedDevicesSettings = lazyComponent(
+  () =>
+    import('./LinkedDevicesSettings')
+      .then(({ LinkedDevicesSettings }) => LinkedDevicesSettings)
+      .catch(() => () => <p>Could not load linked devices settings. Reload the page to retry.</p>),
+  <p>Loading linked devices settings…</p>,
+);
+
+const settingsTabs = [
+  { label: 'Model', slug: 'model' },
+  { label: 'Interface', slug: 'interface' },
+  { label: 'Extensions', slug: 'extensions' },
+  { label: 'Linked devices', slug: 'linked-devices' },
+  { label: 'Connection', slug: 'connection' },
+] as const;
+
 export function Settings() {
   const store = useStore();
   const [tab, setTab] = useState('model');
   const [extensionsVisited, setExtensionsVisited] = useState(false);
   const activeTab = tab;
-  const tabs = ['Model', 'Interface', 'Extensions', 'Connection'];
+  const visibleTabs = store.linkedDevicesMode.value
+    ? settingsTabs.filter(({ slug }) => slug === 'model' || slug === 'interface')
+    : settingsTabs;
   const selectTab = (name: string) => {
     setTab(name);
     if (name === 'extensions') setExtensionsVisited(true);
@@ -52,27 +70,28 @@ export function Settings() {
   return (
     <Overlay title="Settings" className="settings-modal" dismissDisabled={saving}>
       <div class="settings-tabs" role="tablist" aria-label="Settings sections">
-        {tabs.map((label, index) => {
-          const name = label.toLowerCase();
+        {visibleTabs.map(({ label, slug }, index) => {
           return (
             <button
               type="button"
               role="tab"
-              id={`settings-${name}-tab`}
-              aria-controls={`settings-${name}-panel`}
-              aria-selected={activeTab === name}
-              tabIndex={activeTab === name ? 0 : -1}
-              onClick={() => selectTab(name)}
+              id={`settings-${slug}-tab`}
+              aria-controls={`settings-${slug}-panel`}
+              aria-selected={activeTab === slug}
+              tabIndex={activeTab === slug ? 0 : -1}
+              onClick={() => selectTab(slug)}
               onKeyDown={(event) => {
                 let next: number;
-                if (event.key === 'ArrowRight') next = (index + 1) % tabs.length;
-                else if (event.key === 'ArrowLeft') next = (index + tabs.length - 1) % tabs.length;
+                if (event.key === 'ArrowRight') next = (index + 1) % visibleTabs.length;
+                else if (event.key === 'ArrowLeft')
+                  next = (index + visibleTabs.length - 1) % visibleTabs.length;
                 else if (event.key === 'Home') next = 0;
-                else if (event.key === 'End') next = tabs.length - 1;
+                else if (event.key === 'End') next = visibleTabs.length - 1;
                 else return;
                 event.preventDefault();
-                selectTab(tabs[next].toLowerCase());
-                document.getElementById(`settings-${tabs[next].toLowerCase()}-tab`)?.focus();
+                const nextTab = visibleTabs[next];
+                selectTab(nextTab.slug);
+                document.getElementById(`settings-${nextTab.slug}-tab`)?.focus();
               }}
             >
               {label}
@@ -177,76 +196,87 @@ export function Settings() {
             />
           </label>
         </div>
-        <div class="settings-field">
-          <label class="settings-toggle">
-            <span class="settings-label settings-label-inline">Show widgets in sidebar</span>
-            <ToggleSwitch
-              checked={store.showWidgets.value}
-              onChange={(event) => {
-                store.showWidgets.value = event.currentTarget.checked;
-                store.storage.setItem(
-                  store.keys.showWidgetsSidebar,
-                  event.currentTarget.checked ? '1' : '0',
-                );
-              }}
-            />
-          </label>
-        </div>
+        {!store.linkedDevicesMode.value && (
+          <div class="settings-field">
+            <label class="settings-toggle">
+              <span class="settings-label settings-label-inline">Show widgets in sidebar</span>
+              <ToggleSwitch
+                checked={store.showWidgets.value}
+                onChange={(event) => {
+                  store.showWidgets.value = event.currentTarget.checked;
+                  store.storage.setItem(
+                    store.keys.showWidgetsSidebar,
+                    event.currentTarget.checked ? '1' : '0',
+                  );
+                }}
+              />
+            </label>
+          </div>
+        )}
         <div class="settings-field notification-settings">
           <span class="settings-label">Notifications</span>
-          <div
-            class={`notification-state notification-state-${store.notifications.value.status}`}
-            role="status"
-            aria-live="polite"
-          >
-            <strong>
-              {store.notifications.value.status === 'subscribed'
-                ? store.notifications.value.verified
-                  ? 'Enabled'
-                  : 'Enabled · verification pending'
-                : store.notifications.value.status === 'blocked'
-                  ? 'Blocked'
-                  : store.notifications.value.status === 'stale'
-                    ? 'Needs repair'
-                    : store.notifications.value.status === 'unsubscribed'
-                      ? 'Not enabled'
-                      : 'Unavailable'}
-            </strong>
-            <span>{store.notifications.value.detail}</span>
-          </div>
-          <div class="notification-actions">
-            {store.notifications.value.status === 'unsubscribed' && (
-              <button
-                type="button"
-                class="btn"
-                disabled={store.notifications.value.busy}
-                onClick={() => void store.enableNotifications()}
+          {store.linkedDevicesMode.value ? (
+            <div class="notification-state notification-state-unsupported" role="status">
+              <strong>Unavailable</strong>
+              <span>Push notifications are not available through Linked devices.</span>
+            </div>
+          ) : (
+            <>
+              <div
+                class={`notification-state notification-state-${store.notifications.value.status}`}
+                role="status"
+                aria-live="polite"
               >
-                Enable notifications
-              </button>
-            )}
-            {store.notifications.value.status === 'stale' && (
-              <button
-                type="button"
-                class="btn"
-                disabled={store.notifications.value.busy}
-                onClick={() => void store.retryNotifications()}
-              >
-                Retry repair
-              </button>
-            )}
-            {(store.notifications.value.status === 'subscribed' ||
-              store.notifications.value.status === 'stale') && (
-              <button
-                type="button"
-                class="btn"
-                disabled={store.notifications.value.busy}
-                onClick={() => void store.disableNotifications()}
-              >
-                Disable
-              </button>
-            )}
-          </div>
+                <strong>
+                  {store.notifications.value.status === 'subscribed'
+                    ? store.notifications.value.verified
+                      ? 'Enabled'
+                      : 'Enabled · verification pending'
+                    : store.notifications.value.status === 'blocked'
+                      ? 'Blocked'
+                      : store.notifications.value.status === 'stale'
+                        ? 'Needs repair'
+                        : store.notifications.value.status === 'unsubscribed'
+                          ? 'Not enabled'
+                          : 'Unavailable'}
+                </strong>
+                <span>{store.notifications.value.detail}</span>
+              </div>
+              <div class="notification-actions">
+                {store.notifications.value.status === 'unsubscribed' && (
+                  <button
+                    type="button"
+                    class="btn"
+                    disabled={store.notifications.value.busy}
+                    onClick={() => void store.enableNotifications()}
+                  >
+                    Enable notifications
+                  </button>
+                )}
+                {store.notifications.value.status === 'stale' && (
+                  <button
+                    type="button"
+                    class="btn"
+                    disabled={store.notifications.value.busy}
+                    onClick={() => void store.retryNotifications()}
+                  >
+                    Retry repair
+                  </button>
+                )}
+                {(store.notifications.value.status === 'subscribed' ||
+                  store.notifications.value.status === 'stale') && (
+                  <button
+                    type="button"
+                    class="btn"
+                    disabled={store.notifications.value.busy}
+                    onClick={() => void store.disableNotifications()}
+                  >
+                    Disable
+                  </button>
+                )}
+              </div>
+            </>
+          )}
         </div>
       </div>
       <div
@@ -300,6 +330,15 @@ export function Settings() {
         class="settings-panel"
       >
         {extensionsVisited && <LazyExtensionSettings />}
+      </div>
+      <div
+        id="settings-linked-devices-panel"
+        role="tabpanel"
+        aria-labelledby="settings-linked-devices-tab"
+        hidden={activeTab !== 'linked-devices'}
+        class="settings-panel"
+      >
+        {activeTab === 'linked-devices' && <LazyLinkedDevicesSettings active />}
       </div>
       {saveError && <p role="alert">{saveError}</p>}
       {(activeTab === 'model' || (activeTab === 'connection' && !store.config.passkeyAuth)) && (

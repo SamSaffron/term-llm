@@ -1,0 +1,208 @@
+.linked-devices {
+  display: grid;
+  gap: 1rem;
+  min-width: 0;
+}
+
+.linked-devices p {
+  margin: 0;
+}
+
+.linked-devices-state {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 0.75rem 0.85rem;
+  border: 1px solid var(--border);
+  border-radius: 0.6rem;
+  background: var(--surface-2);
+}
+
+.linked-devices-state > span {
+  color: var(--text-muted);
+  font-size: 0.82rem;
+}
+
+.linked-devices-state > strong {
+  color: var(--accent-green);
+}
+
+.linked-devices-state.is-unavailable,
+.linked-devices-state.is-off,
+.linked-devices-state.is-stopped {
+  display: grid;
+}
+
+.linked-devices-state.is-unavailable > strong,
+.linked-devices-state.is-off > strong,
+.linked-devices-state.is-stopped > strong {
+  color: var(--text-muted);
+}
+
+.linked-devices-state.is-unavailable p {
+  font-size: 0.85rem;
+}
+
+.linked-devices-warning {
+  padding: 0.75rem 0.85rem;
+  border-left: 3px solid var(--accent-amber);
+  background: color-mix(in srgb, var(--accent-amber) 8%, transparent);
+  color: var(--text-muted);
+  font-size: 0.82rem;
+  line-height: 1.45;
+}
+
+.linked-devices-reason,
+.linked-devices-error {
+  color: var(--text-muted);
+  font-size: 0.85rem;
+}
+
+.linked-devices-error {
+  color: var(--danger);
+}
+
+.linked-devices-section {
+  display: grid;
+  gap: 0.75rem;
+  padding-top: 0.25rem;
+}
+
+.linked-devices-section h3 {
+  margin: 0;
+  font-size: 0.95rem;
+}
+
+.linked-devices-section > p:not(.linked-devices-warning) {
+  color: var(--text-muted);
+  font-size: 0.85rem;
+}
+
+.linked-devices-section > .btn {
+  justify-self: start;
+}
+
+.linked-devices-invitation {
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: start;
+}
+
+.linked-devices-invitation img {
+  grid-column: 2;
+  grid-row: 1 / span 2;
+  width: clamp(15rem, 28vw, 16rem);
+  max-width: 40vw;
+  box-sizing: border-box;
+  aspect-ratio: 1;
+  padding: 0.75rem;
+  border-radius: 0.5rem;
+  background: white;
+}
+
+.linked-devices-countdown {
+  margin-top: 0.2rem !important;
+  font-variant-numeric: tabular-nums;
+}
+
+.linked-devices-invite-actions,
+.linked-devices-card-actions,
+.linked-devices-controls,
+.linked-devices-confirm > div {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+.linked-devices-warning {
+  grid-column: 1 / -1;
+}
+
+.linked-devices-list {
+  display: grid;
+  gap: 0.65rem;
+}
+
+.linked-devices-card {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(10rem, 0.7fr) auto;
+  align-items: end;
+  gap: 0.65rem;
+  padding: 0.75rem;
+  border: 1px solid var(--border);
+  border-radius: 0.55rem;
+}
+
+.linked-devices-card > div:first-child,
+.linked-devices-card label {
+  display: grid;
+  gap: 0.2rem;
+}
+
+.linked-devices-card small,
+.linked-devices-card label,
+.linked-devices-card details {
+  color: var(--text-muted);
+  font-size: 0.75rem;
+}
+
+.linked-devices-card p {
+  margin: 0.25rem 0 0;
+  font-size: 0.8rem;
+}
+
+.linked-devices-card summary {
+  cursor: pointer;
+}
+
+.linked-devices-card input {
+  width: 100%;
+  min-width: 0;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.linked-devices-device {
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+}
+
+.linked-devices-controls {
+  padding-top: 0.75rem;
+  border-top: 1px solid var(--border);
+}
+
+.linked-devices .btn.danger {
+  border-color: var(--danger);
+  background: var(--danger);
+  color: var(--btn-accent-text);
+}
+
+.linked-devices-confirm {
+  display: grid;
+  gap: 0.65rem;
+  padding: 0.85rem;
+  border: 1px solid var(--danger);
+  border-radius: 0.6rem;
+  background: color-mix(in srgb, var(--danger) 7%, var(--surface-2));
+}
+
+.linked-devices-confirm p {
+  color: var(--text-muted);
+  font-size: 0.85rem;
+}
+
+@media (width < 640px) {
+  .linked-devices-invitation,
+  .linked-devices-card {
+    grid-template-columns: 1fr;
+  }
+
+  .linked-devices-invitation img {
+    grid-column: 1;
+    grid-row: auto;
+    width: min(16rem, 82vw);
+    max-width: none;
+    justify-self: center;
+  }
+}

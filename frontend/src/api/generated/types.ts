@@ -14,6 +14,18 @@ export type HubNodeView = { "id": string; "name": string; "source": string; "con
 
 export type JobsV2RunEvent = { "id": number; "run_id": string; "event_type": string; "message"?: string; "data"?: unknown; "created_at": string; };
 
+export type LinkedDevicesAuthorityStatement = { "agent_name"?: string; "description": string; "same_uid_note": string; };
+
+export type LinkedDevicesDeviceStatus = { "id": string; "name": string; "approved_at"?: string; "last_seen_at"?: string; "connection": string; };
+
+export type LinkedDevicesInvitationStatus = { "url": string; "qr_data_url": string; "expires_at": string; };
+
+export type LinkedDevicesRequestStatus = { "id": string; "name": string; "requested_at"?: string; "expires_at"?: string; };
+
+export type LinkedDevicesState = string;
+
+export type LinkedDevicesStatus = { "state": LinkedDevicesState; "reason"?: string; "reset_required"?: boolean; "can_resume"?: boolean; "can_reset"?: boolean; "enabled": boolean; "broker_connected": boolean; "host_fingerprint"?: string; "invitation"?: LinkedDevicesInvitationStatus; "pending_requests": (LinkedDevicesRequestStatus)[] | null; "devices": (LinkedDevicesDeviceStatus)[] | null; "warnings"?: (string)[]; "authority": LinkedDevicesAuthorityStatement; };
+
 export type ServeContextUsage = { "used_tokens": number; "input_limit"?: number; "cached_input_tokens"?: number; "estimated": boolean; };
 
 export type ServeEvent = { "v": number; "sequence": number; "instance_id": string; "type": string; "occurred_at": number; "session_id"?: string; "response_id"?: string; "project_id"?: string; "parent_session_id"?: string; "transcript_rev"?: number; "run_epoch"?: number; "operation_id"?: string; "reason"?: string; };

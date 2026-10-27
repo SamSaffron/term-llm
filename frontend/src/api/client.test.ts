@@ -200,6 +200,23 @@ describe('API transport', () => {
     expect(JSON.parse(String(init.body))).toEqual({ preview: true });
   });
 
+  it('does not turn a peer scope denial into a global authentication failure', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(
+        async () =>
+          new Response('forbidden', {
+            status: 403,
+            headers: { 'X-Term-LLM-Peer-Error': 'scope_denied' },
+          }),
+      ),
+    );
+    const auth = vi.fn();
+    const api = new APIClient(config, { getToken: () => '', onAuthRequired: auth });
+    await expect(api.get('/v1/linked-devices')).rejects.toMatchObject({ status: 403 });
+    expect(auth).not.toHaveBeenCalled();
+  });
+
   it('coordinates auth-required and typed errors', async () => {
     vi.stubGlobal(
       'fetch',

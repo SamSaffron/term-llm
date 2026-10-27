@@ -5,6 +5,12 @@ HubNodeSessionView
 HubNodeSessionsView
 HubNodeView
 JobsV2RunEvent
+LinkedDevicesAuthorityStatement
+LinkedDevicesDeviceStatus
+LinkedDevicesInvitationStatus
+LinkedDevicesRequestStatus
+LinkedDevicesState
+LinkedDevicesStatus
 ServeContextUsage
 ServeEvent
 ServeMentionSearchItem

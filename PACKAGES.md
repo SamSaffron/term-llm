@@ -11,6 +11,8 @@ One line per root-module package, generated from package doc comments by `make d
 - `cmd/genpkgmap` — regenerates PACKAGES.md, the one-line-per-package map of the root module built from package doc comments.
 - `cmd/gentsapi` — writes the registered Go serve JSON contracts for the frontend.
 - `cmd/imagetest` — Standalone test binary to debug image rendering with streaming markdown
+- `cmd/peer-broker` — peer-broker runs the standalone version 2 linked-device rendezvous broker.
+- `cmd/peer-testdevice` — peer-testdevice is a synthetic linked-device protocol test device.
 - `cmd/precompressui` — gzips the generated web UI bundle in place so the binary embeds compressed bytes and the server can send them unchanged.
 - `cmd/servicesmoke` — exercises installed service specifications and real runners without touching a supervisor.
 - `internal/acp` — implements the client side of Agent Client Protocol v1.
@@ -96,6 +98,8 @@ One line per root-module package, generated from package doc comments by `make d
 - `internal/inspect` — projects stored session history into a read-only, presentation-neutral inspector.
 - `internal/jobs` — defines scheduled jobs, runs and runner contracts plus the program runner.
 - `internal/lifecycle` — defines the dependency-free lifecycle domain shared by chat and terminal-host integrations.
+- `internal/linkeddevices` — owns the server-side linked-device lifecycle, admission, persistence, and owner API for a single term-llm web target.
+- `internal/linkeddevices/testdevice` — implements a synthetic linked device for protocol interoperability tests and manual development.
 - `internal/live` — implements bidirectional voice ("live") sessions: the protocol client for the voice model, and a controller that turns the voice model's delegation requests into ordinary agent turns.
 - `internal/live/classify` — classifies live voice delegations and gates the resulting intent.
 - `internal/llm` — owns model metadata, config-backed limits and policies, provider selection, retry and cross-family wiring.
@@ -130,8 +134,11 @@ One line per root-module package, generated from package doc comments by `make d
 - `internal/notification` — defines the shared Web Push wire envelope and event identity helpers.
 - `internal/oauth` — implements ChatGPT, Copilot and Grok OAuth login and refresh flows.
 - `internal/openaiapi` — resolves the public OpenAI API endpoint settings shared by every API-key OpenAI client (Responses, model listing, embeddings, images and transcription).
+- `internal/pairing` — implements the frozen v2 identity-pairing and signed transport-handshake contract, strict termllm://pair invitations, persistent Ed25519 identities, and durable revocation-only web-v1 grants.
 - `internal/passkeyauth` — provides application-neutral WebAuthn authentication primitives for first-party term-llm servers.
 - `internal/pathutil` — provides shared path manipulation utilities.
+- `internal/peer` — bridges HTTP requests to a fixed http.Handler over a reliable, ordered WebRTC DataChannel.
+- `internal/peerbroker` — implements the version 2 linked-device rendezvous service.
 - `internal/plan` — owns the shared update_plan snapshot model, validation, history extraction, and bounded rendering helpers.
 - `internal/pprof` — runs the opt-in profiling HTTP server and tracks its port file.
 - `internal/process` — provides advisory process discovery, never restart authority.

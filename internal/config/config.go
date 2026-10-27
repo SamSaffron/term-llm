@@ -491,6 +491,7 @@ type Config struct {
 	AutoCompact     bool                      `mapstructure:"auto_compact"`
 	Serve           ServeConfig               `mapstructure:"serve"`
 	FileTracking    FileTrackingConfig        `mapstructure:"file_tracking"`
+	LinkedDevices   LinkedDevicesConfig       `mapstructure:"linked_devices" yaml:"linked_devices,omitempty"`
 
 	// ProviderDiscovery decides which routes enable a text provider:
 	// auto (config, default_provider, env var, local login), env (config
@@ -1567,11 +1568,10 @@ func loadUnresolved() (*Config, error) {
 	if err := cfg.ValidateLive(); err != nil {
 		return nil, err
 	}
-
 	if cfg.Providers == nil {
 		cfg.Providers = make(map[string]ProviderConfig)
 	}
-	return &cfg, nil
+	return &cfg, cfg.initializeLinkedDevices()
 }
 
 func liveControlPlaneDecodeHook() mapstructure.DecodeHookFunc {

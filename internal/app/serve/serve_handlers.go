@@ -5,7 +5,6 @@ import (
 	"compress/gzip"
 	"context"
 	"crypto/sha256"
-	"crypto/subtle"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
@@ -34,6 +33,7 @@ import (
 	buildinfo "github.com/samsaffron/term-llm/internal/buildinfo"
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/image"
+	"github.com/samsaffron/term-llm/internal/linkeddevices"
 	"github.com/samsaffron/term-llm/internal/llm"
 	"github.com/samsaffron/term-llm/internal/llm/core"
 	"github.com/samsaffron/term-llm/internal/llm/engine"
@@ -52,38 +52,21 @@ func (s *serveServer) handleHealth(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	resp := map[string]any{"status": "ok"}
-	// Identity fields (agent, version, capabilities) are only reported to
-	// trusted callers — a valid bearer token, or any caller when auth is
-	// disabled — so the unauthenticated health probe stays anonymous. The hub
-	// prober sends the node token and uses these for its dashboard.
-	if s.healthIdentityTrusted(r) {
+	// Identity fields (agent, version, capabilities) are only reported to a
+	// trusted linked device, a passkey session in passkey mode, a valid token in
+	// bearer mode, or any caller when auth is disabled. The unauthenticated
+	// health probe stays anonymous while the hub prober can report identity.
+	passkeyMode := s.browserAuth != nil
+	passkeyAuthenticated := false
+	if passkeyMode {
+		_, passkeyAuthenticated = s.browserAuth.authenticatePasskeyRequest(r)
+	}
+	if linkeddevices.IdentityRequestTrusted(r, s.cfg.requireAuth, s.cfg.token, passkeyMode, passkeyAuthenticated) {
 		resp["agent"] = s.cfg.agentName
 		resp["version"] = buildinfo.Version
 		resp["capabilities"] = s.capabilityList()
 	}
 	writeJSON(w, http.StatusOK, resp)
-}
-
-// healthIdentityTrusted reports whether the health request may receive node
-// identity fields: either auth is disabled (loopback-only serves), or the
-// request carries a valid bearer token or passkey browser session.
-func (s *serveServer) healthIdentityTrusted(r *http.Request) bool {
-	if s.browserAuth != nil {
-		_, ok := s.browserAuth.authenticatePasskeyRequest(r)
-		return ok
-	}
-	if !s.cfg.requireAuth {
-		return true
-	}
-	if s.cfg.token == "" {
-		return false
-	}
-	auth := r.Header.Get("Authorization")
-	const prefix = "Bearer "
-	if !strings.HasPrefix(auth, prefix) {
-		return false
-	}
-	return subtle.ConstantTimeCompare([]byte(strings.TrimPrefix(auth, prefix)), []byte(s.cfg.token)) == 1
 }
 
 // capabilityList describes what this serve exposes, for hub discovery.
@@ -2902,18 +2885,18 @@ func (s *serveServer) handleSessionMetadataPatch(w http.ResponseWriter, r *http.
 
 func (s *serveServer) auth(next http.HandlerFunc) http.HandlerFunc {
 	if s.browserAuth != nil {
-		return func(w http.ResponseWriter, r *http.Request) {
+		return linkeddevices.AdmitDevice(next, func(w http.ResponseWriter, r *http.Request) {
 			if p, ok := hubPrincipal(r); !ok || p.SessionID == "" {
 				writeOpenAIError(w, http.StatusUnauthorized, "invalid_session", "Passkey authentication is required")
 				return
 			}
 			next(w, r)
-		}
+		})
 	}
 	if !s.cfg.requireAuth {
 		return next
 	}
-	return func(w http.ResponseWriter, r *http.Request) {
+	return linkeddevices.AdmitDevice(next, func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodOptions {
 			next(w, r)
 			return
@@ -2923,7 +2906,7 @@ func (s *serveServer) auth(next http.HandlerFunc) http.HandlerFunc {
 			return
 		}
 		next(w, r)
-	}
+	})
 }
 
 func cookieAuthAllowed(r *http.Request) bool {

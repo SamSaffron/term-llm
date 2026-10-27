@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/samsaffron/term-llm/internal/app/serve/wire"
+	"github.com/samsaffron/term-llm/internal/linkeddevices"
 )
 
 // serveIndexHTML serves the SPA shell. Authorized, non-safe-mode documents link
@@ -15,7 +16,7 @@ import (
 // frontend/src/api/extensions.ts adopts those links instead of adding copies.
 func (s *serveServer) serveIndexHTML(w http.ResponseWriter, r *http.Request) {
 	const contentType, cacheControl = "text/html; charset=utf-8", "no-cache, no-store, must-revalidate"
-	page, links := s.renderIndexHTML(), ""
+	page, links := linkeddevices.PeerIndexHTML(r, s.renderIndexHTML()), ""
 	if s.extensions != nil && r.URL.Query().Get("safe-mode") != "1" && s.requestAuthorized(r) {
 		links = s.extensions.manager.StylesheetLinks()
 	}
