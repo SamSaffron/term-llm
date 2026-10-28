@@ -34,6 +34,7 @@ var errChildRunAbandoned = errors.New("delegated run ended without a terminal st
 // SpawnAgentRunner implements the tools.SpawnAgentRunner interface.
 // It loads and runs sub-agents for the spawn_agent tool.
 type SpawnAgentRunner struct {
+	runtime.SpawnModelCatalog
 	cfg               *config.Config
 	policySource      func() ParentModelState
 	registry          *agents.Registry
@@ -95,6 +96,7 @@ func NewSpawnAgentRunnerWithStore(cfg *config.Config, yoloMode bool, parentAppro
 	registry.SetPreferences(cfg.Agents.Preferences)
 
 	return &SpawnAgentRunner{
+		SpawnModelCatalog: runtime.NewSpawnModelCatalog(cfg),
 		cfg:               cfg,
 		registry:          registry,
 		yoloMode:          yoloMode,
