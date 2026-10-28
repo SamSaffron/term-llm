@@ -552,7 +552,8 @@ export class RunEngine {
     this.composer.sendPending.value = true;
     const clientMessageId = uuid();
     const requestId = uuid();
-    const admissionInstance = this.admissionInstance.peek();
+    let admissionInstance = this.admissionInstance.peek();
+    let refreshedAdmission = false;
 
     let session = this.sessionStore.activeSession.value;
     const newSession = !session;
@@ -717,7 +718,8 @@ export class RunEngine {
           options,
           offersClientTools: 'tools' in requestBody,
         });
-      } catch (error) {
+      } catch (sendError) {
+        let error = sendError;
         if (!this.supervisors.owns(streamOwner)) return;
         // Once x-response-id has been adopted, delivery is known and only the
         // resumable response stream needs recovery.
@@ -728,6 +730,30 @@ export class RunEngine {
         if (this.definitiveSendRejection(error) && unknownAttempts > 0) {
           this.pauseUnconfirmed(streamOwner, clientMessageId);
           return;
+        }
+        if (
+          error instanceof APIError &&
+          error.status === 409 &&
+          error.type === 'server_instance_changed'
+        ) {
+          // The first POST was rejected before admission. Only in this case
+          // may we refresh its fence; an ambiguous POST must keep the old one.
+          if (!refreshedAdmission) {
+            refreshedAdmission = true;
+            const instance = await this.refreshRejectedAdmissionInstance(admissionInstance);
+            if (!this.supervisors.owns(streamOwner)) return;
+            if (instance) {
+              admissionInstance = instance;
+              await submit(signal);
+              return;
+            }
+          }
+          error = new APIError(
+            'The server restarted before your message was sent. Your draft is still available; please try sending again.',
+            409,
+            '',
+            'server_instance_changed',
+          );
         }
         if (this.definitiveSendRejection(error)) {
           options.onTransportFailed?.(error);
@@ -862,6 +888,23 @@ export class RunEngine {
       signal,
       timeoutMs,
     );
+  }
+
+  private async refreshRejectedAdmissionInstance(previous: string): Promise<string> {
+    try {
+      const capabilities = await this.services.endpoints.capabilities();
+      const admission = recordValue(capabilities.response_admission);
+      const instance = admission?.version === 1 ? admission.instance_id : undefined;
+      // Do not silently remove the process fence on downgrade or a stale read.
+      if (typeof instance === 'string' && instance && instance !== previous) {
+        this.admissionInstance.value = instance;
+        return instance;
+      }
+    } catch {
+      // The POST was definitively rejected, even if refreshing capabilities
+      // fails. Let the caller restore the draft, not mark delivery unknown.
+    }
+    return '';
   }
 
   private definitiveSendRejection(error: unknown): boolean {
