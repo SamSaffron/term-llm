@@ -313,6 +313,10 @@ func TestArbitraryExecutionShellPatternPredicate(t *testing.T) {
 		"node *": true, "node *.js": true, "bash *": true, "env *": true, "sudo *": true,
 		"uv run *": true, "uv run *.py": true, "npx *": true, "npx *.js": true,
 		"pipx run *": true, "pipx run tool?": true,
+		"find *": true, "find . *": true, "make *": true, "make build *": true, "gmake *": true,
+		"npm *": true, "npm run *": true, "npm test *": true, "yarn *": true, "pnpm *": true,
+		"git *": true, "git -c *": true, "git -C *": true, "/usr/bin/git *": true,
+		"git status *": false, "find . -name fixed.txt": false, "make build": false,
 		"sudo systemctl status": false, "git status": false, "go test *": false,
 		"npm test": false, "python script.py": false, "node app.js": false,
 		"uv run pytest": false, "uv sync": false, "npx eslint": false, "pipx run black": false,
@@ -432,7 +436,7 @@ func TestGuardianPatternFilteringPreservesModesAndCompoundBoundaries(t *testing.
 		t.Fatal("patterns from configured and session sources were unioned")
 	}
 	if _, ok := mgr.checkShellApprovalNoPrompt("python x.py | head", ""); ok {
-		t.Fatal("safe pipe target resurrected a suspended head pattern")
+		t.Fatal("pipeline resurrected a suspended first-stage pattern")
 	}
 }
 

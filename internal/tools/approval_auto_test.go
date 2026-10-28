@@ -235,7 +235,7 @@ func TestApprovalManagerApprovalModeParentInheritance(t *testing.T) {
 
 func TestApprovalManagerAutoReviewerOnlyAfterDeterministicMiss(t *testing.T) {
 	perms := NewToolPermissions()
-	perms.ShellAllow = []string{"git *"}
+	perms.ShellAllow = []string{"git status *"}
 	if err := perms.CompileShellPatterns(); err != nil {
 		t.Fatal(err)
 	}
@@ -295,7 +295,7 @@ func TestApprovalManagerLazyTranscriptSupplierSkipsFastPaths(t *testing.T) {
 
 	t.Run("deterministic allow", func(t *testing.T) {
 		perms := NewToolPermissions()
-		perms.ShellAllow = []string{"git *"}
+		perms.ShellAllow = []string{"git status *"}
 		if err := perms.CompileShellPatterns(); err != nil {
 			t.Fatal(err)
 		}

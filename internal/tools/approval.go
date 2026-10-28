@@ -2113,26 +2113,6 @@ func (m *ApprovalManager) ApproveDirectory(toolName, dir string, outcome Confirm
 	m.cache.SetForDirectory(toolName, dir, outcome)
 }
 
-// safePipeTargets lists commands that only read/filter/format stdin and are
-// safe to auto-approve as pipe targets without separate pattern matching.
-var safePipeTargets = map[string]bool{
-	"head": true, "tail": true, "grep": true, "egrep": true, "fgrep": true,
-	"sort": true, "uniq": true, "wc": true, "cat": true, "less": true,
-	"more": true, "cut": true, "tr": true, "column": true, "fmt": true,
-	"fold": true, "nl": true, "paste": true, "rev": true, "tac": true,
-	"jq": true, "yq": true,
-}
-
-// isSafePipeTarget checks if a command string is a safe pipe target
-// by extracting its first word and checking against the safe set.
-func isSafePipeTarget(command string) bool {
-	words, err := splitShellWords(command)
-	if err != nil || len(words) == 0 {
-		return false
-	}
-	return safePipeTargets[filepath.Base(words[0])]
-}
-
 var arbitraryExecutionShellPattern = regexp.MustCompile(`^(python|node|ruby|perl|php|lua|deno|bun|pwsh)[0-9._-]*$`)
 
 var arbitraryExecutionShellCommands = map[string]bool{
@@ -2140,6 +2120,8 @@ var arbitraryExecutionShellCommands = map[string]bool{
 	"ksh": true, "powershell": true, "cmd": true, "wsl": true, "env": true,
 	"xargs": true, "sudo": true, "doas": true,
 	"uv": true, "npx": true, "pipx": true,
+	"find": true, "make": true, "gmake": true,
+	"npm": true, "yarn": true, "pnpm": true,
 }
 
 func hasShellGlobMetachar(value string) bool {
@@ -2159,7 +2141,12 @@ func isArbitraryExecutionShellPattern(pattern string) bool {
 	}
 	executable := filepath.Base(parts[0])
 	executable = strings.TrimSuffix(executable, ".exe")
-	if !arbitraryExecutionShellPattern.MatchString(executable) && !arbitraryExecutionShellCommands[executable] {
+	// A wildcard Git subcommand or global option can select shell aliases or
+	// inject configuration (e.g. git -c alias.pwn='!id' pwn). Preserve narrow
+	// rules such as git status * which fix the subcommand before the wildcard.
+	broadGit := executable == "git" && len(parts) > 1 &&
+		(hasShellGlobMetachar(parts[1]) || strings.HasPrefix(parts[1], "-"))
+	if !broadGit && !arbitraryExecutionShellPattern.MatchString(executable) && !arbitraryExecutionShellCommands[executable] {
 		return false
 	}
 	for _, argument := range parts[1:] {
@@ -2173,8 +2160,8 @@ func isArbitraryExecutionShellPattern(pattern string) bool {
 // matchAnyShellPattern returns true if the command is covered by the set of
 // patterns. A command is covered if any single pattern matches the whole
 // command, or — for compound commands — every segment (sequential and piped)
-// is covered by some pattern. Pipe targets (i.e. pipe parts after the first)
-// may additionally be a safe pipe built-in like grep/head/jq.
+// is covered by some pattern. No executable is implicitly trusted by basename:
+// even system filters can read files, write output, or invoke other programs.
 //
 // Examples (with `gh *`, `echo *`, `python *` approved):
 //
@@ -2206,11 +2193,8 @@ func matchAnyShellPattern(patterns []string, command string) bool {
 		if len(pipeParts) == 0 {
 			return false
 		}
-		for i, pipePart := range pipeParts {
+		for _, pipePart := range pipeParts {
 			if matchAnyPatternSingle(validPatterns, pipePart) {
-				continue
-			}
-			if i > 0 && isSafePipeTarget(pipePart) {
 				continue
 			}
 			return false
@@ -2234,7 +2218,7 @@ func matchAnyPatternSingle(patterns []string, command string) bool {
 // For compound commands, it uses two-level decomposition:
 //  1. Split on sequential operators (&&, ||, ;) — each segment must match.
 //  2. Within each segment, split on pipes (|) — the first command must match
-//     the pattern, and remaining pipe targets must match OR be safe pipe targets.
+//     the pattern, and every remaining pipe target must also match.
 func matchPattern(pattern, command string) bool {
 	if validateShellApprovalPattern(pattern) != nil {
 		return false
@@ -2265,8 +2249,7 @@ func matchPatternValidated(pattern, command string) bool {
 }
 
 // matchPipeChain checks if a pipe chain matches a pattern.
-// The first command must match the pattern. Subsequent pipe targets
-// must either match the pattern or be safe pipe targets.
+// Every command in the pipeline must independently match the pattern.
 func matchPipeChain(pattern, pipeChain string) bool {
 	pipeParts := splitPipeCommands(pipeChain)
 	if len(pipeParts) == 0 {
@@ -2276,7 +2259,7 @@ func matchPipeChain(pattern, pipeChain string) bool {
 		return false
 	}
 	for _, pipePart := range pipeParts[1:] {
-		if !matchPatternSingle(pattern, pipePart) && !isSafePipeTarget(pipePart) {
+		if !matchPatternSingle(pattern, pipePart) {
 			return false
 		}
 	}

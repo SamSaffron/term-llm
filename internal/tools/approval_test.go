@@ -51,25 +51,25 @@ func TestMatchPattern(t *testing.T) {
 		{"bundle *", "bundle exec stree check a.rb && rm -rf /", false},
 		{"bundle *", "npm install && bundle exec rake", false},
 
-		// Pipes: first command must match, downstream must be safe or match
-		{"git *", "git log --oneline | head -20", true}, // head is a safe pipe target
-		{"git *", "git log | git diff", true},           // both match "git *"
-		{"git *", "git log --oneline | tail -30", true},
-		{"git *", "git log --oneline | grep feature", true},
-		{"git *", "git log --oneline | sort | uniq", true},
-		{"bin/rspec *", "bin/rspec spec/foo | tail -30", true},
+		// Pipes: every stage must match, even common system filters
+		{"git *", "git log --oneline | head -20", false}, // head has no approval
+		{"git *", "git log | git diff", true},            // both match "git *"
+		{"git *", "git log --oneline | tail -30", false},
+		{"git *", "git log --oneline | grep feature", false},
+		{"git *", "git log --oneline | sort | uniq", false},
+		{"bin/rspec *", "bin/rspec spec/foo | tail -30", false},
 
-		// Unsafe pipe targets: NOT auto-approved
+		// Unapproved pipe targets
 		{"git *", "git log | bash", false},
 		{"git *", "git log | sh", false},
 		{"git *", "git log | xargs rm", false},
 
 		// Mixed sequential + pipe
-		{"git *", "git log | head -5 && git status | tail -3", true},
+		{"git *", "git log | head -5 && git status | tail -3", false},
 		{"git *", "git log | head -5 && rm -rf /", false},
-		{"bundle *", "bundle exec rspec | tail -20 && bundle exec rubocop | grep error", true},
+		{"bundle *", "bundle exec rspec | tail -20 && bundle exec rubocop | grep error", false},
 
-		// Pipe target that matches pattern is OK even if not in safe list
+		// A pipe target covered by the same pattern remains approved.
 		{"npm *", "npm test | npm run format", true},
 
 		// $ in single quotes is not unsafe — normal match works
@@ -117,8 +117,8 @@ func TestMatchAnyShellPattern(t *testing.T) {
 		// Mixed sequential + pipeline across multiple patterns.
 		{`gh pr view 1 | python parse.py && echo ok`, true},
 
-		// Pipe target that is not in the pattern set but is a safe built-in.
-		{`gh pr view 1 | jq .title`, true},
+		// A familiar filter still needs its own approval.
+		{`gh pr view 1 | jq .title`, false},
 
 		// A single uncovered segment rejects the whole command.
 		{`gh pr view 1 && rm -rf /tmp`, false},
@@ -1329,41 +1329,16 @@ func TestSplitPipeCommands(t *testing.T) {
 	}
 }
 
-func TestIsSafePipeTarget(t *testing.T) {
-	tests := []struct {
-		command string
-		want    bool
-	}{
-		{"head -20", true},
-		{"tail -f", true},
-		{"grep pattern", true},
-		{"sort -r", true},
-		{"jq '.data'", true},
-		{"/usr/bin/tail -30", true},
-		{"bash", false},
-		{"sh -c 'evil'", false},
-		{"xargs rm", false},
-		{"python3 -c 'import os'", false},
-		{"curl http://example.com", false},
-		{"", false},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.command, func(t *testing.T) {
-			got := isSafePipeTarget(tt.command)
-			if got != tt.want {
-				t.Errorf("isSafePipeTarget(%q) = %v, want %v", tt.command, got, tt.want)
-			}
-		})
-	}
-}
-
 func TestApprovalManager_ShellPatternCacheWorksWithUnsafeSyntax(t *testing.T) {
 	perms := NewToolPermissions()
 	mgr := NewApprovalManager(perms)
 
-	// Simulate user approving "bundle *" pattern
-	mgr.shellCache.AddPattern("bundle *")
+	// Every pipeline stage needs its own approval.
+	for _, pattern := range []string{"bundle *", "tail *", "grep *", "sort"} {
+		if err := mgr.ApproveShellPattern(pattern); err != nil {
+			t.Fatal(err)
+		}
+	}
 
 	// All these commands should be auto-approved from the session cache
 	approved := []string{
