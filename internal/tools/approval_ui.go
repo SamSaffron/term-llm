@@ -359,7 +359,10 @@ func BuildShellOptions(command string, repoInfo *GitRepoInfo) []ApprovalOption {
 	var options []ApprovalOption
 	pattern := GenerateShellPattern(command)
 
-	if repoInfo != nil && repoInfo.IsRepo {
+	// Environment-bearing invocations are exact, session-only approvals. A
+	// remembered command pattern must never authorize arbitrary startup hooks
+	// or persist environment values (which may contain credentials).
+	if repoInfo != nil && repoInfo.IsRepo && !strings.HasPrefix(command, "env -- ") {
 		// In a git repo - offer remembered options
 		// Option 1: Approve pattern in repo (remembered)
 		options = append(options, ApprovalOption{

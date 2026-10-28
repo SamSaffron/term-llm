@@ -239,10 +239,7 @@ func (s *serveServer) startQueuedAgentNotificationContinuation(ctx context.Conte
 		log.Printf("[jobs-v2] queued agent notification continuation failed for session %s: %v", sessionID, err)
 		return false
 	}
-	if run == nil {
-		return false
-	}
-	return true
+	return run != nil
 }
 
 func (rt *serveRuntime) appendNotificationMessage(ctx context.Context, sessionID, message string) error {

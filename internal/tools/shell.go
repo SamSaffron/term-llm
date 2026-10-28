@@ -16,6 +16,7 @@ import (
 
 	"github.com/samsaffron/term-llm/internal/llm/core"
 	"github.com/samsaffron/term-llm/internal/llm/engine"
+	"github.com/samsaffron/term-llm/internal/procutil"
 )
 
 const (
@@ -476,6 +477,22 @@ func (t *ShellTool) executeLocal(ctx context.Context, args json.RawMessage) (cor
 	// the approval prompt shows only the real command, not the cd prefix.
 	a.Command, workDir = extractLeadingCd(a.Command, workDir)
 
+	// Validate before approval and execute this exact environment snapshot.
+	env, envErr := procutil.ResolveShellEnvironment(a.Env)
+	if envErr != nil {
+		return errorOutput(formatToolError(NewToolError(ErrInvalidParams, envErr.Error()))), nil
+	}
+	shellPath := t.shellPath
+	if len(a.Env) != 0 {
+		// Like CommandContext, resolve the shell using host PATH, not cmd.Env.
+		var err error
+		shellPath, err = exec.LookPath(shellPath)
+		if err != nil {
+			return errorOutput(formatToolError(NewToolErrorf(ErrExecutionFailed, "cannot resolve shell: %v", err))), nil
+		}
+	}
+	approvalCommand := procutil.ShellEnvironmentCommand(a.Command, shellPath, a.Env)
+
 	var claims []normalizedOutputClaim
 	if trackingEnabled {
 		var claimErr error
@@ -488,12 +505,12 @@ func (t *ShellTool) executeLocal(ctx context.Context, args json.RawMessage) (cor
 		}
 	}
 
-	// Check permissions — pass both command and working directory so the
-	// approval UI can show the user where the command will run.
+	// Review the full invocation, including overrides installed before shell
+	// startup. Command-only grants cannot authorize a different environment.
 	if t.approval != nil {
-		outcome, err := t.approval.checkShellApprovalWithContext(ctx, a.Command, workDir, func() []TranscriptEntry {
+		outcome, err := t.approval.checkShellApprovalWithContext(ctx, approvalCommand, workDir, func() []TranscriptEntry {
 			return approvalTranscriptFromContext(ctx)
-		})
+		}, len(a.Env) != 0)
 		if err != nil {
 			if toolErr, ok := err.(*ToolError); ok {
 				return errorOutput(formatToolError(toolErr)), nil
@@ -533,24 +550,9 @@ func (t *ShellTool) executeLocal(ctx context.Context, args json.RawMessage) (cor
 	execCtx, cancel := context.WithTimeout(ctx, time.Duration(timeout)*time.Second)
 	defer cancel()
 
-	cmd := exec.CommandContext(execCtx, t.shellPath, "-c", a.Command)
+	cmd := exec.CommandContext(execCtx, shellPath, "-c", a.Command)
 	cmd.Dir = workDir
-	overrides := make(map[string]struct{}, len(a.Env))
-	for key := range a.Env {
-		overrides[key] = struct{}{}
-	}
-	cmd.Env = make([]string, 0, len(os.Environ())+len(a.Env))
-	for _, e := range os.Environ() {
-		if k, _, ok := strings.Cut(e, "="); ok {
-			if _, shadowed := overrides[k]; shadowed {
-				continue
-			}
-		}
-		cmd.Env = append(cmd.Env, e)
-	}
-	for key, value := range a.Env {
-		cmd.Env = append(cmd.Env, fmt.Sprintf("%s=%s", key, value))
-	}
+	cmd.Env = env
 
 	cleanup, prepErr := prepareToolCommand(cmd)
 	if prepErr != nil {
