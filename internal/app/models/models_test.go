@@ -15,6 +15,7 @@ import (
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/llm/core"
 	"github.com/samsaffron/term-llm/internal/llm/providers/clibin"
+	"github.com/samsaffron/term-llm/internal/providerspec"
 )
 
 func TestSupportedModelListProviderTypesIncludesCLIProviders(t *testing.T) {
@@ -50,6 +51,13 @@ func TestClaudeBinModelListerFallsBackToCuratedList(t *testing.T) {
 	}
 	if opus == nil || !slices.Contains(opus.ReasoningEfforts, "max") {
 		t.Fatalf("fallback opus entry = %+v, want efforts including max", opus)
+	}
+}
+
+func TestModelListSupportedTypesIncludesObscurify(t *testing.T) {
+	t.Parallel()
+	if !supportsModelListing(providerspec.TypeObscurify) {
+		t.Fatal("Obscurify.ai should be wired for dynamic model listing")
 	}
 }
 
@@ -228,6 +236,7 @@ func TestBuiltinProviderRegistryDescribesListingProviders(t *testing.T) {
 		{"cursor-bin", config.CredentialOAuth, "CURSOR_API_KEY"},
 		{"sambanova", config.CredentialAPIKey, "SAMBANOVA_API_KEY"},
 		{"nearai", config.CredentialAPIKey, "NEARAI_API_KEY"},
+		{"obscurify", config.CredentialAPIKey, "OBSCURIFY_API_KEY"},
 	} {
 		spec, ok := config.BuiltinProvider(tc.name)
 		if !ok {

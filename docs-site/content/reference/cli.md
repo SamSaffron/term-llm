@@ -1052,7 +1052,7 @@ List available models from a provider
 | Flag | Type | Description |
 |---|---|---|
 | `--json` | bool | Output as JSON |
-| `--provider, -p` | string | Provider to list models from (agy-bin, anthropic, chatgpt, claude-bin, copilot, cursor-bin, grok, grok-bin, nearai, ollama, openai, openai_compatible, opencode-go, openrouter, sambanova, venice, vllm, xai, zen) |
+| `--provider, -p` | string | Provider to list models from (agy-bin, anthropic, chatgpt, claude-bin, copilot, cursor-bin, grok, grok-bin, nearai, obscurify, ollama, openai, openai_compatible, opencode-go, openrouter, sambanova, venice, vllm, xai, zen) |
 | `--refresh` | bool | Force a fresh ChatGPT model catalog fetch (report fetch errors) |
 
 ### `term-llm music`

@@ -406,6 +406,10 @@ providers:
     model: gpt-oss-120b
     fast_model: Meta-Llama-3.3-70B-Instruct
 
+  obscurify:
+    model: z-ai/glm-5.3
+    fast_model: deepseek/deepseek-v4-flash
+
   claude-bin:
     model: opus
     env:

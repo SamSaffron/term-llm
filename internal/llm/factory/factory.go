@@ -19,6 +19,7 @@ import (
 	"github.com/samsaffron/term-llm/internal/llm/providers/opencompat"
 	"github.com/samsaffron/term-llm/internal/llm/providers/responses"
 	rp "github.com/samsaffron/term-llm/internal/llm/providers/responsesproviders"
+	"github.com/samsaffron/term-llm/internal/providerspec"
 )
 
 // Provider is the shared provider contract.
@@ -138,6 +139,9 @@ var apiKeyProviderConstructors = map[config.ProviderType]func(string, string, *c
 	},
 	config.ProviderTypeSambaNova: func(name, key string, cfg *config.ProviderConfig, _ Options) (Provider, error) {
 		return opencompat.NewSambaNovaProvider(key, cfg.Model), nil
+	},
+	providerspec.TypeObscurify: func(name, key string, cfg *config.ProviderConfig, _ Options) (Provider, error) {
+		return opencompat.NewObscurifyProvider(key, cfg.Model), nil
 	},
 	config.ProviderTypeOpenCodeGo: func(name, key string, cfg *config.ProviderConfig, _ Options) (Provider, error) {
 		if strings.TrimSpace(cfg.URL) != "" {
