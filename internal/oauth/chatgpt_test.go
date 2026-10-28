@@ -22,6 +22,18 @@ func TestRefreshTokenClassifiesOnlyInvalidGrantAsInvalid(t *testing.T) {
 			wantInvalid: true,
 		},
 		{
+			name:        "openai nested token_expired",
+			status:      http.StatusUnauthorized,
+			body:        `{"error":{"message":"Could not validate your token. Please try signing in again.","type":"invalid_request_error","param":null,"code":"token_expired"}}`,
+			wantInvalid: true,
+		},
+		{
+			name:        "bare 401 without body",
+			status:      http.StatusUnauthorized,
+			body:        ``,
+			wantInvalid: true,
+		},
+		{
 			name:        "transient server error",
 			status:      http.StatusInternalServerError,
 			body:        `{"error":"server_error","error_description":"try again later"}`,

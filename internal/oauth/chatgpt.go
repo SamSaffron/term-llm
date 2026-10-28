@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/url"
@@ -157,6 +158,57 @@ func exchangeCodeForTokens(code, codeVerifier string) (*ChatGPTTokenResponse, er
 	return &tokenResp, nil
 }
 
+// parseChatGPTRefreshError extracts an error code and description from a token
+// endpoint error body. It accepts both the RFC 6749 shape
+// ({"error":"invalid_grant","error_description":"..."}) and the OpenAI API
+// shape ({"error":{"code":"token_expired","message":"...","type":"..."}}).
+func parseChatGPTRefreshError(body []byte) (code, desc string) {
+	var raw struct {
+		Error            json.RawMessage `json:"error"`
+		ErrorDescription string          `json:"error_description"`
+	}
+	if err := json.Unmarshal(body, &raw); err != nil {
+		return "", ""
+	}
+	desc = raw.ErrorDescription
+	var s string
+	if err := json.Unmarshal(raw.Error, &s); err == nil {
+		return s, desc
+	}
+	var obj struct {
+		Code    string `json:"code"`
+		Type    string `json:"type"`
+		Message string `json:"message"`
+	}
+	if err := json.Unmarshal(raw.Error, &obj); err == nil {
+		code = obj.Code
+		if code == "" {
+			code = obj.Type
+		}
+		if desc == "" {
+			desc = obj.Message
+		}
+	}
+	return code, desc
+}
+
+// isChatGPTRefreshTokenRejected reports whether a refresh failure is a
+// definitive rejection of the refresh token (re-auth required) rather than a
+// transient error.
+func isChatGPTRefreshTokenRejected(status int, code, desc string) bool {
+	switch code {
+	case "invalid_grant", "token_expired", "refresh_token_expired",
+		"refresh_token_reused", "refresh_token_invalidated", "invalid_token":
+		return true
+	}
+	if strings.Contains(strings.ToLower(desc), "revoked") {
+		return true
+	}
+	// A 401 from the token endpoint means the refresh token itself was not
+	// accepted; retrying will not help.
+	return status == http.StatusUnauthorized
+}
+
 // RefreshToken refreshes an expired access token
 func RefreshToken(refreshToken string) (*ChatGPTTokenResponse, error) {
 	data := url.Values{
@@ -181,16 +233,13 @@ func RefreshToken(refreshToken string) (*ChatGPTTokenResponse, error) {
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		var errResp struct {
-			Error            string `json:"error"`
-			ErrorDescription string `json:"error_description"`
-		}
-		json.NewDecoder(resp.Body).Decode(&errResp)
-		if errResp.Error == "invalid_grant" || strings.Contains(errResp.ErrorDescription, "revoked") {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 64<<10))
+		code, desc := parseChatGPTRefreshError(body)
+		if isChatGPTRefreshTokenRejected(resp.StatusCode, code, desc) {
 			return nil, fmt.Errorf("%w: please re-authenticate", ErrChatGPTRefreshTokenInvalid)
 		}
-		if errResp.ErrorDescription != "" {
-			return nil, fmt.Errorf("token refresh failed: %s - %s", errResp.Error, errResp.ErrorDescription)
+		if desc != "" {
+			return nil, fmt.Errorf("token refresh failed: %s - %s", code, desc)
 		}
 		return nil, fmt.Errorf("token refresh failed: %s", resp.Status)
 	}
