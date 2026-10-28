@@ -18,6 +18,7 @@ import (
 	"github.com/samsaffron/term-llm/internal/llm/providers/ollama"
 	"github.com/samsaffron/term-llm/internal/llm/providers/opencompat"
 	rp "github.com/samsaffron/term-llm/internal/llm/providers/responsesproviders"
+	"github.com/samsaffron/term-llm/internal/providerspec"
 )
 
 func TestNewProviderRejectsDisabledProvider(t *testing.T) {
@@ -113,6 +114,7 @@ func TestCreateProviderFromConfigKeyProviderEnvFallback(t *testing.T) {
 		{"venice", config.ProviderTypeVenice, "VENICE_API_KEY", &opencompat.VeniceProvider{}},
 		{"nearai", config.ProviderTypeNearAI, "NEARAI_API_KEY", &opencompat.NearAIProvider{}},
 		{"sambanova", config.ProviderTypeSambaNova, "SAMBANOVA_API_KEY", &opencompat.SambaNovaProvider{}},
+		{"obscurify", providerspec.TypeObscurify, "OBSCURIFY_API_KEY", &opencompat.ObscurifyProvider{}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

@@ -338,6 +338,10 @@ var apiKeyModelListers = map[config.ProviderType]func(config.ProviderConfig) (Mo
 		}
 		return opencompat.NewSambaNovaProvider(apiKey, providerCfg.Model), nil
 	},
+	providerspec.TypeObscurify: func(providerCfg config.ProviderConfig) (ModelLister, error) {
+		apiKey := modelListAPIKey(providerCfg.ResolvedAPIKey, "OBSCURIFY_API_KEY")
+		return opencompat.NewObscurifyProvider(apiKey, providerCfg.Model), nil
+	},
 }
 
 func newAPIKeyModelLister(providerType config.ProviderType, providerCfg config.ProviderConfig) (ModelLister, error) {
@@ -396,7 +400,7 @@ func printModelList(providerName string, providerType config.ProviderType, model
 	fmt.Printf("Available models from %s:\n\n", providerName)
 
 	// Only these providers return or have known pricing info
-	providerHasPricing := providerType == config.ProviderTypeOpenRouter || providerType == config.ProviderTypeZen || providerType == config.ProviderTypeNearAI || providerType == config.ProviderTypeSambaNova
+	providerHasPricing := providerType == config.ProviderTypeOpenRouter || providerType == config.ProviderTypeZen || providerType == config.ProviderTypeNearAI || providerType == config.ProviderTypeSambaNova || providerType == providerspec.TypeObscurify
 
 	for _, m := range models {
 		if m.DisplayName != "" {

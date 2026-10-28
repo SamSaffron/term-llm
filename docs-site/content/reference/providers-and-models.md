@@ -91,7 +91,7 @@ A catalog entry is not a guarantee of capacity, free access, tool support, or ac
 
 The provider name selects an integration, not just a model vendor:
 
-- **Hosted APIs:** Anthropic, OpenAI, Gemini, xAI, OpenRouter, Venice, NEAR AI Cloud, SambaNova, and OpenCode Zen.
+- **Hosted APIs:** Anthropic, OpenAI, Gemini, xAI, OpenRouter, Venice, NEAR AI Cloud, SambaNova, Obscurify.ai, and OpenCode Zen.
 - **AWS:** Bedrock uses AWS credentials and Bedrock model/inference-profile identifiers.
 - **Subscriptions:** ChatGPT, Grok, and Copilot use term-llm-managed OAuth; OpenCode Go uses a subscription API key.
 - **Companion CLIs:** `claude-bin`, `cursor-bin`, `agy-bin`, and `grok-bin` run a separately installed and authenticated CLI.
@@ -116,6 +116,7 @@ Config paths below are relative to `$XDG_CONFIG_HOME/term-llm/`, normally `~/.co
 | `venice` | `venice` | api_key; `VENICE_API_KEY` | api_key (upstream listing) |
 | `nearai` | `nearai` | api_key; `NEARAI_API_KEY` | nearai (upstream listing) |
 | `sambanova` | `sambanova` | api_key; `SAMBANOVA_API_KEY` | api_key (upstream listing) |
+| `obscurify` | `obscurify` | api_key; `OBSCURIFY_API_KEY` | api_key (upstream listing) |
 | `zen` | `zen` | api_key; `ZEN_API_KEY` | zen (upstream listing) |
 | `opencode-go` | `opencode-go` | api_key; `OPENCODE_API_KEY` | opencode-go (upstream listing) |
 | `copilot` | `copilot` | oauth; run term-llm auth login copilot | copilot (upstream listing) |
@@ -144,6 +145,7 @@ Config paths below are relative to `$XDG_CONFIG_HOME/term-llm/`, normally `~/.co
 | `venice` | `VENICE_API_KEY` | Hosted text models and Venice-native search. |
 | `nearai` | `NEARAI_API_KEY` | NEAR AI Cloud; check the service's privacy and TEE policies. |
 | `sambanova` | `SAMBANOVA_API_KEY` | SambaNova Cloud. |
+| `obscurify` | `OBSCURIFY_API_KEY` | Obscurify.ai; key from obscurify.ai/account. |
 | `zen` | `ZEN_API_KEY` | Paid models only; the free tier is restricted to OpenCode. |
 | `opencode-go` | `OPENCODE_API_KEY` | OpenCode Go subscription key; distinct from Zen's API key. |
 | `ollama` | Running local Ollama server; no API key needed for local use | Native `/api/chat`; configure `base_url` or `OLLAMA_HOST`, without `/v1`. |
@@ -434,6 +436,25 @@ providers:
 ```
 
 The provider uses `https://cloud-api.near.ai/v1`, supports tool calls, and has a curated fallback list of TEE-hosted text models. `term-llm models --provider nearai` queries NEAR AI Cloud's public `/model/list` catalog and filters it to chat-capable models, with token prices shown per 1M tokens when available.
+
+## Obscurify.ai
+
+Obscurify.ai is available as a built-in OpenAI-compatible provider:
+
+```bash
+export OBSCURIFY_API_KEY=your-key
+term-llm ask --provider obscurify:deepseek/deepseek-v4-flash "quick question"
+term-llm models --provider obscurify
+```
+
+```yaml
+providers:
+  obscurify:
+    model: z-ai/glm-5.3
+    fast_model: deepseek/deepseek-v4-flash
+```
+
+The provider uses `https://obscurify.ai/v1` and supports tool calls. `term-llm models --provider obscurify` queries the public `/models` endpoint (no key needed), which reports context windows and per-token prices.
 
 ## Ollama
 
