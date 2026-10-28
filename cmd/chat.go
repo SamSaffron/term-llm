@@ -109,7 +109,7 @@ Slash commands:
 
 func init() {
 	AddCommonFlags(chatCmd,
-		CommonCoreFlags|CommonSearchFlags|CommonMaxTurns|CommonAgent|CommonSkills,
+		CommonCoreFlags|CommonSearchFlags|CommonMaxTurns|CommonAgent|CommonSkills|CommonProjectSkillTools,
 		CommonFlagBindings{
 			Provider:        &chatProvider,
 			Debug:           &chatDebug,

@@ -104,6 +104,7 @@ Ask a question and stream the answer
 | Flag | Type | Description |
 |---|---|---|
 | `--agent, -a` | string | Use an agent (name or path to agent directory) |
+| `--allow-project-skill-tools` | bool | Enable execution of project skill-declared script tools without approval (always allowed in yolo mode) |
 | `--approval` | approval | Approval mode: prompt, auto (guardian-reviewed), or yolo |
 | `--auto` | bool | Use guardian LLM review for unmatched shell and file approvals instead of prompting when safe |
 | `--continue-with` | string | Custom continuation prompt for progressive timeout mode |
@@ -224,6 +225,7 @@ Start an interactive chat session
 | Flag | Type | Description |
 |---|---|---|
 | `--agent, -a` | string | Use an agent (name or path to agent directory) |
+| `--allow-project-skill-tools` | bool | Enable execution of project skill-declared script tools without approval (always allowed in yolo mode) |
 | `--approval` | approval | Approval mode: prompt, auto (guardian-reviewed), or yolo |
 | `--auto-send` | stringArray | Queue message(s) to send automatically and exit after all responses (repeatable) |
 | `--auto` | bool | Use guardian LLM review for unmatched shell and file approvals instead of prompting when safe |
@@ -1191,6 +1193,7 @@ Run the agent as a server (web, api, jobs, Telegram, or any combination)
 | Flag | Type | Description |
 |---|---|---|
 | `--agent, -a` | string | Use an agent (name or path to agent directory) |
+| `--allow-project-skill-tools` | bool | Enable execution of project skill-declared script tools without approval (always allowed in yolo mode) |
 | `--approval` | approval | Approval mode: prompt, auto (guardian-reviewed), or yolo |
 | `--auth` | string | Auth mode: bearer, passkey (web only), or none |
 | `--auto` | bool | Use guardian LLM review for unmatched shell and file approvals instead of prompting when safe |

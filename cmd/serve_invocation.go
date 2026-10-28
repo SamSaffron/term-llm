@@ -10,6 +10,7 @@ import (
 type serveFlagState = appserve.FlagState
 
 func captureServeInvocation(cmd *cobra.Command, opts *ServeOptions) appserve.Invocation {
+	opts.AllowProjectSkillTools = projectSkillToolsOverride(cmd)
 	flags := cmd.Flags()
 	approval, auto, yolo := opts.Approval, opts.Auto, opts.Yolo
 	return appserve.Invocation{

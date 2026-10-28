@@ -1,6 +1,7 @@
 package chat
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"slices"
@@ -206,6 +207,11 @@ Use the helper.
 	}
 	if _, ok := localRegistry.Get("scoped_helper"); !ok {
 		t.Fatal("skill tool was not registered locally")
+	}
+	tool, _ := m.engine.Tools().Get("scoped_helper")
+	output, err := tool.Execute(context.Background(), nil)
+	if err != nil || !output.IsError || !strings.Contains(output.Content, "--allow-project-skill-tools") {
+		t.Fatalf("slash-activated project script was not gated: output=%+v err=%v", output, err)
 	}
 
 	m.restoreSkillAllowedTools()

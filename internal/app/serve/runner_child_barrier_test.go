@@ -589,13 +589,14 @@ func TestHostedChildBarrierRetainsRuntimeAndDeliversPendingResults(t *testing.T)
 	defer env.Close()
 
 	var closed atomic.Int32
-	previousHook := serveRuntimeClosedHook
-	serveRuntimeClosedHook = func(rt *serveRuntime) {
-		if rt == env.runtime {
+	expectedRuntime := env.runtime
+	hook := func(rt *serveRuntime) {
+		if rt == expectedRuntime {
 			closed.Add(1)
 		}
 	}
-	defer func() { serveRuntimeClosedHook = previousHook }()
+	previousHook := serveRuntimeClosedHook.Swap(&hook)
+	defer serveRuntimeClosedHook.Store(previousHook)
 
 	result, err := handle.Execute(ctx, env, sink)
 	if err != nil {

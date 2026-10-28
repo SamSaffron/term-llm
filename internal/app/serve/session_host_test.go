@@ -926,7 +926,7 @@ func TestModelSkillActivationPreservesParentToolsAcrossTurns(t *testing.T) {
 	}
 
 	// Isolate user-level skill paths so this test only sees the local fixture.
-	t.Setenv("HOME", tmp)
+	t.Setenv("HOME", filepath.Join(tmp, "home"))
 	t.Setenv("XDG_CONFIG_HOME", filepath.Join(tmp, ".config"))
 	t.Setenv("CODEX_HOME", filepath.Join(tmp, ".codex"))
 
@@ -1019,6 +1019,15 @@ tools:
 		Tools:    engine.Tools().AllSpecs(),
 		MaxTurns: 3,
 	}))
+
+	tool, ok := engine.Tools().Get("test_echo")
+	if !ok {
+		t.Fatal("skill tool was not registered")
+	}
+	output, err := tool.Execute(context.Background(), json.RawMessage(`{}`))
+	if err != nil || !output.IsError || !strings.Contains(output.Content, "--allow-project-skill-tools") {
+		t.Fatalf("model-activated project script was not gated: output=%+v err=%v", output, err)
+	}
 
 	requests := provider.RecordedRequests()
 	if len(requests) != 3 {

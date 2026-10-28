@@ -41,8 +41,9 @@ type Registry struct {
 }
 
 type searchPath struct {
-	path   string
-	source SkillSource
+	path          string
+	source        SkillSource
+	userInstalled bool
 }
 
 // RegistryConfig configures the skill registry.
@@ -107,169 +108,6 @@ func NewRegistry(cfg RegistryConfig) (*Registry, error) {
 	return r, nil
 }
 
-// buildSearchPaths constructs the ordered list of search paths.
-func (r *Registry) buildSearchPaths() error {
-	cwd := strings.TrimSpace(r.config.ProjectDir)
-	if cwd == "" {
-		var err error
-		cwd, err = os.Getwd()
-		if err != nil {
-			cwd = "."
-		}
-	} else if abs, err := filepath.Abs(cwd); err == nil {
-		cwd = abs
-	}
-
-	home, _ := os.UserHomeDir()
-	configDir := os.Getenv("XDG_CONFIG_HOME")
-	if configDir == "" && home != "" {
-		configDir = filepath.Join(home, ".config")
-	}
-
-	// 1. Project-local paths (if enabled)
-	if r.config.IncludeProjectSkills {
-		r.addProjectPaths(cwd)
-	}
-
-	// 2. User-scope paths (always included)
-	r.addUserPaths(home, configDir)
-
-	return nil
-}
-
-// addProjectPaths adds project-local skill directories.
-// Walks upward from CWD to repo root (or filesystem root).
-func (r *Registry) addProjectPaths(cwd string) {
-	// Find repo root
-	repoRoot := findRepoRoot(cwd)
-	if repoRoot == "" {
-		repoRoot = cwd
-	}
-
-	// Walk from CWD up to repo root
-	current := cwd
-	for {
-		// Add paths at this level in precedence order
-		r.addProjectPathsAtLevel(current)
-
-		// Stop at repo root
-		if current == repoRoot {
-			break
-		}
-
-		parent := filepath.Dir(current)
-		if parent == current {
-			break // Reached filesystem root
-		}
-		current = parent
-	}
-}
-
-// addProjectPathsAtLevel adds skill directories at a specific directory level.
-func (r *Registry) addProjectPathsAtLevel(dir string) {
-	// Universal convention - always included when IncludeProjectSkills is true
-	// (the caller already checks IncludeProjectSkills before calling addProjectPaths)
-	r.searchPaths = append(r.searchPaths, searchPath{
-		path:   filepath.Join(dir, ".skills"),
-		source: SourceLocal,
-	})
-
-	// Ecosystem paths are gated by IncludeEcosystemPaths
-	if !r.config.IncludeEcosystemPaths {
-		return
-	}
-
-	// Claude Code
-	r.searchPaths = append(r.searchPaths, searchPath{
-		path:   filepath.Join(dir, ".claude", "skills"),
-		source: SourceClaude,
-	})
-
-	// Codex / open agent skills (current convention)
-	r.searchPaths = append(r.searchPaths, searchPath{
-		path:   filepath.Join(dir, ".agents", "skills"),
-		source: SourceCodex,
-	})
-
-	// Codex (legacy convention)
-	r.searchPaths = append(r.searchPaths, searchPath{
-		path:   filepath.Join(dir, ".codex", "skills"),
-		source: SourceCodex,
-	})
-
-	// Gemini CLI
-	r.searchPaths = append(r.searchPaths, searchPath{
-		path:   filepath.Join(dir, ".gemini", "skills"),
-		source: SourceGemini,
-	})
-
-	// Cursor
-	r.searchPaths = append(r.searchPaths, searchPath{
-		path:   filepath.Join(dir, ".cursor", "skills"),
-		source: SourceCursor,
-	})
-}
-
-// addUserPaths adds user-scope skill directories.
-func (r *Registry) addUserPaths(home, configDir string) {
-	// term-llm user skills (highest user-scope precedence)
-	if configDir != "" {
-		r.searchPaths = append(r.searchPaths, searchPath{
-			path:   filepath.Join(configDir, "term-llm", "skills"),
-			source: SourceUser,
-		})
-	}
-
-	if home == "" {
-		return
-	}
-
-	// Universal user skills - always included
-	r.searchPaths = append(r.searchPaths, searchPath{
-		path:   filepath.Join(home, ".skills"),
-		source: SourceUser,
-	})
-
-	// Ecosystem paths are gated by IncludeEcosystemPaths
-	if !r.config.IncludeEcosystemPaths {
-		return
-	}
-
-	// Claude Code user skills
-	r.searchPaths = append(r.searchPaths, searchPath{
-		path:   filepath.Join(home, ".claude", "skills"),
-		source: SourceClaude,
-	})
-
-	// Codex / open agent skills user skills (current convention)
-	r.searchPaths = append(r.searchPaths, searchPath{
-		path:   filepath.Join(home, ".agents", "skills"),
-		source: SourceCodex,
-	})
-
-	// Codex user skills (legacy convention)
-	codexHome := os.Getenv("CODEX_HOME")
-	if codexHome == "" {
-		codexHome = filepath.Join(home, ".codex")
-	}
-	r.searchPaths = append(r.searchPaths, searchPath{
-		path:   filepath.Join(codexHome, "skills"),
-		source: SourceCodex,
-	})
-
-	// Gemini CLI user skills
-	r.searchPaths = append(r.searchPaths, searchPath{
-		path:   filepath.Join(home, ".gemini", "skills"),
-		source: SourceGemini,
-	})
-
-	// Cursor user skills
-	r.searchPaths = append(r.searchPaths, searchPath{
-		path:   filepath.Join(home, ".cursor", "skills"),
-		source: SourceCursor,
-	})
-}
-
 // HasAnySkill returns true as soon as a valid skill is found in any search path.
 // This avoids a full catalog scan during startup when callers only need to know
 // whether the skills system should be enabled at all.
@@ -313,6 +151,9 @@ func (r *Registry) HasAnySkill() (bool, error) {
 
 // Get retrieves a skill by name, loading full content.
 func (r *Registry) Get(name string) (*Skill, error) {
+	if err := ValidateName(name); err != nil {
+		return nil, fmt.Errorf("invalid skill lookup name %q: %w", name, err)
+	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
@@ -327,6 +168,7 @@ func (r *Registry) Get(name string) (*Skill, error) {
 					if err := fullSkill.Validate(); err != nil {
 						delete(r.cache, name)
 					} else {
+						fullSkill.UserInstalled = skill.UserInstalled
 						r.cache[name] = fullSkill
 						return fullSkill, nil
 					}
@@ -357,6 +199,7 @@ func (r *Registry) Get(name string) (*Skill, error) {
 			if err := skill.Validate(); err != nil {
 				return nil, fmt.Errorf("invalid skill %s: %w", name, err)
 			}
+			skill.UserInstalled = sp.userInstalled
 			r.cache[name] = skill
 			return skill, nil
 		}
@@ -366,7 +209,7 @@ func (r *Registry) Get(name string) (*Skill, error) {
 	// directory. Fall back to scanning metadata and resolve by canonical skill
 	// name so those skills can still be activated by the name shown in prompts.
 	for _, sp := range r.searchPaths {
-		found, err := r.scanDir(sp.path, sp.source)
+		found, err := r.scanDir(sp)
 		if err != nil {
 			continue
 		}
@@ -381,6 +224,7 @@ func (r *Registry) Get(name string) (*Skill, error) {
 			if err := skill.Validate(); err != nil {
 				return nil, fmt.Errorf("invalid skill %s: %w", name, err)
 			}
+			skill.UserInstalled = sp.userInstalled
 			r.cache[name] = skill
 			return skill, nil
 		}
@@ -413,7 +257,7 @@ func (r *Registry) List() ([]*Skill, error) {
 	// and stats every SKILL.md before immediately scanning again.
 	for _, sp := range r.searchPaths {
 		writeSearchPathFingerprintHeader(&fingerprint, sp)
-		found, err := r.scanDirWithFingerprint(sp.path, sp.source, &fingerprint)
+		found, err := r.scanDirWithFingerprint(sp, &fingerprint)
 		if err != nil {
 			fingerprint.WriteString("!missing\n")
 			continue // Skip directories that don't exist or can't be read
@@ -527,7 +371,7 @@ func (r *Registry) ListAll() ([]*Skill, error) {
 
 	// Scan filesystem paths
 	for _, sp := range r.searchPaths {
-		found, err := r.scanDir(sp.path, sp.source)
+		found, err := r.scanDir(sp)
 		if err != nil {
 			continue // Skip directories that don't exist or can't be read
 		}
@@ -713,8 +557,8 @@ func writeSkillFingerprint(sb *strings.Builder, dirName string, manifest skillMa
 }
 
 // scanDir scans a directory for skill subdirectories.
-func (r *Registry) scanDir(dir string, source SkillSource) ([]*Skill, error) {
-	return r.scanDirWithFingerprint(dir, source, nil)
+func (r *Registry) scanDir(sp searchPath) ([]*Skill, error) {
+	return r.scanDirWithFingerprint(sp, nil)
 }
 
 // Invalid ecosystem skills are expected during broad discovery. Keep them
@@ -724,8 +568,8 @@ func logSkippedInvalidSkill(skillDir string, err error) {
 	runtimeoutput.Debug("skipping invalid skill", "path", skillDir, "error", err)
 }
 
-func (r *Registry) scanDirWithFingerprint(dir string, source SkillSource, fingerprint *strings.Builder) ([]*Skill, error) {
-	entries, err := os.ReadDir(dir)
+func (r *Registry) scanDirWithFingerprint(sp searchPath, fingerprint *strings.Builder) ([]*Skill, error) {
+	entries, err := os.ReadDir(sp.path)
 	if err != nil {
 		return nil, err
 	}
@@ -736,7 +580,7 @@ func (r *Registry) scanDirWithFingerprint(dir string, source SkillSource, finger
 			continue
 		}
 
-		skillDir := filepath.Join(dir, entry.Name())
+		skillDir := filepath.Join(sp.path, entry.Name())
 		manifest, ok := findSkillManifest(skillDir)
 		if !ok {
 			continue
@@ -746,7 +590,7 @@ func (r *Registry) scanDirWithFingerprint(dir string, source SkillSource, finger
 		}
 
 		// Load metadata only for listing
-		skill, err := loadFromSkillManifest(skillDir, manifest, source, false)
+		skill, err := loadFromSkillManifest(skillDir, manifest, sp.source, false)
 		if err != nil {
 			logSkippedInvalidSkill(skillDir, err)
 			continue
@@ -757,6 +601,7 @@ func (r *Registry) scanDirWithFingerprint(dir string, source SkillSource, finger
 			continue
 		}
 
+		skill.UserInstalled = sp.userInstalled
 		skills = append(skills, skill)
 	}
 

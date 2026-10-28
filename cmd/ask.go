@@ -88,7 +88,7 @@ Line range syntax for files:
 
 func init() {
 	AddCommonFlags(askCmd,
-		CommonCoreFlags|CommonSearchFlags|CommonMaxTurns|CommonMaxOutputTokens|CommonFiles|CommonAgent|CommonSkills,
+		CommonCoreFlags|CommonSearchFlags|CommonMaxTurns|CommonMaxOutputTokens|CommonFiles|CommonAgent|CommonSkills|CommonProjectSkillTools,
 		CommonFlagBindings{
 			Provider:         &askProvider,
 			Debug:            &askDebug,
@@ -188,7 +188,7 @@ func captureAskInvocation(cmd *cobra.Command) (ask.Options, ask.Dependencies) {
 		Stdin: stdin, HasStdin: hasStdin, Stdout: cmd.OutOrStdout(), Stderr: cmd.ErrOrStderr(),
 		Interactive:  func() bool { return terminalpolicy.Interactive(os.Stdin, os.Stdout) },
 		SessionStore: sessionStoreOverrides(), MemoryPaths: memoryPaths(),
-		LoadConfig: loadConfigWithSetup, NewProvider: ask.NewProvider, CreateDebugLogger: createDebugLogger,
+		LoadConfig: projectSkillToolsConfigLoader(cmd, loadConfigWithSetup), NewProvider: ask.NewProvider, CreateDebugLogger: createDebugLogger,
 		RunnerCleanupTimeout: runpkg.DefaultRunnerCleanupTimeout,
 		ResolveApproval: func(cfg *config.Config) (resolvedApprovalMode, error) {
 			if cliErr != nil {

@@ -273,6 +273,7 @@ The index below follows the canonical config schema. A dash means no default or 
 | `skills.metadata_budget_tokens` | integer | `8000` | — |
 | `skills.max_visible_skills` | integer | `50` | — |
 | `skills.include_project_skills` | boolean | `true` | — |
+| `skills.allow_project_script_tools` | boolean | `false` | — |
 | `skills.include_ecosystem_paths` | boolean | `true` | — |
 | `skills.always_enabled` | list of string | `[]` | — |
 | `skills.never_auto` | list of string | `[]` | — |
@@ -1349,12 +1350,15 @@ skills:
   metadata_budget_tokens: 8000
   max_visible_skills: 50
   include_project_skills: true
+  allow_project_script_tools: false
   include_ecosystem_paths: true
   always_enabled: [git, code-review]
   never_auto: [expensive-api-skill]
 ```
 
 Controls the skills system: portable instruction bundles that inject task-specific context into the system prompt. Skills and model-driven activation are enabled by default. Set `skills.enabled: false` to disable the system in the global configuration (unless overridden by an agent or CLI flag), or use `--skills none` to disable it for one invocation. See [Skills](/guides/skills/) for the full guide.
+
+Project skill-declared script tools are disabled by default. Set `skills.allow_project_script_tools: true` in user config, or pass `--allow-project-skill-tools` to `chat`, `ask`, or `serve`, to enable their execution without approval. An explicit `--allow-project-skill-tools=false` overrides a `true` user setting; an absent flag preserves config. Yolo mode always bypasses this execution gate. User-installed skill tools and agent-defined custom tools are unchanged. This gate does not send scripts to Guardian or change ordinary shell approvals. It does not override `--skills none` or `include_project_skills: false`.
 
 ## Diagnostics
 

@@ -47,6 +47,9 @@ func (s SkillSource) SourceName() string {
 // When the skill is activated, these tools are dynamically registered with the engine.
 // Scripts are resolved relative to the skill directory (SourcePath).
 type SkillToolDef struct {
+	// UserInstalled is set by activation from discovery scope, never frontmatter.
+	UserInstalled bool `yaml:"-" json:"-"`
+
 	// Name is the tool name shown to the LLM. Must match ^[a-z][a-z0-9_]*$
 	Name string `yaml:"name"`
 
@@ -72,6 +75,20 @@ type SkillToolDef struct {
 	//   "positional"            — positional args in schema property order
 	//   "json"                  — JSON object on stdin
 	Call string `yaml:"call,omitempty"`
+}
+
+// Validate checks the required fields of a script-backed skill tool.
+func (d SkillToolDef) Validate() error {
+	if d.Name == "" {
+		return fmt.Errorf("skill tool: name is required")
+	}
+	if d.Description == "" {
+		return fmt.Errorf("skill tool %q: description is required", d.Name)
+	}
+	if d.Script == "" {
+		return fmt.Errorf("skill tool %q: script is required", d.Name)
+	}
+	return nil
 }
 
 // Skill represents a skill loaded from a SKILL.md file.
@@ -102,8 +119,11 @@ type Skill struct {
 	Assets     []string `yaml:"-"` // Files in assets/
 
 	// Source tracking
-	Source     SkillSource `yaml:"-"`
-	SourcePath string      `yaml:"-"` // Directory path
+	// UserInstalled identifies user-scope discovery independently of ecosystem.
+	// Unclassified skills default to the project execution gate.
+	UserInstalled bool        `yaml:"-" json:"-"`
+	Source        SkillSource `yaml:"-"`
+	SourcePath    string      `yaml:"-"` // Directory path
 
 	// State
 	loaded bool // True if full body has been loaded

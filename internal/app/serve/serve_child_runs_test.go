@@ -617,8 +617,9 @@ func TestHostedChildContinuesCompletedSession(t *testing.T) {
 	}
 	var closedMu sync.Mutex
 	closed := 0
-	serveRuntimeClosedHook = func(*serveRuntime) { closedMu.Lock(); closed++; closedMu.Unlock() }
-	t.Cleanup(func() { serveRuntimeClosedHook = nil })
+	hook := func(*serveRuntime) { closedMu.Lock(); closed++; closedMu.Unlock() }
+	previousHook := serveRuntimeClosedHook.Swap(&hook)
+	t.Cleanup(func() { serveRuntimeClosedHook.Store(previousHook) })
 	ctx := core.ContextWithCallID(f.ctx, "continue-drill")
 	output, err := continueTool.Execute(ctx, json.RawMessage(fmt.Sprintf(`{"agent_id":%q,"instructions":"Say hello again","wait":5}`, first.SessionID)))
 	var continued tools.SpawnAgentResult

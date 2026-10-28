@@ -31,6 +31,7 @@ const (
 	CommonSystemMessage
 	CommonApproval
 	CommonSkills
+	CommonProjectSkillTools
 	// Tier 2 / non-position-0 flags. These can use the common registration
 	// helper without becoming eligible for pre-command normalization.
 	CommonMaxTurns
@@ -103,6 +104,7 @@ var commonFlagMetas = []commonFlagMeta{
 	{Name: "yolo", Kind: flagKindBool, PreCommand: true, Bit: CommonApproval},
 	{Name: "auto", Kind: flagKindBool, PreCommand: true, Bit: CommonApproval},
 	{Name: "skills", Kind: flagKindString, PreCommand: true, Bit: CommonSkills},
+	{Name: "allow-project-skill-tools", Kind: flagKindBool, PreCommand: true, Bit: CommonProjectSkillTools},
 	{Name: "max-turns", Kind: flagKindString, Bit: CommonMaxTurns},
 	{Name: "max-output-tokens", Kind: flagKindString, Bit: CommonMaxOutputTokens},
 	{Name: "agent", Shorthand: "a", Kind: flagKindString, Bit: CommonAgent},
@@ -181,6 +183,9 @@ func AddCommonFlags(cmd *cobra.Command, set CommonFlagSet, b CommonFlagBindings)
 		AddYoloFlag(cmd, b.Yolo)
 		AddAutoFlag(cmd, b.Auto)
 		cmd.MarkFlagsMutuallyExclusive("approval", "yolo", "auto")
+	}
+	if set.has(CommonProjectSkillTools) {
+		cmd.Flags().Bool("allow-project-skill-tools", false, "Enable execution of project skill-declared script tools without approval (always allowed in yolo mode)")
 	}
 	if set.has(CommonSkills) {
 		requireStringFlagBinding("skills", b.Skills)

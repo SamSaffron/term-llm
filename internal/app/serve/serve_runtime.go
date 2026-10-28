@@ -468,14 +468,14 @@ func markSessionChildrenSwept(ctx context.Context) {
 }
 
 // serveRuntimeClosedHook observes runtime closure in tests; nil in production.
-var serveRuntimeClosedHook func(*serveRuntime)
+var serveRuntimeClosedHook atomic.Pointer[func(*serveRuntime)]
 
 func (rt *serveRuntime) closeContext(ctx context.Context, drain bool) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	if hook := serveRuntimeClosedHook; hook != nil {
-		defer hook(rt)
+	if hook := serveRuntimeClosedHook.Load(); hook != nil {
+		defer (*hook)(rt)
 	}
 	sideCtx, sideCancel := context.WithTimeout(context.Background(), 2*time.Second)
 	rt.sideQuestion.close(sideCtx)
@@ -1648,22 +1648,6 @@ func contextUsageSnapshot(engine *engine.Engine, messages []core.Message, cached
 		CachedInputTokens: cachedInputTokens,
 		Estimated:         true,
 	}
-}
-
-type serveRunResult struct {
-	Text         strings.Builder
-	ToolCalls    []core.ToolCall
-	Usage        core.Usage
-	SessionUsage core.Usage
-	ContextUsage *serveContextUsage
-	// clientCalls tracks passthrough calls the final provider turn left for
-	// the caller to answer; see PendingClientCalls.
-	clientCalls pendingClientCallTracker
-}
-
-// PendingClientCalls returns the client tool calls this run stopped on.
-func (r *serveRunResult) PendingClientCalls() []core.ToolCall {
-	return r.clientCalls.pending()
 }
 
 type serveRuntimeSetupContextKey struct{}

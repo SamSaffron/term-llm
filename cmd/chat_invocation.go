@@ -55,7 +55,7 @@ func captureChatInvocation(cmd *cobra.Command) (appchat.Options, appchat.Depende
 	interactive, outputInteractive := terminalpolicy.Interactive, terminalpolicy.OutputInteractive
 	deps := appchat.Dependencies{
 		Stdout: stdout, Stderr: stderr, SessionStore: sessionStoreOverrides(), MemoryPaths: memoryPaths(),
-		LoadConfig: loadConfigWithSetup, CreateDebugLogger: createDebugLogger, StartDiagnostics: startInteractiveDiagnostics,
+		LoadConfig: projectSkillToolsConfigLoader(cmd, loadConfigWithSetup), CreateDebugLogger: createDebugLogger, StartDiagnostics: startInteractiveDiagnostics,
 		Interactive:       func() bool { return interactive(os.Stdin, os.Stdout) },
 		OutputInteractive: func() bool { return outputInteractive(os.Stdout) },
 		StdoutIsTerminal:  func() bool { return term.IsTerminal(int(os.Stdout.Fd())) }, OpenTTY: tea.OpenTTY,

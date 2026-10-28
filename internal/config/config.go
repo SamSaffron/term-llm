@@ -633,13 +633,13 @@ type AgentPreference struct {
 
 // SkillsConfig configures the Agent Skills system
 type SkillsConfig struct {
-	Enabled              bool `mapstructure:"enabled"`                // Enable the skills system
-	AutoInvoke           bool `mapstructure:"auto_invoke"`            // Allow model-driven activation
-	MetadataBudgetTokens int  `mapstructure:"metadata_budget_tokens"` // Max tokens for skill metadata
-	MaxVisibleSkills     int  `mapstructure:"max_visible_skills"`     // Max skills shown in system prompt
-
-	IncludeProjectSkills  bool `mapstructure:"include_project_skills"`  // Discover from project-local paths
-	IncludeEcosystemPaths bool `mapstructure:"include_ecosystem_paths"` // Include ~/.agents/skills, ~/.codex/skills, ~/.claude/skills, ~/.gemini/skills, etc.
+	Enabled                 bool `mapstructure:"enabled"`                    // Enable the skills system
+	AutoInvoke              bool `mapstructure:"auto_invoke"`                // Allow model-driven activation
+	MetadataBudgetTokens    int  `mapstructure:"metadata_budget_tokens"`     // Max tokens for skill metadata
+	MaxVisibleSkills        int  `mapstructure:"max_visible_skills"`         // Max skills shown in system prompt
+	AllowProjectScriptTools bool `mapstructure:"allow_project_script_tools"` // Execute project skill-declared scripts without approval
+	IncludeProjectSkills    bool `mapstructure:"include_project_skills"`     // Discover from project-local paths
+	IncludeEcosystemPaths   bool `mapstructure:"include_ecosystem_paths"`    // Include ~/.agents/skills, ~/.codex/skills, ~/.claude/skills, ~/.gemini/skills, etc.
 
 	AlwaysEnabled []string `mapstructure:"always_enabled"` // Always include in metadata
 	NeverAuto     []string `mapstructure:"never_auto"`     // Must be explicit activation

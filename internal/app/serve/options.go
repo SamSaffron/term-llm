@@ -32,6 +32,7 @@ type Options struct {
 	WriteDirs              []string
 	ShellAllow             []string
 	SystemMessage          string
+	AllowProjectSkillTools *bool
 	Agent                  string
 	Approval               string
 	Yolo                   bool

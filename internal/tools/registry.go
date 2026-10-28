@@ -3,7 +3,6 @@ package tools
 import (
 	"context"
 	"fmt"
-	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -14,7 +13,6 @@ import (
 	"github.com/samsaffron/term-llm/internal/llm/core"
 	"github.com/samsaffron/term-llm/internal/llm/engine"
 	"github.com/samsaffron/term-llm/internal/modelpolicy"
-	"github.com/samsaffron/term-llm/internal/runtimeoutput"
 	"github.com/samsaffron/term-llm/internal/session"
 	"github.com/samsaffron/term-llm/internal/skills"
 )
@@ -698,21 +696,18 @@ func (r *LocalToolRegistry) RegisterSkillTool(skillRegistry *skills.Registry) *A
 
 // RegisterSkillTools registers script-backed tools declared in a skill's frontmatter.
 // skillDir is the skill's SourcePath (absolute directory containing SKILL.md).
-// Tools are resolved relative to skillDir and executed from there.
+// Scripts are resolved relative to skillDir; execution uses the session workspace.
+// Project skill scripts require explicit opt-in or the current yolo mode.
 // Duplicate registrations (same name) overwrite the previous entry — activating
 // a skill twice is idempotent. Name collisions with built-in tools are rejected.
 func (r *LocalToolRegistry) RegisterSkillTools(defs []skills.SkillToolDef, skillDir string) error {
 	// Convert SkillToolDef → agents.CustomToolDef
 	agentDefs := make([]agents.CustomToolDef, 0, len(defs))
+	userInstalled := true
 	for _, d := range defs {
-		if d.Name == "" {
-			return fmt.Errorf("skill tool: name is required")
-		}
-		if d.Description == "" {
-			return fmt.Errorf("skill tool %q: description is required", d.Name)
-		}
-		if d.Script == "" {
-			return fmt.Errorf("skill tool %q: script is required", d.Name)
+		userInstalled = userInstalled && d.UserInstalled
+		if err := d.Validate(); err != nil {
+			return err
 		}
 		agentDefs = append(agentDefs, agents.CustomToolDef{
 			Name:           d.Name,
@@ -725,12 +720,12 @@ func (r *LocalToolRegistry) RegisterSkillTools(defs []skills.SkillToolDef, skill
 		})
 	}
 
-	// Warn if the skill dir doesn't exist (non-fatal, matches existing behaviour)
-	if _, err := os.Stat(skillDir); os.IsNotExist(err) {
-		runtimeoutput.Printf("warning: skill directory not found: %s\n", skillDir)
+	if userInstalled || (r.appConfig != nil && r.appConfig.Skills.AllowProjectScriptTools) {
+		return r.RegisterCustomTools(agentDefs, skillDir)
 	}
-
-	return r.RegisterCustomTools(agentDefs, skillDir)
+	return r.registerCustomTools(agentDefs, skillDir, func(tool *CustomScriptTool) core.Tool {
+		return skills.GateProjectScriptTool(tool, r.approval.YoloEnabled)
+	})
 }
 
 // RestoreSkillTools removes tools registered for a skill turn and restores any

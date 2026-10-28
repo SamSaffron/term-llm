@@ -132,6 +132,11 @@ func (a *Activator) Activate(request ActivationRequest) (*Activation, error) {
 		}
 	}
 
+	toolDefs := append([]SkillToolDef(nil), skill.Tools...)
+	for i := range toolDefs {
+		toolDefs[i].UserInstalled = skill.UserInstalled
+	}
+
 	return &Activation{
 		Skill:               skill,
 		Metadata:            metadata,
@@ -140,7 +145,7 @@ func (a *Activator) Activate(request ActivationRequest) (*Activation, error) {
 		Resources:           activationResources(skill),
 		AllowedTools:        append([]string(nil), skill.AllowedTools...),
 		AllowedToolsPresent: skill.AllowedToolsPresent,
-		ToolDefs:            append([]SkillToolDef(nil), skill.Tools...),
+		ToolDefs:            toolDefs,
 		RawArgs:             request.RawArgs,
 		Origin:              request.Origin,
 	}, nil

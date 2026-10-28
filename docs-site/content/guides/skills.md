@@ -213,6 +213,7 @@ skills:
   metadata_budget_tokens: 8000    # Max tokens for skill metadata in system prompt
   max_visible_skills: 50           # Max skills shown in system prompt (0 = search only)
   include_project_skills: true    # Discover from .skills/ in project tree
+  allow_project_script_tools: false # Project skill-declared scripts are disabled by default
   include_ecosystem_paths: true   # Discover from ~/.claude/skills/, ~/.codex/skills/, etc.
   always_enabled: []              # Always include these skills in metadata
   never_auto: []                  # Require explicit --skills or activate_skill call
@@ -225,6 +226,7 @@ skills:
 | `metadata_budget_tokens` | `8000` | Token budget for the `<available_skills>` block injected into the system prompt. |
 | `max_visible_skills` | `50` | Maximum number of skills shown in the system prompt. When more skills exist, `search_skills` is registered automatically. Set to `0` for pure search mode. |
 | `include_project_skills` | `true` | Scan `.skills/` directories from CWD up to the repo root. |
+| `allow_project_script_tools` | `false` | Allow project skill-declared script tools to execute without approval. Always allowed in yolo mode. |
 | `include_ecosystem_paths` | `true` | Also scan `.claude/skills/`, `.codex/skills/`, `.gemini/skills/`, `.cursor/skills/` at both project and user scope. |
 | `always_enabled` | `[]` | Skills that are always included in metadata, even if they would exceed the budget. |
 | `never_auto` | `[]` | Skills excluded from auto-discovery metadata. They can still be activated with explicit `activate_skill` calls when model invocation is enabled. |
@@ -259,6 +261,31 @@ When `auto_invoke` is `false`, model-facing skill metadata and model activation 
 ### Skill Tools
 
 Skills can declare script-backed tools in their frontmatter. When the skill is activated via `activate_skill`, those tools are dynamically registered with the engine. The LLM can then call them directly, with no hardcoded paths anywhere.
+
+#### Project script execution gate
+
+Script tools declared by **project-local skills are disabled by default**. Loading a skill's instructions does not grant permission to execute its scripts. Script tools from user-installed skills retain their existing behavior; this gate does not change agent-defined custom tools in `agent.yaml`.
+
+To allow project skill-declared script tools to run **without approval**, opt in through your user config (`~/.config/term-llm/config.yaml`):
+
+```yaml
+skills:
+  allow_project_script_tools: true
+```
+
+Or opt in for one invocation with `--allow-project-skill-tools` on `chat`, `ask`, or `serve`:
+
+```sh
+term-llm chat --allow-project-skill-tools
+term-llm --allow-project-skill-tools ask "Use the project skill"
+term-llm serve web --allow-project-skill-tools
+```
+
+An explicit `--allow-project-skill-tools=false` overrides a `true` user setting; omitting the flag preserves the setting. In yolo mode (`--yolo` or `--approval yolo`), execution is always allowed by this gate, even when the setting is `false`.
+
+This is an execution gate, not a request for approval or Guardian review: denied scripts are not submitted for review, and script source is not uploaded to Guardian. It does not change ordinary `shell` approvals or other tool permissions. `--skills none` still disables skills, and `include_project_skills: false` still disables project skill discovery; neither the opt-in nor yolo mode changes those controls.
+
+#### Script tool example
 
 ```markdown
 ---

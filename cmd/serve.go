@@ -114,7 +114,7 @@ func bindServeFlags(cmd *cobra.Command, opts *ServeOptions) {
 	cmd.Flags().StringVar(&opts.HubRegistrationToken, "hub-registration-token", "", "Hub registration token for --hub-register (defaults to $TERM_LLM_HUB_REGISTRATION_TOKEN)")
 
 	AddCommonFlags(cmd,
-		CommonCoreFlags|CommonSearch|CommonNativeSearch|CommonMaxTurns|CommonAgent,
+		CommonCoreFlags|CommonSearch|CommonNativeSearch|CommonMaxTurns|CommonAgent|CommonProjectSkillTools,
 		CommonFlagBindings{
 			Provider:        &opts.Provider,
 			Debug:           &opts.Debug,

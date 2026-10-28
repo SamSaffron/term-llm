@@ -460,6 +460,7 @@ var keySpecs = []KeySpec{
 	def("skills.metadata_budget_tokens", DefaultSkillsMetadataBudgetTokens),
 	def("skills.max_visible_skills", DefaultSkillsMaxVisibleSkills),
 	def("skills.include_project_skills", true),
+	def("skills.allow_project_script_tools", false),
 	def("skills.include_ecosystem_paths", true),
 	def("skills.always_enabled", []string{}),
 	def("skills.never_auto", []string{}),

@@ -49,6 +49,9 @@ func runServeWith(parentCtx context.Context, deps serveDeps, opts *Options, args
 	if err != nil {
 		return err
 	}
+	if opts.AllowProjectSkillTools != nil {
+		cfg.Skills.AllowProjectScriptTools = *opts.AllowProjectSkillTools
+	}
 	runtime.ApplyServeFileTrackingOverride(cfg, opts.EnableFileTracking)
 	if deps.ResolveApproval == nil {
 		return fmt.Errorf("serve approval resolver is required")
