@@ -1,4 +1,4 @@
-import { computed, effect } from '@preact/signals';
+import { computed, effect, type ReadonlySignal } from '@preact/signals';
 import { Component, type ComponentChildren, type ComponentType } from 'preact';
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'preact/hooks';
 import { StoreContext } from './context';
@@ -165,22 +165,27 @@ export function App({ store }: { store: AppStore }) {
   const diffWidth = useMemo(() => computed(() => store.diff.value.width), [store]);
   const diffOpen = useMemo(() => computed(() => store.diff.value.open), [store]);
   const diffMaximized = useMemo(() => computed(() => store.diff.value.maximized), [store]);
+  const shellSizes = useMemo(
+    (): [string, ReadonlySignal<number>][] => [
+      ['--diff-sidebar-user-width', diffWidth],
+      ['--sidebar-user-width', store.sidebarWidth],
+      ['--shell-dock-bottom-size', store.shellStore.dockBottomSize],
+      ['--shell-dock-right-size', store.shellStore.dockRightSize],
+    ],
+    [store, diffWidth],
+  );
   useLayoutEffect(() => {
-    const bind = (property: string, value: () => number) =>
-      effect(() => {
-        const pixels = value();
-        shell.current?.style.setProperty(property, `${pixels}px`);
-      });
     // Separate effects keep a dock-size update from overwriting an in-flight
     // diff drag's presentation-only width.
-    const dispose = [
-      bind('--diff-sidebar-user-width', () => diffWidth.value),
-      bind('--sidebar-user-width', () => store.sidebarWidth.value),
-      bind('--shell-dock-bottom-size', () => store.shellStore.dockBottomSize.value),
-      bind('--shell-dock-right-size', () => store.shellStore.dockRightSize.value),
-    ];
+    const dispose = shellSizes.map(([property, size]) =>
+      effect(() => {
+        const pixels = size.value;
+        shell.current?.style.setProperty(property, `${pixels}px`);
+      }),
+    );
     return () => dispose.forEach((stop) => stop());
   }, [
+    shellSizes,
     store,
     diffWidth,
     store.authRequired.value,
@@ -311,6 +316,13 @@ export function App({ store }: { store: AppStore }) {
               class={`app ${store.sidebarCollapsed.value ? 'sidebar-collapsed' : ''} ${diffOpen.value ? 'diff-open' : ''} ${diffMaximized.value ? 'diff-maximized' : ''} ${store.planVisible.value ? 'plan-open' : ''} ${shellVisible && shellLayout === 'bottom' ? 'shell-docked-bottom' : ''} ${shellVisible && shellLayout === 'right' ? 'shell-docked-right' : ''}`}
               id="appShell"
               ref={shell}
+              // Mount with the saved sizes: a child layout effect can force a
+              // layout before the effects above run, and the later write would
+              // then animate the columns from their defaults. Peek so size
+              // changes stay effect-only and do not re-render App.
+              style={Object.fromEntries(
+                shellSizes.map(([property, size]) => [property, `${size.peek()}px`]),
+              )}
               aria-hidden={shellFullscreen || undefined}
               inert={shellFullscreen || undefined}
             >

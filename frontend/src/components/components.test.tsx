@@ -1620,6 +1620,32 @@ describe('Preact-owned chat surfaces', () => {
     expect(store.storage.getItem(store.keys.sidebarWidth)).toBeNull();
   });
 
+  it('mounts the shell at the saved sidebar width before child layout effects measure', () => {
+    const store = createStore();
+    store.startupDone.value = true;
+    store.bootstrap = vi.fn(async () => undefined);
+    store.sidebarWidth.value = 300;
+    // A restored draft makes the composer read scrollHeight in its layout
+    // effect, which runs before App's and would lay the shell out at the
+    // default width, so the later write animated the sidebar on load.
+    store.prompt.value = 'draft';
+    const widths: string[] = [];
+    const scrollHeight = vi
+      .spyOn(HTMLTextAreaElement.prototype, 'scrollHeight', 'get')
+      .mockImplementation(() => {
+        const shell = document.getElementById('appShell');
+        widths.push(shell?.style.getPropertyValue('--sidebar-user-width') ?? '');
+        return 40;
+      });
+    try {
+      render(<App store={store} />);
+    } finally {
+      scrollHeight.mockRestore();
+    }
+    expect(widths.length).toBeGreaterThan(0);
+    expect(widths[0]).toBe('300px');
+  });
+
   it('keeps sidebar drag previews isolated from changes-panel updates', () => {
     const store = createStore();
     store.startupDone.value = true;
