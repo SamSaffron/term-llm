@@ -38,6 +38,7 @@ export type IconName =
   | 'send'
   | 'settings'
   | 'share'
+  | 'sort'
   | 'steer'
   | 'terminal'
   | 'trash'
@@ -70,6 +71,11 @@ const paths: Record<IconName, JSX.Element> = {
       <circle cx="6" cy="19" r="2" />
       <path d="M8 5h3a5 5 0 0 1 5 5v5" />
       <path d="M8 19h3a5 5 0 0 0 5-5v-5" />
+    </>
+  ),
+  sort: (
+    <>
+      <path d="M4 6h16M4 12h11M4 18h6" />
     </>
   ),
   check: <path d="m5 12 4 4L19 6" />,

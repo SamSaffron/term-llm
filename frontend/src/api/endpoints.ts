@@ -9,6 +9,8 @@ import type {
   SessionShareResponse as GeneratedSessionShareResponse,
   ShareVisibility as GeneratedShareVisibility,
 } from './generated/types';
+export type SessionSearchSort = 'relevance' | 'newest' | 'oldest';
+
 export interface LiveSessionStartResponse {
   live_id: string;
   session_id: string;
@@ -258,8 +260,10 @@ export const endpoints = (api: APIClient) => ({
     includeArchived = false,
     categories: string[] = ['all'],
     signal?: AbortSignal,
+    sort: SessionSearchSort = 'relevance',
   ) => {
     const params = new URLSearchParams({ q: query, limit: '30' });
+    if (sort !== 'relevance') params.set('sort', sort);
     if (includeArchived) params.set('include_archived', '1');
     if (!categories.includes('all')) params.set('categories', categories.join(','));
     return api.get<Record<string, unknown>>(`/v1/sessions/search?${params}`, signal);

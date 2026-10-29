@@ -1,4 +1,5 @@
 import { batch, computed, signal, type Signal } from '@preact/signals';
+import type { SessionSearchSort } from '../api/endpoints';
 import { APIError } from '../api/client';
 import { SessionActivityStore } from './session-activity-store';
 import { clampSidebarWidth, DEFAULT_SIDEBAR_WIDTH } from '../domain/sidebar';
@@ -163,6 +164,7 @@ export class SessionStore {
   readonly sidebarOpen = signal(false);
   readonly sidebarSearch = signal('');
   readonly searchResults = signal<Session[] | null>(null);
+  readonly searchSort = signal<SessionSearchSort>('relevance');
   readonly searchLoading = signal(false);
   readonly searchError = signal('');
   readonly showArchived: Signal<boolean>;
@@ -181,6 +183,7 @@ export class SessionStore {
 
   private searchAbort: AbortController | null = null;
   private searchTimer = 0;
+  private searchDebounceResolve: (() => void) | null = null;
   private lastSidebarRefreshAt = 0;
   private sidebarGeneration = 0;
   private lastAppliedSidebarGeneration = 0;
@@ -725,10 +728,20 @@ export class SessionStore {
     return tracked;
   }
 
+  async setSearchSort(sort: SessionSearchSort): Promise<void> {
+    if (this.searchSort.peek() === sort) return;
+    this.searchSort.value = sort;
+    await this.search(this.sidebarSearch.peek());
+  }
+
   async search(query: string): Promise<void> {
     this.sidebarSearch.value = query;
     this.searchAbort?.abort();
     clearTimeout(this.searchTimer);
+    this.searchDebounceResolve?.();
+    const abort = new AbortController();
+    this.searchAbort = abort;
+    const sort = this.searchSort.peek();
     if (!query.trim()) {
       this.searchResults.value = null;
       this.searchLoading.value = false;
@@ -739,19 +752,20 @@ export class SessionStore {
     this.searchResults.value = [];
     this.searchError.value = '';
     await new Promise<void>((resolve) => {
+      this.searchDebounceResolve = resolve;
       this.searchTimer = window.setTimeout(resolve, 180);
     });
-    if (this.sidebarSearch.peek() !== query) return;
-    const abort = new AbortController();
-    this.searchAbort = abort;
+    if (abort.signal.aborted || this.disposed) return;
+    this.searchDebounceResolve = null;
     try {
       const data = await this.services.endpoints.searchSessions(
         query,
         this.showArchived.value,
         this.services.config.sidebarCategories,
         abort.signal,
+        sort,
       );
-      if (!abort.signal.aborted && this.sidebarSearch.peek() === query)
+      if (!abort.signal.aborted)
         this.searchResults.value = listFrom(data, 'sessions', 'items').map((entry) =>
           this.sessionFrom(entry),
         );
@@ -1249,5 +1263,6 @@ export class SessionStore {
     window.clearTimeout(this.hubAgentRefreshTimer);
     this.searchAbort?.abort();
     window.clearTimeout(this.searchTimer);
+    this.searchDebounceResolve?.();
   }
 }

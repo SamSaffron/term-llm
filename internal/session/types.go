@@ -214,14 +214,24 @@ type ListOptions struct {
 	ExcludeSubagents bool                  // Hide machine-generated child-agent sessions
 }
 
+// SearchSort selects the ordering of distinct session search results.
+type SearchSort string
+
+const (
+	SearchSortRelevance SearchSort = "relevance"
+	SearchSortNewest    SearchSort = "newest"
+	SearchSortOldest    SearchSort = "oldest"
+)
+
 // SearchOptions configures session full-text search.
 type SearchOptions struct {
-	Query            string   // Text query to search for
-	Categories       []string // Sidebar/web categories (all, chat, web, ask, plan, exec)
-	Limit            int      // Max results (0 = use default)
-	Archived         bool     // Include archived sessions
-	ProjectID        string   // Restrict to one stable project ID
-	ExcludeSubagents bool     // Hide machine-generated child-agent sessions
+	Sort             SearchSort // Empty means relevance; date sorts use last message time (creation fallback)
+	Query            string     // Text query to search for
+	Categories       []string   // Sidebar/web categories (all, chat, web, ask, plan, exec)
+	Limit            int        // Max results (0 = use default)
+	Archived         bool       // Include archived sessions
+	ProjectID        string     // Restrict to one stable project ID
+	ExcludeSubagents bool       // Hide machine-generated child-agent sessions
 }
 
 // SearchResult represents a search match.

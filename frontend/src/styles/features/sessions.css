@@ -136,6 +136,50 @@
   text-transform: uppercase;
 }
 
+.search-results-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding-right: 0.35rem;
+}
+
+.search-sort {
+  position: relative;
+  flex-shrink: 0;
+}
+
+.search-sort-trigger {
+  width: 28px;
+  height: 28px;
+  color: var(--text-muted);
+}
+
+.search-sort-trigger:not(:hover, :focus-visible, [aria-expanded='true']) {
+  background: transparent;
+  border-color: transparent;
+}
+
+.search-sort-trigger[aria-expanded='true'] {
+  background: var(--surface-2);
+  border-color: var(--border);
+}
+
+.search-sort-trigger svg {
+  width: 16px;
+  height: 16px;
+}
+
+.session-menu.search-sort-menu {
+  display: flex;
+  min-width: 180px;
+  max-width: calc(100vw - 2rem);
+  z-index: var(--z-session-menu-open);
+}
+
+.session-menu.search-sort-menu .session-menu-icon {
+  flex-shrink: 0;
+}
+
 .session-date-group h4 {
   margin: 0;
   padding: 0.42rem 0.75rem 0.25rem;
