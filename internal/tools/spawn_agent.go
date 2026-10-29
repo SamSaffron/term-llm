@@ -11,12 +11,12 @@ import (
 	"strings"
 	"sync"
 	"time"
-	"unicode"
 
 	"github.com/samsaffron/term-llm/internal/llm/core"
 	"github.com/samsaffron/term-llm/internal/llm/engine"
 	"github.com/samsaffron/term-llm/internal/session"
 	"github.com/samsaffron/term-llm/internal/tools/agentwait"
+	"github.com/samsaffron/term-llm/internal/tools/spawnmodel"
 )
 
 // SpawnAgentArgs are the arguments for the spawn_agent tool.
@@ -378,13 +378,6 @@ Guidelines:
 	}
 }
 
-func isQualifiedSpawnModel(model string) bool {
-	provider, modelName, found := strings.Cut(model, ":")
-	return found && provider != "" && modelName != "" &&
-		!strings.ContainsFunc(provider, unicode.IsSpace) &&
-		!strings.ContainsFunc(modelName, unicode.IsSpace)
-}
-
 type spawnAgentPolicyError struct {
 	typeName ToolErrorType
 	message  string
@@ -536,11 +529,6 @@ func (t *SpawnAgentTool) Execute(ctx context.Context, args json.RawMessage) (cor
 	if a.Prompt == "" {
 		return spawnAgentErrorOutput(t.formatError(ErrInvalidParams, "prompt is required"), false), nil
 	}
-	requestedModel := a.Model
-	if requestedModel != "" && !isQualifiedSpawnModel(requestedModel) {
-		return spawnAgentErrorOutput(t.formatError(ErrInvalidParams, "model must use exact provider:model format; omit it to use the configured/default model"), false), nil
-	}
-
 	runner, currentDepth, policyErr := t.localSpawnPolicy(a.AgentName)
 	if policyErr != nil {
 		errType := ErrExecutionFailed
@@ -549,6 +537,10 @@ func (t *SpawnAgentTool) Execute(ctx context.Context, args json.RawMessage) (cor
 			errType = typed.typeName
 		}
 		return spawnAgentErrorOutput(t.formatError(errType, policyErr.Error()), false), nil
+	}
+	requestedModel := a.Model
+	if err := spawnmodel.Validate(runner, requestedModel); err != nil {
+		return spawnAgentErrorOutput(t.formatError(ErrInvalidParams, err.Error()), false), nil
 	}
 
 	budget := t.config.DefaultTimeout

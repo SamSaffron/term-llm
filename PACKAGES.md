@@ -187,6 +187,7 @@ One line per root-module package, generated from package doc comments by `make d
 - `internal/tools` — provides a permission-aware local tool system for term-llm.
 - `internal/tools/agentwait` — carries exact, generation-scoped child wait evidence for host turn finalization.
 - `internal/tools/gitidentity` — validates checkout membership before sharing a Git approval identity.
+- `internal/tools/spawnmodel` — checks the spawn_agent model argument.
 - `internal/tsgen` — generates the explicitly registered serve JSON contracts for the web UI.
 - `internal/tui/chat` — implements the interactive terminal chat TUI and its run lifecycle.
 - `internal/tui/chat/agentbarrier` — owns persisted TUI lifecycle delivery settlement.

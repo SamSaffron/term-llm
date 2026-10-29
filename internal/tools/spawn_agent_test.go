@@ -372,6 +372,106 @@ func TestSpawnAgentTool_ModelArgumentRequiresProviderModel(t *testing.T) {
 	}
 }
 
+// modelCatalogMockRunner enables only the listed providers.
+type modelCatalogMockRunner struct {
+	*mockRunner
+	providers []string
+	validated []string
+}
+
+func (r *modelCatalogMockRunner) ValidateSpawnModel(model string) error {
+	r.validated = append(r.validated, model)
+	provider, _, _ := strings.Cut(model, ":")
+	for _, enabled := range r.providers {
+		if provider == enabled {
+			return nil
+		}
+	}
+	return errors.New("unknown provider " + provider)
+}
+
+func spawnModelDescription(t *testing.T, tool *SpawnAgentTool) string {
+	t.Helper()
+	properties := tool.Spec().Schema["properties"].(map[string]any)
+	return properties["model"].(map[string]any)["description"].(string)
+}
+
+func TestSpawnAgentTool_ModelDescriptionDoesNotListCatalogProviders(t *testing.T) {
+	tool := NewSpawnAgentTool(SpawnConfig{MaxDepth: 5, DefaultTimeout: 300}, 0)
+	before := spawnModelDescription(t, tool)
+
+	runner := &modelCatalogMockRunner{mockRunner: newMockRunner(), providers: []string{"chatgpt", "claude-bin"}}
+	tool.SetRunner(runner)
+	description := spawnModelDescription(t, tool)
+	if description != before {
+		t.Fatalf("model description changed after installing a runner: %q, want %q", description, before)
+	}
+	for _, provider := range runner.providers {
+		if strings.Contains(description, provider) {
+			t.Fatalf("model description lists provider %q: %q", provider, description)
+		}
+	}
+	if len(runner.validated) != 0 {
+		t.Fatalf("schema generation validated models: %v", runner.validated)
+	}
+}
+
+func TestSpawnAgentTool_ModelArgumentRejectedByCatalog(t *testing.T) {
+	tool := NewSpawnAgentTool(SpawnConfig{MaxDepth: 5, DefaultTimeout: 300}, 0)
+	runner := &modelCatalogMockRunner{mockRunner: newMockRunner(), providers: []string{"chatgpt"}}
+	tool.SetRunner(runner)
+
+	result, err := tool.Execute(context.Background(), makeSpawnArgsWithModel("reviewer", "inspect", 0, "codex:gpt-5.4"))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	r := parseResult(t, result.Content)
+	if r.Type != string(ErrInvalidParams) {
+		t.Fatalf("error type = %q, want %q (%s)", r.Type, ErrInvalidParams, r.Error)
+	}
+	if !strings.Contains(r.Error, "unknown provider codex") {
+		t.Fatalf("error = %q, want catalog reason", r.Error)
+	}
+	if calls := runner.GetCalls(); len(calls) != 0 {
+		t.Fatalf("runner call count = %d, want 0", len(calls))
+	}
+
+	result, err = tool.Execute(context.Background(), makeSpawnArgsWithModel("reviewer", "inspect", 0, "chatgpt:gpt-5.4"))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if r := parseResult(t, result.Content); r.Error != "" {
+		t.Fatalf("unexpected tool error: %s", r.Error)
+	}
+	if calls := runner.GetCalls(); len(calls) != 1 || calls[0].ModelOverride != "chatgpt:gpt-5.4" {
+		t.Fatalf("runner calls = %#v, want one chatgpt:gpt-5.4 run", calls)
+	}
+}
+
+func TestSpawnAgentTool_ConfiguredAgentModelSkipsCatalog(t *testing.T) {
+	tool := NewSpawnAgentTool(SpawnConfig{
+		MaxDepth:       5,
+		DefaultTimeout: 300,
+		AgentModels:    map[string]string{"reviewer": "llama3:8b"},
+	}, 0)
+	runner := &modelCatalogMockRunner{mockRunner: newMockRunner(), providers: []string{"chatgpt"}}
+	tool.SetRunner(runner)
+
+	result, err := tool.Execute(context.Background(), makeSpawnArgs("reviewer", "inspect", 0))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if r := parseResult(t, result.Content); r.Error != "" {
+		t.Fatalf("unexpected tool error: %s", r.Error)
+	}
+	if len(runner.validated) != 0 {
+		t.Fatalf("validated %v; config-sourced models must not be checked as provider:model", runner.validated)
+	}
+	if calls := runner.GetCalls(); len(calls) != 1 || calls[0].ModelOverride != "llama3:8b" {
+		t.Fatalf("runner calls = %#v, want configured llama3:8b", calls)
+	}
+}
+
 func TestSpawnAgentTool_ModelArgumentFallsBackToConfiguredAgentModel(t *testing.T) {
 	tool := NewSpawnAgentTool(SpawnConfig{
 		MaxDepth:       5,

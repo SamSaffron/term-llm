@@ -14,3 +14,11 @@ func ResolveAgentModelOverride(cfg *config.Config, model string) (provider, reso
 func ApplyAgentModelOverride(cfg *config.Config, model string) error {
 	return appagent.ApplyModelOverride(cfg, model)
 }
+
+// SpawnModelCatalog validates spawn_agent model overrides.
+type SpawnModelCatalog = appagent.SpawnModelCatalog
+
+// NewSpawnModelCatalog returns a spawn model catalog over cfg.
+func NewSpawnModelCatalog(cfg *config.Config) SpawnModelCatalog {
+	return appagent.NewSpawnModelCatalog(cfg)
+}

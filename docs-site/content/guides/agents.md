@@ -211,6 +211,7 @@ A child run may only use a model that **every ancestor's list and its own list**
 
 - If the child's selection — its own `provider`/`model`, a `model` argument to `spawn_agent` or `queue_agent`, or the parent's `spawn.agent_models` entry — is outside a parent's list, the child is rejected at launch with an error naming that parent agent.
 - If the child specifies no model, it runs on the parent's current model (including after a `/model` switch in the parent).
+- A `model` argument to `spawn_agent` must name a provider this host enables, the same providers the model picker offers. Any other provider (such as a guessed `codex:` prefix) fails before the child starts. The error suggests at most three enabled providers (preferring the default), gives one `provider:<model>` format example, and explains that omitting `model` uses the agent's default. Larger provider lists are summarized with an omitted count and a `term-llm providers --configured` discovery hint; model catalogs are never enumerated. Provider lists are not included in the tool schema. This applies with or without `allowed_models`.
 - A continued child keeps its own model unless the continuation overrides it, and that model is rechecked.
 - The inherited restrictions are stored with the child session, so they still apply when the child is resumed later or opened directly in the terminal or web UI. Branches and handovers of a restricted session keep them.
 - `hub_delegate` is unavailable to restricted agents, because provider keys on a remote node cannot be checked locally.
