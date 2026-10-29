@@ -483,6 +483,7 @@ func TestHeaderTransportAddsHeadersWithoutMutatingRequest(t *testing.T) {
 			}, nil
 		}),
 		headers: map[string]string{"Authorization": "Bearer token"},
+		origin:  req.URL,
 	}
 
 	resp, err := transport.RoundTrip(req)

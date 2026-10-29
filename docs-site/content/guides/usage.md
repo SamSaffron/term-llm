@@ -219,6 +219,13 @@ Changing sessions, compacting, handing over, or switching models pauses the curr
 | `--auto` | | Compatibility alias for `--approval auto` |
 | `--yolo` | | Compatibility alias for `--approval yolo`; bypasses approval prompts |
 
+**Session storage privacy:** Prompts and tool output may contain secrets. Writable
+session stores create or repair the database and its WAL/SHM files to `0600`, and
+the default data directory to `0700`. Existing custom parent directories are not
+chmodded. Database and sidecar files must be regular files; for a database on
+another volume, pass its actual path to `--session-db` rather than symlinking the
+file itself. Read-only opens do not change permissions; `:memory:` creates no files.
+
 **Note:** The `-a` short flag has different meanings:
 - In `exec`: `-a` is `--auto-pick` (auto-execute best suggestion)
 - In `ask`/`chat`: `-a` is `--agent` (use a specific agent)

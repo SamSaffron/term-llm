@@ -450,6 +450,21 @@ The hub defaults to bearer auth: `--auth bearer` protects the dashboard, Hub API
 
 The backend transport never uses an environment proxy (`HTTP_PROXY` would see injected tokens). The hub still rejects obvious cross-site browser requests and requires JSON content types for mutating node-registry APIs as defense-in-depth around the simple bearer gate.
 
+The network listener rejects unconfigured HTTP `Host` names before authentication
+or proxying to prevent DNS rebinding, including in `--auth none` mode. Loopback
+names/addresses and the bind hostname are allowed; wildcard binds also accept
+literal IP addresses. For a named reverse proxy, configure
+`--public-url https://hub.example.com/hub/` (or `TERM_LLM_HUB_PUBLIC_URL`) in bearer
+mode as well as passkey mode. Forwarded headers cannot add allowed hostnames.
+
+The same rule applies to a direct node reached by a DNS name: set the node's
+`--public-url` / `TERM_LLM_SERVE_PUBLIC_URL` to the URL registered with the Hub.
+For example, a wildcard-bound node registered as
+`http://jarvis.tailnet.ts.net:8081/chat` must declare that public URL, or the
+node will reject proxy requests, health probes, and Test connection with 403.
+Alternatively, register a literal IP address or use reverse mode. A public URL
+must be a complete `http://` or `https://` URL, not a bare hostname.
+
 Routing is path-based (`/node/<id>/...`) in v1; the proxy target is resolved per request, so host-based routing can be layered on later without changing the proxy plumbing. Because path routing puts hub UI and proxied node UI on the same browser origin, Hub v1 treats every registered node/widget as fully trusted with the operator browser's Hub authority. HttpOnly/SameSite session cookies and passkeys do not isolate malicious JavaScript already executing on that origin. The node web UI namespaces localStorage by hub node id to avoid ordinary state collisions; this is not a security boundary. Untrusted remote nodes/widgets still need the future host-based/widget-grant isolation work before they should be opened through a shared hub origin.
 
 Node scheduling and mTLS between hub and nodes remain out of scope for v1; passkey mode intentionally supports one logical Hub administrator rather than multiple users or roles.

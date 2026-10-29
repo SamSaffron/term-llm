@@ -3,10 +3,10 @@ package tools
 import (
 	"crypto/sha256"
 	"encoding/hex"
-	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
+
+	"github.com/samsaffron/term-llm/internal/tools/gitidentity"
 )
 
 // GitRepoInfo contains information about a git repository.
@@ -16,83 +16,19 @@ type GitRepoInfo struct {
 	RepoName string // Basename of the repository (for display)
 }
 
-// DetectGitRepo detects if the given path is inside a git repository.
-// Returns GitRepoInfo with IsRepo=false if not in a repo or if git is unavailable.
-// The path can be a file or directory.
+// DetectGitRepo discovers the physical checkout containing path, which may be a
+// file, directory, or not-yet-created path. Git configuration and environment
+// cannot redirect this approval identity to another checkout.
 func DetectGitRepo(path string) GitRepoInfo {
-	absPath, err := filepath.Abs(path)
-	if err != nil {
-		return GitRepoInfo{}
-	}
-
-	// Determine the directory to run git from. If the path doesn't exist yet,
-	// walk up to the nearest existing ancestor before invoking git.
-	workDir := absPath
-	for {
-		if info, err := os.Stat(workDir); err == nil {
-			if info.IsDir() {
-				break
-			}
-			workDir = filepath.Dir(workDir)
-			continue
-		}
-
-		parent := filepath.Dir(workDir)
-		if parent == workDir {
-			return GitRepoInfo{}
-		}
-		workDir = parent
-	}
-
-	// Run git rev-parse --show-toplevel to find repo root
-	cmd := exec.Command("git", "rev-parse", "--show-toplevel")
-	cmd.Dir = workDir
-
-	output, err := cmd.Output()
-	if err != nil {
-		// Not in a git repo or git not available
-		return GitRepoInfo{}
-	}
-
-	root := strings.TrimSpace(string(output))
+	root := gitidentity.Root(path)
 	if root == "" {
 		return GitRepoInfo{}
 	}
-	if canonical := canonicalGitCommonRoot(workDir); canonical != "" {
-		root = canonical
-	}
-
 	return GitRepoInfo{
 		IsRepo:   true,
 		Root:     root,
 		RepoName: filepath.Base(root),
 	}
-}
-
-func canonicalGitCommonRoot(workDir string) string {
-	cmd := exec.Command("git", "rev-parse", "--git-common-dir")
-	cmd.Dir = workDir
-	out, err := cmd.Output()
-	if err != nil {
-		return ""
-	}
-	common := strings.TrimSpace(string(out))
-	if common == "" {
-		return ""
-	}
-	if !filepath.IsAbs(common) {
-		common = filepath.Join(workDir, common)
-	}
-	if resolved, err := filepath.EvalSymlinks(common); err == nil {
-		common = resolved
-	} else if abs, err := filepath.Abs(common); err == nil {
-		common = abs
-	}
-	common = filepath.Clean(common)
-	if filepath.Base(common) == ".git" {
-		return filepath.Dir(common)
-	}
-	return ""
 }
 
 // GetGitRepoID returns a unique identifier for a git repository.

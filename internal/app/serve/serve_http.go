@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	appserver "github.com/samsaffron/term-llm/internal/app/serve/server"
 	"github.com/samsaffron/term-llm/internal/usage"
 )
 
@@ -47,7 +48,7 @@ func (s *serveServer) Start() (startErr error) {
 	}
 	s.server = &http.Server{
 		Addr:              net.JoinHostPort(s.cfg.host, strconv.Itoa(s.cfg.port)),
-		Handler:           s.httpHandler(),
+		Handler:           appserver.GuardHost(s.httpHandler(), s.cfg.host, s.cfg.publicURL),
 		ConnContext:       s.reloadTransport().ConnContext,
 		ConnState:         s.reloadTransport().ConnState,
 		ReadHeaderTimeout: serveReadHeaderTimeout,

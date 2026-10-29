@@ -702,19 +702,6 @@ func configEdit(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("failed to get config path: %w", err)
 	}
 
-	// Ensure config directory exists
-	configDir := filepath.Dir(configPath)
-	if err := os.MkdirAll(configDir, 0755); err != nil {
-		return fmt.Errorf("failed to create config directory: %w", err)
-	}
-
-	// Create default config if it doesn't exist
-	if _, err := os.Stat(configPath); os.IsNotExist(err) {
-		if err := config.WriteFileAtomically(configPath, []byte(defaultConfigContent()), 0o600); err != nil {
-			return fmt.Errorf("failed to create config file: %w", err)
-		}
-	}
-
 	// Get editor from environment
 	editor := os.Getenv("EDITOR")
 	if editor == "" {
@@ -724,11 +711,13 @@ func configEdit(cmd *cobra.Command, args []string) error {
 		editor = "vi"
 	}
 
-	editorCmd := exec.Command(editor, configPath)
-	editorCmd.Stdin = os.Stdin
-	editorCmd.Stdout = os.Stdout
-	editorCmd.Stderr = os.Stderr
-	return editorCmd.Run()
+	return config.EditPrivateConfigFile(configPath, []byte(defaultConfigContent()), func(path string) error {
+		editorCmd := exec.Command(editor, path)
+		editorCmd.Stdin = os.Stdin
+		editorCmd.Stdout = os.Stdout
+		editorCmd.Stderr = os.Stderr
+		return editorCmd.Run()
+	})
 }
 
 func configEditMcp(cmd *cobra.Command, args []string) error {
@@ -789,7 +778,7 @@ func configReset(cmd *cobra.Command, args []string) error {
 	}
 
 	// Write default config
-	if err := config.WriteFileAtomically(configPath, []byte(defaultConfigContent()), 0o600); err != nil {
+	if err := config.WritePrivateConfigFile(configPath, []byte(defaultConfigContent())); err != nil {
 		return fmt.Errorf("failed to write config file: %w", err)
 	}
 
@@ -981,7 +970,7 @@ func configSet(cmd *cobra.Command, args []string) error {
 	}
 	encoder.Close()
 
-	if err := config.WriteFileAtomically(configPath, buf.Bytes(), 0644); err != nil {
+	if err := config.WritePrivateConfigFile(configPath, buf.Bytes()); err != nil {
 		return fmt.Errorf("failed to write config: %w", err)
 	}
 

@@ -64,7 +64,7 @@ func (m *ApprovalManager) checkShellApprovalWithContext(ctx context.Context, com
 	}
 
 	// Remember approval in the command's repo, not the process's repo.
-	projectApprovals := m.getProjectApprovals(normalizeGuardianWorkDir(workDir))
+	projectApprovals := m.getProjectApprovals(workDir)
 
 	// Try new UI first (local, then ancestors), then fall back to legacy
 	promptUIFunc := m.lookupPromptUIFunc()

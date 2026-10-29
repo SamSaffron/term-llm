@@ -41,7 +41,7 @@ func editConfigFile(edit func(root *yaml.Node) (bool, error)) error {
 	if err := enc.Close(); err != nil {
 		return fmt.Errorf("encode config: %w", err)
 	}
-	if err := WriteFileAtomically(path, buf.Bytes(), 0o600); err != nil {
+	if err := WritePrivateConfigFile(path, buf.Bytes()); err != nil {
 		return fmt.Errorf("write config: %w", err)
 	}
 	return nil

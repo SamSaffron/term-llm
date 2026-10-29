@@ -419,6 +419,14 @@ term-llm serve web --auth none --host 127.0.0.1
 
 `--allow-no-auth` and `--auth none` are only valid for loopback use. Non-loopback listeners require authentication; use HTTPS and a stable token when exposing a server remotely.
 
+The network listener also validates the HTTP `Host` before any route, including
+streams and public assets, to reject DNS rebinding. Loopback names/addresses and
+the configured bind hostname are accepted; wildcard listeners additionally accept
+literal IP addresses. If a reverse proxy preserves a different hostname, declare
+it with `--public-url https://chat.example.com/ui/` (or
+`TERM_LLM_SERVE_PUBLIC_URL`). Forwarded headers do not expand this allowlist.
+Browser bearer cookies gain `Secure` when the UI is opened over HTTPS.
+
 ## Optional passkey authentication (Web only)
 
 Bearer authentication remains the default. To use passkeys and private browser

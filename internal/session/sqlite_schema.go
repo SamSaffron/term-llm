@@ -4,8 +4,6 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
-	"os"
-	"path/filepath"
 	"strings"
 	"time"
 
@@ -28,11 +26,8 @@ func NewSQLiteStore(cfg Config) (*SQLiteStore, error) {
 	// Retain the resolved identity even if a caller later changes process CWD.
 	cfg.Path = dbPath
 
-	// Ensure directory exists for file-backed databases.
-	if dbPath != ":memory:" && !cfg.ReadOnly {
-		if err := os.MkdirAll(filepath.Dir(dbPath), 0755); err != nil {
-			return nil, fmt.Errorf("create data directory: %w", err)
-		}
+	if err := prepareSessionStorage(dbPath, cfg.ReadOnly); err != nil {
+		return nil, err
 	}
 
 	// Configure SQLite for concurrent access:

@@ -3,7 +3,6 @@ package markdown
 import (
 	"bytes"
 	"fmt"
-	"html"
 	"math"
 	"regexp"
 	"strconv"
@@ -1173,25 +1172,6 @@ func hasThreeConsecutiveNewlines(s string) bool {
 		}
 	}
 	return false
-}
-
-// backslashEscapeRe matches a backslash followed by an ASCII punctuation character.
-var backslashEscapeRe = regexp.MustCompile(`\\([!"#$%&'()*+,\-./:;<=>?@\[\\\]^_{|}~` + "`])")
-
-// decodeInlineText processes raw goldmark source text for terminal display:
-// 1. Strips CommonMark backslash escapes (\* → *)
-// 2. Decodes HTML entities (&amp; → &, &ouml; → ö)
-func decodeInlineText(s string) string {
-	if strings.IndexAny(s, "\\&") < 0 {
-		return s
-	}
-	if strings.IndexByte(s, '\\') >= 0 {
-		s = backslashEscapeRe.ReplaceAllString(s, "$1")
-	}
-	if strings.IndexByte(s, '&') >= 0 {
-		s = html.UnescapeString(s)
-	}
-	return s
 }
 
 type codeHighlighter struct {

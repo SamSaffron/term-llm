@@ -380,12 +380,13 @@ type ApprovalManager struct {
 	guardianMu       sync.RWMutex
 	guardianExact    map[guardianShellKey]struct{} // exact shell actions approved by guardian
 
-	policyReviewMu      sync.RWMutex
-	policyReviewFunc    func(context.Context, PolicyReviewRequest) (PolicyDecision, error)
-	policyReviewCleanup func()
-	permissions         *ToolPermissions
-	projectCache        map[string]*ProjectApprovals // repo root -> approvals
-	projectMu           sync.Mutex
+	policyReviewMu       sync.RWMutex
+	policyReviewFunc     func(context.Context, PolicyReviewRequest) (PolicyDecision, error)
+	policyReviewCleanup  func()
+	permissions          *ToolPermissions
+	projectCache         map[string]*ProjectApprovals   // validated repo root -> loaded approval data
+	sessionProjectGrants map[string]sessionProjectGrant // explicit session repo file grants; protected by projectMu
+	projectMu            sync.Mutex
 
 	toolAllowMu        sync.RWMutex
 	extensionDirectory string              // host-scoped file access for the built-in web extension-builder only
@@ -910,29 +911,6 @@ func (m *ApprovalManager) YoloEnabled() bool {
 	return m.ApprovalMode() == ModeYolo
 }
 
-// getProjectApprovals returns or loads project approvals for the given path.
-func (m *ApprovalManager) getProjectApprovals(path string) *ProjectApprovals {
-	repoInfo := DetectGitRepo(path)
-	if !repoInfo.IsRepo {
-		return nil
-	}
-
-	m.projectMu.Lock()
-	defer m.projectMu.Unlock()
-
-	if pa, ok := m.projectCache[repoInfo.Root]; ok {
-		return pa
-	}
-
-	pa, err := LoadProjectApprovals(repoInfo.Root)
-	if err != nil {
-		return nil
-	}
-
-	m.projectCache[repoInfo.Root] = pa
-	return pa
-}
-
 // checkPathApprovalNoPrompt runs the non-interactive approval checks.
 // Returns (outcome, true, nil) when a decision is made, or (Cancel, false, nil)
 // when prompting is still required.
@@ -1006,22 +984,15 @@ func (m *ApprovalManager) checkPathApprovalNoPrompt(toolName, path, absPath stri
 		}
 	}
 
-	// 3. Check project-level approvals (persisted)
-	if !m.IgnoreProjectApprovals {
-		if absPath == "" {
-			absPath = path
-			if resolved, err := filepath.Abs(path); err == nil {
-				absPath = resolved
-			}
+	// 3. Check explicit session repo grants and, unless ignored, persisted grants.
+	if absPath == "" {
+		absPath = path
+	}
+	if m.isProjectPathApproved(absPath, isWrite) {
+		if m.DebugApproval {
+			runtimeoutput.Logf("[approval]   project approvals approved %q (isWrite=%v)", absPath, isWrite)
 		}
-
-		projectApprovals := m.getProjectApprovals(absPath)
-		if projectApprovals != nil && projectApprovals.IsPathApproved(absPath, isWrite) {
-			if m.DebugApproval {
-				runtimeoutput.Logf("[approval]   project approvals approved %q (isWrite=%v)", absPath, isWrite)
-			}
-			return ProceedAlways, true, nil
-		}
+		return ProceedAlways, true, nil
 	}
 
 	return Cancel, false, nil
@@ -1398,10 +1369,8 @@ func (m *ApprovalManager) handleFileApprovalResult(result ApprovalResult, path s
 				}
 			}
 		}
-		// Also add to session cache for fast lookups (read only)
-		if result.Path != "" {
-			m.dirCache.Set(result.Path, ProceedAlways, false)
-		}
+		// Session grants use the actual validated repo, never a UI path prefix.
+		m.rememberSessionProjectGrant(path, false)
 		return ProceedAlways, nil
 
 	case ApprovalChoiceRepoWrite:
@@ -1413,10 +1382,7 @@ func (m *ApprovalManager) handleFileApprovalResult(result ApprovalResult, path s
 				}
 			}
 		}
-		// Also add to session cache (write)
-		if result.Path != "" {
-			m.dirCache.Set(result.Path, ProceedAlways, true)
-		}
+		m.rememberSessionProjectGrant(path, true)
 		return ProceedAlways, nil
 
 	default:

@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { observePopoverPosition, positionPopover } from './browser';
+import { observePopoverPosition, positionPopover, syncTokenCookie } from './browser';
 
 const originalVisualViewport = Object.getOwnPropertyDescriptor(window, 'visualViewport');
 
@@ -52,5 +52,23 @@ describe('popover positioning', () => {
     stop();
     expect(viewport.removeEventListener).toHaveBeenCalledWith('resize', expect.any(Function));
     expect(viewport.removeEventListener).toHaveBeenCalledWith('scroll', expect.any(Function));
+  });
+});
+
+describe('token cookie transport security', () => {
+  it.each(['https:', 'http:'])('uses Secure only for %s', (protocol) => {
+    const cookies: string[] = [];
+    const target = {
+      location: { protocol },
+      set cookie(value: string) {
+        cookies.push(value);
+      },
+    } as unknown as Document;
+    syncTokenCookie('/ui', 'secret', target);
+    expect(cookies).toHaveLength(2);
+    for (const cookie of cookies) {
+      expect(cookie.includes('; Secure')).toBe(protocol === 'https:');
+      expect(cookie).toContain('SameSite=Strict');
+    }
   });
 });

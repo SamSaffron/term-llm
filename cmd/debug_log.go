@@ -89,10 +89,10 @@ func init() {
 	debugLogCleanCmd.Flags().BoolVar(&debugLogDryRun, "dry-run", false, "Show what would be deleted")
 
 	// Export flags
-	debugLogExportCmd.Flags().BoolVar(&debugLogRedact, "redact", false, "Redact sensitive content")
+	debugLogExportCmd.Flags().BoolVar(&debugLogRedact, "redact", true, "Export metadata only (default true); --redact=false includes private content and credentials")
 	debugLogExportCmd.Flags().BoolVar(&debugLogMarkdown, "markdown", false, "Export as markdown")
 	debugLogExportCmd.Flags().BoolVar(&debugLogJSON, "json", false, "Export as JSON (default)")
-	debugLogExportCmd.Flags().BoolVar(&debugLogRaw, "raw", false, "Export raw JSONL")
+	debugLogExportCmd.Flags().BoolVar(&debugLogRaw, "raw", false, "Export as JSONL (redacted unless --redact=false)")
 }
 
 var debugLogListCmd = &cobra.Command{
@@ -174,13 +174,24 @@ Examples:
 var debugLogExportCmd = &cobra.Command{
 	Use:   "export [session]",
 	Short: "Export a session for sharing",
-	Long: `Export a debug session for sharing or bug reports.
+	Long: `Export a debug session as diagnostic metadata for sharing or bug reports.
+
+Redaction is ON by default in every format, including --raw (JSONL). It omits
+prompts, responses, reasoning, tool arguments/results/info, errors, paths,
+environment values, tool descriptions, and unknown payload fields. Timing,
+provider/model labels, tool names, counts, usage, and success flags remain.
+Review retained metadata before sharing: arbitrary content cannot be guaranteed
+safe by secret-pattern matching.
+
+For private local diagnostics, --redact=false explicitly includes sensitive
+content and credentials. This emits a warning; do not share that output blindly.
+Local show, tail, and search commands remain unredacted.
 
 Examples:
-  term-llm debug-log export 1 > session.json
-  term-llm debug-log export 1 --redact       # redact sensitive content
-  term-llm debug-log export 1 --markdown     # export as markdown
-  term-llm debug-log export 1 --raw          # export raw JSONL`,
+  term-llm debug-log export 1 > session.json  # metadata only (default)
+  term-llm debug-log export 1 --markdown      # metadata as markdown
+  term-llm debug-log export 1 --raw           # metadata as JSONL, not a byte copy
+  term-llm debug-log export 1 --raw --redact=false > private.jsonl`,
 	Args: cobra.MaximumNArgs(1),
 	RunE: debugLogExport,
 }
@@ -268,13 +279,15 @@ func debugLogShow(cmd *cobra.Command, args []string) error {
 
 	// Raw output
 	if debugLogRaw {
-		return debuglog.ExportRawByID(dir, summary.ID, os.Stdout)
+		return debuglog.ExportSessionByID(dir, summary.ID, os.Stdout, debuglog.ExportOptions{
+			Format: debuglog.FormatRaw, IncludeSensitive: true,
+		})
 	}
 
 	// JSON output
 	if debugLogJSON {
 		return debuglog.ExportSessionByID(dir, summary.ID, os.Stdout, debuglog.ExportOptions{
-			Format: debuglog.FormatJSON,
+			Format: debuglog.FormatJSON, IncludeSensitive: true,
 		})
 	}
 
@@ -470,9 +483,12 @@ func debugLogExport(cmd *cobra.Command, args []string) error {
 		format = debuglog.FormatRaw
 	}
 
-	return debuglog.ExportSessionByID(dir, identifier, os.Stdout, debuglog.ExportOptions{
-		Format: format,
-		Redact: debugLogRedact,
+	if !debugLogRedact {
+		fmt.Fprintln(cmd.ErrOrStderr(), "WARNING: redaction disabled; export includes private prompts, tool output, and credentials. Keep it local and review before sharing.")
+	}
+	return debuglog.ExportSessionByID(dir, identifier, cmd.OutOrStdout(), debuglog.ExportOptions{
+		Format:           format,
+		IncludeSensitive: !debugLogRedact,
 	})
 }
 
@@ -587,7 +603,7 @@ func setDebugLogEnabled(enabled bool) error {
 	}
 	encoder.Close()
 
-	if err := os.WriteFile(configPath, buf.Bytes(), 0644); err != nil {
+	if err := config.WritePrivateConfigFile(configPath, buf.Bytes()); err != nil {
 		return fmt.Errorf("failed to write config: %w", err)
 	}
 

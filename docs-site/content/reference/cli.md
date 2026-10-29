@@ -6,6 +6,8 @@ kicker: "CLI"
 ---
 This index is generated from the CLI's registered command tree. Subcommands inherit the global flags listed under `term-llm`; use `term-llm <command> --help` for full usage and examples. Hidden and Cobra-internal help flags are omitted.
 
+`term-llm debug-log export` defaults to **metadata-only redaction** in JSON, Markdown, and `--raw` JSONL. It removes message content (including structured prompts, responses, and reasoning), tool arguments/results/info, error details, environment values, command arguments/paths, tool descriptions, and unknown payload fields. Provider/model labels, tool names, timestamps, counts, usage, and success flags remain useful for diagnosis. Recognizable credential patterns are also blocked in retained labels, but no pattern matcher can guarantee arbitrary content is safe: **review the remaining metadata before sharing**. `--raw` selects JSONL, not an unredacted byte copy. For private diagnostics, explicitly use `--redact=false`; this warns on stderr and includes sensitive content (with `--raw`, the original bytes). Local `debug-log show`, `tail`, and `search` remain unredacted.
+
 <!-- BEGIN GENERATED: cli -->
 ### `term-llm`
 
@@ -427,8 +429,8 @@ Export a session for sharing
 |---|---|---|
 | `--json` | bool | Export as JSON (default) |
 | `--markdown` | bool | Export as markdown |
-| `--raw` | bool | Export raw JSONL |
-| `--redact` | bool | Redact sensitive content |
+| `--raw` | bool | Export as JSONL (redacted unless --redact=false) |
+| `--redact` | bool | Export metadata only (default true); --redact=false includes private content and credentials |
 
 ### `term-llm debug-log list`
 

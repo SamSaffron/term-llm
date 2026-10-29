@@ -17,6 +17,7 @@ import (
 
 	"github.com/samsaffron/term-llm/internal/app/reload"
 	apphub "github.com/samsaffron/term-llm/internal/app/serve/hub"
+	appserver "github.com/samsaffron/term-llm/internal/app/serve/server"
 	"github.com/samsaffron/term-llm/internal/filelock"
 	"github.com/samsaffron/term-llm/internal/hub"
 	"github.com/samsaffron/term-llm/internal/passkeyauth"
@@ -62,12 +63,12 @@ func runServeHubWith(parentCtx context.Context, deps hubDeps, opts *apphub.Optio
 	if err := validateHubBind(opts.Host, opts.Port, requireAuth); err != nil {
 		return err
 	}
+	publicURL := strings.TrimSpace(opts.PublicURL)
+	if publicURL == "" {
+		publicURL = strings.TrimSpace(os.Getenv("TERM_LLM_HUB_PUBLIC_URL"))
+	}
 	var endpoint passkeyauth.Endpoint
 	if authMode == "passkey" {
-		publicURL := strings.TrimSpace(opts.PublicURL)
-		if publicURL == "" {
-			publicURL = strings.TrimSpace(os.Getenv("TERM_LLM_HUB_PUBLIC_URL"))
-		}
 		endpoint, err = passkeyauth.ParseEndpoint(passkeyauth.EndpointOptions{PublicURL: publicURL, BasePath: opts.BasePath, BasePathExplicit: deps.Flags.BasePath})
 		if err != nil {
 			return fmt.Errorf("invalid Hub passkey --public-url/--base-path configuration: %w", err)
@@ -174,7 +175,7 @@ func runServeHubWith(parentCtx context.Context, deps hubDeps, opts *apphub.Optio
 	}
 	addr := net.JoinHostPort(opts.Host, strconv.Itoa(opts.Port))
 	transport := &restart.HTTPTransport{Coordinator: restart.Default}
-	srv := &http.Server{Addr: addr, Handler: transport.Handler(s.handler()), ConnContext: transport.ConnContext, ConnState: transport.ConnState}
+	srv := &http.Server{Addr: addr, Handler: transport.Handler(appserver.GuardHost(s.handler(), opts.Host, publicURL)), ConnContext: transport.ConnContext, ConnState: transport.ConnState}
 	srv.RegisterOnShutdown(s.changes.Close)
 
 	out := deps.Stdout

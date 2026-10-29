@@ -6,7 +6,6 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"regexp"
 	"strings"
 )
 
@@ -22,17 +21,28 @@ const (
 // ExportOptions controls export behavior
 type ExportOptions struct {
 	Format ExportFormat
-	Redact bool // Redact sensitive content (API keys, file contents, paths)
+	// Redact forces metadata-only output, even if IncludeSensitive is also set.
+	// Redaction is the default; false alone does not opt out.
+	Redact bool
+	// IncludeSensitive explicitly opts out of structural redaction. Intended for
+	// local diagnostics only: output can contain credentials and private content.
+	IncludeSensitive bool
 }
 
 // Export exports a session in the specified format
 func Export(w io.Writer, session *Session, opts ExportOptions) error {
+	if opts.shouldRedact() {
+		session = redactSession(session)
+	}
 	switch opts.Format {
 	case FormatJSON:
 		return exportJSON(w, session, opts)
 	case FormatMarkdown:
-		return exportMarkdown(w, session, opts)
+		return exportMarkdown(w, session)
 	case FormatRaw:
+		if opts.shouldRedact() {
+			return exportRedactedRaw(w, session.FilePath)
+		}
 		return exportRaw(w, session.FilePath)
 	default:
 		return fmt.Errorf("unknown format: %s", opts.Format)
@@ -54,7 +64,7 @@ func exportJSON(w io.Writer, session *Session, opts ExportOptions) error {
 			continue
 		}
 
-		if opts.Redact {
+		if opts.shouldRedact() {
 			redactEntry(entry)
 		}
 
@@ -84,7 +94,7 @@ func exportJSON(w io.Writer, session *Session, opts ExportOptions) error {
 }
 
 // exportMarkdown exports the session as readable markdown
-func exportMarkdown(w io.Writer, session *Session, opts ExportOptions) error {
+func exportMarkdown(w io.Writer, session *Session) error {
 	fmt.Fprintf(w, "# Debug Session: %s\n\n", session.ID)
 	fmt.Fprintf(w, "**Provider:** %s  \n", session.Provider)
 	fmt.Fprintf(w, "**Model:** %s  \n", session.Model)
@@ -106,9 +116,9 @@ func exportMarkdown(w io.Writer, session *Session, opts ExportOptions) error {
 	for _, entry := range session.Entries {
 		switch e := entry.(type) {
 		case RequestEntry:
-			exportRequestMarkdown(w, e, opts)
+			exportRequestMarkdown(w, e)
 		case EventEntry:
-			exportEventMarkdown(w, e, opts)
+			exportEventMarkdown(w, e)
 		}
 	}
 
@@ -116,7 +126,7 @@ func exportMarkdown(w io.Writer, session *Session, opts ExportOptions) error {
 }
 
 // exportRequestMarkdown exports a request entry as markdown
-func exportRequestMarkdown(w io.Writer, req RequestEntry, opts ExportOptions) {
+func exportRequestMarkdown(w io.Writer, req RequestEntry) {
 	fmt.Fprintf(w, "### Request (%s)\n\n", req.Timestamp.Local().Format("15:04:05"))
 	fmt.Fprintf(w, "- Provider: %s\n", req.Provider)
 	fmt.Fprintf(w, "- Model: %s\n", req.Model)
@@ -140,10 +150,7 @@ func exportRequestMarkdown(w io.Writer, req RequestEntry, opts ExportOptions) {
 		role := capitalizeFirst(msg.Role)
 		fmt.Fprintf(w, "**%s Message %d:**\n", role, i+1)
 
-		content := formatMessageContent(msg.Content, opts)
-		if opts.Redact {
-			content = redactText(content)
-		}
+		content := formatMessageContent(msg.Content)
 
 		if len(content) > 500 {
 			content = content[:500] + "\n...(truncated)"
@@ -153,16 +160,13 @@ func exportRequestMarkdown(w io.Writer, req RequestEntry, opts ExportOptions) {
 }
 
 // exportEventMarkdown exports an event entry as markdown
-func exportEventMarkdown(w io.Writer, evt EventEntry, opts ExportOptions) {
+func exportEventMarkdown(w io.Writer, evt EventEntry) {
 	switch evt.EventType {
 	case "tool_call":
 		name, _ := evt.Data["name"].(string)
 		args, _ := evt.Data["arguments"].(string)
 		fmt.Fprintf(w, "#### Tool Call: %s (%s)\n\n", name, evt.Timestamp.Local().Format("15:04:05"))
 		if args != "" {
-			if opts.Redact {
-				args = redactText(args)
-			}
 			if len(args) > 500 {
 				args = args[:500] + "\n...(truncated)"
 			}
@@ -180,9 +184,6 @@ func exportEventMarkdown(w io.Writer, evt EventEntry, opts ExportOptions) {
 
 	case "error":
 		errMsg, _ := evt.Data["error"].(string)
-		if opts.Redact {
-			errMsg = redactText(errMsg)
-		}
 		fmt.Fprintf(w, "**Error:** %s\n\n", errMsg)
 
 	case "usage":
@@ -220,7 +221,7 @@ func exportRaw(w io.Writer, filePath string) error {
 }
 
 // formatMessageContent converts message content to a string
-func formatMessageContent(content any, opts ExportOptions) string {
+func formatMessageContent(content any) string {
 	switch c := content.(type) {
 	case string:
 		return c
@@ -258,61 +259,6 @@ func formatMessageContent(content any, opts ExportOptions) string {
 	}
 }
 
-// redactEntry redacts sensitive data from a parsed entry
-func redactEntry(entry map[string]any) {
-	// Redact request data
-	if req, ok := entry["request"].(map[string]any); ok {
-		if messages, ok := req["messages"].([]any); ok {
-			for _, msg := range messages {
-				if m, ok := msg.(map[string]any); ok {
-					if content, ok := m["content"].(string); ok {
-						m["content"] = redactText(content)
-					}
-				}
-			}
-		}
-	}
-
-	// Redact event data
-	if data, ok := entry["data"].(map[string]any); ok {
-		if text, ok := data["text"].(string); ok {
-			data["text"] = redactText(text)
-		}
-		if args, ok := data["arguments"].(string); ok {
-			data["arguments"] = redactText(args)
-		}
-		if content, ok := data["content"].(string); ok {
-			data["content"] = redactText(content)
-		}
-		if err, ok := data["error"].(string); ok {
-			data["error"] = redactText(err)
-		}
-	}
-}
-
-// redactText redacts sensitive patterns from text
-func redactText(text string) string {
-	// API keys (common patterns)
-	text = regexp.MustCompile(`(?i)(sk-[a-zA-Z0-9]{20,})`).ReplaceAllString(text, "[REDACTED_API_KEY]")
-	text = regexp.MustCompile(`(?i)(api[_-]?key[\"']?\s*[:=]\s*[\"']?)[a-zA-Z0-9_-]{20,}`).ReplaceAllString(text, "${1}[REDACTED]")
-
-	// Home directory paths
-	homeDir, _ := os.UserHomeDir()
-	if homeDir != "" {
-		text = strings.ReplaceAll(text, homeDir, "~")
-	}
-
-	// File contents that look like code (long lines with common patterns)
-	// This is a heuristic - actual file contents in tool results
-	lines := strings.Split(text, "\n")
-	if len(lines) > 50 {
-		// Truncate very long content
-		text = strings.Join(lines[:50], "\n") + "\n[...content truncated for export...]"
-	}
-
-	return text
-}
-
 // ExportSessionByID exports a session by ID or number
 func ExportSessionByID(dir, identifier string, w io.Writer, opts ExportOptions) error {
 	summary, err := ResolveSession(dir, identifier)
@@ -331,17 +277,10 @@ func ExportSessionByID(dir, identifier string, w io.Writer, opts ExportOptions) 
 	return Export(w, session, opts)
 }
 
-// ExportRawByID exports raw JSONL by session ID or number
+// ExportRawByID exports metadata-only JSONL by session ID or number.
+// Use ExportSessionByID with IncludeSensitive for unredacted local diagnostics.
 func ExportRawByID(dir, identifier string, w io.Writer) error {
-	summary, err := ResolveSession(dir, identifier)
-	if err != nil {
-		return err
-	}
-	if summary == nil {
-		return fmt.Errorf("session not found: %s", identifier)
-	}
-
-	return exportRaw(w, summary.FilePath)
+	return ExportSessionByID(dir, identifier, w, ExportOptions{Format: FormatRaw})
 }
 
 // GetSessionFilePath returns the file path for a session

@@ -2775,7 +2775,7 @@ func Save(cfg *Config) error {
 		return fmt.Errorf("failed to marshal config: %w", err)
 	}
 
-	return writeFileAtomically(path, data, 0o600)
+	return WritePrivateConfigFile(path, data)
 }
 
 // SetAgentPreference sets a preference for a specific agent in config.yaml,

@@ -286,9 +286,9 @@ func (c *Client) createHTTPTransport() (mcp.Transport, error) {
 		if err != nil {
 			return nil, fmt.Errorf("mcp server %s: headers: %w", c.name, err)
 		}
-		httpClient.Transport = &headerTransport{
-			base:    baseTransport,
-			headers: headers,
+		httpClient.Transport, err = newHeaderTransport(baseTransport, headers, c.config.URL)
+		if err != nil {
+			return nil, fmt.Errorf("mcp server %s: headers: %w", c.name, err)
 		}
 	}
 
@@ -334,20 +334,6 @@ func (c *Client) automaticOAuthEnabled() bool {
 
 func isClientAuthenticationRequired(err error) bool {
 	return errors.Is(err, mcpoauth.ErrAuthenticationRequired) || errors.Is(err, mcpoauth.ErrRefreshRejected)
-}
-
-// headerTransport is an http.RoundTripper that adds custom headers to requests.
-type headerTransport struct {
-	base    http.RoundTripper
-	headers map[string]string
-}
-
-func (t *headerTransport) RoundTrip(req *http.Request) (*http.Response, error) {
-	req = req.Clone(req.Context())
-	for k, v := range t.headers {
-		req.Header.Set(k, v)
-	}
-	return t.base.RoundTrip(req)
 }
 
 func (c *Client) currentSession() *mcp.ClientSession {

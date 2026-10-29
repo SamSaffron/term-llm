@@ -136,7 +136,7 @@ func saveThemeToConfig(themeConfig ui.ThemeConfig) error {
 	}
 	encoder.Close()
 
-	return os.WriteFile(configPath, buf.Bytes(), 0644)
+	return config.WritePrivateConfigFile(configPath, buf.Bytes())
 }
 
 // themeSelectorModel is the bubbletea model for theme selection

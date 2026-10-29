@@ -85,8 +85,9 @@ export function syncTokenCookie(
   documentTarget: Document = document,
 ): void {
   const path = prefix.replace(/\/$/, '') || '/';
+  const secure = documentTarget.location.protocol === 'https:' ? '; Secure' : '';
   const write = (value: string, cookiePath: string, maxAge: number) => {
-    documentTarget.cookie = `term_llm_token=${value}; path=${cookiePath}; SameSite=Strict; max-age=${maxAge}`;
+    documentTarget.cookie = `term_llm_token=${value}; path=${cookiePath}; SameSite=Strict; max-age=${maxAge}${secure}`;
   };
   write('', `${path}/images`, 0);
   write(token ? encodeURIComponent(token) : '', path, token ? 31_536_000 : 0);
