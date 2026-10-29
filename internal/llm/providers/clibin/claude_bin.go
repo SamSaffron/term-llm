@@ -106,6 +106,9 @@ type ClaudeBinProvider struct {
 
 	activeStream atomic.Bool
 
+	// contextReport tracks the context occupancy Claude Code reports (display only).
+	contextReport claudeContextReport
+
 	// activeInput keeps Claude's stream-json stdin open for native control
 	// requests while a turn is running. RequestInlineFlush uses it to interrupt
 	// prose/model generation immediately instead of waiting for an MCP tool
@@ -1150,6 +1153,9 @@ func (p *ClaudeBinProvider) handleClaudeLine(
 		}
 		return nil
 	}
+	if err := p.reportClaudeContext(baseMsg.Type, line, ephemeral, send); err != nil {
+		return err
+	}
 
 	switch baseMsg.Type {
 	case "system":
@@ -1199,14 +1205,7 @@ func (p *ClaudeBinProvider) handleClaudeLine(
 		}
 
 	case "assistant":
-		// Buffer assistant text as a fallback for providers/versions that
-		// don't emit stream_event text deltas.
-		var assistantMsg claudeAssistantMessage
-		if err := json.Unmarshal([]byte(line), &assistantMsg); err == nil && assistantFallbackText != nil {
-			if text := extractClaudeAssistantText(assistantMsg); text != "" {
-				*assistantFallbackText = text
-			}
-		}
+		bufferClaudeAssistantFallback(line, assistantFallbackText)
 
 	case "result":
 		var resultMsg claudeResultMessage
@@ -1268,6 +1267,21 @@ func (p *ClaudeBinProvider) handleClaudeLine(
 	}
 
 	return nil
+}
+
+// bufferClaudeAssistantFallback keeps assistant text as a fallback for
+// providers/versions that don't emit stream_event text deltas.
+func bufferClaudeAssistantFallback(line string, assistantFallbackText *string) {
+	if assistantFallbackText == nil {
+		return
+	}
+	var assistantMsg claudeAssistantMessage
+	if err := json.Unmarshal([]byte(line), &assistantMsg); err != nil {
+		return
+	}
+	if text := extractClaudeAssistantText(assistantMsg); text != "" {
+		*assistantFallbackText = text
+	}
 }
 
 func (p *ClaudeBinProvider) handleClaudeToolRequest(req claudeToolRequest, send eventSender) {

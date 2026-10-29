@@ -381,3 +381,25 @@ func (r *responseRun) applyRecoveryResponseFailed(event string, payload map[stri
 	})
 	r.currentAssistant = -1
 }
+func attachmentsFromPayload(v any) []map[string]any {
+	switch items := v.(type) {
+	case []map[string]any:
+		out := make([]map[string]any, 0, len(items))
+		for _, item := range items {
+			if len(item) > 0 {
+				out = append(out, cloneJSONMap(item))
+			}
+		}
+		return out
+	case []any:
+		out := make([]map[string]any, 0, len(items))
+		for _, item := range items {
+			if m := mapValue(item); len(m) > 0 {
+				out = append(out, cloneJSONMap(m))
+			}
+		}
+		return out
+	default:
+		return nil
+	}
+}

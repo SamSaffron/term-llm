@@ -1395,6 +1395,18 @@ export class RunEngine {
     }
     if (event.type === 'response.completed' && Object.hasOwn(response, 'context_usage')) {
       runtimePatch.contextUsage = sanitizeContextUsage(response.context_usage) ?? null;
+    } else if (event.type === 'response.context_usage') {
+      // Mid-run checkpoints carry occupancy only; the session cached-token
+      // counter arrives with response.completed.
+      const usage = sanitizeContextUsage(event.context_usage);
+      const previous = this.sessionStore.sessions
+        .peek()
+        .find((entry) => entry.id === sessionId)?.contextUsage;
+      if (usage)
+        runtimePatch.contextUsage = {
+          ...usage,
+          cachedInputTokens: usage.cachedInputTokens || previous?.cachedInputTokens || 0,
+        };
     }
     if (runtimePatch.activeEffort !== undefined)
       runtimePatch.confirmedEffort = runtimePatch.activeEffort;

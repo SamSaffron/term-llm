@@ -137,6 +137,7 @@ func (e *Engine) runSimpleScratchpad(ctx context.Context, req core.Request, send
 			case core.EventDone:
 				// The engine emits one done event after committing the scratchpad.
 			default:
+				e.observeReportedContext(event)
 				if err := send.Send(event); err != nil {
 					_ = stream.Close()
 					return err

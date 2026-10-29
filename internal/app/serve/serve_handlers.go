@@ -1413,6 +1413,14 @@ func (s *serveServer) selectedWebSession(ctx context.Context, selector string, s
 	}
 	if selectedMeta != nil {
 		result.ContextUsage = persistedContextUsage(selectedMeta, selected.Provider)
+		// The persisted row lags a live runtime; a stale/null value would clobber mid-run readings.
+		if s.sessionMgr != nil {
+			if rt, ok := s.sessionMgr.Get(selected.ID); ok && rt != nil {
+				if live := contextUsageSnapshot(rt.engine, nil, selectedMeta.CachedInputTokens); live != nil && live.UsedTokens > 0 {
+					result.ContextUsage = live
+				}
+			}
+		}
 		result.Metrics = &webSessionMetrics{InputTokens: selectedMeta.InputTokens, OutputTokens: selectedMeta.OutputTokens, CachedInputTokens: selectedMeta.CachedInputTokens, CacheWriteTokens: selectedMeta.CacheWriteTokens, ToolCalls: selectedMeta.ToolCalls, LLMTurns: selectedMeta.LLMTurns}
 	}
 	if attention, ok := session.AsAttentionStore(s.store); ok {

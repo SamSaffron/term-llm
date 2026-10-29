@@ -1634,17 +1634,16 @@ func contextUsageSnapshot(engine *engine.Engine, messages []core.Message, cached
 	if engine == nil {
 		return nil
 	}
-	usedTokens := engine.LastTotalTokens()
-	if usedTokens <= 0 && messages != nil {
-		usedTokens = engine.EstimateTokens(messages)
+	current := engine.ContextUsage()
+	if current.UsedTokens <= 0 && messages != nil {
+		current.UsedTokens = engine.EstimateTokens(messages)
 	}
-	inputLimit := engine.InputLimit()
-	if usedTokens <= 0 && inputLimit <= 0 && cachedInputTokens <= 0 {
+	if current.UsedTokens <= 0 && current.Window <= 0 && cachedInputTokens <= 0 {
 		return nil
 	}
 	return &serveContextUsage{
-		UsedTokens:        usedTokens,
-		InputLimit:        inputLimit,
+		UsedTokens:        current.UsedTokens,
+		InputLimit:        current.Window,
 		CachedInputTokens: cachedInputTokens,
 		Estimated:         true,
 	}

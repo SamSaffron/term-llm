@@ -69,6 +69,12 @@ func (e *Engine) ConfigureContextManagement(provider core.Provider, providerName
 	e.callbackMu.Lock()
 	e.inputLimit = limit
 	e.compactionConfig = compactionConfig
+	// A provider-reported context reading only describes the provider/model
+	// that produced it; drop it when the runtime moves to another one.
+	if key := providerName + "\x00" + modelName; key != e.reportedContextKey {
+		e.reportedContextKey = key
+		e.reportedContext = core.ContextUsage{}
+	}
 	e.callbackMu.Unlock()
 }
 
@@ -109,15 +115,75 @@ func (e *Engine) LastTotalTokens() int {
 	return v
 }
 
+// ContextUsage returns the latest known context occupancy for display.
+//
+// Providers that manage their own context report it via EventContextUsage;
+// that reading wins because the engine neither tracks nor compacts their
+// context. Otherwise it is the engine-tracked usage baseline and input limit.
+// The result never feeds compaction.
+func (e *Engine) ContextUsage() core.ContextUsage {
+	e.callbackMu.RLock()
+	defer e.callbackMu.RUnlock()
+	if e.reportedContext.UsedTokens > 0 {
+		return e.reportedContext
+	}
+	return core.ContextUsage{UsedTokens: e.lastTotalTokens, Window: e.inputLimit}
+}
+
+// observeReportedContext stores the reading carried by an EventContextUsage
+// and ignores every other event. The provider owns window retention: a zero
+// window means unknown (e.g. Claude Code switched models mid-run), so it must
+// not inherit the previous model's window here.
+func (e *Engine) observeReportedContext(event core.Event) {
+	reported := event.Context
+	if event.Type != core.EventContextUsage || reported == nil || reported.UsedTokens <= 0 {
+		return
+	}
+	e.callbackMu.Lock()
+	e.reportedContext = *reported
+	e.callbackMu.Unlock()
+}
+
+// recordUsageBaseline updates the engine-tracked context baseline from a
+// provider usage report when context tracking is enabled. Cache writes are
+// part of the prompt (providers report them separately from InputTokens), and
+// the output becomes assistant-message input on the next request.
+func (e *Engine) recordUsageBaseline(inputLimit int, use *core.Usage, messageCount int, producedOutput bool) {
+	if inputLimit <= 0 || use == nil {
+		return
+	}
+	// Retain a compatibility count that includes the in-flight assistant row
+	// when this usage event carries provider output.
+	if use.OutputTokens > 0 || producedOutput {
+		messageCount++
+	}
+	e.callbackMu.Lock()
+	e.lastTotalTokens = use.InputTokens + use.CachedInputTokens + use.CacheWriteTokens + use.OutputTokens
+	e.lastMessageCount = messageCount
+	e.callbackMu.Unlock()
+}
+
+// hasProvisionalOutput reports whether this attempt has produced assistant
+// output that will become a transcript row.
+func (t *providerTurnFrame) hasProvisionalOutput() bool {
+	return t.textBuilder.Len() > 0 || t.reasoningBuilder.Len() > 0 || len(t.toolCalls) > 0 ||
+		len(t.syncToolCalls) > 0 || t.reasoningItemID != "" || t.reasoningEncryptedContent != ""
+}
+
 // ContextEstimateBaseline returns the persisted context-estimate baseline: the
 // last observed exact total tokens plus a legacy message count retained for
 // compatibility with existing session metadata.
+//
+// For providers that manage their own context the engine never tracks usage,
+// so the latest provider-reported occupancy is the baseline. Persisting it lets
+// a reloaded session show its last known size before the next turn.
 func (e *Engine) ContextEstimateBaseline() (int, int) {
 	e.callbackMu.RLock()
-	total := e.lastTotalTokens
-	count := e.lastMessageCount
-	e.callbackMu.RUnlock()
-	return total, count
+	defer e.callbackMu.RUnlock()
+	if e.reportedContext.UsedTokens > 0 {
+		return e.reportedContext.UsedTokens, 0
+	}
+	return e.lastTotalTokens, e.lastMessageCount
 }
 
 // SetContextEstimateBaseline seeds the context-estimate baseline, typically

@@ -18,6 +18,9 @@ type MockTurn struct {
 	Usage     core.Usage      // Token usage to report
 	Delay     time.Duration   // Optional delay before responding (for timeout tests)
 	Error     error           // Return this error instead of responding
+	// Context, when set, is emitted as an EventContextUsage after Text, the way
+	// providers that manage their own context (claude-bin) report occupancy.
+	Context *core.ContextUsage
 	// InlineTools emits ToolCalls the way inline-loop bridges (claude-bin) do:
 	// each call carries a ToolResponse channel and the turn waits for its
 	// result before continuing. InlineText is emitted after every result.
@@ -185,6 +188,13 @@ func (m *MockProvider) Stream(ctx context.Context, req core.Request) (core.Strea
 				if err := send.Send(core.Event{Type: core.EventTextDelta, Text: chunk}); err != nil {
 					return err
 				}
+			}
+		}
+
+		if turn.Context != nil {
+			reading := *turn.Context
+			if err := send.Send(core.Event{Type: core.EventContextUsage, Context: &reading}); err != nil {
+				return err
 			}
 		}
 

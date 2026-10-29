@@ -132,28 +132,11 @@ func (s *serveServer) appendResponseRunEvent(runtime *serveRuntime, run *respons
 		return s.appendResponseSteering(runtime, run, state, ev)
 	case core.EventModelSwitch:
 		return s.appendResponseModelSwitch(runtime, run, state, ev)
-	default:
+	case core.EventUsage, core.EventContextUsage: // Live occupancy at every provider checkpoint.
+		if snapshot := contextUsageSnapshot(runtime.engine, nil, 0); snapshot != nil && snapshot.UsedTokens > 0 {
+			return run.appendEvent("response.context_usage", map[string]any{"context_usage": snapshot})
+		}
 		return nil
-	}
-}
-func attachmentsFromPayload(v any) []map[string]any {
-	switch items := v.(type) {
-	case []map[string]any:
-		out := make([]map[string]any, 0, len(items))
-		for _, item := range items {
-			if len(item) > 0 {
-				out = append(out, cloneJSONMap(item))
-			}
-		}
-		return out
-	case []any:
-		out := make([]map[string]any, 0, len(items))
-		for _, item := range items {
-			if m := mapValue(item); len(m) > 0 {
-				out = append(out, cloneJSONMap(m))
-			}
-		}
-		return out
 	default:
 		return nil
 	}

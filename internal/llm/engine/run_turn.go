@@ -533,25 +533,9 @@ func (e *Engine) runProviderTurn(state *engineRunTurnContext, attempt int) error
 				turn.turnMetrics.CacheWriteTokens += event.Use.CacheWriteTokens
 			}
 			// Update token tracking for compaction threshold and status line display.
-			// InputTokens is the non-cached portion; CachedInputTokens is the cached
-			// portion. Together they equal the total context size this turn. Adding
-			// OutputTokens gives the baseline for the next turn's input estimate
-			// (the model's output becomes assistant-message input on the next turn).
-			// All providers normalise to this convention — see Usage type docs.
-			if compaction.inputLimit > 0 {
-				messageCount := len(run.req.Messages)
-				// Usage total includes the assistant output from this provider turn.
-				// That output becomes assistant-message input on the next request, so
-				// retain a compatibility count that includes the in-flight assistant
-				// row when this usage event carries provider output.
-				if event.Use.OutputTokens > 0 || turn.textBuilder.Len() > 0 || turn.reasoningBuilder.Len() > 0 || len(turn.toolCalls) > 0 || len(turn.syncToolCalls) > 0 || turn.reasoningItemID != "" || turn.reasoningEncryptedContent != "" {
-					messageCount++
-				}
-				e.callbackMu.Lock()
-				e.lastTotalTokens = event.Use.InputTokens + event.Use.CachedInputTokens + event.Use.OutputTokens
-				e.lastMessageCount = messageCount
-				e.callbackMu.Unlock()
-			}
+			// All providers normalise usage to additive input/cached/cache-write
+			// counters — see Usage type docs.
+			e.recordUsageBaseline(compaction.inputLimit, event.Use, len(run.req.Messages), turn.hasProvisionalOutput())
 			if compaction.softActive {
 				continue
 			}
@@ -614,6 +598,7 @@ func (e *Engine) runProviderTurn(state *engineRunTurnContext, attempt int) error
 		if event.Type == core.EventDone {
 			continue
 		}
+		e.observeReportedContext(event)
 		if err := send.Send(event); err != nil {
 			return err
 		}

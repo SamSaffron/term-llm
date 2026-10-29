@@ -1,6 +1,7 @@
 package serve
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -247,12 +248,8 @@ func appendStatsContextSections(out *serveStatsResponse, meta *session.Session, 
 		}
 	}
 	if rt != nil && rt.engine != nil {
-		if n := rt.engine.LastTotalTokens(); n > 0 {
-			used = n
-		}
-		if n := rt.engine.InputLimit(); n > 0 {
-			limit = n
-		}
+		current := rt.engine.ContextUsage()
+		used, limit = cmp.Or(current.UsedTokens, used), cmp.Or(current.Window, limit)
 		soft, hard, compactEnabled = rt.engine.CompactionThresholds()
 		if diagnostics, ok := rt.engine.ToolDiscoveryDiagnostics(id); ok {
 			rows := []serveStatsRow{statsRow("Mode configured/resolved", diagnostics.ConfiguredMode+" / "+diagnostics.ResolvedMode), statsRow("Strategy configured/resolved", diagnostics.ConfiguredStrategy+" / "+diagnostics.Strategy), statsRow("Mode reason", diagnostics.Reason), statsRow("Strategy reason", diagnostics.StrategyReason), statsRow("Native fallback", fmt.Sprintf("%d (%s)", diagnostics.FallbackCount, diagnostics.FallbackReason)), statsRow("Pinned MCP", fmt.Sprintf("%d tools, ~%d tokens", diagnostics.PinnedCount, diagnostics.PinnedTokens)), statsRow("Active MCP", fmt.Sprintf("%d tools, ~%d tokens", diagnostics.ActiveMCPCount, diagnostics.ActiveMCPTokens)), statsRow("Deferred MCP", fmt.Sprintf("%d tools, ~%d tokens avoided", diagnostics.DeferredCount, diagnostics.DeferredTokens)), statsRow("Dynamic working set", fmt.Sprintf("%d/%d tools", diagnostics.DynamicActive, diagnostics.DynamicLimit)), statsRow("Working-set evictions", diagnostics.EvictionCount)}

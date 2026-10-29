@@ -224,6 +224,10 @@ const (
 	EventProviderReplay   EventType = "provider_replay"  // Internal-only opaque Responses output item.
 	EventDiscoveryCall    EventType = "discovery_call"   // Provider-neutral native client-executed discovery request.
 	EventDiscoveryOutput  EventType = "discovery_output" // Planner-selected schemas returned to native discovery.
+	// EventContextUsage reports how full the provider's context window is, as
+	// observed by a provider that manages its own context (Context is set). It
+	// is display-only: it never drives compaction or billing.
+	EventContextUsage EventType = "context_usage"
 )
 
 // WarningPhasePrefix is the prefix for warning-level phase events.
@@ -276,6 +280,7 @@ type Event struct {
 	ToolImages                 []string        // Legacy image paths from image tools
 	ToolMedia                  []MediaArtifact // Ordered image/video/audio artifacts from presentation tools
 	Use                        *Usage
+	Context                    *ContextUsage // For EventContextUsage
 	Err                        error
 	// CompactionActive carries the compaction lifecycle for
 	// EventCompactionStatus. True begins a span; false ends it. An ending event
@@ -325,6 +330,12 @@ type Usage struct {
 	ProviderTotalTokens int
 	// ReasoningTokens is provider-reported reasoning output tokens when available.
 	ReasoningTokens int
+}
+
+// ContextUsage describes the context occupied by the latest provider request.
+type ContextUsage struct {
+	UsedTokens int // Prompt tokens of the most recent request (input + cache read + cache write)
+	Window     int // Context window the provider reports for the model; 0 if unknown
 }
 
 // Add accumulates another usage value into u.

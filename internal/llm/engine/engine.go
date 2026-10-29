@@ -150,6 +150,8 @@ type Engine struct {
 	inputLimit           int               // 0 = unknown/disabled
 	lastTotalTokens      int               // cached+input+output from most recent API response
 	lastMessageCount     int               // retained/persisted for compatibility; estimator anchors structurally
+	reportedContext      core.ContextUsage // display-only reading from providers that manage their own context
+	reportedContextKey   string            // provider/model the reportedContext belongs to
 	systemPrompt         string            // Captured for re-injection after compaction
 	contextNoticeEmitted atomic.Bool       // one-shot flag: WARNING emitted once per session
 
@@ -610,6 +612,7 @@ func (e *Engine) ResetConversation() {
 	e.callbackMu.Lock()
 	e.lastTotalTokens = 0
 	e.lastMessageCount = 0
+	e.reportedContext = core.ContextUsage{}
 	e.systemPrompt = ""
 	e.claimedSteeringIDs = nil
 	e.claimedSteeringOrder = nil

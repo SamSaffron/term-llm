@@ -6027,11 +6027,28 @@ describe('AppStore compatibility behavior', () => {
       activeProvider: 'anthropic',
       activeEffort: 'medium',
     });
+    store.sessionStore.patch(active.id, {
+      contextUsage: { usedTokens: 1_000, cachedInputTokens: 900, estimated: true },
+    });
+    store.applyResponseEvent(active.id, {
+      type: 'response.context_usage',
+      response_id: 'r1',
+      run_epoch: 1,
+      sequence_number: 3,
+      context_usage: { used_tokens: 25_670, input_limit: 1_000_000, estimated: true },
+    });
+    // Mid-run checkpoints move occupancy and keep the session cached counter.
+    expect(store.activeSession.value?.contextUsage).toEqual({
+      usedTokens: 25_670,
+      inputLimit: 1_000_000,
+      cachedInputTokens: 900,
+      estimated: true,
+    });
     store.applyResponseEvent(active.id, {
       type: 'response.completed',
       response_id: 'r1',
       run_epoch: 1,
-      sequence_number: 3,
+      sequence_number: 4,
       response: {
         id: 'r1',
         status: 'completed',

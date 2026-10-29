@@ -3673,7 +3673,7 @@ func TestLastTotalTokensIncludesCachedTokens(t *testing.T) {
 						InputTokens:       1000,  // new (uncached) input tokens
 						OutputTokens:      500,   // output tokens
 						CachedInputTokens: 50000, // tokens read from cache
-						CacheWriteTokens:  200,   // tokens written to cache (subset of input, not additive)
+						CacheWriteTokens:  200,   // tokens written to cache (additive, like Anthropic cache_creation_input_tokens)
 					},
 				},
 				{Type: core.EventDone},
@@ -3707,13 +3707,15 @@ func TestLastTotalTokensIncludesCachedTokens(t *testing.T) {
 		}
 	}
 
-	// lastTotalTokens should include cached + new input + output
-	// = 50000 + 1000 + 500 = 51500
-	// cache_write tokens are NOT additive (they're a subset of input tokens)
+	// lastTotalTokens should include cached + new input + cache write + output
+	// = 50000 + 1000 + 200 + 500 = 51700. Every provider reports cache writes
+	// separately from InputTokens (Anthropic input_tokens excludes
+	// cache_creation_input_tokens), so a cold-cache turn would otherwise read
+	// as a near-empty context.
 	got := e.LastTotalTokens()
-	want := 51500
+	want := 51700
 	if got != want {
-		t.Errorf("LastTotalTokens() = %d, want %d (cached 50000 + input 1000 + output 500; cache_write excluded)", got, want)
+		t.Errorf("LastTotalTokens() = %d, want %d (cached 50000 + input 1000 + cache_write 200 + output 500)", got, want)
 	}
 }
 
