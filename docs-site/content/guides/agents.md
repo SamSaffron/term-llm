@@ -63,6 +63,10 @@ A few good starting points:
 - `@web-researcher` when the answer depends on current web information
 - `@commit-message` when you want a clean commit message without fuss
 
+### Developer shell policy
+
+The bundled `developer` shell allowlist contains only the argument-free commands `pwd`, `git diff`, `git status`, and `git log`. Additional Git options and similarly named Git aliases require separate approval; argument wildcards can permit outside-file reads, output writes, or external tools. Builds, tests, package-manager commands, interpreters, Make targets, and formatters (including `go fmt` and `cargo fmt`) are not pre-approved by the bundle: these can execute repository-controlled code or external tools. They remain subject to the normal approval policy unless separately authorized. Auto/Guardian machinery is unchanged, and existing persisted approvals and custom agent grants are not removed or rewritten. Even the remaining inspection grants authorize command text, not pinned executables or safe Git configuration, and are not a sandbox. Other bundled agents have their own policies; this tightening does not remove their grants.
+
 ### Commit workflow agent
 
 Native `/commit` resolves `commit-message` through the normal registry, so a user-installed agent with that name shadows the builtin. You can instead set `commit.message_agent` to another registered lookup name. The same resolution is used by TUI and Web.

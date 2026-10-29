@@ -126,70 +126,39 @@ func TestBuildFileOptions_NotInGitRepo(t *testing.T) {
 }
 
 func TestBuildShellOptions_InGitRepo(t *testing.T) {
-	repoInfo := &GitRepoInfo{
-		IsRepo:   true,
-		Root:     "/home/user/myproject",
-		RepoName: "myproject",
-	}
+	repoInfo := &GitRepoInfo{IsRepo: true, Root: "/home/user/myproject", RepoName: "myproject"}
 	command := "go test ./..."
-
 	options := BuildShellOptions(command, repoInfo)
 
-	// Should have 4 options: pattern, command, once, deny
-	if len(options) != 4 {
-		t.Errorf("expected 4 options for shell in git repo, got %d", len(options))
+	want := []ApprovalChoice{ApprovalChoiceOnce, ApprovalChoiceCommand, ApprovalChoicePattern, ApprovalChoiceDeny}
+	if len(options) != len(want) {
+		t.Fatalf("expected %d options, got %d", len(want), len(options))
 	}
-
-	// First option should be pattern (remembered)
-	if options[0].Choice != ApprovalChoicePattern {
-		t.Errorf("first option should be ApprovalChoicePattern, got %v", options[0].Choice)
+	for i, choice := range want {
+		if options[i].Choice != choice {
+			t.Errorf("option %d choice = %v, want %v", i, options[i].Choice, choice)
+		}
+		if options[i].SaveToRepo != (choice == ApprovalChoicePattern) {
+			t.Errorf("option %d has unexpected persistence: %+v", i, options[i])
+		}
 	}
-	if !options[0].SaveToRepo {
-		t.Error("pattern option should have SaveToRepo=true")
+	if options[1].Pattern != command {
+		t.Errorf("exact option = %q, want %q", options[1].Pattern, command)
 	}
-	if options[0].Pattern == "" {
-		t.Error("pattern option should have a pattern set")
-	}
-
-	// Second option should be specific command (session only)
-	if options[1].Choice != ApprovalChoiceCommand {
-		t.Errorf("second option should be ApprovalChoiceCommand, got %v", options[1].Choice)
-	}
-	if options[1].SaveToRepo {
-		t.Error("command option should have SaveToRepo=false")
-	}
-
-	// Third should be once
-	if options[2].Choice != ApprovalChoiceOnce {
-		t.Errorf("third option should be ApprovalChoiceOnce, got %v", options[2].Choice)
-	}
-
-	// Fourth should be deny
-	if options[3].Choice != ApprovalChoiceDeny {
-		t.Errorf("fourth option should be ApprovalChoiceDeny, got %v", options[3].Choice)
+	if options[2].Pattern != "go test *" {
+		t.Errorf("advanced pattern = %q, want go test *", options[2].Pattern)
 	}
 }
 
 func TestBuildShellOptions_NotInGitRepo(t *testing.T) {
-	command := "go test ./..."
-
-	// No git repo
-	options := BuildShellOptions(command, nil)
-
-	// Should have 3 options: command, once, deny (no pattern option)
-	if len(options) != 3 {
-		t.Errorf("expected 3 options outside git repo, got %d", len(options))
+	options := BuildShellOptions("go test ./...", nil)
+	want := []ApprovalChoice{ApprovalChoiceOnce, ApprovalChoiceCommand, ApprovalChoiceDeny}
+	if len(options) != len(want) {
+		t.Fatalf("expected %d options, got %d", len(want), len(options))
 	}
-
-	// First option should be command (not pattern)
-	if options[0].Choice != ApprovalChoiceCommand {
-		t.Errorf("first option outside repo should be ApprovalChoiceCommand, got %v", options[0].Choice)
-	}
-
-	// No option should have SaveToRepo=true
-	for _, opt := range options {
-		if opt.SaveToRepo {
-			t.Errorf("option %v should not have SaveToRepo=true outside git repo", opt.Choice)
+	for i, choice := range want {
+		if options[i].Choice != choice || options[i].SaveToRepo {
+			t.Errorf("option %d = %+v, want session-only choice %v", i, options[i], choice)
 		}
 	}
 }

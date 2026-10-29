@@ -22,22 +22,9 @@ spawn:
 shell:
   allow:
     - "pwd"
-    - "go build*"
-    - "go test*"
-    - "go run*"
-    - "go fmt*"
-    - "npm *"
-    - "yarn *"
-    - "pnpm *"
-    - "git diff*"
+    - "git diff"
     - "git status"
-    - "git log*"
-    - "cargo build*"
-    - "cargo test*"
-    - "cargo fmt*"
-    - "python *"
-    - "pytest*"
-    - "make *"
+    - "git log"
 
 search: true
 

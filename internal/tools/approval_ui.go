@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"image/color"
 	"os"
+	"path/filepath"
 	"strings"
 
 	tea "charm.land/bubbletea/v2"
@@ -331,74 +332,53 @@ func BuildWorkspaceOptions(workspace string) []ApprovalOption {
 // BuildSharedShellOptions creates session-scoped options for a command running
 // in the browser-visible terminal, which may be attached to a remote host.
 func BuildSharedShellOptions(command string) []ApprovalOption {
-	return []ApprovalOption{
-		{
-			Label:       "Allow this specific command",
-			Description: "Approve this exact command in the shared terminal (session only)",
-			Choice:      ApprovalChoiceCommand,
-			Pattern:     command,
-			SaveToRepo:  false,
-		},
-		{
-			Label:       "Allow once",
-			Description: "Single shared-terminal execution, no memory",
-			Choice:      ApprovalChoiceOnce,
-			SaveToRepo:  false,
-		},
-		{
-			Label:       "Deny",
-			Description: "Block this shared-terminal command",
-			Choice:      ApprovalChoiceDeny,
-			SaveToRepo:  false,
-		},
-	}
+	options := BuildShellOptions(command, nil)
+	options[0].Description = "Single shared-terminal execution, no memory"
+	options[1].Description = "Approve this exact command in the shared terminal (session only); script and executable contents can change"
+	return options
 }
 
-// BuildShellOptions creates the options for a shell command prompt.
+// BuildShellOptions defaults to one-time execution; patterns are explicit choices.
 func BuildShellOptions(command string, repoInfo *GitRepoInfo) []ApprovalOption {
-	var options []ApprovalOption
-	pattern := GenerateShellPattern(command)
+	options := []ApprovalOption{
+		{
+			Label:       "Allow once",
+			Description: "Single execution, no memory",
+			Choice:      ApprovalChoiceOnce,
+		},
+		{
+			Label:       "Allow this specific command",
+			Description: "Approve exact command text in the current working directory (session only); script and executable contents can change",
+			Choice:      ApprovalChoiceCommand,
+			Pattern:     command,
+		},
+	}
 
 	// Environment-bearing invocations are exact, session-only approvals. A
 	// remembered command pattern must never authorize arbitrary startup hooks
 	// or persist environment values (which may contain credentials).
 	if repoInfo != nil && repoInfo.IsRepo && !strings.HasPrefix(command, "env -- ") {
-		// In a git repo - offer remembered options
-		// Option 1: Approve pattern in repo (remembered)
+		pattern := GenerateShellPattern(command)
+		label := fmt.Sprintf("Advanced: allow \"%s\" pattern", pattern)
+		description := fmt.Sprintf("Remember matching commands for %s; not a filesystem or network sandbox. Press Enter to confirm this scope", repoInfo.RepoName)
+		if shellPatternAllowsCodeExecution(pattern) {
+			label += " (code execution)"
+			description = fmt.Sprintf("Remember matching commands for %s; permits arbitrary code execution with this OS user's access, including inline programs, other scripts or build hooks. Press Enter to confirm this scope", repoInfo.RepoName)
+		}
 		options = append(options, ApprovalOption{
-			Label:       fmt.Sprintf("Allow \"%s\" pattern", pattern),
-			Description: fmt.Sprintf("Approve matching commands in %s (remembered)", repoInfo.RepoName),
+			Label:       label,
+			Description: description,
 			Choice:      ApprovalChoicePattern,
 			Pattern:     pattern,
 			SaveToRepo:  true,
 		})
 	}
 
-	// Option: Allow this specific command (session only)
-	options = append(options, ApprovalOption{
-		Label:       "Allow this specific command",
-		Description: "Approve exact command in the current working directory (session only)",
-		Choice:      ApprovalChoiceCommand,
-		Pattern:     command,
-		SaveToRepo:  false,
-	})
-
-	// Option: Allow once (no memory)
-	options = append(options, ApprovalOption{
-		Label:       "Allow once",
-		Description: "Single execution, no memory",
-		Choice:      ApprovalChoiceOnce,
-		SaveToRepo:  false,
-	})
-
-	// Option: Deny
 	options = append(options, ApprovalOption{
 		Label:       "Deny",
 		Description: "Block this command",
 		Choice:      ApprovalChoiceDeny,
-		SaveToRepo:  false,
 	})
-
 	return options
 }
 
@@ -428,6 +408,17 @@ func (m *ApprovalModel) applyMessage(msg tea.Msg) bool {
 				m.cursor = 0
 			}
 
+		// Number shortcuts select persistent shell grants but never confirm them.
+		case "1", "2", "3", "4", "5", "6", "7", "8", "9":
+			idx := int(msg.String()[0] - '1')
+			if idx >= len(m.options) {
+				return false
+			}
+			m.cursor = idx
+			if m.options[idx].Choice == ApprovalChoicePattern {
+				return false
+			}
+			fallthrough
 		case "enter", " ", "space":
 			opt := m.options[m.cursor]
 			m.Done = true
@@ -438,22 +429,6 @@ func (m *ApprovalModel) applyMessage(msg tea.Msg) bool {
 				SaveToRepo: opt.SaveToRepo,
 			}
 			return true
-
-		// Quick number selection (1-9)
-		case "1", "2", "3", "4", "5", "6", "7", "8", "9":
-			idx := int(msg.String()[0] - '1')
-			if idx < len(m.options) {
-				m.cursor = idx
-				opt := m.options[m.cursor]
-				m.Done = true
-				m.result = ApprovalResult{
-					Choice:     opt.Choice,
-					Path:       opt.Path,
-					Pattern:    opt.Pattern,
-					SaveToRepo: opt.SaveToRepo,
-				}
-				return true
-			}
 		}
 
 	case tea.WindowSizeMsg:
@@ -718,4 +693,27 @@ func RunShellApprovalUI(command, workDir string) (ApprovalResult, error) {
 	}
 
 	return result.result, nil
+}
+
+// shellPatternAllowsCodeExecution is a non-exhaustive UI warning heuristic.
+// It never changes Guardian policy; fixed scripts/builds can execute code too.
+func shellPatternAllowsCodeExecution(pattern string) bool {
+	if isArbitraryExecutionShellPattern(pattern) {
+		return true
+	}
+	parts, err := splitShellWords(pattern)
+	if err != nil || len(parts) == 0 {
+		return true
+	}
+	executable := strings.TrimSuffix(filepath.Base(parts[0]), ".exe")
+	if arbitraryExecutionShellPattern.MatchString(executable) || arbitraryExecutionShellCommands[executable] {
+		return true
+	}
+	switch executable {
+	case "go", "cargo", "pytest", "py.test", "tox", "nox", "poetry", "hatch",
+		"cmake", "ctest", "ninja", "meson", "mvn", "gradle", "gradlew", "ant",
+		"rake", "rspec", "bundle", "dotnet", "mix":
+		return true
+	}
+	return false
 }
