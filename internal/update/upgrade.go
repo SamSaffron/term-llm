@@ -1,13 +1,10 @@
 package update
 
 import (
-	"archive/tar"
-	"compress/gzip"
 	"context"
 	"errors"
 	"fmt"
 	"io"
-	"net/http"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -29,6 +26,10 @@ func RunUpgrade(ctx context.Context, currentVersion, targetVersion string, stdou
 		targetTag = "v" + targetTag
 	}
 
+	if !validReleaseTag(targetTag) {
+		return fmt.Errorf("invalid release version %q", targetTag)
+	}
+
 	currentNorm := NormalizeVersion(currentVersion)
 	targetNorm := NormalizeVersion(targetTag)
 	if currentVersion != "dev" && currentNorm != "" && targetNorm != "" {
@@ -42,12 +43,9 @@ func RunUpgrade(ctx context.Context, currentVersion, targetVersion string, stdou
 		}
 	}
 
-	assetVersion := targetNorm
-	if assetVersion == "" {
-		assetVersion = strings.TrimPrefix(targetTag, "v")
-	}
+	assetVersion := strings.TrimPrefix(targetTag, "v")
 	assetName := fmt.Sprintf("%s_%s_%s_%s.tar.gz", RepoName, assetVersion, runtime.GOOS, runtime.GOARCH)
-	downloadURL := fmt.Sprintf("https://github.com/%s/%s/releases/download/%s/%s", RepoOwner, RepoName, targetTag, assetName)
+	releaseURL := fmt.Sprintf("https://github.com/%s/%s/releases/download/%s", RepoOwner, RepoName, targetTag)
 
 	tmpDir, err := os.MkdirTemp("", "term-llm-upgrade-*")
 	if err != nil {
@@ -55,8 +53,8 @@ func RunUpgrade(ctx context.Context, currentVersion, targetVersion string, stdou
 	}
 	defer os.RemoveAll(tmpDir)
 
-	archivePath := filepath.Join(tmpDir, assetName)
-	if err := downloadFile(ctx, downloadURL, archivePath); err != nil {
+	archivePath, err := downloadVerifiedArchive(ctx, releaseHTTPClient(), releaseURL, assetName, tmpDir)
+	if err != nil {
 		return err
 	}
 
@@ -78,20 +76,18 @@ func RunUpgrade(ctx context.Context, currentVersion, targetVersion string, stdou
 		return err
 	}
 	tempPath := tempFile.Name()
+	defer os.Remove(tempPath)
 
 	if err := extractBinaryTo(archivePath, tempFile); err != nil {
 		tempFile.Close()
-		os.Remove(tempPath)
 		return err
 	}
 
 	if err := tempFile.Close(); err != nil {
-		os.Remove(tempPath)
 		return err
 	}
 
 	if err := os.Chmod(tempPath, 0o755); err != nil {
-		os.Remove(tempPath)
 		return err
 	}
 
@@ -99,7 +95,6 @@ func RunUpgrade(ctx context.Context, currentVersion, targetVersion string, stdou
 		if errors.Is(err, os.ErrPermission) {
 			return fmt.Errorf("failed to replace %s (permission denied). try running with sudo", exePath)
 		}
-		os.Remove(tempPath)
 		return fmt.Errorf("replace binary: %w", err)
 	}
 
@@ -133,74 +128,4 @@ func versionDisplayTag(version string) string {
 		return "v" + version
 	}
 	return version
-}
-
-func downloadFile(ctx context.Context, url string, dest string) error {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
-	if err != nil {
-		return err
-	}
-	req.Header.Set("User-Agent", updateUserAgent)
-	client := &http.Client{Timeout: 5 * time.Minute}
-	resp, err := client.Do(req)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4<<10))
-		return fmt.Errorf("download failed (%d) for %s: %s", resp.StatusCode, url, strings.TrimSpace(string(body)))
-	}
-
-	out, err := os.Create(dest)
-	if err != nil {
-		return err
-	}
-	defer out.Close()
-
-	if _, err := io.Copy(out, resp.Body); err != nil {
-		return err
-	}
-	return nil
-}
-
-func extractBinaryTo(archivePath string, dest *os.File) error {
-	if _, err := dest.Seek(0, 0); err != nil {
-		return err
-	}
-	if err := dest.Truncate(0); err != nil {
-		return err
-	}
-
-	archive, err := os.Open(archivePath)
-	if err != nil {
-		return err
-	}
-	defer archive.Close()
-
-	gz, err := gzip.NewReader(archive)
-	if err != nil {
-		return err
-	}
-	defer gz.Close()
-
-	tr := tar.NewReader(gz)
-	for {
-		header, err := tr.Next()
-		if err == io.EOF {
-			break
-		}
-		if err != nil {
-			return err
-		}
-		name := filepath.Base(header.Name)
-		if name != RepoName && name != RepoName+".exe" {
-			continue
-		}
-		if _, err := io.Copy(dest, tr); err != nil {
-			return err
-		}
-		return nil
-	}
-	return fmt.Errorf("binary %s not found in archive", RepoName)
 }

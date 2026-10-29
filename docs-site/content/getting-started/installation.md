@@ -17,6 +17,12 @@ Published binaries include the browser workspace. You do not need Go or Node.js 
 
 ### One-liner (recommended)
 
+Requires `curl`, `tar`, `gzip`, `awk`, and a SHA-256 utility (`sha256sum` or `shasum`).
+The installer verifies the release archive against its published
+checksum before installation and does not run the installed binary. See
+[download integrity and trust](/reference/version-and-updates/#download-integrity-and-trust)
+for the limits of this verification.
+
 ```bash
 curl -fsSL https://raw.githubusercontent.com/samsaffron/term-llm/main/install.sh | sh
 ```
