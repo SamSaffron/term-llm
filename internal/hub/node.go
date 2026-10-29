@@ -27,6 +27,10 @@ const (
 
 // Node is one reachable term-llm web/API endpoint known to the hub.
 type Node struct {
+	// Opaque process-local transport identity, never serialized.
+	lifetime   uint64
+	generation uint64
+
 	// ID uniquely identifies the node within the hub and is used as the
 	// proxy path segment (/node/<id>/...). Restricted to a path-safe charset.
 	ID string `json:"id" yaml:"id"`

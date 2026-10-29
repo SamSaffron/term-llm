@@ -30,8 +30,8 @@ import (
 // must use the chunked frame sequence.
 
 const (
-	hubReversePingInterval = 20 * time.Second
-	hubReversePongWait     = 60 * time.Second
+	hubReversePingInterval = appserver.ReversePingInterval
+	hubReversePongWait     = appserver.ReversePongWait
 	hubReverseWriteWait    = wire.JSONChunkWriteWait
 	hubReverseChunkSize    = appserver.ReverseChunkSize
 	// Bound each request by both frames and decoded body bytes. This absorbs an
@@ -74,6 +74,8 @@ type hubReversePending struct {
 
 type hubReverseConnection struct {
 	nodeID      string
+	node        hub.Node
+	manager     *hubReverseManager
 	connectedAt time.Time
 	lastSeenMu  sync.RWMutex
 	lastSeen    time.Time
@@ -215,8 +217,9 @@ func (p *hubReversePending) deferTerminal(resp hubReverseResponse) bool {
 }
 
 type hubReverseManager struct {
-	mu    sync.RWMutex
-	conns map[string]*hubReverseConnection
+	registry *hub.Registry
+	mu       sync.RWMutex
+	conns    map[string]*hubReverseConnection
 }
 
 func newHubReverseManager() *hubReverseManager {
@@ -246,9 +249,11 @@ func (m *hubReverseManager) status(nodeID string) (connected bool, connectedAt, 
 	return true, c.connectedAt, c.lastSeenValue()
 }
 
-func (m *hubReverseManager) attach(node hub.Node, conn *websocket.Conn) {
+func (m *hubReverseManager) attach(node hub.Node, conn *websocket.Conn) error {
 	c := &hubReverseConnection{
 		nodeID:      node.ID,
+		node:        node,
+		manager:     m,
 		connectedAt: time.Now().UTC(),
 		lastSeen:    time.Now().UTC(),
 		conn:        conn,
@@ -262,15 +267,23 @@ func (m *hubReverseManager) attach(node hub.Node, conn *websocket.Conn) {
 		}
 		m.mu.Unlock()
 	}
-	m.mu.Lock()
-	old := m.conns[node.ID]
-	m.conns[node.ID] = c
-	m.mu.Unlock()
-	if old != nil {
-		old.closeWithError(errors.New("reverse connection replaced"))
+	err := m.registry.WithCurrent(node, func(hub.Node) error {
+		m.mu.Lock()
+		old := m.conns[node.ID]
+		m.conns[node.ID] = c
+		m.mu.Unlock()
+		if old != nil {
+			old.closeWithError(errors.New("reverse connection replaced"))
+		}
+		return nil
+	})
+	if err != nil {
+		_ = conn.Close()
+		return err
 	}
 	go c.cancelLoop()
 	go c.readLoop()
+	return nil
 }
 
 func (c *hubReverseConnection) touch() {
@@ -289,50 +302,13 @@ func (c *hubReverseConnection) nextRequestID() string {
 	return fmt.Sprintf("req_%d", c.requestSeq.Add(1))
 }
 
-func hubReverseSetHeartbeat(conn *websocket.Conn, touch func()) error {
-	if touch != nil {
-		touch()
-	}
-	if err := conn.SetReadDeadline(time.Now().Add(hubReversePongWait)); err != nil {
-		return err
-	}
-	conn.SetPongHandler(func(string) error {
-		if touch != nil {
-			touch()
-		}
-		return conn.SetReadDeadline(time.Now().Add(hubReversePongWait))
-	})
-	return nil
-}
-
-func hubReversePingLoop(conn *websocket.Conn, writeMu *sync.Mutex, done <-chan struct{}) {
-	ticker := time.NewTicker(hubReversePingInterval)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-done:
-			return
-		case <-ticker.C:
-			writeMu.Lock()
-			_ = conn.SetWriteDeadline(time.Now().Add(hubReverseWriteWait))
-			err := conn.WriteControl(websocket.PingMessage, nil, time.Now().Add(hubReverseWriteWait))
-			_ = conn.SetWriteDeadline(time.Time{})
-			writeMu.Unlock()
-			if err != nil {
-				_ = conn.Close()
-				return
-			}
-		}
-	}
-}
-
 func (c *hubReverseConnection) readLoop() {
 	defer c.closeWithError(errors.New("reverse reader stopped"))
-	if err := hubReverseSetHeartbeat(c.conn, c.touch); err != nil {
+	if err := appserver.SetReverseHeartbeat(c.conn, c.touch); err != nil {
 		c.closeWithError(fmt.Errorf("reverse connection heartbeat setup failed: %w", err))
 		return
 	}
-	go c.pingLoop()
+	go appserver.RunReverseControlPingLoop(c.conn, c.closed, c.closeWithError)
 	for {
 		var resp hubReverseResponse
 		if err := c.conn.ReadJSON(&resp); err != nil {
@@ -404,11 +380,9 @@ func (m *hubReverseManager) do(ctx context.Context, node hub.Node, req *http.Req
 	if m == nil {
 		return nil, fmt.Errorf("node %q is configured for reverse connection but reverse transport is disabled", node.ID)
 	}
-	m.mu.RLock()
-	c := m.conns[node.ID]
-	m.mu.RUnlock()
-	if c == nil {
-		return nil, fmt.Errorf("node %q is not connected", node.ID)
+	c, err := m.connection(node)
+	if err != nil {
+		return nil, err
 	}
 	if err := c.admit(ctx); err != nil {
 		return nil, err
@@ -602,6 +576,8 @@ func (s *hubServer) handleReverseConnect(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	conn.SetReadLimit(hubReverseMaxWireFrameBytes)
-	s.reverse.attach(node, conn)
+	if err := s.reverse.attach(node, conn); err != nil {
+		return
+	}
 	log.Printf("hub: reverse node %q connected", node.ID)
 }

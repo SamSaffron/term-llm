@@ -79,6 +79,7 @@ func (l throttledUploadListener) Accept() (net.Conn, error) {
 func TestHubReverseLargeCanceledUploadKeepsDefaultHeartbeatAndSibling(t *testing.T) {
 	node := hub.Node{ID: "slow-upload", Connection: "reverse", BasePath: "/chat", Token: "token"}
 	s := newHubServer(hub.NewRegistry(fakeHubResolver{nodes: []hub.Node{node}}), nil)
+	node, _ = s.registry.Lookup(node.ID)
 	ts := httptest.NewUnstartedServer(s.handler())
 	ts.Listener = throttledUploadListener{ts.Listener}
 	ts.Start()

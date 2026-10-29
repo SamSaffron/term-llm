@@ -27,8 +27,17 @@ func TestRootRejectsWindowsPartialAbsolutePaths(t *testing.T) {
 	}
 }
 
+func TestIsAdministrativePathWindowsHeadAliases(t *testing.T) {
+	for _, component := range []string{"HEAD", "head", "HEAD.", "HEAD ", "HEAD::$DATA", "head.::$DATA"} {
+		path := filepath.Join(t.TempDir(), component)
+		if !IsAdministrativePath(path) {
+			t.Errorf("IsAdministrativePath(%q) = false; Win32 HEAD aliases must be reserved", path)
+		}
+	}
+}
+
 func TestContainsGitComponentWindowsAliases(t *testing.T) {
-	for _, component := range []string{".git", ".GIT", ".git.", ".git ", ".git. "} {
+	for _, component := range []string{".git", ".GIT", ".git.", ".git ", ".git. ", ".git::$DATA", ".git::$INDEX_ALLOCATION", ".git.::$DATA"} {
 		for _, path := range []string{filepath.Join("checkout", component), filepath.Join("checkout", component, "config")} {
 			if !containsGitComponent(path) {
 				t.Errorf("containsGitComponent(%q) = false; Win32 metadata aliases must be excluded", path)

@@ -606,7 +606,7 @@ func (s *hubServer) handleAddNode(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, fmt.Sprintf("invalid request body: %v", err), http.StatusBadRequest)
 		return
 	}
-	node, err := s.store.Add(hub.Node{
+	node, err := s.addHubNode(hub.Node{
 		ID:       strings.TrimSpace(req.ID),
 		Name:     strings.TrimSpace(req.Name),
 		URL:      req.URL,
@@ -649,7 +649,7 @@ func (s *hubServer) handleNodeItem(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "node persistence is disabled", http.StatusForbidden)
 		return
 	}
-	if err := s.store.Remove(id); err != nil {
+	if err := s.removeHubNode(id); err != nil {
 		http.Error(w, err.Error(), http.StatusNotFound)
 		return
 	}

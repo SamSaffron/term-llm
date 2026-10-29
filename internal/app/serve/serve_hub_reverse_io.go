@@ -6,9 +6,7 @@ import (
 	"fmt"
 	"io"
 	"sync"
-	"time"
 
-	"github.com/gorilla/websocket"
 	"github.com/samsaffron/term-llm/internal/app/serve/wire"
 )
 
@@ -123,6 +121,11 @@ func (c *hubReverseConnection) writeFrame(ctx context.Context, frame hubReverseR
 		return errors.New("reverse connection is closed")
 	default:
 	}
+	if frame.Type == hubReverseFrameRequest {
+		if err := c.validate(); err != nil {
+			return err
+		}
+	}
 	// Once a JSON message begins, finish it under a byte-scaled hard deadline.
 	// A caller cancellation must not corrupt the shared tunnel; do() sends its
 	// remote cancel after this bounded write completes. Actual IO failures still
@@ -136,24 +139,6 @@ func (c *hubReverseConnection) writeFrame(ctx context.Context, frame hubReverseR
 	}
 	// Successfully sent frames stay owned by response/cancellation handling.
 	return err
-}
-
-func (c *hubReverseConnection) pingLoop() {
-	ticker := time.NewTicker(hubReversePingInterval)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-c.closed:
-			return
-		case <-ticker.C:
-			// WriteControl is Gorilla's concurrency-safe control API and has its own
-			// deadline, including waiting for a data writer. Do not race SetWriteDeadline.
-			if err := c.conn.WriteControl(websocket.PingMessage, nil, time.Now().Add(hubReverseWriteWait)); err != nil {
-				c.closeWithError(err)
-				return
-			}
-		}
-	}
 }
 
 type hubReverseBody struct {

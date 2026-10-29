@@ -88,7 +88,7 @@ func (t *WriteFileTool) Execute(ctx context.Context, args json.RawMessage) (core
 
 	// Check permissions via approval manager
 	if t.approval != nil {
-		outcome, err := t.approval.CheckPathApprovalWithContext(ctx, WriteFileToolName, absPath, a.Path, true)
+		outcome, err := checkFileWriteApproval(ctx, t.approval, WriteFileToolName, absPath, a.Path, t.config)
 		if err != nil {
 			return pathApprovalErrorOutput(warning, err), nil
 		}

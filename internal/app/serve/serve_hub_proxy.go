@@ -16,6 +16,7 @@ import (
 	"strconv"
 	"strings"
 
+	apphub "github.com/samsaffron/term-llm/internal/app/serve/hub"
 	appserver "github.com/samsaffron/term-llm/internal/app/serve/server"
 	"github.com/samsaffron/term-llm/internal/hub"
 	"github.com/samsaffron/term-llm/internal/restart"
@@ -217,58 +218,15 @@ func (w *hubFlushingWriter) Write(p []byte) (int, error) {
 	return n, nil
 }
 
-func hubStripHopByHopHeaders(h http.Header) {
-	for _, value := range h.Values("Connection") {
-		for _, token := range strings.Split(value, ",") {
-			if token = strings.TrimSpace(token); token != "" {
-				h.Del(token)
-			}
-		}
-	}
-	for _, key := range []string{
-		"Connection",
-		"Proxy-Connection",
-		"Keep-Alive",
-		"Proxy-Authenticate",
-		"Proxy-Authorization",
-		"TE",
-		"Trailer",
-		"Transfer-Encoding",
-		"Upgrade",
-	} {
-		h.Del(key)
-	}
-}
+func hubStripHopByHopHeaders(h http.Header) { apphub.StripHopByHopHeaders(h) }
 
 // parseHubNodePath splits "/node/<id>/<rest>" into id and the remainder
 // (including its leading slash). "/node/<id>" yields an empty rest.
-func parseHubNodePath(p string) (id, rest string, ok bool) {
-	const prefix = "/node/"
-	if !strings.HasPrefix(p, prefix) {
-		return "", "", false
-	}
-	tail := p[len(prefix):]
-	if tail == "" {
-		return "", "", false
-	}
-	if slash := strings.IndexByte(tail, '/'); slash >= 0 {
-		return tail[:slash], tail[slash:], true
-	}
-	return tail, "", true
-}
+func parseHubNodePath(p string) (id, rest string, ok bool) { return apphub.ParseNodePath(p) }
 
 // hubJoinBasePath joins a node's base path with the proxied remainder,
 // collapsing the slash seam. An empty remainder targets the base path root.
-func hubJoinBasePath(base, rest string) string {
-	base = strings.TrimRight(base, "/")
-	if rest == "" {
-		return base + "/"
-	}
-	if !strings.HasPrefix(rest, "/") {
-		rest = "/" + rest
-	}
-	return base + rest
-}
+func hubJoinBasePath(base, rest string) string { return apphub.JoinBasePath(base, rest) }
 
 // hubContainsEncodedSeparator reports whether an escaped path smuggles an
 // encoded path separator (%2f) or backslash (%5c).
@@ -327,12 +285,7 @@ func hubRewriteProxyRequest(pr *httputil.ProxyRequest) {
 	out.Header.Set(widgets.PublicPrefixHeader, t.mount)
 }
 
-func hubForwardedProto(r *http.Request) string {
-	if r != nil && (r.TLS != nil || strings.EqualFold(strings.TrimSpace(r.Header.Get("X-Forwarded-Proto")), "https")) {
-		return "https"
-	}
-	return "http"
-}
+func hubForwardedProto(r *http.Request) string { return apphub.ForwardedProto(r) }
 
 type hubPrefixReadCloser struct {
 	reader io.Reader

@@ -124,6 +124,12 @@ Available fetch providers:
 
 `search.provider` and `search.fetch_provider` are independent. For example, `provider: exa_mcp` with `fetch_provider: jina` gives Exa MCP search results but keeps Jina for reading individual pages.
 
+### URL checks and proxies
+
+Before fetching, `read_url` validates the target and each redirect, rejecting local and private-network destinations. Direct redirect-check connections are pinned to the validated IP addresses while retaining the URL's hostname for HTTP and TLS.
+
+Redirect checks honor `HTTP_PROXY`, `HTTPS_PROXY`, and `NO_PROXY`. Configured proxies are trusted routing endpoints: requests go to the proxy, and the proxy resolves the original target hostname using its own DNS and egress policy. Local validation cannot verify which destination IP a proxy ultimately uses, so configure only trusted proxies and enforce destination restrictions at the proxy as needed.
+
 ## Native versus external priority
 
 Priority is:

@@ -118,6 +118,7 @@ func assertHubHealthyNode(t *testing.T, view hubNodeView) {
 // barrier, so tests don't poll for connection readiness or depend on sleeps.
 func attachHubNodeTestReverse(t *testing.T, s *hubServer, n hub.Node, respond func(hubReverseRequest) hubReverseResponse) {
 	t.Helper()
+	n, _ = s.registry.Lookup(n.ID)
 	attached := make(chan struct{})
 	upgrader := websocket.Upgrader{}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -126,7 +127,9 @@ func attachHubNodeTestReverse(t *testing.T, s *hubServer, n hub.Node, respond fu
 			t.Errorf("upgrade test reverse connection: %v", err)
 			return
 		}
-		s.reverse.attach(n, conn)
+		if err := s.reverse.attach(n, conn); err != nil {
+			t.Errorf("attach test reverse connection: %v", err)
+		}
 		close(attached)
 	}))
 	t.Cleanup(server.Close)
@@ -236,7 +239,8 @@ func TestHubReverseHealthBodyBoundAndBestEffort(t *testing.T) {
 	} {
 		t.Run(body[:20], func(t *testing.T) {
 			n := hub.Node{ID: "reverse", Connection: "reverse", BasePath: "/chat"}
-			s := newHubServer(nil, nil)
+			s := newHubServer(hub.NewRegistry(fakeHubResolver{nodes: []hub.Node{n}}), nil)
+			n, _ = s.registry.Lookup(n.ID)
 			attachHubNodeTestReverse(t, s, n, func(hubReverseRequest) hubReverseResponse {
 				return hubReverseResponse{Status: http.StatusOK, Body: []byte(body)}
 			})

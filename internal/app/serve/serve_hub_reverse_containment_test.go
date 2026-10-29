@@ -72,6 +72,7 @@ func containmentHub(t *testing.T) (*hubServer, *httptest.Server, hub.Node, *webs
 	t.Helper()
 	node := hub.Node{ID: "stalled", Connection: "reverse", BasePath: "/chat", Token: "token"}
 	s := newHubServer(hub.NewRegistry(fakeHubResolver{nodes: []hub.Node{node, {ID: "healthy", Connection: "reverse", BasePath: "/chat", Token: "good"}}}), nil)
+	node, _ = s.registry.Lookup(node.ID)
 	ts := httptest.NewUnstartedServer(s.handler())
 	ts.Listener = containmentListener{ts.Listener}
 	ts.Start()
@@ -151,7 +152,8 @@ func TestHubReverseContainmentQueuedCancellation(t *testing.T) {
 			_ = healthyPeer.WriteJSON(hubReverseResponse{ID: frame.ID, Status: 200, Body: []byte(`{}`)})
 		}
 	}()
-	if err := containmentAwait(t, containmentDo(s, t.Context(), hub.Node{ID: "healthy"}, "/healthz", nil)); err != nil {
+	healthy, _ := s.registry.Lookup("healthy")
+	if err := containmentAwait(t, containmentDo(s, t.Context(), healthy, "/healthz", nil)); err != nil {
 		t.Fatalf("healthy reverse peer: %v", err)
 	}
 	for _, path := range []string{"/healthz", "/api/nodes?view=sidebar"} {

@@ -128,7 +128,16 @@ func TestApprovalProjectUIRepoGrantSessionBoundaries(t *testing.T) {
 						}
 						checkProjectSessionPath(t, mgr, otherSource, !isWrite, opposite, &prompts)
 						for _, path := range []string{filepath.Join(root, ".git"), filepath.Join(root, ".git", "config"), hook, filepath.Join(linked, ".git"), filepath.Join(bare, "config"), filepath.Join(separate, "config")} {
-							checkProjectSessionPath(t, mgr, path, isWrite, Cancel, &prompts)
+							if isWrite {
+								before := prompts
+								outcome, err := mgr.CheckPathApproval(WriteFileToolName, path, "", true)
+								requireGitAdministrativeWriteDenied(t, outcome, err)
+								if prompts != before {
+									t.Error("metadata write reached a generic approval prompt")
+								}
+							} else {
+								checkProjectSessionPath(t, mgr, path, false, Cancel, &prompts)
+							}
 						}
 					}
 					// A path approved earlier cannot inherit its ancestor's grant

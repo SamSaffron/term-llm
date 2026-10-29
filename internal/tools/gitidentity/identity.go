@@ -94,6 +94,7 @@ func physicalDirectory(path string) string {
 func containsGitComponent(path string) bool {
 	for component := range strings.SplitSeq(filepath.ToSlash(path), "/") {
 		if filepath.Separator == '\\' {
+			component, _, _ = strings.Cut(component, ":")
 			component = strings.TrimRight(component, " .")
 		}
 		if strings.EqualFold(component, ".git") {

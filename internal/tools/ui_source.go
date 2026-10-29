@@ -218,7 +218,7 @@ func (t *UIGetSourceTool) Execute(ctx context.Context, args json.RawMessage) (co
 		if t.approval == nil {
 			return core.ToolOutput{}, fmt.Errorf("workspace approval is unavailable")
 		}
-		outcome, err := t.approval.CheckPathApprovalWithContext(ctx, UIGetSourceToolName, dest, a.Path, true)
+		outcome, err := checkFileWriteApproval(ctx, t.approval, UIGetSourceToolName, dest, a.Path, t.config)
 		if err != nil {
 			return pathApprovalErrorOutput("", err), nil
 		}

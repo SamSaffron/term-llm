@@ -186,18 +186,22 @@ func resolveReadURLTarget(ctx context.Context, client *http.Client, rawURL strin
 	}
 
 	for range maxReadURLRedirects {
-		redirectClient := newReadURLRedirectClient(client, target.ips)
-
 		req, err := http.NewRequestWithContext(ctx, http.MethodGet, target.url, nil)
 		if err != nil {
 			return "", fmt.Errorf("create redirect check request: %w", err)
 		}
 
+		redirectClient, err := newReadURLRedirectClient(client, req, target.ips)
+		if err != nil {
+			return "", err
+		}
 		resp, err := redirectClient.Do(req)
 		if err != nil {
+			redirectClient.CloseIdleConnections()
 			return "", fmt.Errorf("check url redirects: %w", err)
 		}
 		_ = resp.Body.Close()
+		redirectClient.CloseIdleConnections()
 
 		if resp.StatusCode < 300 || resp.StatusCode >= 400 {
 			return target.url, nil
@@ -222,7 +226,7 @@ func resolveReadURLTarget(ctx context.Context, client *http.Client, rawURL strin
 	return "", fmt.Errorf("too many redirects")
 }
 
-func newReadURLRedirectClient(client *http.Client, ips []net.IP) *http.Client {
+func newReadURLRedirectClient(client *http.Client, req *http.Request, ips []net.IP) (*http.Client, error) {
 	redirectClient := *client
 	redirectClient.CheckRedirect = func(req *http.Request, via []*http.Request) error {
 		return http.ErrUseLastResponse
@@ -230,7 +234,24 @@ func newReadURLRedirectClient(client *http.Client, ips []net.IP) *http.Client {
 
 	transport := cloneReadURLTransport(client.Transport)
 	if transport == nil {
-		return &redirectClient
+		return &redirectClient, nil
+	}
+	redirectClient.Transport = transport
+	if transport.Proxy != nil {
+		proxyURL, err := transport.Proxy(req)
+		if err != nil {
+			return nil, fmt.Errorf("select url proxy: %w", err)
+		}
+		// Select the route once for this validated hop, before installing any
+		// target-IP dial override. A proxy dial must keep the proxy address or
+		// proxy protocol and credentials would be sent to the target instead.
+		transport.Proxy = http.ProxyURL(proxyURL)
+		if proxyURL != nil {
+			// Explicitly configured proxies are trusted routing endpoints and
+			// resolve the already-validated target using their own DNS/policy.
+			// Preserve Go's proxy, CONNECT, TLS and SOCKS behavior unchanged.
+			return &redirectClient, nil
+		}
 	}
 
 	dialContext := readURLDialContext
@@ -258,9 +279,7 @@ func newReadURLRedirectClient(client *http.Client, ips []net.IP) *http.Client {
 		}
 		return nil, fmt.Errorf("no resolved IPs available")
 	}
-	redirectClient.Transport = transport
-
-	return &redirectClient
+	return &redirectClient, nil
 }
 
 func cloneReadURLTransport(rt http.RoundTripper) *http.Transport {

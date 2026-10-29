@@ -76,8 +76,13 @@ func TestApprovalProjectDoesNotAuthorizeGitMetadata(t *testing.T) {
 					t.Fatalf("source (write=%v): outcome=%v err=%v prompts=%d", isWrite, outcome, err, prompts)
 				}
 				outcome, err = mgr.CheckPathApproval(tool, tc.path, "", isWrite)
-				if err != nil || outcome != Cancel || prompts != 1 {
-					t.Errorf("metadata (write=%v): outcome=%v err=%v prompts=%d; want prompted cancel", isWrite, outcome, err, prompts)
+				if isWrite {
+					requireGitAdministrativeWriteDenied(t, outcome, err)
+					if prompts != 0 {
+						t.Errorf("metadata write prompted %d times; want fail-closed denial", prompts)
+					}
+				} else if err != nil || outcome != Cancel || prompts != 1 {
+					t.Errorf("metadata read: outcome=%v err=%v prompts=%d; want prompted cancel", outcome, err, prompts)
 				}
 			}
 			if got := DetectGitRepo(tc.path); got.IsRepo {

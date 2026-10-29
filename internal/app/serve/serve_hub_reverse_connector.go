@@ -99,10 +99,10 @@ func hubReverseConnectOnce(ctx context.Context, hubURL, nodeID, token, localBase
 	var writeMu sync.Mutex
 	donePing := make(chan struct{})
 	defer close(donePing)
-	if err := hubReverseSetHeartbeat(conn, nil); err != nil {
+	if err := appserver.SetReverseHeartbeat(conn, nil); err != nil {
 		return err
 	}
-	go hubReversePingLoop(conn, &writeMu, donePing)
+	go appserver.RunReversePingLoop(conn, &writeMu, donePing)
 	log.Printf("hub reverse connect: node %q connected to %s", nodeID, hubURL)
 	activeMu := sync.Mutex{}
 	active := map[string]context.CancelFunc{}

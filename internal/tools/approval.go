@@ -1163,7 +1163,7 @@ func (m *ApprovalManager) CheckPathApproval(toolName, path, toolInfo string, isW
 // CheckPathApprovalWithContext checks path approval and supplies conversation
 // evidence to Guardian when auto mode reviews an unmatched file request.
 func (m *ApprovalManager) CheckPathApprovalWithContext(ctx context.Context, toolName, path, toolInfo string, isWrite bool) (ConfirmOutcome, error) {
-	absPath, err := canonicalApprovalPath(path, isWrite)
+	absPath, err := m.canonicalFileApprovalPath(path, isWrite)
 	if err != nil {
 		if m.DebugApproval {
 			runtimeoutput.Logf("[approval] CheckPathApproval tool=%s path=%q → canonicalize error: %v", toolName, path, err)

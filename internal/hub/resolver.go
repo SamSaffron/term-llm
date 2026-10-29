@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"sync"
 )
 
 // Resolver enumerates nodes from one backing source (static config file,
@@ -21,7 +22,10 @@ type Resolver interface {
 // is precedence order: when two sources yield the same node ID, the earlier
 // resolver wins and the later duplicate is dropped.
 type Registry struct {
-	resolvers []Resolver
+	mu         sync.Mutex
+	identities map[string]Node
+	observers  []func([]Node)
+	resolvers  []Resolver
 }
 
 // NewRegistry builds a registry over the given resolvers in precedence order.
@@ -35,6 +39,12 @@ func NewRegistry(resolvers ...Resolver) *Registry {
 // remaining sources still resolve, so one broken source never blanks the
 // dashboard.
 func (r *Registry) Nodes() ([]Node, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.nodesLocked()
+}
+
+func (r *Registry) nodesLocked() ([]Node, error) {
 	var (
 		nodes []Node
 		errs  []error
@@ -63,6 +73,7 @@ func (r *Registry) Nodes() ([]Node, error) {
 		}
 		return nodes[i].ID < nodes[j].ID
 	})
+	r.stampNodesLocked(nodes)
 	return nodes, errors.Join(errs...)
 }
 

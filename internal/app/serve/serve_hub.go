@@ -2,7 +2,6 @@ package serve
 
 import (
 	"context"
-	"net"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
@@ -10,6 +9,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	apphub "github.com/samsaffron/term-llm/internal/app/serve/hub"
 	"github.com/samsaffron/term-llm/internal/hub"
 )
 
@@ -77,6 +77,9 @@ type hubServer struct {
 }
 
 func newHubServer(registry *hub.Registry, store *hub.Store) *hubServer {
+	if registry == nil {
+		registry = hub.NewRegistry()
+	}
 	transport := newHubTransport()
 	s := &hubServer{
 		registry:      registry,
@@ -86,6 +89,8 @@ func newHubServer(registry *hub.Registry, store *hub.Store) *hubServer {
 		changes:       hub.NewChangeFeed(),
 		nodeAPIClient: &http.Client{Transport: transport, Timeout: 30 * time.Second, CheckRedirect: hubDoNotFollowRedirects},
 	}
+	s.reverse.registry = registry
+	registry.Observe(s.reverse.reconcile)
 	s.proxy = &httputil.ReverseProxy{
 		Rewrite:        hubRewriteProxyRequest,
 		ModifyResponse: hubRebaseProxyResponse,
@@ -131,24 +136,7 @@ func browserReturnURL(u *url.URL, publicPath func(string) string) string {
 // deliberately sets NO whole-response deadline: long-lived streams (SSE)
 // must stay open, so only connection establishment and
 // response *headers* are bounded.
-func newHubTransport() *http.Transport {
-	return &http.Transport{
-		// No environment proxy: the hub dials known node hosts directly, and
-		// routing a token-injected request through an HTTP_PROXY would leak
-		// the per-node bearer token to that proxy.
-		Proxy: nil,
-		DialContext: (&net.Dialer{
-			Timeout:   5 * time.Second,
-			KeepAlive: 30 * time.Second,
-		}).DialContext,
-		ForceAttemptHTTP2:     true,
-		MaxIdleConns:          100,
-		IdleConnTimeout:       90 * time.Second,
-		TLSHandshakeTimeout:   5 * time.Second,
-		ExpectContinueTimeout: 1 * time.Second,
-		ResponseHeaderTimeout: 30 * time.Second,
-	}
-}
+func newHubTransport() *http.Transport { return apphub.NewTransport() }
 
 func hubDoNotFollowRedirects(_ *http.Request, _ []*http.Request) error {
 	return http.ErrUseLastResponse

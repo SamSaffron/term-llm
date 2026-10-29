@@ -80,6 +80,7 @@ func TestHubReverseNodeProxy(t *testing.T) {
 
 	node := hub.Node{ID: "artist", Name: "Artist", Connection: "reverse", BasePath: "/chat", Token: "node-token"}
 	s := newHubServer(hub.NewRegistry(fakeHubResolver{nodes: []hub.Node{node}}), nil)
+	node, _ = s.registry.Lookup(node.ID)
 	hubTS := httptest.NewServer(s.handler())
 	defer hubTS.Close()
 
@@ -141,6 +142,7 @@ func TestHubReverseNodeProxyPreservesCompression(t *testing.T) {
 	defer backend.Close()
 	node := hub.Node{ID: "artist", Name: "Artist", Connection: "reverse", BasePath: "/chat", Token: "node-token"}
 	s := newHubServer(hub.NewRegistry(fakeHubResolver{nodes: []hub.Node{node}}), nil)
+	node, _ = s.registry.Lookup(node.ID)
 	hubTS := httptest.NewServer(s.handler())
 	defer hubTS.Close()
 	ctx, cancel := context.WithCancel(context.Background())
@@ -280,6 +282,7 @@ func TestHubReverseNodeSessionsSummary(t *testing.T) {
 
 	node := hub.Node{ID: "artist", Name: "Artist", Connection: "reverse", BasePath: "/chat", Token: "node-token"}
 	s := newHubServer(hub.NewRegistry(fakeHubResolver{nodes: []hub.Node{node}}), nil)
+	node, _ = s.registry.Lookup(node.ID)
 	hubTS := httptest.NewServer(s.handler())
 	defer hubTS.Close()
 
@@ -325,6 +328,7 @@ func TestHubReverseNodeProxyStreamsChunkedResponse(t *testing.T) {
 
 	node := hub.Node{ID: "artist", Name: "Artist", Connection: "reverse", BasePath: "/chat", Token: "node-token"}
 	s := newHubServer(hub.NewRegistry(fakeHubResolver{nodes: []hub.Node{node}}), nil)
+	node, _ = s.registry.Lookup(node.ID)
 	hubTS := httptest.NewServer(s.handler())
 	defer hubTS.Close()
 
@@ -368,6 +372,7 @@ func TestHubReverseNodeProxyStreamsShellSSEIncrementally(t *testing.T) {
 
 	node := hub.Node{ID: "artist", Name: "Artist", Connection: "reverse", BasePath: "/chat", Token: "node-token"}
 	s := newHubServer(hub.NewRegistry(fakeHubResolver{nodes: []hub.Node{node}}), nil)
+	node, _ = s.registry.Lookup(node.ID)
 	hubTS := httptest.NewServer(s.handler())
 	defer hubTS.Close()
 	defer release()
@@ -633,6 +638,7 @@ func TestHubReverseNodeProxyRejectsOversizedRequestBody(t *testing.T) {
 
 	node := hub.Node{ID: "artist", Name: "Artist", Connection: "reverse", BasePath: "/chat", Token: "node-token"}
 	s := newHubServer(hub.NewRegistry(fakeHubResolver{nodes: []hub.Node{node}}), nil)
+	node, _ = s.registry.Lookup(node.ID)
 	hubTS := httptest.NewServer(s.handler())
 	defer hubTS.Close()
 
@@ -676,6 +682,7 @@ func TestHubReverseResponseCancellation(t *testing.T) {
 
 	node := hub.Node{ID: "artist", Name: "Artist", Connection: "reverse", BasePath: "/chat", Token: "node-token"}
 	s := newHubServer(hub.NewRegistry(fakeHubResolver{nodes: []hub.Node{node}}), nil)
+	node, _ = s.registry.Lookup(node.ID)
 	hubTS := httptest.NewServer(s.handler())
 	defer hubTS.Close()
 
@@ -709,6 +716,7 @@ func TestHubReverseResponseCancellation(t *testing.T) {
 func TestHubReverseReadLoopIsolatesUnreadResponseOverflow(t *testing.T) {
 	node := hub.Node{ID: "artist", Name: "Artist", Connection: "reverse", BasePath: "/chat", Token: "node-token"}
 	s := newHubServer(hub.NewRegistry(fakeHubResolver{nodes: []hub.Node{node}}), nil)
+	node, _ = s.registry.Lookup(node.ID)
 	hubTS := httptest.NewServer(s.handler())
 	defer hubTS.Close()
 
@@ -813,6 +821,7 @@ func TestHubReverseReadLoopIsolatesUnreadResponseOverflow(t *testing.T) {
 func TestHubReverseReadLoopCompletesLargeActivelyDrainedStream(t *testing.T) {
 	node := hub.Node{ID: "artist", Name: "Artist", Connection: "reverse", BasePath: "/chat", Token: "node-token"}
 	s := newHubServer(hub.NewRegistry(fakeHubResolver{nodes: []hub.Node{node}}), nil)
+	node, _ = s.registry.Lookup(node.ID)
 	hubTS := httptest.NewServer(s.handler())
 	defer hubTS.Close()
 
@@ -1039,6 +1048,7 @@ func TestHubReverseDispatchFullTerminalPreservesNodeOutcome(t *testing.T) {
 func TestHubReverseReadLoopSurvivesCanceledUndrainedStream(t *testing.T) {
 	node := hub.Node{ID: "artist", Name: "Artist", Connection: "reverse", BasePath: "/chat", Token: "node-token"}
 	s := newHubServer(hub.NewRegistry(fakeHubResolver{nodes: []hub.Node{node}}), nil)
+	node, _ = s.registry.Lookup(node.ID)
 	hubTS := httptest.NewServer(s.handler())
 	defer hubTS.Close()
 
@@ -1192,6 +1202,7 @@ func TestHubReverseConnectorReconnectsAfterDroppedWebsocket(t *testing.T) {
 
 	node := hub.Node{ID: "artist", Name: "Artist", Connection: "reverse", BasePath: "/chat", Token: "node-token"}
 	s := newHubServer(hub.NewRegistry(fakeHubResolver{nodes: []hub.Node{node}}), nil)
+	node, _ = s.registry.Lookup(node.ID)
 	hubTS := httptest.NewServer(s.handler())
 	defer hubTS.Close()
 
@@ -1234,6 +1245,7 @@ func TestHubReverseConnectorFailsInFlightRequestAndRecoversAfterDrop(t *testing.
 
 	node := hub.Node{ID: "artist", Name: "Artist", Connection: "reverse", BasePath: "/chat", Token: "node-token"}
 	s := newHubServer(hub.NewRegistry(fakeHubResolver{nodes: []hub.Node{node}}), nil)
+	node, _ = s.registry.Lookup(node.ID)
 	hubTS := httptest.NewServer(s.handler())
 	defer hubTS.Close()
 
@@ -1279,6 +1291,7 @@ func TestHubReverseDelegationNodeJSON(t *testing.T) {
 
 	node := hub.Node{ID: "artist", Name: "Artist", Connection: "reverse", BasePath: "/chat", Token: "node-token"}
 	s := newHubServer(hub.NewRegistry(fakeHubResolver{nodes: []hub.Node{node}}), nil)
+	node, _ = s.registry.Lookup(node.ID)
 	hubTS := httptest.NewServer(s.handler())
 	defer hubTS.Close()
 

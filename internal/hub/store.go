@@ -14,8 +14,9 @@ import (
 // bearer tokens). It doubles as a Resolver so UI-added nodes resolve through
 // the same Registry as config/contain nodes.
 type Store struct {
-	mu   sync.Mutex
-	path string
+	mu         sync.Mutex
+	path       string
+	identities map[string]Node
 }
 
 // storeFile is the on-disk JSON shape.
@@ -46,6 +47,7 @@ func (s *Store) readLocked() ([]Node, error) {
 	data, err := os.ReadFile(s.path)
 	if err != nil {
 		if os.IsNotExist(err) {
+			s.stampNodesLocked(nil)
 			return nil, nil
 		}
 		return nil, fmt.Errorf("read hub node store: %w", err)
@@ -57,6 +59,7 @@ func (s *Store) readLocked() ([]Node, error) {
 	for i := range f.Nodes {
 		f.Nodes[i].Source = SourceLocal
 	}
+	s.stampNodesLocked(f.Nodes)
 	return f.Nodes, nil
 }
 
@@ -77,6 +80,7 @@ func (s *Store) writeLocked(nodes []Node) error {
 	if err := config.WriteFileAtomically(s.path, append(data, '\n'), 0o600); err != nil {
 		return fmt.Errorf("write hub node store: %w", err)
 	}
+	s.stampNodesLocked(nodes)
 	return nil
 }
 
@@ -102,7 +106,7 @@ func (s *Store) Add(n Node) (Node, error) {
 	if err := s.writeLocked(nodes); err != nil {
 		return Node{}, err
 	}
-	return n, nil
+	return nodes[len(nodes)-1], nil
 }
 
 // Upsert normalizes and creates or replaces a stored node by ID. It only
@@ -125,14 +129,14 @@ func (s *Store) Upsert(n Node) (Node, bool, error) {
 			if err := s.writeLocked(nodes); err != nil {
 				return Node{}, false, err
 			}
-			return n, false, nil
+			return nodes[i], false, nil
 		}
 	}
 	nodes = append(nodes, n)
 	if err := s.writeLocked(nodes); err != nil {
 		return Node{}, false, err
 	}
-	return n, true, nil
+	return nodes[len(nodes)-1], true, nil
 }
 
 // Remove deletes a stored node by ID. Removing an unknown ID is an error so

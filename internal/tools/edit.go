@@ -125,7 +125,7 @@ func (t *EditFileTool) Execute(ctx context.Context, args json.RawMessage) (core.
 
 	// Check permissions via approval manager
 	if t.approval != nil {
-		outcome, err := t.approval.CheckPathApprovalWithContext(ctx, EditFileToolName, absPath, a.Path, true)
+		outcome, err := checkFileWriteApproval(ctx, t.approval, EditFileToolName, absPath, a.Path, t.config)
 		if err != nil {
 			return pathApprovalErrorOutput(warning, err), nil
 		}
@@ -345,7 +345,7 @@ func (t *UnifiedDiffTool) Execute(ctx context.Context, args json.RawMessage) (co
 			return core.TextOutput(formatToolError(NewToolErrorf(ErrInvalidParams, "cannot resolve path: %v", err))), nil
 		}
 		if t.approval != nil {
-			outcome, err := t.approval.CheckPathApprovalWithContext(ctx, UnifiedDiffToolName, absPath, fd.Path, true)
+			outcome, err := checkFileWriteApproval(ctx, t.approval, UnifiedDiffToolName, absPath, fd.Path, t.config)
 			if err != nil {
 				return pathApprovalErrorOutput("", err), nil
 			}

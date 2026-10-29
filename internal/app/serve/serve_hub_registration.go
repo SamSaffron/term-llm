@@ -140,7 +140,7 @@ func (s *hubServer) handleRegisterNode(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	stored, created, err := s.store.Upsert(node)
+	stored, created, err := s.upsertHubNode(node)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
@@ -199,7 +199,7 @@ func (s *hubServer) handleUnregisterNode(w http.ResponseWriter, r *http.Request)
 		}
 	}
 
-	removed, err := s.store.RemoveIfExists(id)
+	removed, err := s.unregisterHubNode(id)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return

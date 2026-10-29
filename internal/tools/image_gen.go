@@ -282,7 +282,7 @@ func (t *ImageGenerateTool) approveOutputPath(ctx context.Context, a ImageGenera
 		return "", &out
 	}
 	if t.approval != nil {
-		outcome, err := t.approval.CheckPathApprovalWithContext(ctx, ImageGenerateToolName, resolvedOutputPath, a.OutputPath, true)
+		outcome, err := checkFileWriteApproval(ctx, t.approval, ImageGenerateToolName, resolvedOutputPath, a.OutputPath, t.toolConfig)
 		if err != nil {
 			out := pathApprovalErrorOutput("", err)
 			return "", &out
@@ -463,7 +463,7 @@ func (t *ImageGenerateTool) saveImageResult(a ImageGenerateArgs, result *image.I
 		out := core.TextOutput(formatToolError(NewToolErrorf(ErrExecutionFailed, "failed to create directory: %v", err)))
 		return "", "", &out
 	}
-	if err := os.WriteFile(outputPath, result.Data, 0644); err != nil {
+	if err := config.WriteFileAtomically(outputPath, result.Data, 0644); err != nil {
 		out := core.TextOutput(formatToolError(NewToolErrorf(ErrExecutionFailed, "failed to write image: %v", err)))
 		return "", "", &out
 	}
