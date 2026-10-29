@@ -2,8 +2,6 @@
 title: Linked devices
 ---
 
-# Linked devices
-
 Linked devices is a preview feature for connecting a compatible client to one
 `term-llm serve web` target without exposing its HTTP listener to the internet.
 Open **Settings → Linked devices** to see the target's current state.
