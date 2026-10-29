@@ -10,6 +10,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -118,44 +119,6 @@ type rgMatchData struct {
 type ripgrepResult struct {
 	matches   []GrepMatch
 	truncated bool
-}
-
-func buildRipgrepArgs(a GrepArgs, searchPath string, contextLines, maxResults int) []string {
-	args := []string{
-		"--no-config",
-		"--color=never",
-		"--hidden",
-		"--glob", "!.git",
-	}
-
-	if a.FilesWithMatches {
-		args = append(args, "--files-with-matches")
-	} else {
-		args = append(args,
-			"--json",
-			// --max-count is per-file, not global. runRipgrep also applies a
-			// streaming global limit so broad searches can stop as soon as the
-			// caller's max_results is satisfied.
-			"--max-count", strconv.Itoa(maxResults),
-			"--context", strconv.Itoa(contextLines),
-		)
-	}
-
-	if a.Include != "" {
-		args = append(args, "--glob", a.Include)
-	}
-	if a.Exclude != "" {
-		args = append(args, "--glob", "!"+a.Exclude)
-	}
-	if a.Type != "" {
-		args = append(args, "--type", a.Type)
-	}
-	if a.Multiline {
-		args = append(args, "--multiline", "--multiline-dotall")
-	}
-
-	args = append(args, a.Pattern, searchPath)
-	return args
 }
 
 type ripgrepCaptureLimits struct {
@@ -312,9 +275,14 @@ func captureRipgrepStderr(stderr io.Reader) []byte {
 	return data
 }
 
-func runRipgrep(ctx context.Context, args []string, limits ripgrepCaptureLimits, maxResults int, filesWithMatches bool, observers ...ripgrepLineConsumer) ([]byte, bool, error) {
+func runRipgrep(ctx context.Context, searchPath string, args []string, limits ripgrepCaptureLimits, maxResults int, filesWithMatches bool, observers ...ripgrepLineConsumer) ([]byte, bool, error) {
 	limits = limits.normalize()
 	cmd := exec.CommandContext(ctx, "rg", args...)
+	// Anchor the subprocess to the approved search directory, not the host CWD.
+	cmd.Dir = filepath.Dir(searchPath)
+	if info, err := os.Stat(searchPath); err == nil && info.IsDir() {
+		cmd.Dir = searchPath
+	}
 
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
@@ -391,7 +359,7 @@ func runRipgrep(ctx context.Context, args []string, limits ripgrepCaptureLimits,
 // executeRipgrep runs ripgrep and returns matches.
 func (t *GrepTool) executeRipgrep(ctx context.Context, a GrepArgs, searchPath string, contextLines, maxResults int) (ripgrepResult, error) {
 	args := buildRipgrepArgs(a, searchPath, contextLines, maxResults)
-	output, truncated, err := runRipgrep(ctx, args, t.rgCaptureLimits, maxResults, a.FilesWithMatches)
+	output, truncated, err := runRipgrep(ctx, searchPath, args, t.rgCaptureLimits, maxResults, a.FilesWithMatches)
 	if err != nil {
 		return ripgrepResult{}, err
 	}

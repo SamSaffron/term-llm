@@ -86,7 +86,10 @@ func TestGrepUnconfiguredRipgrepGolden(t *testing.T) {
 				t.Fatal(err)
 			}
 			gotArgs := strings.ReplaceAll(strings.Join(rg.argv(t), "\n")+"\n", root, "{{ROOT}}")
-			if want := string(read(c.Name + ".args")); gotArgs != want {
+			// Preserve the upstream golden, except for the intentional security
+			// hardening that separates the pattern and path from rg options.
+			wantArgs := strings.Replace(string(read(c.Name+".args")), "\nneedle\n{{ROOT}}\n", "\n-e\nneedle\n--\n{{ROOT}}\n", 1)
+			if want := wantArgs; gotArgs != want {
 				t.Fatalf("rg args:\n%s\nwant:\n%s", gotArgs, want)
 			}
 			gotOut := strings.ReplaceAll(out.Content, root, "{{ROOT}}")
