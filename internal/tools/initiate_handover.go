@@ -7,6 +7,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/samsaffron/term-llm/internal/agents"
 	"github.com/samsaffron/term-llm/internal/llm/core"
 )
 
@@ -64,7 +65,7 @@ Guidelines:
 			"properties": map[string]interface{}{
 				"agent": map[string]interface{}{
 					"type":        "string",
-					"description": "The name of the target agent to hand over to (without @ prefix)",
+					"description": "The registry name of the target agent (without @ prefix, not a filesystem path)",
 				},
 			},
 			"required":             []string{"agent"},
@@ -81,8 +82,8 @@ func (t *InitiateHandoverTool) Execute(ctx context.Context, args json.RawMessage
 	}
 
 	agent := strings.TrimSpace(strings.TrimPrefix(a.Agent, "@"))
-	if agent == "" {
-		return core.TextOutput(formatHandoverResult("error", "agent name is required")), nil
+	if !agents.IsSafeLookupName(agent) {
+		return core.TextOutput(formatHandoverResult("error", "agent name is required and must be a registry lookup name, not a filesystem path")), nil
 	}
 
 	// Check context-based handler first (for web serve / non-TUI use)

@@ -64,7 +64,7 @@ func TestQueueAgentCreatesAndTriggersJobsBackedLLMJob(t *testing.T) {
 	defer server.Close()
 
 	client := &jobsBackedAgentClient{baseURL: server.URL, httpClient: server.Client()}
-	tool := NewQueueAgentToolWithClient(client)
+	tool := NewQueueAgentToolWithClient(client, nil)
 	out, err := tool.Execute(context.Background(), json.RawMessage(`{"agent_name":"developer","prompt":"do it","timeout":60,"model":"fast","cwd":"/tmp/work"}`))
 	if err != nil {
 		t.Fatalf("queue Execute() error = %v", err)
@@ -97,7 +97,7 @@ func TestQueueAgentUsesConfiguredJobsBasePath(t *testing.T) {
 	defer server.Close()
 	t.Setenv("TERM_LLM_JOBS_SERVER", server.URL+"/ui")
 
-	out, err := NewQueueAgentTool().Execute(context.Background(), json.RawMessage(`{"agent_name":"developer","prompt":"do it","cwd":"/tmp/work"}`))
+	out, err := NewQueueAgentTool(nil).Execute(context.Background(), json.RawMessage(`{"agent_name":"developer","prompt":"do it","cwd":"/tmp/work"}`))
 	if err != nil || out.IsError || !created {
 		t.Fatalf("queue against combined jobs route: created=%v result=%+v err=%v", created, out, err)
 	}
@@ -180,7 +180,7 @@ func TestQueueAgentRecoversRunAfterLostTriggerResponse(t *testing.T) {
 			defer server.Close()
 
 			client := &jobsBackedAgentClient{baseURL: server.URL, httpClient: server.Client()}
-			tool := NewQueueAgentToolWithClient(client)
+			tool := NewQueueAgentToolWithClient(client, nil)
 			out, err := tool.Execute(ctx, json.RawMessage(`{"agent_name":"developer","prompt":"do it","cwd":"/tmp/work"}`))
 			if err != nil {
 				t.Fatalf("queue Execute() error = %v", err)
@@ -226,7 +226,7 @@ func TestQueueAgentPreservesJobIDWhenTriggerCannotBeReconciled(t *testing.T) {
 	defer server.Close()
 
 	client := &jobsBackedAgentClient{baseURL: server.URL, httpClient: server.Client()}
-	tool := NewQueueAgentToolWithClient(client)
+	tool := NewQueueAgentToolWithClient(client, nil)
 	tool.triggerReconcileTimeout = 20 * time.Millisecond
 	out, err := tool.Execute(context.Background(), json.RawMessage(`{"agent_name":"developer","prompt":"do it","cwd":"/tmp/work"}`))
 	if err != nil {
@@ -284,7 +284,7 @@ func TestQueueAgentNotifyWhenDonePersistsTrustedOrigin(t *testing.T) {
 	defer server.Close()
 
 	client := &jobsBackedAgentClient{baseURL: server.URL, httpClient: server.Client()}
-	tool := NewQueueAgentToolWithClient(client)
+	tool := NewQueueAgentToolWithClient(client, nil)
 	ctx := ContextWithQueueAgentOrigin(context.Background(), QueueAgentOriginContext{Origin: QueueAgentOriginWeb, SessionID: "sess-web-1"})
 	out, err := tool.Execute(ctx, json.RawMessage(`{"agent_name":"developer","prompt":"do it","cwd":"/tmp/work","notify_when_done":true}`))
 	if err != nil {
@@ -671,7 +671,7 @@ func TestQueueAgentSurfacesJobsErrorBody(t *testing.T) {
 	defer server.Close()
 
 	client := &jobsBackedAgentClient{baseURL: server.URL, httpClient: server.Client()}
-	tool := NewQueueAgentToolWithClient(client)
+	tool := NewQueueAgentToolWithClient(client, nil)
 	out, err := tool.Execute(context.Background(), json.RawMessage(`{"agent_name":"developer","prompt":"do it","cwd":"/tmp/work"}`))
 	if err != nil {
 		t.Fatalf("queue Execute() error = %v", err)
@@ -897,7 +897,7 @@ func TestQueueAgentDeniesBeforeCreatingJobAndCarriesParentPolicy(t *testing.T) {
 		writeJSON(t, w, jobsV2AgentRunResponse{ID: "run_1", JobID: "job_1"})
 	}))
 	defer server.Close()
-	tool := NewQueueAgentToolWithClient(&jobsBackedAgentClient{baseURL: server.URL, httpClient: server.Client()})
+	tool := NewQueueAgentToolWithClient(&jobsBackedAgentClient{baseURL: server.URL, httpClient: server.Client()}, nil)
 	tool.SetModelAdmission(func() (modelpolicy.Policy, modelpolicy.ParentModel) {
 		return modelpolicy.Policy{}.With("boss", []string{"debug:*"}), modelpolicy.ParentModel{Provider: "debug", Model: "live"}
 	}, func(_ context.Context, _, model string, _ modelpolicy.Policy, _ modelpolicy.ParentModel) error {

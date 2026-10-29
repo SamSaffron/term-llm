@@ -154,7 +154,7 @@ func (a *Agent) TimeGroundingEnabled() bool {
 type AgentSource int
 
 const (
-	SourceLocal   AgentSource = iota // Project-local (./term-llm-agents/)
+	SourceLocal   AgentSource = iota // Explicit filesystem path (not auto-discovered)
 	SourceUser                       // User-global (~/.config/term-llm/agents/)
 	SourceBuiltin                    // Embedded built-in
 )

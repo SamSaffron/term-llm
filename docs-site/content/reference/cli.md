@@ -32,7 +32,7 @@ Manage agents (named configuration bundles)
 | Flag | Type | Description |
 |---|---|---|
 | `--builtin` | bool | Show only built-in agents |
-| `--local` | bool | Show only project-local agents |
+| `--local` | bool | Deprecated: project agents require an explicit --agent path |
 | `--user` | bool | Show only user-global agents |
 
 ### `term-llm agents clear`
@@ -45,7 +45,7 @@ Copy an agent for customization
 
 | Flag | Type | Description |
 |---|---|---|
-| `--local` | bool | Copy to project's term-llm-agents/ instead of user config |
+| `--local` | bool | Copy to project's term-llm-agents/ (requires explicit --agent path) |
 
 ### `term-llm agents edit`
 
@@ -77,7 +77,7 @@ Import agent from GitHub Gist
 
 | Flag | Type | Description |
 |---|---|---|
-| `--local` | bool | Import to project's term-llm-agents/ instead of user config |
+| `--local` | bool | Import to project's term-llm-agents/ (requires explicit --agent path) |
 
 ### `term-llm agents new`
 
@@ -85,7 +85,7 @@ Create a new agent from template
 
 | Flag | Type | Description |
 |---|---|---|
-| `--local` | bool | Create in project's term-llm-agents/ instead of user config |
+| `--local` | bool | Create in project's term-llm-agents/ (requires explicit --agent path) |
 
 ### `term-llm agents path`
 

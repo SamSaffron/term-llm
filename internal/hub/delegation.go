@@ -120,7 +120,7 @@ func (n Node) DelegationMaxInFlight() int {
 // path. Agent names can resolve to files on the target node, so a remote
 // origin must never smuggle one in under a "*" wildcard.
 func pathLikeAgentName(name string) bool {
-	return strings.ContainsAny(name, `/\`) || strings.Contains(name, "..") || strings.HasPrefix(name, ".") || strings.HasPrefix(name, "~")
+	return strings.ContainsAny(name, `/\:`) || strings.Contains(name, "..") || strings.HasPrefix(name, ".") || strings.HasPrefix(name, "~")
 }
 
 // AcceptsDelegationAgent returns nil when this node's policy allows delegated

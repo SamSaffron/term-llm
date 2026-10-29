@@ -121,7 +121,7 @@ Pasting an image from the clipboard attaches it as an image when the terminal/cl
 
 #### Project and agent `@` mentions
 
-In the TUI composer, type `@` to search permitted agents and files or directories in the active project or worktree. Web chat currently searches project files and directories only. Press Enter or Tab to insert a result as editable text. File results follow worktree switches; project-local agent discovery uses the process startup directory because the session's agent registry and runner are created there.
+In the TUI composer, type `@` to search permitted agents and files or directories in the active project or worktree. Web chat currently searches project files and directories only. Press Enter or Tab to insert a result as editable text. File results follow worktree switches. Agent results come from user-installed/configured agents and built-ins; project agent directories are never auto-discovered.
 
 File syntax remains `@path/to/file`, `@"path with spaces"`, or `@file.go#L10-20` for a line range. Bare `@name` is always file/text syntax. Selecting or typing an agent uses the explicit `@agent:codebase` form (or `@agent:"name with spaces"` when needed). `@agent:` searches agents only, while path-like queries such as `@internal/` search files only.
 

@@ -253,12 +253,12 @@ func TestRegistryPreservesSafeLegacyLookupNames(t *testing.T) {
 	}
 }
 
-func TestRegistry_Shadowing(t *testing.T) {
+func TestRegistry_UserShadowing(t *testing.T) {
 	tmpDir := t.TempDir()
-	localDir := filepath.Join(tmpDir, "local-agents")
+	userDir := filepath.Join(tmpDir, "user-agents")
 
-	// Create a local agent that shadows the builtin "reviewer"
-	agentDir := filepath.Join(localDir, "reviewer")
+	// Create a user agent that shadows the builtin "reviewer"
+	agentDir := filepath.Join(userDir, "reviewer")
 	if err := os.MkdirAll(agentDir, 0755); err != nil {
 		t.Fatal(err)
 	}
@@ -272,17 +272,17 @@ description: "Custom reviewer"`
 		useBuiltin: true,
 		cache:      make(map[string]*Agent),
 		searchPaths: []searchPath{
-			{path: localDir, source: SourceLocal},
+			{path: userDir, source: SourceUser},
 		},
 	}
 
-	// Should get the local version, not builtin
+	// Should get the user version, not builtin
 	agent, err := r.Get("reviewer")
 	if err != nil {
 		t.Fatalf("Get(reviewer): %v", err)
 	}
-	if agent.Source != SourceLocal {
-		t.Errorf("Source = %v, want %v (should shadow builtin)", agent.Source, SourceLocal)
+	if agent.Source != SourceUser {
+		t.Errorf("Source = %v, want %v (should shadow builtin)", agent.Source, SourceUser)
 	}
 	if agent.Description != "Custom reviewer" {
 		t.Errorf("Description = %q, want %q", agent.Description, "Custom reviewer")

@@ -53,7 +53,7 @@ var builtinTools = []builtinDescriptor{
 	{ToolDescriptor: ToolDescriptor{Name: ContinueAgentToolName, Policy: KindAgent, DefaultEnabled: true}, requiresSpawn: true, construct: agentControlConstructor(ContinueAgentToolName)},
 	{ToolDescriptor: ToolDescriptor{Name: CancelAgentToolName, Policy: KindAgent, DefaultEnabled: true}, requiresSpawn: true, construct: agentControlConstructor(CancelAgentToolName)},
 	{ToolDescriptor: ToolDescriptor{Name: ListAgentsToolName, Policy: KindAgent, DefaultEnabled: true}, requiresSpawn: true, construct: agentControlConstructor(ListAgentsToolName)},
-	{ToolDescriptor: ToolDescriptor{Name: QueueAgentToolName, Policy: KindAgent, DefaultEnabled: true, FlagLabel: QueueAgentToolName}, construct: func(r *LocalToolRegistry) core.Tool { return NewQueueAgentTool(r.config) }},
+	{ToolDescriptor: ToolDescriptor{Name: QueueAgentToolName, Policy: KindAgent, DefaultEnabled: true, FlagLabel: QueueAgentToolName}, construct: func(r *LocalToolRegistry) core.Tool { return NewQueueAgentTool(r.approval, r.config) }},
 	{ToolDescriptor: ToolDescriptor{Name: WaitForJobsToolName, Policy: KindAgent, DefaultEnabled: true, FlagLabel: WaitForJobsToolName}, construct: func(*LocalToolRegistry) core.Tool { return NewWaitForJobsTool() }},
 	{ToolDescriptor: ToolDescriptor{Name: RunAgentScriptToolName, Policy: KindExecute, DefaultEnabled: true}, construct: func(r *LocalToolRegistry) core.Tool { return NewRunAgentScriptTool(r.config, r.limits) }},
 	{ToolDescriptor: ToolDescriptor{Name: InitiateHandoverToolName, Policy: KindAgent, DefaultEnabled: true}, construct: func(*LocalToolRegistry) core.Tool { return NewInitiateHandoverTool() }},

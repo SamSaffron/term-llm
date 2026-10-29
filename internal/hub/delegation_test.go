@@ -293,7 +293,7 @@ func TestAcceptsDelegationAgent(t *testing.T) {
 	wild := Node{ID: "wild", Delegation: &DelegationPolicy{Workdir: "/work", AllowedAgents: []string{"*"}}}
 	allow(wild, "reviewer")
 	allow(wild, DefaultDelegationAgent)
-	for _, agent := range []string{"../evil", "skills/custom", `..\evil`, ".hidden", "~root"} {
+	for _, agent := range []string{"../evil", "skills/custom", `..\evil`, ".hidden", "~root", "C:", "C:reviewer"} {
 		deny(wild, agent)
 	}
 

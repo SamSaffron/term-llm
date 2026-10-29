@@ -704,7 +704,7 @@ This is a built-in safety limit rather than a config option today. It preserves 
 
 ## Native commit agent
 
-`commit.message_agent` defaults to `commit-message`. The value must be a safe exact agent registry lookup name. Normal precedence applies, so a project-local or user-global `commit-message` shadows the builtin; setting another name selects that agent explicitly. Resolution errors are shown in `/commit` and leave manual message entry available—there is no silent builtin fallback. The workflow keeps the agent's style/model preferences but overlays read-only, host-owned scope and staged-message tools and always suppresses `on_complete`.
+`commit.message_agent` defaults to `commit-message`. The value must be a safe exact agent registry lookup name. Normal precedence applies, so a user-global or explicitly configured search-path `commit-message` shadows the builtin; project agents are not auto-discovered. Setting another name selects that agent explicitly. Resolution errors are shown in `/commit` and leave manual message entry available—there is no silent builtin fallback. The workflow keeps the agent's style/model preferences but overlays read-only, host-owned scope and staged-message tools and always suppresses `on_complete`.
 
 ## Chat terminal titles
 

@@ -65,7 +65,7 @@ A few good starting points:
 
 ### Commit workflow agent
 
-Native `/commit` resolves `commit-message` through the normal registry, so a project-local or user agent with that name shadows the builtin. You can instead set `commit.message_agent` to another registered lookup name. The same resolution is used by TUI and Web.
+Native `/commit` resolves `commit-message` through the normal registry, so a user-installed agent with that name shadows the builtin. You can instead set `commit.message_agent` to another registered lookup name. The same resolution is used by TUI and Web.
 
 The resolved agent contributes its prompt, tone, provider, model, and reasoning style to two specialized child phases: read-only whole-file scope planning and staged-only message drafting. The host overlays the safety contract for both phases. Configured write/custom tools, broad file reads, custom output tools, and `on_complete` are disabled; a small turn cap and host-owned typed finishing tool replace them. In particular, `/commit` never runs the builtin's legacy `commit_editmsg` side effect or a custom agent's completion hook before user review. Missing or invalid configured agents are reported without silently falling back, and manual file/message entry stays available.
 
@@ -81,7 +81,6 @@ The built-in `sysadmin` agent uses `workspace: none`: its execution directory re
 term-llm agents                              # List all agents
 term-llm agents list                         # Same as above
 term-llm agents list --builtin               # Only built-in agents
-term-llm agents list --local                 # Only local agents
 term-llm agents list --user                  # Only user agents
 term-llm agents new my-agent                 # Create new agent
 term-llm agents show reviewer                # Show agent configuration
@@ -99,9 +98,23 @@ The Gist commands require the `gh` CLI. Export requires authentication; import r
 
 Registry lookup names are limited to 64 letters, digits, or underscores, with non-trailing spaces, dots, and hyphens between segments. This is also the grammar used by explicit `@agent:name` delegation mentions, so surrounding sentence punctuation is never part of the lookup key.
 
+### Project agents require explicit selection
+
+Cloning or entering a repository does not install its agents. In particular, `./term-llm-agents/` is **not auto-discovered** and cannot shadow built-in or user-installed agents. `--agent reviewer` always uses the trusted search order below, never an implicitly discovered project definition.
+
+To use a repository agent, inspect its definition and bundled scripts, then select its directory explicitly:
+
+```bash
+term-llm chat --agent ./term-llm-agents/my-agent
+```
+
+Explicit path selection trusts that agent's configuration, including script tools, shell allowlists, and completion hooks, which may execute without further approval. It does not make sibling project agents discoverable: spawned agent names still resolve through user-installed/configured agents and built-ins, and model-controlled `spawn_agent` and `initiate_handover` calls cannot select filesystem paths. `queue_agent` also requires a registry name in prompt/auto modes, but accepts explicit filesystem paths while its current effective approval mode is yolo (including inherited yolo). Turning yolo off restores the registry-name restriction; yolo does not enable automatic project-agent discovery.
+
+`agents new`, `agents copy`, and `agents import gist` still accept `--local` to write a project agent, but using it requires an explicit `--agent` path. `agents --local` no longer lists project definitions and reports migration guidance instead.
+
 ## Customizing built-ins
 
-A filesystem agent with the same name as a built-in shadows the built-in. For example, to customize the default `developer` behavior, create `term-llm-agents/developer/agent.yaml` in a project or `~/.config/term-llm/agents/developer/agent.yaml` for your user account. You can start from the bundled implementation with:
+A user-installed agent with the same name as a built-in shadows the built-in. For example, to customize the default `developer` behavior, create `~/.config/term-llm/agents/developer/agent.yaml` for your user account (or use `$XDG_CONFIG_HOME/term-llm/agents/developer/agent.yaml`). You can start from the bundled implementation with:
 
 ```bash
 term-llm agents copy developer developer      # copy built-in developer into your user agents dir
@@ -370,7 +383,7 @@ Running in container: {{env:DV_CONTAINER_NAME}}
 
 Whitespace around the directive is allowed, for example `{{ env : DV_CONTAINER_NAME }}`. Unset environment variables expand to an empty string. Use `{{!env:DV_CONTAINER_NAME}}` to render the placeholder literally. Because values are inserted into the model-visible system prompt, avoid referencing secret env vars unless you intentionally want to send them to the model.
 
-**Agent search order:** project-local agents (`./term-llm-agents`) → user agents (`~/.config/term-llm/agents`) → configured `agents.search_paths` → built-in agents
+**Agent search order:** user agents (`$XDG_CONFIG_HOME/term-llm/agents`, defaulting to `~/.config/term-llm/agents`) → explicitly configured `agents.search_paths` → built-in agents. This order applies to named selection, mentions, completions, and spawned agents. Configure search paths only for agent directories you trust; their definitions can authorize scripts and shell commands.
 
 ## Model-gated personal instructions
 

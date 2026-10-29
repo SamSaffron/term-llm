@@ -17,6 +17,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/samsaffron/term-llm/internal/agents"
 	"github.com/samsaffron/term-llm/internal/llm/core"
 	"github.com/samsaffron/term-llm/internal/modelpolicy"
 )
@@ -139,6 +140,7 @@ type jobsV2ErrorResponse struct {
 }
 
 type QueueAgentTool struct {
+	approval                *ApprovalManager
 	client                  *jobsBackedAgentClient
 	config                  *ToolConfig
 	triggerReconcileTimeout time.Duration
@@ -146,12 +148,12 @@ type QueueAgentTool struct {
 	parentState             func() (modelpolicy.Policy, modelpolicy.ParentModel)
 }
 
-func NewQueueAgentTool(configs ...*ToolConfig) *QueueAgentTool {
-	return NewQueueAgentToolWithClient(newJobsBackedAgentClientFromEnv(), configs...)
+func NewQueueAgentTool(approval *ApprovalManager, configs ...*ToolConfig) *QueueAgentTool {
+	return NewQueueAgentToolWithClient(newJobsBackedAgentClientFromEnv(), approval, configs...)
 }
 
-func NewQueueAgentToolWithClient(client *jobsBackedAgentClient, configs ...*ToolConfig) *QueueAgentTool {
-	return &QueueAgentTool{client: client, config: optionalToolConfig(configs)}
+func NewQueueAgentToolWithClient(client *jobsBackedAgentClient, approval *ApprovalManager, configs ...*ToolConfig) *QueueAgentTool {
+	return &QueueAgentTool{client: client, approval: approval, config: optionalToolConfig(configs)}
 }
 
 // SetModelAdmission configures a frozen parent snapshot and launch preflight.
@@ -168,7 +170,7 @@ func (t *QueueAgentTool) Spec() core.ToolSpec {
 			"properties": map[string]any{
 				"agent_name": map[string]any{
 					"type":        "string",
-					"description": "Name of the agent to queue (e.g., 'developer', 'codebase', 'web-researcher'). Use 'codebase' for local source code questions; 'web-researcher' for external web research only.",
+					"description": "Registry name of the agent to queue, or a filesystem path in yolo mode (e.g., 'developer', 'codebase', 'web-researcher'). Use 'codebase' for local source code questions; 'web-researcher' for external web research only.",
 				},
 				"prompt": map[string]any{
 					"type":        "string",
@@ -205,21 +207,18 @@ func (t *QueueAgentTool) Execute(ctx context.Context, args json.RawMessage) (cor
 		return queuedAgentErrorOutput(formatQueuedAgentError(ErrInvalidParams, fmt.Sprintf("failed to parse arguments: %v", err))), nil
 	}
 	agentName := strings.TrimSpace(a.AgentName)
-	if agentName == "" {
-		return queuedAgentErrorOutput(formatQueuedAgentError(ErrInvalidParams, "agent_name is required")), nil
+	if agentName == "" || (!t.approval.YoloEnabled() && !agents.IsSafeLookupName(agentName)) {
+		return queuedAgentErrorOutput(formatQueuedAgentError(ErrInvalidParams, "agent_name is required; filesystem paths require yolo mode")), nil
 	}
 	if strings.TrimSpace(a.Prompt) == "" {
 		return queuedAgentErrorOutput(formatQueuedAgentError(ErrInvalidParams, "prompt is required")), nil
 	}
 	timeout := a.Timeout
-	if timeout <= 0 {
+	if timeout <= 0 || timeout > defaultQueuedAgentTimeout {
 		timeout = defaultQueuedAgentTimeout
 	}
 	if timeout < 10 {
 		timeout = 10
-	}
-	if timeout > defaultQueuedAgentTimeout {
-		timeout = defaultQueuedAgentTimeout
 	}
 	cwd, err := queueAgentCwd(a.Cwd, t.config)
 	if err != nil {
@@ -267,11 +266,10 @@ func (t *QueueAgentTool) Execute(ctx context.Context, args json.RawMessage) (cor
 func (t *QueueAgentTool) Preview(args json.RawMessage) string {
 	var a QueueAgentArgs
 	_ = json.Unmarshal(args, &a)
-	agentName := a.AgentName
-	if agentName == "" {
+	if a.AgentName == "" {
 		return "queue agent"
 	}
-	return fmt.Sprintf("queue %s", agentName)
+	return fmt.Sprintf("queue %s", a.AgentName)
 }
 
 type WaitForJobsTool struct {

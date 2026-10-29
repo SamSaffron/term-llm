@@ -40,24 +40,15 @@ type RegistryConfig struct {
 	SearchPaths []string
 }
 
-// NewRegistry creates an agent registry with standard paths.
+// NewRegistry creates an agent registry with user-configured paths.
+// Project agents are never discovered implicitly; load them by explicit path.
 func NewRegistry(cfg RegistryConfig) (*Registry, error) {
 	r := &Registry{
 		useBuiltin: cfg.UseBuiltin,
 		cache:      make(map[string]*Agent),
 	}
 
-	// 1. Project-local agents (./term-llm-agents/)
-	cwd, err := os.Getwd()
-	if err == nil {
-		localDir := filepath.Join(cwd, "term-llm-agents")
-		r.searchPaths = append(r.searchPaths, searchPath{
-			path:   localDir,
-			source: SourceLocal,
-		})
-	}
-
-	// 2. User-global agents (~/.config/term-llm/agents/)
+	// 1. User-global agents (~/.config/term-llm/agents/)
 	if home, err := os.UserHomeDir(); err == nil {
 		configDir := os.Getenv("XDG_CONFIG_HOME")
 		if configDir == "" {
@@ -70,7 +61,7 @@ func NewRegistry(cfg RegistryConfig) (*Registry, error) {
 		})
 	}
 
-	// 3. Additional search paths from config
+	// 2. Additional search paths explicitly configured by the user
 	for _, p := range cfg.SearchPaths {
 		r.searchPaths = append(r.searchPaths, searchPath{
 			path:   p,
@@ -108,7 +99,7 @@ func (r *Registry) SetPreferences(prefs map[string]config.AgentPreference) {
 var ErrNotFound = errors.New("agent not found")
 
 // Get retrieves an agent by name.
-// Resolution order: local > user > search paths > builtin
+// Resolution order: user > configured search paths > builtin
 // Preferences are applied on top of the loaded agent config.
 func (r *Registry) Get(name string) (*Agent, error) {
 	if !IsSafeLookupName(name) {
@@ -201,7 +192,7 @@ func (r *Registry) List() ([]*Agent, error) {
 	// Sort by source first (builtin first), then by name
 	sort.Slice(agents, func(i, j int) bool {
 		if agents[i].Source != agents[j].Source {
-			// Builtin (2) > User (1) > Local (0) - reverse enum order
+			// Display builtins before user-installed agents (reverse enum order).
 			return agents[i].Source > agents[j].Source
 		}
 		return agents[i].Name < agents[j].Name
@@ -329,7 +320,8 @@ func GetUserAgentsDir() (string, error) {
 	return filepath.Join(configDir, "term-llm", "agents"), nil
 }
 
-// GetLocalAgentsDir returns the path for project-local agents.
+// GetLocalAgentsDir returns the creation directory for project-local agents.
+// This directory is not searched by the registry.
 func GetLocalAgentsDir() (string, error) {
 	cwd, err := os.Getwd()
 	if err != nil {

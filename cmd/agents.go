@@ -33,7 +33,6 @@ tool sets, model preferences, and MCP servers.
 Examples:
   term-llm agents                    # List all available agents
   term-llm agents --builtin          # Only built-in agents
-  term-llm agents --local            # Only project-local agents
   term-llm agents new my-agent       # Create a new agent from template
   term-llm agents show reviewer      # Display agent configuration
   term-llm agents edit my-agent      # Open agent in $EDITOR
@@ -48,7 +47,8 @@ var agentsNewCmd = &cobra.Command{
 
 By default, creates the agent in the user's config directory
 (~/.config/term-llm/agents/). Use --local to create in the
-current project's term-llm-agents/ directory.
+current project's term-llm-agents/ directory. Local agents are not
+auto-discovered; select one explicitly with --agent ./term-llm-agents/<name>.
 
 Examples:
   term-llm agents new my-agent        # Create in user config
@@ -188,12 +188,12 @@ var agentsPrefClearCmd = &cobra.Command{
 
 func init() {
 	agentsCmd.Flags().BoolVar(&agentsBuiltin, "builtin", false, "Show only built-in agents")
-	agentsCmd.Flags().BoolVar(&agentsLocal, "local", false, "Show only project-local agents")
+	agentsCmd.Flags().BoolVar(&agentsLocal, "local", false, "Deprecated: project agents require an explicit --agent path")
 	agentsCmd.Flags().BoolVar(&agentsUser, "user", false, "Show only user-global agents")
-	agentsNewCmd.Flags().BoolVar(&agentsLocal, "local", false, "Create in project's term-llm-agents/ instead of user config")
-	agentsCopyCmd.Flags().BoolVar(&agentsLocal, "local", false, "Copy to project's term-llm-agents/ instead of user config")
+	agentsNewCmd.Flags().BoolVar(&agentsLocal, "local", false, "Create in project's term-llm-agents/ (requires explicit --agent path)")
+	agentsCopyCmd.Flags().BoolVar(&agentsLocal, "local", false, "Copy to project's term-llm-agents/ (requires explicit --agent path)")
 	agentsExportGistCmd.Flags().BoolVar(&agentsGistPublic, "public", false, "Create a public gist (default: secret)")
-	agentsImportGistCmd.Flags().BoolVar(&agentsLocal, "local", false, "Import to project's term-llm-agents/ instead of user config")
+	agentsImportGistCmd.Flags().BoolVar(&agentsLocal, "local", false, "Import to project's term-llm-agents/ (requires explicit --agent path)")
 
 	rootCmd.AddCommand(agentsCmd)
 	agentsCmd.AddCommand(agentsNewCmd)
@@ -211,6 +211,9 @@ func init() {
 }
 
 func runAgentsList(cmd *cobra.Command, args []string) error {
+	if agentsLocal {
+		return fmt.Errorf("project agents are not auto-discovered; use --agent ./term-llm-agents/<name> to select one explicitly")
+	}
 	cfg, err := loadConfigWithSetup()
 	if err != nil {
 		return err
@@ -230,8 +233,6 @@ func runAgentsList(cmd *cobra.Command, args []string) error {
 	// Filter by source if flags are set
 	if agentsBuiltin {
 		agentList, err = registry.ListBySource(agents.SourceBuiltin)
-	} else if agentsLocal {
-		agentList, err = registry.ListBySource(agents.SourceLocal)
 	} else if agentsUser {
 		agentList, err = registry.ListBySource(agents.SourceUser)
 	} else {
@@ -243,7 +244,7 @@ func runAgentsList(cmd *cobra.Command, args []string) error {
 	}
 
 	if len(agentList) == 0 {
-		if agentsBuiltin || agentsLocal || agentsUser {
+		if agentsBuiltin || agentsUser {
 			fmt.Println("No agents found matching filter.")
 		} else {
 			fmt.Println("No agents configured.")
@@ -267,9 +268,6 @@ func runAgentsList(cmd *cobra.Command, args []string) error {
 				fmt.Println()
 			}
 			switch agent.Source {
-			case agents.SourceLocal:
-				localDir, _ := agents.GetLocalAgentsDir()
-				fmt.Printf("  [local] %s/\n", localDir)
 			case agents.SourceUser:
 				userDir, _ := agents.GetUserAgentsDir()
 				fmt.Printf("  [user] %s/\n", userDir)
@@ -327,9 +325,7 @@ func runAgentsNew(cmd *cobra.Command, args []string) error {
 	fmt.Println("Files created:")
 	fmt.Println("  agent.yaml  - Agent configuration")
 	fmt.Println("  system.md   - System prompt template")
-	fmt.Println()
-	fmt.Printf("Edit with: term-llm agents edit %s\n", name)
-	fmt.Printf("Use with:  term-llm ask --agent %s ...\n", name)
+	printCreatedAgentUsage(name, agentDir)
 
 	return nil
 }
@@ -562,37 +558,42 @@ func runAgentsCopy(cmd *cobra.Command, args []string) error {
 	}
 
 	fmt.Printf("Copied '%s' to '%s'\n", srcName, destAgentDir)
-	fmt.Println()
-	fmt.Printf("Edit with: term-llm agents edit %s\n", destName)
-	fmt.Printf("Use with:  term-llm ask --agent %s ...\n", destName)
+	printCreatedAgentUsage(destName, destAgentDir)
 
 	return nil
 }
 
 func runAgentsPath(cmd *cobra.Command, args []string) error {
-	localDir, _ := agents.GetLocalAgentsDir()
-	userDir, _ := agents.GetUserAgentsDir()
-
+	cfg, err := config.Load()
+	if err != nil {
+		fmt.Fprintf(cmd.ErrOrStderr(), "Warning: could not load configured agent paths; showing defaults: %v\n", err)
+		cfg = &config.Config{Agents: config.AgentsConfig{UseBuiltin: true}}
+	}
+	userDir, err := agents.GetUserAgentsDir()
+	if err != nil {
+		return fmt.Errorf("get agents dir: %w", err)
+	}
 	fmt.Println("Agent directories (searched in order):")
-	fmt.Println()
-
-	// Check if local dir exists
-	if _, err := os.Stat(localDir); err == nil {
-		fmt.Printf("  local: %s\n", localDir)
-	} else {
-		fmt.Printf("  local: %s (not created)\n", localDir)
+	fmt.Printf("  user: %s\n", userDir)
+	for _, path := range cfg.Agents.SearchPaths {
+		fmt.Printf("  configured: %s\n", path)
 	}
-
-	// Check if user dir exists
-	if _, err := os.Stat(userDir); err == nil {
-		fmt.Printf("  user:  %s\n", userDir)
-	} else {
-		fmt.Printf("  user:  %s (not created)\n", userDir)
+	if cfg.Agents.UseBuiltin {
+		fmt.Println("  builtin: (embedded in binary)")
 	}
-
-	fmt.Println("  builtin: (embedded in binary)")
-
+	fmt.Println("Project agents are not auto-discovered; use --agent ./path/to/agent explicitly.")
 	return nil
+}
+
+func printCreatedAgentUsage(name, dir string) {
+	fmt.Println()
+	if agentsLocal {
+		fmt.Printf("Edit files in: %s\n", dir)
+		fmt.Printf("Use with: term-llm ask --agent %q ...\n", "./term-llm-agents/"+name)
+		return
+	}
+	fmt.Printf("Edit with: term-llm agents edit %s\n", name)
+	fmt.Printf("Use with:  term-llm ask --agent %s ...\n", name)
 }
 
 // agentNameCompletion provides shell completion for agent names.
@@ -1049,9 +1050,7 @@ func runAgentsImportGist(cmd *cobra.Command, args []string) error {
 	}
 
 	fmt.Printf("Imported agent '%s' to %s\n", agentConfig.Name, agentDir)
-	fmt.Println()
-	fmt.Printf("Use with: term-llm ask --agent %s ...\n", agentConfig.Name)
-	fmt.Printf("Edit with: term-llm agents edit %s\n", agentConfig.Name)
+	printCreatedAgentUsage(agentConfig.Name, agentDir)
 
 	return nil
 }
