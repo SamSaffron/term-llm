@@ -335,24 +335,6 @@
   white-space: nowrap;
 }
 
-.session-row.is-refining-title .session-title::before {
-  content: '';
-  display: inline-block;
-  width: 0.72em;
-  height: 0.72em;
-  margin-right: 0.45em;
-  border-radius: 50%;
-  border: 2px solid var(--border-strong);
-  border-top-color: var(--text);
-  vertical-align: -0.08em;
-  animation: title-spin 0.8s linear infinite;
-}
-
-.session-row.is-refining-title .session-meta {
-  color: var(--text);
-  font-weight: 600;
-}
-
 @keyframes title-spin {
   to {
     transform: rotate(360deg);
@@ -531,10 +513,6 @@
 
 .session-menu button:hover .session-menu-icon {
   color: var(--text);
-}
-
-.session-menu-label {
-  min-width: 0;
 }
 
 /* Shortcut metadata is assigned in rendered sidebar order. */

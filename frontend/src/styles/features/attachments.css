@@ -123,13 +123,6 @@
   display: none;
 }
 
-.message-attachments {
-  display: flex;
-  gap: 0.5rem;
-  flex-wrap: wrap;
-  margin-bottom: 0.4rem;
-}
-
 .message-attachments img {
   /* Keep these caps coupled to app-render.js; TestAttachmentImageSizeLimitsStayCoupled enforces it. */
   display: block;
@@ -145,18 +138,6 @@
 
 .message-attachments img:hover {
   opacity: 0.85;
-}
-
-.message-attachments .att-file {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.3rem;
-  background: var(--surface-2);
-  border: 1px solid var(--border);
-  border-radius: 4px;
-  padding: 0.2rem 0.5rem;
-  font-size: 0.82rem;
-  color: var(--text-muted);
 }
 
 .markdown-body img {

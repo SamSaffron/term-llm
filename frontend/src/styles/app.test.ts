@@ -321,7 +321,6 @@ describe('touch affordances', () => {
       '.session-menu-trigger',
       '.session-group-chevron',
       '.code-copy-btn',
-      '.math-copy-btn',
       '.diff-file-actions',
       '.diff-comment-affordance',
     ]) {

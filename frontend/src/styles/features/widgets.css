@@ -78,20 +78,6 @@
   outline-offset: 1px;
 }
 
-.widgets-modal-search-icon {
-  position: absolute;
-  left: 0.72rem;
-  z-index: var(--z-local-raised);
-  display: inline-flex;
-  color: var(--text-muted);
-  pointer-events: none;
-}
-
-.widgets-modal-search-icon svg {
-  width: 1rem;
-  height: 1rem;
-}
-
 .widget-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));

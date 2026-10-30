@@ -478,11 +478,6 @@
   cursor: not-allowed;
 }
 
-.composer-icon-btn svg {
-  width: 20px;
-  height: 20px;
-}
-
 .approval-mode-chip,
 .goal-chip {
   align-self: flex-start;
@@ -543,12 +538,6 @@
   font: inherit;
   resize: vertical;
   min-height: 120px;
-}
-
-.goal-modal-subtitle {
-  margin: 0 0 1rem;
-  color: var(--text-muted);
-  line-height: 1.4;
 }
 
 .goal-actions {

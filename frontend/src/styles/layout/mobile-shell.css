@@ -22,7 +22,6 @@
     bottom: auto;
     left: 0;
     height: var(--app-height);
-    width: min(280px, 85vw);
     display: flex;
     flex-direction: column;
     transform: translateX(-100%);
@@ -92,12 +91,6 @@
   .header-title-row {
     align-items: center;
     gap: 8px;
-    flex-wrap: nowrap;
-  }
-
-  .header-left {
-    flex: 1 1 auto;
-    min-width: 0;
   }
 
   .header-controls-row {
@@ -111,11 +104,6 @@
     line-height: 1.1;
   }
 
-  .header-title {
-    white-space: nowrap;
-    display: block;
-  }
-
   .mobile-menu {
     display: inline-flex;
     width: 33px;
@@ -124,12 +112,6 @@
 
   .diff-toggle {
     flex: 0 0 auto;
-    min-width: 50px;
-  }
-
-  .header-right {
-    margin-left: auto;
-    flex-shrink: 0;
   }
 
   .header-stats {
@@ -180,15 +162,6 @@
 
   .chat-scroll {
     padding: 0.8rem calc(0.75rem + var(--safe-right)) 0.7rem calc(0.75rem + var(--safe-left));
-  }
-
-  .message.user {
-    width: min(92%, 820px);
-  }
-
-  .settings-row {
-    align-items: flex-start;
-    flex-direction: column;
   }
 
   .ask-user-question {

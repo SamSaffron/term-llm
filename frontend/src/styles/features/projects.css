@@ -669,12 +669,6 @@
   gap: 0.35rem;
 }
 
-.project-browser-row-arrow {
-  color: var(--text-muted);
-  font-size: 1.05rem;
-  opacity: 0.55;
-}
-
 .project-browser-badge {
   display: inline-flex;
   align-items: center;
@@ -718,8 +712,7 @@
   border-radius: 0.25rem;
 }
 
-.project-browser-empty,
-.project-browser-error {
+.project-browser-empty {
   min-height: 100%;
   display: flex;
   flex-direction: column;
@@ -732,24 +725,9 @@
   font-size: 0.78rem;
 }
 
-.project-browser-empty strong,
-.project-browser-error strong {
+.project-browser-empty strong {
   color: var(--text);
   font-size: 0.84rem;
-}
-
-.project-browser-empty-icon {
-  font-size: 1.2rem;
-  opacity: 0.55;
-}
-
-.project-browser-error {
-  color: var(--danger);
-}
-
-.project-browser-error .btn {
-  margin-top: 0.35rem;
-  padding: 0.4rem 0.7rem;
 }
 
 .project-browser-footer {
@@ -862,10 +840,6 @@
 
 .project-modal-status.is-error {
   color: var(--danger);
-}
-
-.project-modal-status.is-muted {
-  color: var(--text-muted);
 }
 
 .header-title-context {
