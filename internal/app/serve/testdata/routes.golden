@@ -113,7 +113,7 @@ return s.mountBasePath(s.auth(mux))
 
 [outer web]
 if s.jobsV2 != nil && !s.cfg.ui && !s.cfg.api {
-	return appserver.GuardNoAuthBrowser(s.reloadTransport().Handler(inner), !s.cfg.requireAuth && s.browserAuth == nil, s.cfg.corsOrigins, s.cfg.publicURL)
+	return appserver.GuardNoAuthBrowser(s.reloadTransport().Handler(inner), !s.cfg.requireAuth && s.browserAuth == nil, s.cfg.corsOrigins, s.cfg.publicURL, s.cfg.hubURL)
 }
 prefix := s.cfg.basePath
 mux := http.NewServeMux()
@@ -127,4 +127,4 @@ if s.cfg.ui {
 		http.Redirect(w, r, prefix+"/", http.StatusTemporaryRedirect)
 	}))
 }
-return appserver.GuardNoAuthBrowser(s.reloadTransport().Handler(mux), !s.cfg.requireAuth && s.browserAuth == nil, s.cfg.corsOrigins, s.cfg.publicURL)
+return appserver.GuardNoAuthBrowser(s.reloadTransport().Handler(mux), !s.cfg.requireAuth && s.browserAuth == nil, s.cfg.corsOrigins, s.cfg.publicURL, s.cfg.hubURL)

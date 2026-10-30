@@ -11,12 +11,13 @@ import (
 // GuardNoAuthBrowser prevents browser-simple requests from exercising loopback
 // authority in no-auth mode. CORS controls response access, not whether a remote
 // page can send a request. Authenticated modes keep their existing checks.
-func GuardNoAuthBrowser(next http.Handler, noAuth bool, corsOrigins []string, publicURL string) http.Handler {
+// trustedURLs must come from operator-configured public/Hub URLs, not headers.
+func GuardNoAuthBrowser(next http.Handler, noAuth bool, corsOrigins []string, trustedURLs ...string) http.Handler {
 	if !noAuth {
 		return next
 	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if !browserMutationAllowed(r, corsOrigins, publicURL) {
+		if !browserMutationAllowed(r, corsOrigins, trustedURLs...) {
 			wire.WriteOpenAIError(w, http.StatusForbidden, "invalid_origin", "cross-origin requests require an explicit --cors-origin in no-auth mode")
 			return
 		}
@@ -28,7 +29,7 @@ func GuardNoAuthBrowser(next http.Handler, noAuth bool, corsOrigins []string, pu
 // loopback authority. It allows safe methods, explicitly configured CORS origins,
 // same-origin browser traffic, and non-browser clients without browser signals.
 // This is not an authentication boundary against other local processes.
-func browserMutationAllowed(r *http.Request, corsOrigins []string, publicURL string) bool {
+func browserMutationAllowed(r *http.Request, corsOrigins []string, trustedURLs ...string) bool {
 	switch r.Method {
 	case http.MethodGet, http.MethodHead, http.MethodOptions:
 		return true
@@ -63,6 +64,11 @@ func browserMutationAllowed(r *http.Request, corsOrigins []string, publicURL str
 	}
 	// Older browsers may omit Fetch Metadata. Use only configured authority
 	// for named reverse proxies, never client-supplied forwarded headers.
-	u, err := url.Parse(publicURL)
-	return err == nil && u.Host != "" && strings.EqualFold(origin, u.Scheme+"://"+u.Host)
+	for _, configured := range trustedURLs {
+		u, err := url.Parse(configured)
+		if err == nil && u.Host != "" && strings.EqualFold(origin, u.Scheme+"://"+u.Host) {
+			return true
+		}
+	}
+	return false
 }
