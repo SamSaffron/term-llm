@@ -73,6 +73,8 @@ User-invocable skills appear alongside built-in slash commands in the terminal a
 
 Only an exact listed name invokes a skill. Prefixes such as `/rev` and unknown slash text remain ordinary prompt input. Built-in commands win collisions; use `/skills run <name> [arguments]` in the TUI to run a colliding skill explicitly.
 
+In the Web composer, typing `/` after other prompt text completes skill names in place, for example `please follow /review on this branch`. This only inserts the name: the message is sent as ordinary text, and the model decides whether to activate the skill. Built-in commands only complete at the start of the prompt.
+
 Useful TUI commands:
 
 ```text

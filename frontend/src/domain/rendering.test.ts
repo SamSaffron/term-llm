@@ -334,6 +334,31 @@ describe('composer completion', () => {
     ).toBe('/review [scope]');
   });
 
+  it('completes skill names after prompt text without offering built-in commands', () => {
+    const skills = [
+      { name: 'review', description: 'Review changes', execution: 'isolated', source: 'local' },
+      { name: 'explain', description: 'Explain code', execution: 'main', source: 'user' },
+      { name: 'compact', collides_with_builtin: true },
+    ];
+    expect(composerCompletions('please /', [], skills).map((entry) => entry.value)).toEqual([
+      '/explain',
+      '/review',
+    ]);
+    expect(composerCompletions('then\n/rev', [], skills, true).map((entry) => entry.value)).toEqual(
+      ['/review'],
+    );
+    expect(composerCompletions('please /co', [], skills)).toEqual([]);
+    expect(composerCompletions('see /usr/bin', [], skills)).toEqual([]);
+    expect(composerCompletions('a/rev', [], skills)).toEqual([]);
+    expect(composerCompletions('  /rev', [], skills)).toEqual([]);
+
+    // The composer passes only the text before the caret.
+    const [completion] = composerCompletions('run /rev', [], skills);
+    expect(completion.replacement).toEqual({ start: 4, end: 8 });
+    expect(applyCompletion('run /rev on main', completion)).toBe('run /review on main');
+    expect(completedCursor('run /rev on main', completion)).toBe(11);
+  });
+
   it('applies server mention ranges without damaging text after the caret', () => {
     const [completion] = mentionCompletions({
       active: true,
