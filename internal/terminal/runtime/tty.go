@@ -3,6 +3,7 @@ package tea
 import (
 	"fmt"
 	"os"
+	"strconv"
 	"time"
 
 	uv "github.com/charmbracelet/ultraviolet"
@@ -105,6 +106,29 @@ func (p *Program) waitForReadLoop() {
 	}
 }
 
+const (
+	defaultWidth  = 80
+	defaultHeight = 24
+)
+
+// fallbackDimensions replaces a non-positive width or height, which some
+// containers, serial consoles and detached PTYs report, with $COLUMNS or
+// $LINES from the program environment, or with 80x24.
+func (p *Program) fallbackDimensions(width, height int) (int, int) {
+	return fallbackDimension(width, p.environ.Getenv("COLUMNS"), defaultWidth),
+		fallbackDimension(height, p.environ.Getenv("LINES"), defaultHeight)
+}
+
+func fallbackDimension(size int, env string, def int) int {
+	if size > 0 {
+		return size
+	}
+	if n, err := strconv.Atoi(env); err == nil && n > 0 {
+		return n
+	}
+	return def
+}
+
 // checkResize detects the current size of the output and informs the program
 // via a WindowSizeMsg.
 func (p *Program) checkResize() {
@@ -123,6 +147,7 @@ func (p *Program) checkResize() {
 		return
 	}
 
+	w, h = p.fallbackDimensions(w, h)
 	p.width, p.height = w, h
 	p.Send(WindowSizeMsg{Width: w, Height: h})
 }

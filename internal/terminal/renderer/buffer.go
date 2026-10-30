@@ -650,6 +650,8 @@ func TrimSpace(s string) string {
 // parts of the screen that have changed.
 type RenderBuffer struct {
 	*Buffer
+	// Touched covers at least every screen row. Nil entries are unchanged;
+	// the renderer repairs an exported list shortened by the caller.
 	Touched []*LineData
 }
 
@@ -684,14 +686,7 @@ func (b *RenderBuffer) TouchLine(x, y, n int) {
 		return
 	}
 
-	if y >= len(b.Touched) {
-		b.Touched = append(b.Touched, make([]*LineData, y-len(b.Touched)+1)...)
-	}
-
-	// Re-check bounds: a concurrent resize may have cleared Touched
-	if y >= len(b.Touched) {
-		return
-	}
+	b.growTouched()
 
 	ch := b.Touched[y]
 	if ch == nil {
@@ -813,4 +808,13 @@ func (b *RenderBuffer) DeleteCellArea(x, y, n int, c *Cell, area Rectangle) {
 		n = remainingCells
 	}
 	b.TouchLine(x, y, n)
+}
+
+// growTouched restores coverage without discarding records from a collapsed
+// frame: TouchedLines counts non-nil records, even after their rows disappear.
+func (b *RenderBuffer) growTouched() {
+	if len(b.Touched) >= b.Height() {
+		return
+	}
+	b.Touched = append(b.Touched, make([]*LineData, b.Height()-len(b.Touched))...)
 }

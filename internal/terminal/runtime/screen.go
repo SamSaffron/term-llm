@@ -66,3 +66,21 @@ type ModeReportMsg struct {
 	// Value is the mode value.
 	Value ansi.ModeSetting
 }
+
+// Window size reports beyond these bounds are treated as bogus and ignored, so
+// a corrupt or hostile report cannot make the renderer allocate huge buffers.
+const (
+	maxWindowDimension = 4096
+	maxWindowCells     = 1 << 20
+)
+
+// isPlausibleWindowSize reports whether a window size report is believable.
+func isPlausibleWindowSize(width, height int) bool {
+	if width < 0 || height < 0 {
+		return false
+	}
+	if width > maxWindowDimension || height > maxWindowDimension {
+		return false
+	}
+	return width*height <= maxWindowCells
+}

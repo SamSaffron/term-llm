@@ -26,7 +26,9 @@ func (p *Program) translateInputEvent(e uv.Event) Msg {
 	case uv.PasteEvent:
 		return PasteMsg(e)
 	case uv.WindowSizeEvent:
-		return WindowSizeMsg(e)
+		return plausibleWindowSizeMsg(WindowSizeMsg(e))
+	case WindowSizeMsg:
+		return plausibleWindowSizeMsg(e)
 	case uv.ModeReportEvent:
 		return ModeReportMsg(e)
 	case uv.ClipboardEvent,
@@ -42,4 +44,13 @@ func (p *Program) translateInputEvent(e uv.Event) Msg {
 		return nil
 	}
 	return e
+}
+
+// plausibleWindowSizeMsg drops a bogus size report, which the event loop then
+// skips, before the model or renderer sees it.
+func plausibleWindowSizeMsg(size WindowSizeMsg) Msg {
+	if !isPlausibleWindowSize(size.Width, size.Height) {
+		return nil
+	}
+	return size
 }

@@ -159,6 +159,8 @@ type TerminalRenderer struct {
 	atPhantom        bool         // whether the cursor is out of bounds and at a phantom cell
 	noWrapLine       bool         // whether a wide-row repaint already disabled autowrap
 	skipScrollOptim  bool         // set by HardScroll to skip scrollOptimize on the next Render call
+	termW, termH     int          // last reported terminal size, independent of the frame
+	termResized      bool         // latched until Render restores the owned cells
 	logger           Logger       // The logger used for debugging.
 
 	// profile is the color profile to use when downsampling colors. This is
@@ -1217,19 +1219,10 @@ func (s *TerminalRenderer) Redraw(newbuf *RenderBuffer) {
 	s.Render(newbuf)
 }
 
-// needsRender includes geometry changes even when a fresh frame reports no
-// touched cells: its blank rows can still replace content from the old frame.
-// Read the touch count after reconciliation, which marks those blank rows.
-func (s *TerminalRenderer) needsRender(newbuf *RenderBuffer) bool {
-	if s.clear || newbuf.TouchedLines() > 0 {
-		return true
-	}
-	return s.curbuf != nil && s.curbuf.Bounds() != newbuf.Bounds()
-}
-
 // Render renders changes of the screen to the internal buffer. Call
 // [terminalWriter.Flush] to flush pending changes to the screen.
 func (s *TerminalRenderer) Render(newbuf *RenderBuffer) {
+	newbuf.growTouched()
 	// Do we need to render anything?
 	if !s.needsRender(newbuf) {
 		return
@@ -1241,6 +1234,7 @@ func (s *TerminalRenderer) Render(newbuf *RenderBuffer) {
 		s.curbuf = NewRenderBuffer(newbuf.Width(), newbuf.Height())
 	}
 
+	repaintInline := s.consumeTerminalResize()
 	newWidth, newHeight := newbuf.Width(), newbuf.Height()
 	curWidth, curHeight := s.curbuf.Width(), s.curbuf.Height()
 
@@ -1271,22 +1265,14 @@ func (s *TerminalRenderer) Render(newbuf *RenderBuffer) {
 
 	var nonEmpty int
 
-	// XXX: In inline mode, after a screen resize, we need to clear the extra
-	// lines at the bottom of the screen. This is because in inline mode, we
-	// don't use the full screen height and the current buffer size might be
-	// larger than the new buffer size.
-	partialClear := !s.flags.Contains(tFullscreen) && s.cur.X != -1 && s.cur.Y != -1 &&
-		curWidth == newWidth &&
-		curHeight > 0 &&
-		curHeight > newHeight
-
-	if !s.clear && partialClear {
-		s.clearBelow(newbuf, nil, max(newHeight-1, 0))
-	}
+	s.clearAbandonedRows(newbuf, curHeight)
 
 	if s.clear { //nolint:nestif
 		s.clearUpdate(newbuf)
 		s.clear = false
+		s.skipScrollOptim = false
+	} else if repaintInline {
+		s.repaintInline(newbuf)
 		s.skipScrollOptim = false
 	} else if touchedLines > 0 {
 		// On Windows, there's a bug with Windows Terminal where [ansi.DECSTBM]
@@ -1308,8 +1294,8 @@ func (s *TerminalRenderer) Render(newbuf *RenderBuffer) {
 
 		nonEmpty = s.clearBottom(newbuf, nonEmpty)
 		for i = 0; i < nonEmpty; i++ {
-			if newbuf.Touched == nil || i >= len(newbuf.Touched) || (newbuf.Touched[i] != nil &&
-				(newbuf.Touched[i].FirstCell != -1 || newbuf.Touched[i].LastCell != -1)) {
+			if newbuf.Touched[i] != nil &&
+				(newbuf.Touched[i].FirstCell != -1 || newbuf.Touched[i].LastCell != -1) {
 				s.transformLine(newbuf, i)
 				changedLines++
 			}
@@ -1325,9 +1311,7 @@ func (s *TerminalRenderer) Render(newbuf *RenderBuffer) {
 	}
 
 	// Sync windows and screen
-	if len(newbuf.Touched) != newHeight {
-		newbuf.Touched = make([]*LineData, newHeight)
-	}
+	newbuf.growTouched()
 	resetTouchedLines(newbuf.Touched)
 	resetTouchedLines(s.curbuf.Touched)
 
@@ -1343,43 +1327,9 @@ func (s *TerminalRenderer) Render(newbuf *RenderBuffer) {
 	s.updatePen(nil) // nil indicates a blank cell with no styles
 }
 
-// reconcileResize discards the retained model when a resize invalidates what it
-// believes is on the physical screen, and resizes it otherwise so the diff below
-// walks every row of the new screen.
-//
-// A width shrink rewraps in emulator-defined ways, and a height change is no
-// safer: a grown terminal refills rows from its own scrollback, so a row that
-// was blank can return holding content this renderer never painted. Fullscreen
-// mode owns every cell it is about to clear, so it repaints completely; inline
-// mode shares the screen with preceding output and keeps its partial clear plus
-// the post-diff model resize instead.
-func (s *TerminalRenderer) reconcileResize(newbuf *RenderBuffer, curWidth, curHeight int) {
-	newWidth, newHeight := newbuf.Width(), newbuf.Height()
-	// A fresh differently-sized frame may leave old rows blank without ever
-	// touching them. Recheck every row in either mode before diffing.
-	for y := range newHeight {
-		newbuf.TouchLine(0, y, newWidth)
-	}
-	if !s.flags.Contains(tFullscreen) {
-		return
-	}
-	if newWidth < curWidth || newHeight != curHeight {
-		s.clear = true
-	}
-	s.curbuf.Resize(newWidth, newHeight)
-}
-
 // Erase marks the screen to be fully erased on the next render.
 func (s *TerminalRenderer) Erase() {
 	s.clear = true
-}
-
-// Resize updates the terminal screen tab stops. This is used to calculate
-// terminal tab stops for hard tab optimizations.
-func (s *TerminalRenderer) Resize(width, _ int) {
-	if s.tabs != nil {
-		s.tabs.Resize(width)
-	}
 }
 
 // Position returns the cursor position in the screen buffer after applying any
