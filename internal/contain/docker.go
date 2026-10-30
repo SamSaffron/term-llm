@@ -507,7 +507,9 @@ func randomHexToken(n int) (string, error) {
 }
 
 func DockerPS(ctx context.Context, runner Runner, stderr io.Writer) ([]byte, error) {
-	args := []string{"ps", "-a", "--filter", "label=org.term-llm.contain=true", "--format", "{{json .}}"}
+	// Full-object JSON formatting can implicitly enable expensive filesystem size
+	// queries in Docker. Explicitly disable them; listing only needs metadata.
+	args := []string{"ps", "-a", "--size=false", "--filter", "label=org.term-llm.contain=true", "--format", "{{json .}}"}
 	return runner.Output(ctx, "docker", args, RunOptions{Stderr: stderr})
 }
 

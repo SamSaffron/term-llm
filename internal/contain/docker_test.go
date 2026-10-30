@@ -84,6 +84,22 @@ func clearConsoleEnvForContainTest(t *testing.T) {
 	}
 }
 
+func TestDockerPSDisablesSizeQueries(t *testing.T) {
+	output := []byte(`{"Names":"box","State":"running","Status":"Up","Labels":"org.term-llm.contain=true"}`)
+	r := &fakeRunner{output: output}
+	got, err := DockerPS(context.Background(), r, io.Discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"ps", "-a", "--size=false", "--filter", "label=org.term-llm.contain=true", "--format", "{{json .}}"}
+	if r.name != "docker" || !reflect.DeepEqual(r.args, want) {
+		t.Fatalf("command = %q %q, want docker %q", r.name, r.args, want)
+	}
+	if string(got) != string(output) {
+		t.Fatalf("output = %q, want %q", got, output)
+	}
+}
+
 func TestDockerCommands(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	clearConsoleEnvForContainTest(t)
