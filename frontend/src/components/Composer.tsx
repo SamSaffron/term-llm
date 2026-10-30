@@ -4,6 +4,7 @@ import { rushActive } from '../domain/steering';
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'preact/hooks';
 import { useStore } from '../app/context';
 import {
+  activeInlineSlashAtCursor,
   activeMentionAtCursor,
   applyCompletion,
   completedCursor,
@@ -483,6 +484,7 @@ function ConversationComposer() {
     return () => clearTimeout(timer);
   }, [voice, voiceState.phase, voiceState.generation]);
   const mention = activeMentionAtCursor(store.prompt.value, cursor);
+  const inlineSlash = activeInlineSlashAtCursor(store.prompt.value, cursor);
 
   // Mention results are revalidated in place: keep showing the previous
   // payload while the next search is pending so the menu does not flash.
@@ -1259,14 +1261,18 @@ function ConversationComposer() {
               const selected = completions[activeIndex];
               const exactSlash =
                 selected?.kind === 'slash' &&
-                store.prompt.value.trim().toLowerCase() === selected.value.toLowerCase();
+                (inlineSlash
+                  ? `/${inlineSlash.query}`
+                  : store.prompt.value.trim()
+                ).toLowerCase() === selected.value.toLowerCase();
+              // A bare token after prompt text is often just punctuation, so
+              // return sends it unless the user has started typing a name.
+              const bareToken =
+                selected?.kind === 'slash' ? inlineSlash?.query === '' : mention?.query === '';
               if (
                 selected &&
                 (event.key === 'Tab' ||
-                  (event.key === 'Enter' &&
-                    !event.shiftKey &&
-                    !exactSlash &&
-                    !(selected.kind !== 'slash' && mention?.query === '')))
+                  (event.key === 'Enter' && !event.shiftKey && !exactSlash && !bareToken))
               ) {
                 event.preventDefault();
                 choose(selected);

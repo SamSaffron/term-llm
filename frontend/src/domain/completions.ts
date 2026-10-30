@@ -168,6 +168,12 @@ export function composerCompletions(
       )
       .sort((left, right) => left.value.localeCompare(right.value));
   }
+  const inline = activeInlineSlashAtCursor(value, value.length);
+  if (inline)
+    return skillCompletions(skills)
+      .filter((entry) => entry.value.startsWith(`/${inline.query}`))
+      .map((entry) => ({ ...entry, replacement: { start: inline.start, end: inline.end } }))
+      .sort((left, right) => left.value.localeCompare(right.value));
   const mention = activeMentionAtCursor(value, value.length);
   if (mention)
     return agents
@@ -200,6 +206,21 @@ export function activeMentionAtCursor(
     end: bounded,
     query: token.slice(1).replace(/^"/, ''),
   };
+}
+
+// A slash token after other prompt text only completes skill names as text.
+// Built-in commands act on the session, so they stay at the start of the
+// prompt, and sending never treats an inline skill name as an invocation.
+export function activeInlineSlashAtCursor(
+  value: string,
+  cursor: number,
+): { start: number; end: number; query: string } | null {
+  const bounded = Math.max(0, Math.min(value.length, cursor));
+  const before = value.slice(0, bounded);
+  const match = before.match(/[\s。 、？！](\/([a-z0-9-]*))$/u);
+  const start = bounded - (match?.[1].length ?? 0);
+  if (!match || !before.slice(0, start).trim()) return null;
+  return { start, end: bounded, query: match[2] };
 }
 
 export function mentionCompletions(

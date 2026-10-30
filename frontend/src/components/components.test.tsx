@@ -5895,6 +5895,45 @@ describe('Preact-owned chat surfaces', () => {
     expect(skillStore.invokeSkill).toHaveBeenCalledWith('review', 'src');
   });
 
+  it('completes skill names after prompt text and sends them as ordinary text', async () => {
+    const store = createStore();
+    store.skills.value = [
+      { name: 'review', description: 'Review', execution: 'main', source: 'local' },
+    ];
+    store.invokeSkill = vi.fn(async () => undefined);
+    store.send = vi.fn(async () => undefined);
+    const view = render(
+      <StoreContext.Provider value={store}>
+        <Composer />
+      </StoreContext.Provider>,
+    );
+    const input = screen.getByRole('textbox', { name: 'Message' });
+    await userEvent.type(input, 'please /rev');
+    expect(screen.getByRole('option', { name: /review/ })).toBeInTheDocument();
+    expect(screen.queryByRole('option', { name: /compact/ })).not.toBeInTheDocument();
+    await userEvent.keyboard('{Enter}');
+    expect(store.prompt.value).toBe('please /review ');
+    expect(store.send).not.toHaveBeenCalled();
+
+    await userEvent.type(input, 'this{Enter}');
+    expect(store.send).toHaveBeenCalledOnce();
+    expect(store.invokeSkill).not.toHaveBeenCalled();
+    view.unmount();
+
+    const bare = createStore();
+    bare.skills.value = store.skills.value;
+    bare.send = vi.fn(async () => undefined);
+    render(
+      <StoreContext.Provider value={bare}>
+        <Composer />
+      </StoreContext.Provider>,
+    );
+    await userEvent.type(screen.getByRole('textbox', { name: 'Message' }), 'this and /');
+    expect(screen.getByRole('option', { name: /review/ })).toBeInTheDocument();
+    await userEvent.keyboard('{Enter}');
+    expect(bare.send).toHaveBeenCalledOnce();
+  });
+
   it('keeps Back to Hub inside the persisted collapsible Agents section', async () => {
     const store = new AppStore({
       ...config,
