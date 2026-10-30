@@ -9,6 +9,7 @@ node_modules/
 docs-site/test-results/
 frontend/test-results/
 frontend/playwright-report/
+/output/playwright/
 frontend/coverage/
 internal/serveui/static/dist/
 __pycache__/
