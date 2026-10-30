@@ -187,7 +187,7 @@ func (s *serveServer) httpHandler() http.Handler {
 	// the canonical /v2/* API paths. The shared base-path wrapper is still used
 	// for web/UI surfaces where the browser and API must live under one prefix.
 	if s.jobsV2 != nil && !s.cfg.ui && !s.cfg.api {
-		return s.reloadTransport().Handler(inner)
+		return appserver.GuardNoAuthBrowser(s.reloadTransport().Handler(inner), !s.cfg.requireAuth && s.browserAuth == nil, s.cfg.corsOrigins, s.cfg.publicURL)
 	}
 
 	// Outer mux: mount everything under basePath.
@@ -207,5 +207,5 @@ func (s *serveServer) httpHandler() http.Handler {
 		}))
 	}
 
-	return s.reloadTransport().Handler(mux)
+	return appserver.GuardNoAuthBrowser(s.reloadTransport().Handler(mux), !s.cfg.requireAuth && s.browserAuth == nil, s.cfg.corsOrigins, s.cfg.publicURL)
 }
