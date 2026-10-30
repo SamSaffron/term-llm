@@ -1,3 +1,4 @@
+import { Icon } from './Icon';
 import type { ComponentChildren, TargetedKeyboardEvent } from 'preact';
 import { useId, useLayoutEffect, useMemo, useRef, useState } from 'preact/hooks';
 import { observePopoverPosition, positionPopover } from '../platform/browser';
@@ -203,6 +204,9 @@ export function ChipPicker({
                 onClick={() => choose(option.value)}
                 onKeyDown={handleItemKeys}
               >
+                <span class="chip-popover-check" aria-hidden="true">
+                  {option.value === value && <Icon class="glyph-icon" name="check" />}
+                </span>
                 <span class="chip-popover-item-label">{option.label}</span>
                 {option.meta && <span class="chip-popover-item-meta">{option.meta}</span>}
               </button>

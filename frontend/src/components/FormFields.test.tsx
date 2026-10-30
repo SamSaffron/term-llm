@@ -47,7 +47,7 @@ describe('form markup primitives', () => {
     const { container } = render(
       <SearchField
         className="mcp-server-search"
-        iconPath="m16.5 16.5 4 4"
+        icon="text-search"
         aria-label="Filter MCP servers"
         value=""
         placeholder="Filter servers…"
@@ -59,7 +59,8 @@ describe('form markup primitives', () => {
     expect(
       container.querySelector('label.mcp-server-search > span.mcp-server-search-icon + input'),
     ).toBe(field);
-    expect(container.querySelector('path')).toHaveAttribute('d', 'm16.5 16.5 4 4');
+    expect(container.querySelector('svg')).toHaveAttribute('data-icon', 'text-search');
+    expect(container.querySelector('use')?.getAttribute('href')).toMatch(/#text-search$/);
     fireEvent.input(field, { target: { value: 'git' } });
     expect(input).toHaveBeenCalledOnce();
     expect(fireEvent.keyDown(field, { key: 'Escape' })).toBe(false);

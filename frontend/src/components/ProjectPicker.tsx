@@ -118,18 +118,20 @@ export function ProjectPicker() {
                 class="project-browser-icon-button"
                 type="button"
                 title="Parent folder"
+                aria-label="Parent folder"
                 disabled={!listing?.parent}
                 onClick={() => void loadDirectory(String(listing?.parent || ''))}
               >
-                ↑
+                <Icon class="glyph-icon" name="arrow-up" />
               </button>
               <button
                 class="project-browser-icon-button"
                 type="button"
                 title="Home folder"
+                aria-label="Home folder"
                 onClick={() => void loadDirectory(String(listing?.home || ''))}
               >
-                ⌂
+                <Icon class="glyph-icon" name="house" />
               </button>
               <nav class="project-browser-breadcrumbs" aria-label="Folder path">
                 {breadcrumbs.map((item, index) => (
@@ -183,7 +185,7 @@ export function ProjectPicker() {
                       {entry.existing_project_id && (
                         <span class="project-browser-badge is-added">Added</span>
                       )}
-                      <span>›</span>
+                      <Icon class="glyph-icon" name="chevron-right" />
                     </span>
                   </button>
                 ))

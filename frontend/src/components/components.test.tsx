@@ -3808,7 +3808,7 @@ describe('Preact-owned chat surfaces', () => {
         await vi.advanceTimersByTimeAsync(18_000);
       });
       expect(status).toHaveTextContent('20s');
-      expect(status).not.toHaveTextContent('✓');
+      expect(status?.querySelector('[data-icon="check"]')).toBeNull();
       expect(container.querySelector('[data-message-id="answer"]')).toBe(unrelated);
     } finally {
       unmount();
@@ -3817,10 +3817,11 @@ describe('Preact-owned chat surfaces', () => {
   });
 
   it.each([
-    { status: 'done' as const, durationMs: 1_999, expected: '✓' },
-    { status: 'done' as const, durationMs: 2_000, expected: '2s ✓' },
-    { status: 'done' as const, durationMs: 20_000, expected: '20s ✓' },
-    { status: 'error' as const, durationMs: 20_000, expected: '20s ✕' },
+    // Icons are decorative; the visually hidden word keeps the status spoken.
+    { status: 'done' as const, durationMs: 1_999, expected: 'Complete' },
+    { status: 'done' as const, durationMs: 2_000, expected: '2s Complete' },
+    { status: 'done' as const, durationMs: 20_000, expected: '20s Complete' },
+    { status: 'error' as const, durationMs: 20_000, expected: '20s Failed' },
     { status: 'cancelled' as const, durationMs: 20_000, expected: '20s stopped' },
   ])(
     'freezes shell duration on $status after $durationMs ms',
@@ -3852,10 +3853,20 @@ describe('Preact-owned chat surfaces', () => {
       try {
         const label = container.querySelector('.tool-status');
         expect(label?.textContent?.trim()).toBe(expected);
+        if (status !== 'cancelled')
+          expect(label?.querySelector('svg')).toHaveAttribute(
+            'data-icon',
+            status === 'error' ? 'close' : 'check',
+          );
         await act(async () => {
           await vi.advanceTimersByTimeAsync(5_000);
         });
         expect(label?.textContent?.trim()).toBe(expected);
+        if (status !== 'cancelled')
+          expect(label?.querySelector('svg')).toHaveAttribute(
+            'data-icon',
+            status === 'error' ? 'close' : 'check',
+          );
       } finally {
         unmount();
         vi.useRealTimers();
@@ -4313,7 +4324,7 @@ describe('Preact-owned chat surfaces', () => {
       </StoreContext.Provider>,
     );
     expect(container.querySelector('[data-tool-id="spawn-1"] .tool-status')).toHaveTextContent(
-      '1m30s ✓',
+      '1m30s',
     );
   });
 
@@ -4351,13 +4362,65 @@ describe('Preact-owned chat surfaces', () => {
     );
     const group = screen.getByRole('button', { name: /2 tool calls · read_file, shell/ });
     expect(group).toHaveAttribute('aria-expanded', 'false');
-    expect(group.querySelector('.tool-status')).toHaveTextContent('✓');
+    expect(group.querySelector('.tool-status svg')).toHaveAttribute('data-icon', 'check');
     expect(group.querySelector('.tool-status')).not.toHaveTextContent('done');
     expect(screen.queryByText('Assistant')).not.toBeInTheDocument();
     expect(screen.getByText('now')).toBeInTheDocument();
     await userEvent.click(group);
     expect(group).toHaveAttribute('aria-expanded', 'true');
     expect(screen.getByText('path: main.go')).toBeInTheDocument();
+  });
+
+  it('uses themed line icons for built-in, MCP, and unknown tools', async () => {
+    const mappings = [
+      ['shell', 'terminal'],
+      ['BASH', 'terminal'],
+      ['read_file', 'file-text'],
+      ['write_file', 'file-pen'],
+      ['edit_file', 'file-pen'],
+      ['web_search', 'search'],
+      ['grep', 'text-search'],
+      ['glob', 'folder-search'],
+      ['read_url', 'globe'],
+      ['image_generate', 'image'],
+      ['spawn_agent', 'bot'],
+      ['ask_user', 'message-circle-question'],
+      ['server__tool', 'plug'],
+      ['webmcp__tool', 'plug'],
+      ['unknown_tool', 'wrench'],
+    ];
+    const store = createStore();
+    store.sessions.value[0].messages = [
+      {
+        id: 'icon-tools',
+        role: 'tool-group',
+        content: '',
+        created: 1,
+        tools: mappings.map(([name], index) => ({
+          id: `icon-${index}`,
+          name,
+          arguments: '{}',
+          status: 'done',
+          result: 'ok',
+        })),
+      },
+    ];
+    const { container } = render(
+      <StoreContext.Provider value={store}>
+        <Transcript />
+      </StoreContext.Provider>,
+    );
+    await userEvent.click(screen.getByRole('button', { name: /15 tool calls/ }));
+    const icons = [...container.querySelectorAll('.tool-entry-icon svg')];
+    expect(icons).toHaveLength(mappings.length);
+    mappings.forEach(([, icon], index) => {
+      expect(icons[index]).toHaveAttribute('data-icon', icon);
+      expect(icons[index]).toHaveAttribute('aria-hidden', 'true');
+      expect(icons[index].querySelector('use')?.getAttribute('href')).toMatch(
+        new RegExp(`#${icon}$`),
+      );
+    });
+    store.dispose();
   });
 
   it('uses a search icon for grep and omits redundant per-tool chevrons', async () => {
@@ -4393,7 +4456,10 @@ describe('Preact-owned chat surfaces', () => {
     );
 
     await userEvent.click(screen.getByRole('button', { name: /2 tool calls · grep, read_file/ }));
-    expect(container.querySelector('.tool-entry-icon')).toHaveTextContent('🔍');
+    expect(container.querySelector('.tool-entry-icon svg')).toHaveAttribute(
+      'data-icon',
+      'text-search',
+    );
     expect(container.querySelector('.tool-toggle .tool-arrow')).toBeNull();
     expect(container.querySelector('.tool-group-toggle .tool-arrow')).not.toBeNull();
   });
@@ -4490,7 +4556,7 @@ describe('Preact-owned chat surfaces', () => {
     );
     const group = screen.getByRole('button', { name: /2 tool calls · read_file, shell/ });
     expect(group).toHaveAttribute('aria-expanded', 'false');
-    expect(group.querySelector('.tool-status')).toHaveTextContent('✓');
+    expect(group.querySelector('.tool-status svg')).toHaveAttribute('data-icon', 'check');
     expect(group.querySelector('.tool-status')).not.toHaveTextContent('error');
     expect(document.querySelectorAll('.tool-toggle')).toHaveLength(0);
     fireEvent.click(group);
@@ -4499,7 +4565,7 @@ describe('Preact-owned chat surfaces', () => {
     toolToggles.forEach((toggle) => expect(toggle).toHaveAttribute('aria-expanded', 'false'));
     expect(document.querySelector('.tool-failure-reason')).not.toBeInTheDocument();
     const failed = document.querySelector('.tool-status.error');
-    expect(failed).toHaveTextContent('✕');
+    expect(failed?.querySelector('svg')).toHaveAttribute('data-icon', 'close');
     expect(failed).not.toHaveTextContent('error');
   });
 
@@ -5218,7 +5284,7 @@ describe('Preact-owned chat surfaces', () => {
     expect(steer).toHaveClass('steer');
     expect(steer).toHaveAttribute('title', 'Steer');
     expect(steer.querySelector('.arrow')?.innerHTML).not.toBe(sendIcon);
-    expect(steer.querySelector('.arrow path')).toHaveAttribute('d', 'M5 6v7a2 2 0 0 0 2 2h12');
+    expect(steer.querySelector('.arrow use')?.getAttribute('href')).toMatch(/#steer$/);
   });
 
   it('drives send from public composer UI and opens attachment picker behavior', async () => {
@@ -8525,7 +8591,7 @@ describe('Preact-owned chat surfaces', () => {
       'href',
       'https://share.example/abc123',
     );
-    expect(screen.getByRole('link', { name: 'View source ↗' })).toHaveAttribute(
+    expect(screen.getByRole('link', { name: 'View source' })).toHaveAttribute(
       'href',
       'https://source.example/abc123',
     );
@@ -9723,6 +9789,8 @@ describe('Preact-owned chat surfaces', () => {
     try {
       render(<Markdown value={'```sh\necho "hello"\n```'} />);
       const button = await screen.findByRole('button', { name: 'Copy code' });
+      expect(button.querySelector('svg')).toHaveAttribute('data-icon', 'copy');
+      expect(button.querySelector('use')?.getAttribute('href')).toMatch(/#copy$/);
       await act(async () => {
         fireEvent.click(button);
         await Promise.resolve();
@@ -9730,6 +9798,8 @@ describe('Preact-owned chat surfaces', () => {
       expect(writeText).toHaveBeenCalledWith('echo "hello"\n');
       expect(button).toHaveClass('copied');
       expect(button).toHaveAttribute('aria-label', 'Copied');
+      expect(button.querySelector('svg')).toHaveAttribute('data-icon', 'check');
+      expect(button.querySelector('use')?.getAttribute('href')).toMatch(/#check$/);
       await act(async () => {
         await vi.advanceTimersByTimeAsync(1_500);
       });
@@ -10977,6 +11047,13 @@ describe('transcript audio cards', () => {
         <Markdown value={`[Recording](/media/${reference}.${extension})`} onMedia={onMedia} />,
       );
       container.addEventListener('click', (event) => event.preventDefault());
+      const play = container.querySelector('a [data-icon="play"]');
+      if (extension === 'ogg') expect(play).toBeNull();
+      else {
+        expect(play).toHaveAttribute('aria-hidden', 'true');
+        expect(play?.querySelector('use')?.getAttribute('href')).toMatch(/#play$/);
+        expect(screen.getByRole('link', { name: 'Recording' })).toBeInTheDocument();
+      }
       fireEvent.click(container.querySelector('a')!);
       expect(onMedia).toHaveBeenCalledTimes(extension === 'ogg' ? 0 : 1);
     },

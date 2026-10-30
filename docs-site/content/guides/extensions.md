@@ -41,11 +41,37 @@ description: Warm paper, quiet borders, and a little more breathing room
 format_version: 1
 css: style.css
 js: main.js
+icons: icons.svg
 ```
 
-At least one of `css` or `js` is required. Entries, module imports, fonts and images use relative paths. Use browser-ready JavaScript modules, not TypeScript or JSX. Symlinks and paths outside the directory are not supported. Each extension may contain up to 512 supported assets; enabled assets share a 32 MiB snapshot budget.
+At least one of `css`, `js` or `icons` is required. Entries, module imports, fonts and images use relative paths. Use browser-ready JavaScript modules, not TypeScript or JSX. Symlinks and paths outside the directory are not supported. Each extension may contain up to 512 supported assets; enabled assets share a 32 MiB snapshot budget.
 
 Example theme and clock directories are available in the repository under `examples/extensions/`.
+
+## Icons
+
+The web UI draws its line icons from an SVG sprite. An extension can replace any of them with `icons:`, an SVG file holding one `<symbol>` per icon it replaces, with the icon's name as its `id`:
+
+```xml
+<svg xmlns="http://www.w3.org/2000/svg">
+  <symbol id="send" viewBox="0 0 24 24"><path d="M5 12h14"/><path d="m13 6 6 6-6 6"/></symbol>
+  <symbol id="copy" viewBox="0 0 24 24"><rect x="8" y="8" width="12" height="12" rx="2"/></symbol>
+</svg>
+```
+
+Icons you don't list keep the built-in drawing. Every icon in the page carries its name in a `data-icon` attribute, so inspecting one shows what to call its symbol; the full set is `frontend/src/components/icons.svg` in the source, which the extension builder can read. Unknown names are ignored. When several enabled extensions replace the same icon, the later one in the enabled list wins.
+
+Symbols are drawn in the current text colour and inherit `fill="none"`, `stroke="currentColor"`, round line caps and the stroke width, so 24×24 line icons such as Lucide's need no attributes of their own. For a filled icon, set `fill="currentColor" stroke="none"` on its shapes. Any `viewBox` works. Symbol ids use lowercase letters, numbers and hyphens, and a sprite may be up to 1 MiB.
+
+To change only the weight of every line icon, set `--icon-stroke-width` in your stylesheet (the default is `1.9`):
+
+```css
+:root {
+  --icon-stroke-width: 1.5;
+}
+```
+
+Replaced icons apply from the first paint, like stylesheets, and safe mode skips them.
 
 ## Enable extensions
 
@@ -116,6 +142,7 @@ The host provides:
 - `getContextUsage()`: the active session's latest approximate context snapshot, or `null`. The snapshot contains `usedTokens`, optional `inputLimit`, cumulative `cachedInputTokens`, and `estimated`.
 - `onContextUsageChanged(callback)`: delivers that snapshot immediately and after session loads, changes, or completed responses; returns an unsubscribe function.
 - `insertComposerText(text)`: appends draft text without submitting it.
+- `icon(name)`: returns a new `<svg>` element drawing the named icon as the app does, including any extension's replacement, for use in your own controls.
 
 Context usage deliberately differs from aggregate response usage: `usedTokens` approximates current context occupancy, while `cachedInputTokens` is cumulative session accounting. Keep an approximation marker such as `~`, and omit percentages when `inputLimit` is unavailable.
 

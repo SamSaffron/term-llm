@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg">
+  <!-- Each symbol id is an app icon name (see the data-icon attribute on any icon). -->
+  <symbol id="send" viewBox="0 0 24 24">
+    <path fill="currentColor" stroke="none" d="M3.5 20.5 21 12 3.5 3.5l.1 6.6L15 12l-11.4 1.9z"/>
+  </symbol>
+  <symbol id="copy" viewBox="0 0 24 24">
+    <rect x="8" y="8" width="13" height="13" rx="4"/>
+    <path d="M16 8V7a4 4 0 0 0-4-4H7a4 4 0 0 0-4 4v5a4 4 0 0 0 4 4h1"/>
+  </symbol>
+</svg>

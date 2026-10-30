@@ -78,9 +78,9 @@ describe('LiveStatus', () => {
     expect(region.scrollTop).toBe(50);
     fireEvent.click(screen.getByRole('button', { name: 'Expand transcript' }));
     expect(region.scrollTop).toBe(50);
-    fireEvent.click(screen.getByRole('button', { name: '↓ Latest' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Latest' }));
     expect(region.scrollTop).toBe(700);
-    expect(screen.queryByRole('button', { name: '↓ Latest' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Latest' })).not.toBeInTheDocument();
     height = 800;
     act(() => {
       live.partialAssistant.value += 'tail';
@@ -90,7 +90,7 @@ describe('LiveStatus', () => {
     fireEvent.scroll(region);
     region.scrollTop = 700;
     fireEvent.scroll(region);
-    expect(screen.queryByRole('button', { name: '↓ Latest' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Latest' })).not.toBeInTheDocument();
   });
 
   it('expands to both sides of recent conversation and includes in-progress speech', () => {
@@ -160,7 +160,7 @@ describe('LiveStatus', () => {
     });
     expect(region.scrollTop).toBe(25);
     expect(region).toHaveTextContent('Next question');
-    fireEvent.click(screen.getByRole('button', { name: '↓ Latest' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Latest' }));
     expect(region.scrollTop).toBe(600);
   });
 

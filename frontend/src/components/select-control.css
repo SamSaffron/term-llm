@@ -18,6 +18,8 @@
 }
 
 .control-select-chevron {
+  width: 14px;
+  height: 14px;
   position: absolute;
   top: 50%;
   inset-inline-end: 14px;

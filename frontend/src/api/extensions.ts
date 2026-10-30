@@ -1,4 +1,6 @@
 import type { AppStore } from '../stores/app-store';
+import { syncDetachedIcons } from '../components/Icon';
+import { iconOverrides, iconOverridesFrom, type IconSprite } from '../components/icon-overrides';
 import { extensionHost, extensionRuntime, type ExtensionStatus } from '../stores/extension-runtime';
 
 async function activationTimeout<T>(promise: Promise<T>): Promise<T> {
@@ -26,8 +28,38 @@ function renderedExtensionStyles(): HTMLLinkElement[] {
   ];
 }
 
-export function removeRenderedExtensionStyles(): void {
+// The server also announces enabled icon sprites in <head> (see icon-overrides.ts).
+function renderedExtensionIcons(): HTMLMetaElement[] {
+  return [
+    ...document.head.querySelectorAll<HTMLMetaElement>('meta[name="term-llm-extension-icons"]'),
+  ];
+}
+
+/** Drops everything the server rendered for extensions: stylesheets and icon sprites. */
+export function removeRenderedExtensions(): void {
   for (const link of renderedExtensionStyles()) link.remove();
+  for (const meta of renderedExtensionIcons()) meta.remove();
+  iconOverrides.value = {};
+  syncDetachedIcons();
+}
+
+// The status is authoritative once it arrives: later enabled extensions win per icon.
+function applyExtensionIcons(store: AppStore, status: ExtensionStatus): void {
+  const sprites: IconSprite[] = [];
+  for (const id of status.disabled ? [] : status.enabled) {
+    const entry = status.entries.find((entry) => entry.id === id);
+    if (!entry || entry.error || !entry.icons || !entry.icon_symbols?.length) continue;
+    sprites.push({
+      href:
+        store.api.url(`/extensions/${status.generation}/${encodeURIComponent(id)}/`) +
+        entry.icons.split('/').map(encodeURIComponent).join('/'),
+      symbols: entry.icon_symbols,
+    });
+  }
+  iconOverrides.value = iconOverridesFrom(sprites, document.baseURI);
+  // Markdown's code-copy buttons and extension icons hold their href as plain DOM.
+  syncDetachedIcons();
+  for (const meta of renderedExtensionIcons()) meta.remove();
 }
 
 // Reuse a server-rendered stylesheet only when it is for this exact generation
@@ -48,7 +80,7 @@ function adoptRenderedStyle(
 
 export async function loadExtensions(store: AppStore): Promise<void> {
   if (extensionRuntime.safeMode.peek()) {
-    removeRenderedExtensionStyles();
+    removeRenderedExtensions();
     return;
   }
   // A failed status request keeps the server-rendered styles: they came from
@@ -73,6 +105,7 @@ async function loadEnabledExtensions(
   status: ExtensionStatus,
   rendered: HTMLLinkElement[],
 ): Promise<void> {
+  applyExtensionIcons(store, status);
   if (status.disabled) return;
   extensionRuntime.generation.value = status.generation;
   extensionRuntime.errors.value = [...status.errors];

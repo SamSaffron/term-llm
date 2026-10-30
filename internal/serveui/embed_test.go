@@ -8,6 +8,7 @@ import (
 	"io"
 	pathpkg "path"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 	"testing"
@@ -199,11 +200,14 @@ func TestProductionBundleSizeBudgets(t *testing.T) {
 		// eager shell code: measured 558.6/164.4 kB raw/gzip. Same ~1% headroom.
 		// Deferring the changes/plan viewers until a panel opens reduces the entry
 		// to 528.7/155.0 kB raw/gzip. Tighten the budget with the same ~1% headroom.
-		"dist/app.js":           {raw: 534_000, gzip: 156_600},
+		// Icon drawings moved to the cached icons.svg sprite (drawn with <use>), and
+		// text marks became sprite icons: 525.1/153.9 kB. Same ~1% rule.
+		"dist/app.js":           {raw: 530_500, gzip: 155_400},
 		"dist/chunks/Panels.js": {raw: 32_000, gzip: 11_000},
 		// Panel splitting adds a shared-import edge to Lightbox: measured 8.03/3.21 kB.
 		// Pausing transcript media while a video is open brings it to 8.16/3.27 kB.
-		"dist/chunks/Lightbox.js":    {raw: 8_300, gzip: 3_350},
+		// Sprite icons for its arrow, zoom and download marks: 8.35/3.29 kB.
+		"dist/chunks/Lightbox.js":    {raw: 8_450, gzip: 3_350},
 		"dist/assets/Lightbox.css":   {raw: 4_000, gzip: 1_400},
 		"dist/chunks/StatsModal.js":  {raw: 8_000, gzip: 3_000},
 		"dist/assets/StatsModal.css": {raw: 5_000, gzip: 1_600},
@@ -498,11 +502,15 @@ func TestLazyChunksReuseCanonicalEntryModuleURL(t *testing.T) {
 func TestRenderIndexHTMLPreservesBootstrapAndModuleContract(t *testing.T) {
 	const bootstrap = `<script>window.TERM_LLM_UI_PREFIX="/chat/nodes/alpha";</script>`
 	rendered := string(RenderIndexHTML("/chat/nodes/alpha", bootstrap))
+	if IconSprite() == "" {
+		t.Fatal("the build must emit the hashed icon sprite the entry draws from")
+	}
 	for _, want := range []string{
 		`<base href="/chat/nodes/alpha/">`,
 		bootstrap,
 		`href="` + ChatAssetManifest().EntryCSS[0] + `"`,
 		`type="module" src="` + ChatAssetManifest().EntryJS + `"`,
+		`<link rel="preload" href="` + IconSprite() + `" as="image" type="image/svg+xml">`,
 	} {
 		if !strings.Contains(rendered, want) {
 			t.Errorf("rendered index missing %q", want)
@@ -516,6 +524,22 @@ func TestRenderIndexHTMLPreservesBootstrapAndModuleContract(t *testing.T) {
 	}
 	if count := strings.Count(rendered, `<script type="module"`); count != 1 {
 		t.Fatalf("first-party module entries = %d, want 1", count)
+	}
+	if strings.Contains(rendered, "dist/icons.svg") {
+		t.Fatal("the icon sprite preload must name the hashed sprite")
+	}
+}
+
+func TestIconSpriteIsAHashedPrewarmedAsset(t *testing.T) {
+	sprite := IconSprite()
+	if !IsHashedAsset(sprite) {
+		t.Fatalf("icon sprite %q must be an immutable hashed asset", sprite)
+	}
+	if !slices.Contains(PrewarmAssetPaths(), sprite) {
+		t.Fatalf("prewarm paths %v must include the icon sprite", PrewarmAssetPaths())
+	}
+	if !strings.Contains(string(RenderServiceWorker()), `"./`+sprite+`"`) {
+		t.Fatal("the service worker must precache the icon sprite")
 	}
 }
 

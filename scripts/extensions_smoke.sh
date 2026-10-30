@@ -17,7 +17,7 @@ cleanup() {
   rm -rf "$home"
 }
 trap cleanup EXIT
-cp -R examples/extensions/dracula examples/extensions/studio-clock "$home/config/term-llm/extensions/"
+cp -R examples/extensions/dracula examples/extensions/studio-clock examples/extensions/soft-icons "$home/config/term-llm/extensions/"
 cat > "$home/config/term-llm/config.yaml" <<'YAML'
 # Isolated extension UX fixture. No user credentials.
 default_provider: debug

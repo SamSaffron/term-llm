@@ -23,9 +23,10 @@
     .startup-card{width:min(320px,100%);padding:1.5rem 1.35rem;border:1px solid var(--startup-border);border-radius:16px;background:var(--startup-surface);box-shadow:var(--startup-shadow);text-align:center}.startup-mark{width:52px;height:52px;margin:0 auto .9rem;border-radius:14px;display:grid;place-items:center;background:var(--startup-surface-2);border:1px solid var(--startup-border);font-size:1.45rem;font-weight:800}.startup-title{font-size:1.05rem;font-weight:800;letter-spacing:.01em}.startup-subtitle{margin-top:.4rem;color:var(--startup-text-muted);font-size:.92rem;line-height:1.45}.startup-spinner{width:22px;height:22px;margin:1rem auto 0;border-radius:50%;border:2px solid var(--startup-border);border-top-color:var(--startup-accent);animation:startup-spin .8s linear infinite}@keyframes startup-spin{to{transform:rotate(360deg)}}
   </style>
   <link rel="stylesheet" href="dist/app.css">
+  <link rel="preload" href="dist/icons.svg" as="image" type="image/svg+xml">
 </head>
 <body>
-  <div id="root"><div class="startup-splash" role="status" aria-live="polite"><div class="startup-card"><div class="startup-mark" aria-hidden="true">⌘</div><div class="startup-title">term-llm</div><div class="startup-subtitle">Loading your chat shell…</div><div class="startup-spinner" aria-hidden="true"></div></div></div></div>
+  <div id="root"><div class="startup-splash" role="status" aria-live="polite"><div class="startup-card"><div class="startup-mark" aria-hidden="true"><svg width="1em" height="1em" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><rect x="3.5" y="4.5" width="17" height="15" rx="2.5"/><path d="m7.5 9.5 3 2.5-3 2.5"/><path d="M12.5 15h4"/></svg></div><div class="startup-title">term-llm</div><div class="startup-subtitle">Loading your chat shell…</div><div class="startup-spinner" aria-hidden="true"></div></div></div></div>
   <script type="module" src="dist/app.js"></script>
 </body>
 </html>

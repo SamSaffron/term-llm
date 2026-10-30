@@ -29,11 +29,14 @@ type Manifest struct {
 	FormatVersion int    `yaml:"format_version" json:"format_version"`
 	CSS           string `yaml:"css" json:"css,omitempty"`
 	JS            string `yaml:"js" json:"js,omitempty"`
+	// Icons is an SVG sprite whose <symbol id> elements replace web UI icons by name.
+	Icons string `yaml:"icons" json:"icons,omitempty"`
 }
 type Entry struct {
 	Manifest
-	ID    string `json:"id"`
-	Error string `json:"error,omitempty"`
+	ID          string   `json:"id"`
+	IconSymbols []string `json:"icon_symbols,omitempty"`
+	Error       string   `json:"error,omitempty"`
 }
 type Snapshot struct {
 	Directory      string   `json:"directory"`
@@ -142,11 +145,14 @@ func loadExtensionEntry(root *os.Root, id string) (Entry, map[string][]byte, boo
 		files, err = walkExtensionAssets(root, id)
 	}
 	if err == nil {
-		for _, entry := range []string{e.CSS, e.JS} {
+		for _, entry := range []string{e.CSS, e.JS, e.Icons} {
 			if entry != "" && files[id+"/"+entry] == nil && err == nil {
 				err = fmt.Errorf("entry point %s is missing", entry)
 			}
 		}
+	}
+	if err == nil && e.Icons != "" {
+		e.IconSymbols, err = iconSymbols(files[id+"/"+e.Icons])
 	}
 	if err != nil {
 		e.Error = err.Error()
@@ -158,8 +164,11 @@ func loadExtensionEntry(root *os.Root, id string) (Entry, map[string][]byte, boo
 // read or unmarshal failure is reported by the caller instead, so only a fully
 // parsed manifest is validated here.
 func validateExtensionManifest(e *Entry) error {
-	if e.Title == "" || e.FormatVersion != 1 || (e.CSS == "" && e.JS == "") {
-		return fmt.Errorf("title, format_version: 1 and a css or js entry are required")
+	if e.Title == "" || e.FormatVersion != 1 || (e.CSS == "" && e.JS == "" && e.Icons == "") {
+		return fmt.Errorf("title, format_version: 1 and a css, js or icons entry are required")
+	}
+	if e.Icons != "" && (!safePath(e.Icons) || path.Ext(e.Icons) != ".svg") {
+		return fmt.Errorf("icons must be a relative SVG path")
 	}
 	if (e.CSS != "" && (!safePath(e.CSS) || path.Ext(e.CSS) != ".css")) || (e.JS != "" && (!safePath(e.JS) || (path.Ext(e.JS) != ".js" && path.Ext(e.JS) != ".mjs"))) {
 		return fmt.Errorf("entry points must be relative CSS/JS paths")
@@ -250,7 +259,7 @@ func snapshotGeneration(s *Snapshot, ids []string) string {
 		fmt.Fprintf(h, "%s\x00", id)
 		for _, entry := range s.Entries {
 			if entry.ID == id {
-				fmt.Fprintf(h, "%s\x00%s\x00%s\x00", entry.CSS, entry.JS, entry.Error)
+				fmt.Fprintf(h, "%s\x00%s\x00%s\x00%s\x00", entry.CSS, entry.JS, entry.Icons, entry.Error)
 			}
 		}
 	}

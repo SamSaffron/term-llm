@@ -454,7 +454,7 @@ export function Lightbox({ returnFocus, onMount }: LightboxProps = {}) {
               disabled={index <= 0}
               onClick={() => navigate(index - 1)}
             >
-              ‹
+              <Icon class="glyph-icon" name="chevron-left" />
             </button>
             <span class="lightbox-position" aria-live="polite">
               {index + 1} / {items.length}
@@ -466,7 +466,7 @@ export function Lightbox({ returnFocus, onMount }: LightboxProps = {}) {
               disabled={index >= items.length - 1}
               onClick={() => navigate(index + 1)}
             >
-              ›
+              <Icon class="glyph-icon" name="chevron-right" />
             </button>
           </div>
         )}
@@ -478,7 +478,7 @@ export function Lightbox({ returnFocus, onMount }: LightboxProps = {}) {
             disabled={zoom <= 1}
             onClick={() => changeZoom(liveView.current.zoom / 2)}
           >
-            −
+            <Icon class="glyph-icon" name="minus" />
           </button>
           <button
             class="lightbox-btn lightbox-zoom"
@@ -497,7 +497,7 @@ export function Lightbox({ returnFocus, onMount }: LightboxProps = {}) {
             disabled={zoom >= MAX_ZOOM}
             onClick={() => changeZoom(liveView.current.zoom * 2)}
           >
-            +
+            <Icon class="glyph-icon" name="add" />
           </button>
         </div>
       </div>
@@ -521,7 +521,7 @@ export function Lightbox({ returnFocus, onMount }: LightboxProps = {}) {
           href={current.src}
           download={current.name || ''}
         >
-          ↓
+          <Icon class="glyph-icon" name="download" />
         </a>
         {current.type === 'image' && !error && <CopyImage key={current.src} image={image} />}
         <button

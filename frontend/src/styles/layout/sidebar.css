@@ -320,11 +320,7 @@
   height: 17px;
   display: block;
   color: currentcolor;
-  background: currentcolor;
-  -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Crect x='4' y='7' width='16' height='13' rx='4'/%3E%3Cpath d='M12 7V3M9 12h.01M15 12h.01M8 17h8'/%3E%3C/svg%3E")
-    center / contain no-repeat;
-  mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Crect x='4' y='7' width='16' height='13' rx='4'/%3E%3Cpath d='M12 7V3M9 12h.01M15 12h.01M8 17h8'/%3E%3C/svg%3E")
-    center / contain no-repeat;
+  flex: none;
 }
 
 .hub-agent-name {

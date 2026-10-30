@@ -24,6 +24,12 @@
   background: var(--border);
 }
 
+/* Icons draw their sprite symbol with <use>, whose shapes inherit these. A theme can
+   set --icon-stroke-width to make every line icon lighter or heavier. */
+:where(svg[data-icon]) {
+  stroke-width: var(--icon-stroke-width, 1.9);
+}
+
 html,
 body {
   margin: 0;

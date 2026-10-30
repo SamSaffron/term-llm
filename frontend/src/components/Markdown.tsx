@@ -1,3 +1,4 @@
+import { iconHTML } from './Icon';
 import { copyText } from '../platform/clipboard';
 import { preserveAudioMediaCards } from '../domain/audio-media';
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'preact/hooks';
@@ -35,10 +36,20 @@ interface MarkdownProps {
   documentPolicy?: (root: HTMLElement) => void;
 }
 
-const COPY_ICON =
-  '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M15 9V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v7a2 2 0 0 0 2 2h3"/></svg>';
-const COPIED_ICON =
-  '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="m5 12 4 4L19 6"/></svg>';
+// App-owned controls are inserted after markdown sanitization, so the sprite's
+// <use> is never passed through the untrusted-content sanitizer.
+function addVideoLinkIcons(root: HTMLElement): void {
+  root.querySelectorAll<HTMLAnchorElement>('a[href]').forEach((anchor) => {
+    if (
+      anchor.closest('.audio-media-card') ||
+      !VIDEO_LINK_PATTERN.test(anchor.getAttribute('href') || '')
+    )
+      return;
+    anchor.classList.add('video-link');
+    if (!anchor.querySelector('[data-icon="play"]'))
+      anchor.insertAdjacentHTML('beforeend', iconHTML('play'));
+  });
+}
 
 function addCodeCopyButtons(root: HTMLElement): void {
   const blocks = root.matches('pre')
@@ -51,7 +62,7 @@ function addCodeCopyButtons(root: HTMLElement): void {
     button.className = 'code-copy-btn';
     button.title = 'Copy';
     button.setAttribute('aria-label', 'Copy code');
-    button.innerHTML = COPY_ICON;
+    button.innerHTML = iconHTML('copy');
     pre.append(button);
   });
 }
@@ -258,6 +269,7 @@ class AssistantStreamRenderer {
 
   private decorate(root: HTMLElement, source: string, copyCode: boolean): void {
     if (this.rebase) rebaseRenderedAssetURLs(root, this.rebase);
+    addVideoLinkIcons(root);
     if (copyCode) addCodeCopyButtons(root);
     const revision = this.revision;
     void decorateRichContent(root, source, () => revision === this.revision);
@@ -303,12 +315,14 @@ class AssistantStreamRenderer {
           if (this.rebase) rebaseRenderedAssetURLs(prepared, this.rebase);
           if (this.fallback && !this.unsafe && source.startsWith(this.latestSource))
             preserveAudioMediaCards(this.root, prepared);
+          addVideoLinkIcons(prepared);
           addCodeCopyButtons(prepared);
         },
         committed,
       );
     } else {
       this.root.innerHTML = html;
+      addVideoLinkIcons(this.root);
       committed();
     }
   }
@@ -351,6 +365,7 @@ class AssistantStreamRenderer {
       const prepared = document.createElement('div');
       prepared.innerHTML = renderMarkdown(source, this.resolveMedia);
       if (this.rebase) rebaseRenderedAssetURLs(prepared, this.rebase);
+      addVideoLinkIcons(prepared);
       preserveAudioMediaCards(this.tail, prepared);
       this.tail.replaceChildren(...Array.from(prepared.childNodes));
     }
@@ -525,6 +540,7 @@ export function Markdown({
       renderer.current?.cancelPending();
       return prepareContent(element, renderValue, renderedHTML || '', (prepared) => {
         documentPolicy?.(prepared);
+        addVideoLinkIcons(prepared);
         addCodeCopyButtons(prepared);
       });
     }
@@ -557,7 +573,7 @@ export function Markdown({
       button.classList.remove('copy-failed');
       button.title = 'Copied';
       button.setAttribute('aria-label', 'Copied');
-      button.innerHTML = COPIED_ICON;
+      button.innerHTML = iconHTML('check');
     } catch {
       if (!button.isConnected) return;
       button.classList.remove('copied');
@@ -569,7 +585,7 @@ export function Markdown({
       button.classList.remove('copied', 'copy-failed');
       button.title = 'Copy';
       button.setAttribute('aria-label', 'Copy code');
-      button.innerHTML = COPY_ICON;
+      button.innerHTML = iconHTML('copy');
       copyTimers.current.delete(button);
     }, 1_500);
     copyTimers.current.set(button, timer);

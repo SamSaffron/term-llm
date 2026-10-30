@@ -56,16 +56,40 @@ test('creates a Dracula workspace, manages extensions, and repairs a broken them
   // and it edits config directly, then requests a registry reload.
   const before = await readFile(configPath, 'utf8');
   expect(before).toContain('enabled: []');
-  await writeFile(configPath, before.replace('enabled: []', 'enabled: [dracula, studio-clock]'));
+  await writeFile(
+    configPath,
+    before.replace('enabled: []', 'enabled: [dracula, studio-clock, soft-icons]'),
+  );
   // Arm the load wait before activation: the idle browser reloads asynchronously.
   // Reading the old document while that happens can destroy an evaluate context.
   const [, active] = await Promise.all([page.waitForEvent('load'), api('activate', {})]);
-  expect(active.enabled).toEqual(['dracula', 'studio-clock']);
-  // No manual refresh: verify the automatic reload applied both extensions.
+  expect(active.enabled).toEqual(['dracula', 'studio-clock', 'soft-icons']);
+  // No manual refresh: verify the automatic reload applied the extensions.
   await expect(page.locator('html')).toHaveCSS('--bg', '#282a36');
   await expect(page.locator('.studio-clock')).toHaveCount(1);
+  // Extension scripts draw app icons through ui.icon().
+  await expect(page.locator('.studio-clock svg[data-icon="clock"] use')).toHaveAttribute(
+    'href',
+    /icons[^#]*\.svg#clock$/,
+  );
   await expect(page.locator('#root')).toHaveCSS('background-color', 'rgb(40, 42, 54)');
   await expect(page.locator('#root')).toHaveCSS('color', 'rgb(248, 248, 242)');
+  // soft-icons replaces send from its sprite and lightens every line icon.
+  const send = page.locator('svg[data-icon="send"]').first();
+  await expect(send.locator('use')).toHaveAttribute(
+    'href',
+    new RegExp(`/extensions/${active.generation}/soft-icons/icons\\.svg#send$`),
+  );
+  await expect
+    .poll(() =>
+      send.evaluate((svg) => (svg.querySelector('use') as SVGGraphicsElement).getBBox().width),
+    )
+    .toBeGreaterThan(0);
+  await expect(page.locator('svg[data-icon="add"] use').first()).toHaveAttribute(
+    'href',
+    /dist\/assets\/icons-[\w-]+\.svg#add$/,
+  );
+  await expect(send).toHaveCSS('stroke-width', '1.5px');
   await page
     .getByRole('textbox', { name: 'Message' })
     .fill('My midnight workspace: calm colors, clear code, and a little room to think.');
@@ -89,7 +113,11 @@ test('creates a Dracula workspace, manages extensions, and repairs a broken them
     (request) => request.method() === 'POST' && request.url().endsWith('/v1/responses'),
   );
   await page.getByRole('button', { name: 'Send message' }).click();
-  expect((await submission).postDataJSON().ui_context.loaded).toEqual(['dracula', 'studio-clock']);
+  expect((await submission).postDataJSON().ui_context.loaded).toEqual([
+    'dracula',
+    'studio-clock',
+    'soft-icons',
+  ]);
   await expect(page.getByRole('heading', { name: 'Debug Provider Output' }).last()).toBeVisible();
 
   // Active service workers must never retain extension assets. An absent worker

@@ -128,11 +128,11 @@ function VoiceStatusIndicator({ state }: { state: VoiceSnapshot }) {
   const stalled = state.phase === 'transcribing' && state.stage === 'stalled';
   const mark =
     state.phase === 'failed' || stalled
-      ? '!'
+      ? 'alert-circle'
       : state.phase === 'complete'
-        ? '✓'
+        ? 'check'
         : state.phase === 'cancelled'
-          ? '–'
+          ? 'close'
           : '';
   return (
     <span class="voice-status-indicator" aria-hidden="true">
@@ -145,7 +145,7 @@ function VoiceStatusIndicator({ state }: { state: VoiceSnapshot }) {
               : 'voice-status-spinner'
         }
       >
-        {mark}
+        {mark && <Icon class="glyph-icon" name={mark} />}
       </span>
     </span>
   );
@@ -1073,7 +1073,9 @@ function ConversationComposer() {
                       setMenu(false);
                     }}
                   >
-                    <span class="composer-add-menu-icon">◉</span>
+                    <span class="composer-add-menu-icon">
+                      <Icon name="camera" />
+                    </span>
                     <span>Take photo</span>
                   </button>
                   {store.config.locationSharing && (
@@ -1085,7 +1087,9 @@ function ConversationComposer() {
                         setMenu(false);
                       }}
                     >
-                      <span class="composer-add-menu-icon">◎</span>
+                      <span class="composer-add-menu-icon">
+                        <Icon name="map-pin" />
+                      </span>
                       <span>Share current location</span>
                     </button>
                   )}
@@ -1111,7 +1115,9 @@ function ConversationComposer() {
                       setMenu(false);
                     }}
                   >
-                    <span class="composer-add-menu-icon">○</span>
+                    <span class="composer-add-menu-icon">
+                      <Icon name="target" />
+                    </span>
                     <span>Set goal…</span>
                   </button>
                   {store.worktreesAvailable() && (

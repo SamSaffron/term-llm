@@ -151,6 +151,8 @@ func IndexHTML() []byte {
 	return data
 }
 
+const iconSpritePreload = `<link rel="preload" href="dist/icons.svg" as="image" type="image/svg+xml">`
+
 // RenderIndexHTML returns the Preact entry page with versioned cacheable assets,
 // a content-addressed module graph, caller-supplied head markup, and the
 // exact relative base-path contract.
@@ -167,6 +169,12 @@ func RenderIndexHTML(basePath, headSnippet string) []byte {
 		{`src="dist/app.js"`, `src="` + manifest.EntryJS + `"`},
 	} {
 		html = bytes.ReplaceAll(html, []byte(replacement.old), []byte(replacement.new))
+	}
+	// The icon sprite loads beside the stylesheet so the first paint has its icons.
+	if sprite := IconSprite(); sprite != "" {
+		html = bytes.ReplaceAll(html, []byte(`href="dist/icons.svg"`), []byte(`href="`+sprite+`"`))
+	} else {
+		html = bytes.ReplaceAll(html, []byte(iconSpritePreload), nil)
 	}
 
 	baseTag := `<base href="` + htmlpkg.EscapeString(basePath) + `/">`

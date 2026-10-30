@@ -22,9 +22,10 @@ description: Rich purple accents and a calm dark reading surface
 format_version: 1
 css: style.css
 js: main.js
+icons: icons.svg
 ```
 
-At least one of css/js is required. Use relative paths for local assets, fonts and module imports; no symlinks or files outside the bundle. Write browser-ready ES modules, not JSX/TypeScript; no application rebuild is needed.
+At least one of css/js/icons is required. Use relative paths for local assets, fonts and module imports; no symlinks or files outside the bundle. Write browser-ready ES modules, not JSX/TypeScript; no application rebuild is needed.
 
 JavaScript may export `activate(ui)`, called once after mounting, in enabled order. ui exposes:
 - root: Preact application root; do not move Preact-owned nodes.
@@ -34,6 +35,9 @@ JavaScript may export `activate(ui)`, called once after mounting, in enabled ord
 - getContextUsage(): latest approximate active-session context snapshot or null; includes usedTokens, optional inputLimit, cumulative cachedInputTokens, and estimated.
 - onContextUsageChanged(callback): immediate context snapshot subscription returning an unsubscribe function; updates after session loads, changes, and completed responses.
 - insertComposerText(text): appends without sending.
+- icon(name): a new `<svg>` drawing the named app icon, including replacements, for extension-owned controls.
+
+Icons: `icons:` names an SVG sprite whose `<symbol id="NAME">` elements replace the app's icons by name; unlisted icons keep the built-in drawing and later enabled extensions win. Names are the `data-icon` attributes in the page and the symbol ids in frontend/src/components/icons.svg (read it via ui_get_source). Symbols inherit fill="none", stroke="currentColor", round caps and the stroke width, so 24×24 line icons need no attributes; set fill="currentColor" stroke="none" on filled shapes. Ids are lowercase letters, numbers and hyphens; sprites are at most 1 MiB. To change only icon weight, set `--icon-stroke-width` (default 1.9) in CSS.
 
 Context usage is not aggregate response usage. Preserve the approximation marker, and do not calculate a percentage when inputLimit is absent.
 

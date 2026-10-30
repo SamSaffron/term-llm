@@ -290,7 +290,7 @@ export function App({ store }: { store: AppStore }) {
           <div class="startup-splash" id="startupSplash" role="status" aria-live="polite">
             <div class="startup-card">
               <div class="startup-mark" aria-hidden="true">
-                ⌘
+                <Icon class="glyph-icon" name="terminal" />
               </div>
               <div class="startup-title">term-llm</div>
               <div class="startup-subtitle" id="startupStatus">

@@ -1,0 +1,4 @@
+/* Every line icon a little lighter; the sprite replaces individual drawings. */
+:root {
+  --icon-stroke-width: 1.5;
+}

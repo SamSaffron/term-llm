@@ -128,13 +128,14 @@ func collect(root string) (map[string][]byte, error) {
 	return files, nil
 }
 
-// included keeps authoring sources while dropping Hub sources and tests.
+// included keeps authoring sources, including the icon sprite extensions
+// replace symbols from, while dropping Hub sources and tests.
 func included(rel string) bool {
 	if strings.Contains(rel, "/hub/") || strings.Contains(rel, "/test/") || strings.Contains(rel, ".test.") {
 		return false
 	}
 	switch filepath.Ext(rel) {
-	case ".ts", ".tsx", ".css":
+	case ".ts", ".tsx", ".css", ".svg":
 		return true
 	}
 	return false

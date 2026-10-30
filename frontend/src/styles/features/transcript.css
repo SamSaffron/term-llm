@@ -1,3 +1,11 @@
+/* Line icons replacing text marks inherit the mark's font size and colour. */
+.glyph-icon {
+  width: 1em;
+  height: 1em;
+  flex: none;
+  vertical-align: -0.125em;
+}
+
 /* Chat transcript: messages, markdown, code blocks, math, tools and turns. */
 
 .delegated-presence {
@@ -250,6 +258,7 @@
   font-weight: 500;
 }
 
+.message.model-swap-divider.failed .model-swap-arrow,
 .message.model-swap-divider.failed .model-swap-to,
 .message.model-swap-divider.failed .model-swap-detail {
   color: var(--error-text);
@@ -1054,19 +1063,25 @@
 
 .tool-group-entry {
   display: flex;
-  align-items: flex-start;
+  align-items: baseline;
   gap: 0.4rem;
   padding: 0 0.75rem;
   font-size: 0.88rem;
 }
 
+/* The icon shares the tool name's baseline and font size, and vertical-align:
+   middle centres it on the name's x-height, whatever the font's metrics. */
 .tool-entry-icon {
   flex-shrink: 0;
   width: 1.1rem;
-  padding-top: 0.5rem;
-  font-size: 0.85rem;
-  line-height: 1.2;
+  font-size: 0.92rem;
   text-align: center;
+}
+
+.tool-entry-icon .glyph-icon {
+  width: 0.925em;
+  height: 0.925em;
+  vertical-align: middle;
 }
 
 .tool-group-entry-body {

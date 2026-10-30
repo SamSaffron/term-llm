@@ -148,8 +148,11 @@
   text-decoration-style: dotted;
 }
 
-.video-link::after {
-  content: ' ▶';
+.video-link > svg[data-icon] {
+  width: 1em;
+  height: 1em;
+  margin-left: 0.3em;
+  vertical-align: -0.125em;
   font-size: 0.75em;
   opacity: 0.7;
 }

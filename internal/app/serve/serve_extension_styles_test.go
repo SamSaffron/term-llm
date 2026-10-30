@@ -98,3 +98,46 @@ func TestIndexExtensionStylesheetsFollowReloads(t *testing.T) {
 		t.Fatal("disabled extension is still linked")
 	}
 }
+
+func TestIndexAnnouncesExtensionIconSprites(t *testing.T) {
+	e := extensionFixture(t)
+	root := filepath.Join(e.manager.Status().Directory, "dracula")
+	for name, body := range map[string]string{
+		"extension.yaml": "title: Dracula\nformat_version: 1\ncss: style.css\nicons: icons.svg\n",
+		"icons.svg":      `<svg xmlns="http://www.w3.org/2000/svg"><symbol id="send" viewBox="0 0 24 24"><path d="M5 12h14"/></symbol></svg>`,
+	} {
+		if err := os.WriteFile(filepath.Join(root, name), []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := e.reload(); err != nil {
+		t.Fatal(err)
+	}
+	s := &serveServer{cfg: serveServerConfig{ui: true, basePath: "/chat", requireAuth: true, token: "secret"}, extensions: e}
+	generation := e.manager.Status().Generation
+	want := `<meta name="term-llm-extension-icons" data-extension="dracula" data-symbols="send" content="extensions/` + generation + `/dracula/icons.svg">`
+
+	body := extensionShell(t, s, "/", true)
+	if head := body[:strings.Index(body, "</head>")]; !strings.Contains(head, want) {
+		t.Fatalf("authorized shell must announce the sprite in <head>:\n%s", body)
+	}
+
+	mux := http.NewServeMux()
+	s.registerExtensionRoutes(mux)
+	asset := httptest.NewRequest(http.MethodGet, "/extensions/"+generation+"/dracula/icons.svg", nil)
+	asset.AddCookie(&http.Cookie{Name: "term_llm_token", Value: "secret"})
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, asset)
+	if w.Code != http.StatusOK || w.Header().Get("Content-Type") != "image/svg+xml" {
+		t.Fatalf("sprite asset: %d %q", w.Code, w.Header().Get("Content-Type"))
+	}
+
+	for name, target := range map[string]struct {
+		url       string
+		authorize bool
+	}{"unauthorized shell": {"/", false}, "safe mode": {"/?safe-mode=1", true}} {
+		if body := extensionShell(t, s, target.url, target.authorize); strings.Contains(body, "term-llm-extension-icons") {
+			t.Errorf("%s must not announce extension icons", name)
+		}
+	}
+}

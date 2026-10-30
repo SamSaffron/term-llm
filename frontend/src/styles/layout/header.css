@@ -440,18 +440,11 @@
   outline: none;
 }
 
-.chip-popover-item[aria-selected='true']::before {
-  content: '✓';
+.chip-popover-check {
   color: var(--accent, var(--text));
   flex: none;
   width: 1em;
   text-align: center;
-}
-
-.chip-popover-item:not([aria-selected='true'])::before {
-  content: '';
-  flex: none;
-  width: 1em;
 }
 
 .chip-popover-item-label {
@@ -499,10 +492,6 @@
 
 .chip-popover-item-action {
   color: var(--text-muted);
-}
-
-.chip-popover-item-action::before {
-  display: none;
 }
 
 .chip-popover-item-action-icon {

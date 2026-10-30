@@ -283,7 +283,7 @@ export function ReviewComment({
                     disabled={!canSubmit}
                     onClick={() => setSendMenuOpen(!sendMenuOpen)}
                   >
-                    ▾
+                    <Icon class="glyph-icon" name="chevron-down" />
                   </button>
                   {sendMenuOpen && (
                     <div

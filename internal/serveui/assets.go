@@ -82,6 +82,19 @@ func loadChatManifest() {
 	sort.Strings(chatManifest.Files)
 }
 
+var iconSpriteName = regexp.MustCompile(`^dist/assets/icons-[A-Za-z0-9_-]{8,}\.svg$`)
+
+// IconSprite is the hashed icon sprite (frontend/src/components/icons.svg) the
+// entry draws its icons from, or "" when the build has none.
+func IconSprite() string {
+	for _, name := range ChatAssetManifest().Files {
+		if iconSpriteName.MatchString(name) {
+			return name
+		}
+	}
+	return ""
+}
+
 // IsHashedAsset only trusts files declared in the embedded build manifest.
 func IsHashedAsset(name string) bool {
 	chatManifestOnce.Do(loadChatManifest)
@@ -92,6 +105,9 @@ func IsHashedAsset(name string) bool {
 func PrewarmAssetPaths() []string {
 	manifest := ChatAssetManifest()
 	paths := append([]string{manifest.EntryJS}, manifest.EntryCSS...)
+	if sprite := IconSprite(); sprite != "" {
+		paths = append(paths, sprite)
+	}
 	for _, name := range manifest.Files {
 		if strings.HasPrefix(name, "dist/chunks/vendor-") && strings.HasSuffix(name, ".js") {
 			paths = append(paths, name)

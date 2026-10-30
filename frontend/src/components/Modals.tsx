@@ -506,7 +506,7 @@ export function SideQuestion() {
         {!state.loading && !hasConversation && (
           <div class="side-question-empty">
             <div class="side-question-empty-mark" aria-hidden="true">
-              ↗
+              <Icon class="glyph-icon" name="arrow-up-right" />
             </div>
             <h3>Ask about this conversation</h3>
             <p>Answers use the transcript as context but are never added to it.</p>

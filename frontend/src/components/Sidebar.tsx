@@ -136,7 +136,7 @@ function SessionMenu({
           onOpenChange(!open);
         }}
       >
-        ⋯
+        <Icon class="glyph-icon" name="more" />
       </button>
       {open && (
         <div
@@ -667,7 +667,7 @@ function ProjectGroup({ project, order }: { project: Project; order?: ReorderCon
             setMenu(!menu);
           }}
         >
-          ⋯
+          <Icon class="glyph-icon" name="more" />
         </button>
         {menu && (
           <div
@@ -882,7 +882,7 @@ function HubAgentRow({
         onPointerDown={canMove ? order.press : undefined}
         onClick={onNavigate}
       >
-        <span class="hub-agent-icon" aria-hidden="true" />
+        <Icon class="hub-agent-icon" name="bot" />
         <span class="hub-agent-name">{agent.name}</span>
         {agent.attention && (
           <>
@@ -903,7 +903,7 @@ function HubAgentRow({
             aria-keyshortcuts="Alt+ArrowUp Alt+ArrowDown"
             onClick={() => setMenuOpen((open) => !open)}
           >
-            ⋯
+            <Icon class="glyph-icon" name="more" />
           </button>
           <Menu
             open={menuOpen}

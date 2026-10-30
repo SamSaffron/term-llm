@@ -11,7 +11,7 @@ import {
 import { updateSessionRoute } from '../platform/routing';
 import {
   loadExtensions,
-  removeRenderedExtensionStyles,
+  removeRenderedExtensions,
   watchExtensionActivation,
 } from '../api/extensions';
 import { AppStore } from './app-store';
@@ -146,7 +146,7 @@ const extensionLinks = () =>
   );
 
 describe('server-rendered extension styles', () => {
-  beforeEach(() => removeRenderedExtensionStyles());
+  beforeEach(() => removeRenderedExtensions());
 
   it('adopts loaded styles instead of loading a second copy', async () => {
     const link = renderedStyle('varnish', 'current');

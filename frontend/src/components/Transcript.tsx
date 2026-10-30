@@ -12,7 +12,7 @@ import { AudioMedia } from './AudioMedia';
 import { trustedPublishedMediaURL } from '../domain/audio-media';
 import { bindTranscriptMedia } from './transcript-media';
 import { ChipPicker } from './ChipPicker';
-import { Icon } from './Icon';
+import { Icon, type IconName } from './Icon';
 import { attachmentIconName, formatAttachmentSize } from '../domain/attachments';
 import { copyText } from '../platform/clipboard';
 import { rebaseHubAssetURL } from '../app/config';
@@ -191,7 +191,7 @@ function AskUserAnswer({ answer }: { answer: string }) {
     <div class="ask-user-result">
       <div class="tool-details-label">Answer</div>
       <div class="ask-user-result-value">
-        <span aria-hidden="true">✓</span>
+        <Icon class="glyph-icon" name="check" />
         <span>{answer}</span>
       </div>
     </div>
@@ -235,22 +235,27 @@ function toolSummary(tool: ToolCall): string {
     )
     .join('\n');
 }
-function toolIcon(name: string): string {
+function toolIcon(name: string): IconName {
+  const key = name.toLowerCase();
+  // MCP tools are named server__tool (the browser's own, webmcp__tool).
+  if (key.includes('__')) return 'plug';
   return (
     (
       {
-        shell: '💻',
-        bash: '💻',
-        read_file: '📄',
-        write_file: '✏️',
-        edit_file: '✏️',
-        web_search: '🔍',
-        grep: '🔍',
-        read_url: '🌐',
-        image_generate: '🎨',
-        spawn_agent: '🤖',
-      } as Record<string, string>
-    )[name.toLowerCase()] || '🔧'
+        shell: 'terminal',
+        bash: 'terminal',
+        read_file: 'file-text',
+        write_file: 'file-pen',
+        edit_file: 'file-pen',
+        web_search: 'search',
+        grep: 'text-search',
+        glob: 'folder-search',
+        read_url: 'globe',
+        image_generate: 'image',
+        spawn_agent: 'bot',
+        ask_user: 'message-circle-question',
+      } as Record<string, IconName>
+    )[key] || 'wrench'
   );
 }
 function guardianReviewReason(message: string, outcome: string): string {
@@ -267,7 +272,7 @@ function formatUsage(message: Message): string {
     usage.input_tokens_details && typeof usage.input_tokens_details === 'object'
       ? (usage.input_tokens_details as Record<string, unknown>)
       : {};
-  return `↙ ${Number(usage.input_tokens || 0).toLocaleString()} in · ${Number(usage.output_tokens || 0).toLocaleString()} out · ${Number(details.cached_tokens || usage.cached_input_tokens || 0).toLocaleString()} cached`;
+  return `${Number(usage.input_tokens || 0).toLocaleString()} in · ${Number(usage.output_tokens || 0).toLocaleString()} out · ${Number(details.cached_tokens || usage.cached_input_tokens || 0).toLocaleString()} cached`;
 }
 
 const SHELL_TIMER_MINIMUM_MS = 2_000;
@@ -610,7 +615,8 @@ const Tool = memo(function Tool({
             <ElapsedDuration durationMs={finalDurationMs} running={false} />{' '}
           </>
         )}
-        ✕
+        <Icon class="glyph-icon" name="close" />
+        <span class="visually-hidden">Failed</span>
       </>
     ) : stopped ? (
       <>
@@ -628,7 +634,8 @@ const Tool = memo(function Tool({
             <ElapsedDuration durationMs={finalDurationMs} running={false} />{' '}
           </>
         )}
-        ✓
+        <Icon class="glyph-icon" name="check" />
+        <span class="visually-hidden">Complete</span>
       </>
     );
   if (tool.name === 'update_plan' && tool.status === 'done' && tool.resultStatus !== 'error')
@@ -791,7 +798,10 @@ function ToolGroup({
           ) : stopped ? (
             'stopped'
           ) : (
-            '✓'
+            <>
+              <Icon class="glyph-icon" name="check" />
+              <span class="visually-hidden">Complete</span>
+            </>
           )}
         </span>
       </button>
@@ -811,7 +821,7 @@ function ToolGroup({
           visible.map((tool) => (
             <div class="tool-group-entry" key={tool.id}>
               <span class="tool-entry-icon" aria-hidden="true">
-                {toolIcon(tool.name)}
+                <Icon class="glyph-icon" name={toolIcon(tool.name)} />
               </span>
               <div class="tool-group-entry-body">
                 <Tool tool={tool} tickElapsed={expanded} resolveMedia={resolveMedia} />
@@ -973,20 +983,24 @@ function MessageMeta({ message, clock }: { message: Message; clock: ReadonlySign
   const interrupt = (
     {
       evaluating: ['pending', '', 'evaluating…'],
-      checking_send: ['pending', '⏳', 'checking whether this was sent'],
-      unconfirmed_send: ['error', '⚠', 'send unconfirmed — it may still be running'],
-      pending_steer: ['pending', '⏳', 'will incorporate'],
-      steer: ['steer', '✓', 'injected'],
-      cancel: ['cancel', '⏹', 'cancelled + queued'],
-      queue: ['queue', '⏳', 'queued'],
-      error: ['error', '⚠', 'failed'],
-    } as Record<string, [string, string, string]>
+      checking_send: ['pending', 'clock', 'checking whether this was sent'],
+      unconfirmed_send: ['error', 'alert-circle', 'send unconfirmed — it may still be running'],
+      pending_steer: ['pending', 'clock', 'will incorporate'],
+      steer: ['steer', 'check', 'injected'],
+      cancel: ['cancel', 'stop', 'cancelled + queued'],
+      queue: ['queue', 'clock', 'queued'],
+      error: ['error', 'alert-circle', 'failed'],
+    } as Record<string, [string, IconName | '', string]>
   )[String(message.interruptState || '')];
   return (
     <div class="message-meta">
       {message.role === 'user' && interrupt && (
         <span class={`interrupt-badge ${interrupt[0]}`}>
-          {interrupt[1] || <span class="interrupt-spinner" />}
+          {interrupt[1] ? (
+            <Icon class="glyph-icon" name={interrupt[1]} />
+          ) : (
+            <span class="interrupt-spinner" />
+          )}
           {interrupt[2]}
         </span>
       )}
@@ -1103,7 +1117,7 @@ function ModelSwapBoundary({
           <>
             <span class="model-swap-from">{from}</span>
             <span class="model-swap-arrow" aria-hidden="true">
-              {failed ? '↛' : '→'}
+              <Icon class="glyph-icon" name="arrow-right" />
             </span>
             <span class="model-swap-to">{to}</span>
             {(failed || handover || started) && (
@@ -1311,7 +1325,11 @@ const MessageRow = memo(function MessageRow({
             <div class="message-text">{message.content}</div>
           ))}
       </div>
-      {message.usage && <div class="usage-line">{formatUsage(message)}</div>}
+      {message.usage && (
+        <div class="usage-line">
+          <Icon class="glyph-icon" name="arrow-down-left" /> {formatUsage(message)}
+        </div>
+      )}
       {message.role === 'assistant' && message.content && copyTarget && (
         <div class="turn-action-panel">
           <TurnCopyButton text={responseText || message.content} />
@@ -1367,7 +1385,9 @@ function NewChatControls() {
               <>
                 <span class="new-chat-project-label">Agent</span>
                 <span class="new-chat-project-value">{selected.label}</span>
-                <span class="new-chat-project-chevron">⌄</span>
+                <span class="new-chat-project-chevron">
+                  <Icon class="glyph-icon" name="chevron-down" />
+                </span>
               </>
             )}
           />
@@ -1395,7 +1415,9 @@ function NewChatControls() {
               <>
                 {selected.value && <span class="new-chat-project-label">Project</span>}
                 <span class="new-chat-project-value">{selected.label}</span>
-                <span class="new-chat-project-chevron">⌄</span>
+                <span class="new-chat-project-chevron">
+                  <Icon class="glyph-icon" name="chevron-down" />
+                </span>
               </>
             )}
           />

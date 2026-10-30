@@ -8,4 +8,10 @@
   pointer-events: none;
   z-index: 5;
 }
+.studio-clock svg {
+  width: 1.1em;
+  height: 1.1em;
+  margin-right: 0.35em;
+  vertical-align: -0.2em;
+}
 @media (max-width: 760px) { .studio-clock { display: none; } }

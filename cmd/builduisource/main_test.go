@@ -24,6 +24,7 @@ func TestCollectSkipsHubAndTestSources(t *testing.T) {
 	root := t.TempDir()
 	writeFile(t, root, "frontend/src/app.tsx", "export const app = 1;\n")
 	writeFile(t, root, "frontend/src/styles/app.css", ".app{}\n")
+	writeFile(t, root, "frontend/src/components/icons.svg", "<svg/>\n")
 	writeFile(t, root, "frontend/src/domain/markdown.ts", "export const md = 1;\n")
 	writeFile(t, root, "frontend/src/domain/markdown.test.ts", "test('x', () => {});\n")
 	writeFile(t, root, "frontend/src/hub/dashboard.tsx", "export const hub = 1;\n")
@@ -38,6 +39,7 @@ func TestCollectSkipsHubAndTestSources(t *testing.T) {
 	want := []string{
 		"frontend/README.md",
 		"frontend/src/app.tsx",
+		"frontend/src/components/icons.svg",
 		"frontend/src/domain/markdown.ts",
 		"frontend/src/styles/app.css",
 	}

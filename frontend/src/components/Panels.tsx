@@ -793,7 +793,9 @@ function File({
           }
         }}
       >
-        <span class="diff-chevron">▸</span>
+        <span class="diff-chevron">
+          <Icon class="glyph-icon" name="chevron-right" />
+        </span>
         <span class={`diff-kind-badge diff-kind-${legacyKind}`}>
           {legacyKind === 'create' ? 'A' : legacyKind === 'delete' ? 'D' : 'M'}
         </span>
@@ -929,18 +931,7 @@ function DiffScopePicker() {
       renderTrigger={(selected) => (
         <>
           <span class="chip-label">{selected.label}</span>
-          <svg
-            class="diff-scope-chevron"
-            viewBox="0 0 12 8"
-            fill="none"
-            stroke="currentColor"
-            stroke-width="1.6"
-            stroke-linecap="round"
-            stroke-linejoin="round"
-            aria-hidden="true"
-          >
-            <path d="m2 2 4 4 4-4" />
-          </svg>
+          <Icon class="diff-scope-chevron" name="chevron-down" />
         </>
       )}
     />
@@ -1126,26 +1117,7 @@ export function DiffSidebar() {
               }
             }}
           >
-            <svg
-              width="18"
-              height="18"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              stroke-width="2"
-              stroke-linecap="round"
-              stroke-linejoin="round"
-              aria-hidden="true"
-            >
-              <g class="diff-bulk-expand-icon">
-                <path d="m7 9 5-5 5 5" />
-                <path d="m7 15 5 5 5-5" />
-              </g>
-              <g class="diff-bulk-collapse-icon">
-                <path d="m7 4 5 5 5-5" />
-                <path d="m7 20 5-5 5 5" />
-              </g>
-            </svg>
+            <Icon name={allExpanded ? 'chevrons-down-up' : 'chevrons-up-down'} />
           </button>
         )}
         <button

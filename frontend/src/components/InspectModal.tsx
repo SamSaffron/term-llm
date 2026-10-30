@@ -1,3 +1,4 @@
+import { Icon } from './Icon';
 import '../styles/features/inspect.css';
 import { useEffect, useId, useRef, useState } from 'preact/hooks';
 import { useStore } from '../app/context';
@@ -217,7 +218,7 @@ function InspectItem({
           aria-controls={regionId}
           onClick={toggle}
         >
-          <span aria-hidden="true">{expanded ? '▾' : '▸'}</span>
+          <Icon class="glyph-icon" name={expanded ? 'chevron-down' : 'chevron-right'} />
           {heading}
         </button>
       ) : (

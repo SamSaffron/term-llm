@@ -71,8 +71,8 @@
 
 .diff-scope-chevron {
   flex: none;
-  width: 0.55rem;
-  height: auto;
+  width: 0.75rem;
+  height: 0.75rem;
   color: var(--text-muted);
   transition: transform 0.12s ease;
 }
@@ -106,15 +106,6 @@
 .diff-sidebar-maximize {
   flex: none;
   border-radius: 50%;
-}
-
-.diff-bulk-collapse-icon,
-.diff-bulk-toggle[data-action='collapse'] .diff-bulk-expand-icon {
-  display: none;
-}
-
-.diff-bulk-toggle[data-action='collapse'] .diff-bulk-collapse-icon {
-  display: inline;
 }
 
 .diff-sidebar-close {
@@ -1227,7 +1218,11 @@
   color: var(--accent);
 }
 
+/* Document CSS can't reach into the sprite's <use> copy, but custom properties
+   inherit into it: the markdown icon's page fills from these. */
 .diff-markdown-toggle {
+  --icon-state-fill: currentcolor;
+
   flex: none;
   border: 1px solid transparent;
   transition:
@@ -1241,20 +1236,12 @@
   height: 19px;
 }
 
-.diff-markdown-toggle .icon-state-fill {
-  fill: currentcolor;
-  fill-opacity: 0;
-  transition: fill-opacity 0.15s ease;
-}
-
 .diff-markdown-toggle.active {
+  --icon-state-fill-opacity: 0.3;
+
   border-color: color-mix(in srgb, var(--accent) 55%, var(--border));
   background: color-mix(in srgb, var(--accent) 14%, transparent);
   color: var(--accent);
-}
-
-.diff-markdown-toggle.active .icon-state-fill {
-  fill-opacity: 0.3;
 }
 
 .diff-markdown-toggle:disabled {

@@ -246,3 +246,30 @@ test('mobile composer keeps its bottom inset clear of the input', async ({ page 
     }
   }
 });
+
+test('tool group icons centre on the tool name in any font', async ({ page }) => {
+  const entry = `<div class="tool-group-entry"><span class="tool-entry-icon" aria-hidden="true"><svg class="glyph-icon" data-icon="terminal" viewBox="0 0 24 24"></svg></span><div class="tool-group-entry-body"><article class="message tool tool-done"><div class="tool-card"><button class="tool-toggle" type="button"><span class="tool-name">shell</span><span class="tool-summary">command: ls</span></button></div></article></div></div>`;
+  await page.setContent(
+    `<main class="chat-scroll"><div class="messages"><div class="tool-group"><article class="tool-group-card"><div class="tool-group-details open">${entry}</div></article></div></div></main>`,
+  );
+  await page.addStyleTag({ content: css });
+  // Fonts differ in ascent, descent and line gap; the icon must follow the text, not them.
+  for (const font of ['sans-serif', 'serif', 'monospace']) {
+    await page.addStyleTag({ content: `body { font-family: ${font} !important; }` });
+    const offset = await page.evaluate(() => {
+      const name = document.querySelector('.tool-name')!;
+      const probe = document.createElement('span');
+      probe.style.cssText = 'display:inline-block;width:0;height:0;vertical-align:baseline';
+      name.append(probe);
+      const baseline = probe.getBoundingClientRect().bottom;
+      probe.remove();
+      const style = getComputedStyle(name);
+      const context = document.createElement('canvas').getContext('2d')!;
+      context.font = `${style.fontWeight} ${style.fontSize} ${style.fontFamily}`;
+      const xHeight = context.measureText('x').actualBoundingBoxAscent;
+      const icon = document.querySelector('.tool-entry-icon svg')!.getBoundingClientRect();
+      return icon.top + icon.height / 2 - (baseline - xHeight / 2);
+    });
+    expect(Math.abs(offset), font).toBeLessThanOrEqual(1);
+  }
+});

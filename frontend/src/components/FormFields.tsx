@@ -1,3 +1,4 @@
+import { Icon, type IconName } from './Icon';
 import type { ComponentChildren, InputHTMLAttributes, SelectHTMLAttributes } from 'preact';
 import { SelectControl } from './SelectControl';
 
@@ -28,16 +29,13 @@ export function SettingsSelect({
 type SearchFieldProps = Pick<
   InputHTMLAttributes<HTMLInputElement>,
   'aria-label' | 'value' | 'placeholder' | 'autoFocus' | 'onInput' | 'onKeyDown'
-> & { className: string; iconPath?: string };
+> & { className: string; icon?: IconName };
 
-export function SearchField({ className, iconPath = 'm16 16 4 4', ...input }: SearchFieldProps) {
+export function SearchField({ className, icon = 'search', ...input }: SearchFieldProps) {
   return (
     <label class={className}>
       <span class={`${className}-icon`} aria-hidden="true">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
-          <circle cx="11" cy="11" r="7" />
-          <path d={iconPath} />
-        </svg>
+        <Icon name={icon} />
       </span>
       <input type="search" {...input} />
     </label>

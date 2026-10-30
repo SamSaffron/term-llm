@@ -1,3 +1,4 @@
+import { Icon } from './Icon';
 import { useLayoutEffect, useRef, useState } from 'preact/hooks';
 import type { LiveStore } from '../stores/live-store';
 
@@ -108,7 +109,7 @@ export function LiveStatus({ live }: { live: LiveStore }) {
           <div class="live-status-transcript-actions">
             {!following && (
               <button type="button" class="btn" onClick={latest}>
-                ↓ Latest
+                <Icon class="glyph-icon" name="arrow-down" /> Latest
               </button>
             )}
             <button

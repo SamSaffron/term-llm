@@ -1,3 +1,4 @@
+import { Icon } from './Icon';
 import '../styles/features/extensions.css';
 import { useEffect, useState } from 'preact/hooks';
 import { useStore } from '../app/context';
@@ -92,7 +93,7 @@ export function ExtensionSettings() {
       <div class="settings-panel-body">
         {store.config.agentNames.includes('extension-builder') && (
           <button type="button" class="btn extension-builder" onClick={startExtensionBuilder}>
-            ✦ Make UI Mine
+            <Icon class="glyph-icon" name="sparkles" /> Make UI Mine
           </button>
         )}
         {safe && (
@@ -150,7 +151,7 @@ export function ExtensionSettings() {
                         disabled={controlled || busy || enabled.indexOf(entry.id) === 0}
                         onClick={() => move(entry.id, -1)}
                       >
-                        ↑
+                        <Icon class="glyph-icon" name="arrow-up" />
                       </button>
                       <button
                         class="btn"
@@ -161,7 +162,7 @@ export function ExtensionSettings() {
                         }
                         onClick={() => move(entry.id, 1)}
                       >
-                        ↓
+                        <Icon class="glyph-icon" name="arrow-down" />
                       </button>
                     </div>
                   )}

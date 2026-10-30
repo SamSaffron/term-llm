@@ -2,6 +2,7 @@ import { computed, effect, signal } from '@preact/signals';
 import type { AppStore } from './app-store';
 import type { AppConfig } from '../app/config';
 import type { ContextUsage } from '../domain/types';
+import { iconElement } from '../components/Icon';
 
 export interface WebExtension {
   id: string;
@@ -9,6 +10,9 @@ export interface WebExtension {
   description: string;
   css?: string;
   js?: string;
+  /** An SVG sprite whose symbols replace UI icons by name. */
+  icons?: string;
+  icon_symbols?: string[];
   error?: string;
 }
 export interface ExtensionStatus {
@@ -68,6 +72,8 @@ export interface ExtensionHost {
   getContextUsage(): Readonly<ContextUsage> | null;
   onContextUsageChanged(callback: (usage: Readonly<ContextUsage> | null) => void): () => void;
   insertComposerText(text: string): void;
+  /** A line icon drawn like the app's own, including any extension replacement. */
+  icon(name: string): SVGSVGElement;
 }
 
 export function extensionHost(store: AppStore, id: string): ExtensionHost {
@@ -95,5 +101,6 @@ export function extensionHost(store: AppStore, id: string): ExtensionHost {
     insertComposerText: (text: string) => {
       store.composer.prompt.value += String(text);
     },
+    icon: iconElement,
   });
 }

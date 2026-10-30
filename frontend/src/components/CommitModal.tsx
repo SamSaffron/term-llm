@@ -1,3 +1,4 @@
+import { Icon } from './Icon';
 import { useEffect, useRef } from 'preact/hooks';
 import { useStore } from '../app/context';
 import { Overlay } from './Overlay';
@@ -270,7 +271,7 @@ export function CommitModal() {
             {safePRURL && (
               <p>
                 <a href={safePRURL} target="_blank" rel="noopener noreferrer">
-                  Open pull request ↗
+                  Open pull request <Icon class="glyph-icon" name="arrow-up-right" />
                 </a>
               </p>
             )}

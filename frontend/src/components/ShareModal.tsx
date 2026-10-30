@@ -1,3 +1,4 @@
+import { Icon } from './Icon';
 import { useEffect, useRef, useState } from 'preact/hooks';
 import { useStore } from '../app/context';
 import type {
@@ -155,7 +156,7 @@ export function ShareModal() {
       {phase === 'success' && result ? (
         <div class="share-success" ref={success} tabIndex={-1} role="status" aria-live="polite">
           <div class="share-success-mark" aria-hidden="true">
-            ✓
+            <Icon class="glyph-icon" name="check" />
           </div>
           <h3>Share created</h3>
           <p>{visibilityLabel(result.visibility)}</p>
@@ -176,7 +177,7 @@ export function ShareModal() {
           />
           {result.source_url && (
             <a class="share-source-link" href={result.source_url} target="_blank" rel="noreferrer">
-              View source ↗
+              View source <Icon class="glyph-icon" name="arrow-up-right" />
             </a>
           )}
           <div class="modal-actions share-success-actions">
