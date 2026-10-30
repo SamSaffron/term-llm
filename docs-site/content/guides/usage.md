@@ -320,5 +320,7 @@ Event types, in typical order:
 | `stats` | `duration_ms`, `llm_ms`, `tool_ms`, token counts, `tool_calls`, `llm_calls` |
 | `done` | `tokens` |
 
-The last two events are always `stats` then `done`, even on context cancellation
-or errors. `seq` starts at 0 and strictly increments.
+Once streaming begins, the last two events are `stats` then `done`, including
+on context cancellation or streaming errors. Startup or validation failures can
+exit without emitting any JSON events, so consumers must also check the process
+exit status and stderr. `seq` starts at 0 and strictly increments.
