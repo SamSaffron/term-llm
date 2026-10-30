@@ -419,6 +419,12 @@ term-llm serve web --auth none --host 127.0.0.1
 
 `--allow-no-auth` and `--auth none` are only valid for loopback use. Non-loopback listeners require authentication; use HTTPS and a stable token when exposing a server remotely.
 
+In no-auth mode, state-changing browser requests must come from the UI origin
+or an explicitly allowed `--cors-origin`. Configured `--public-url` and Hub
+origins also support proxies that replace the backend Host. A wildcard
+`--cors-origin '*'` also opts every origin into that authority. Local non-browser API clients remain
+supported; this browser check is not authentication for other local processes.
+
 The network listener also validates the HTTP `Host` before any route, including
 streams and public assets, to reject DNS rebinding. Loopback names/addresses and
 the configured bind hostname are accepted; wildcard listeners additionally accept
