@@ -22,7 +22,7 @@ it('offers read-only Check status and warning-confirmed Dismiss, never Retry or 
   const check = vi.spyOn(store, 'checkSendStatus').mockResolvedValue(undefined);
   store.endpoints.createResponse = vi.fn();
   store.endpoints.cancelResponse = vi.fn();
-  const confirm = vi.spyOn(window, 'confirm').mockReturnValueOnce(false).mockReturnValueOnce(true);
+  const confirm = vi.spyOn(window, 'confirm').mockReturnValue(false);
   const view = render(
     <StoreContext.Provider value={store}>
       <Composer />
@@ -36,10 +36,13 @@ it('offers read-only Check status and warning-confirmed Dismiss, never Retry or 
     expect(check).toHaveBeenCalledOnce();
     fireEvent.click(screen.getByRole('button', { name: 'Dismiss warning' }));
     expect(store.sendBlocked.value).toBe(true);
+    expect(screen.getByText(/dismissing does not cancel it/)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Keep warning' }));
+    expect(store.sendBlocked.value).toBe(true);
+    expect(screen.queryByRole('button', { name: 'Dismiss anyway' })).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'Dismiss warning' }));
-    expect(confirm).toHaveBeenLastCalledWith(
-      expect.stringContaining('dismissing does not cancel it'),
-    );
+    fireEvent.click(screen.getByRole('button', { name: 'Dismiss anyway' }));
+    expect(confirm).not.toHaveBeenCalled();
     expect(store.sendBlocked.value).toBe(false);
     expect(store.pendingIntents.value.s1[0].state).toBe('dismissed-unconfirmed');
     expect(store.prompt.value).toBe('');
@@ -121,9 +124,14 @@ it('exposes an ambiguous real new-chat send under its original local owner after
       blobRef: 'preserve-original-blob',
       uploadId: `upl_${'a'.repeat(43)}`,
     });
-    vi.spyOn(window, 'confirm').mockReturnValue(true);
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(false);
     fireEvent.click(screen.getByRole('button', { name: 'Dismiss warning' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Dismiss anyway' }));
+    expect(confirm).not.toHaveBeenCalled();
     expect(restored.pendingIntents.value[ownerId][0].state).toBe('dismissed-unconfirmed');
+    expect(
+      screen.queryByRole('region', { name: 'Unconfirmed new conversations' }),
+    ).not.toBeInTheDocument();
     expect(restored.endpoints.createResponse).not.toHaveBeenCalled();
     expect(restored.endpoints.cancelResponse).not.toHaveBeenCalled();
   } finally {

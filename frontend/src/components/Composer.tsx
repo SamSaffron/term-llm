@@ -323,25 +323,35 @@ function LocalUnconfirmedSends() {
 
 function UnconfirmedSendNotice({ ownerId }: { ownerId: string }) {
   const store = useStore();
+  const [dismissOwner, setDismissOwner] = useState<string | null>(null);
   return (
     <div role="status">
       Could not confirm whether this was sent. It may still be running.{' '}
-      <button type="button" onClick={() => void store.checkSendStatus()}>
+      <button type="button" class="btn" onClick={() => void store.checkSendStatus()}>
         Check status
       </button>{' '}
-      <button
-        type="button"
-        onClick={() => {
-          if (
-            confirm(
-              'This message may still be running; dismissing does not cancel it. Sending it again could duplicate the work. Dismiss this warning and unlock the composer?',
-            )
-          )
-            store.runEngine.dismissUnconfirmed(ownerId);
-        }}
-      >
-        Dismiss warning
-      </button>
+      {dismissOwner === ownerId ? (
+        <div role="group" aria-label="Confirm warning dismissal">
+          <p>
+            This message may still be running; dismissing does not cancel it. Sending it again could
+            duplicate the work.
+          </p>
+          <button type="button" class="btn" onClick={() => setDismissOwner(null)}>
+            Keep warning
+          </button>{' '}
+          <button
+            type="button"
+            class="btn"
+            onClick={() => store.runEngine.dismissUnconfirmed(ownerId)}
+          >
+            Dismiss anyway
+          </button>
+        </div>
+      ) : (
+        <button type="button" class="btn" onClick={() => setDismissOwner(ownerId)}>
+          Dismiss warning
+        </button>
+      )}
     </div>
   );
 }
