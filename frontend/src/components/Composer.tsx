@@ -1259,20 +1259,18 @@ function ConversationComposer() {
                 return;
               }
               const selected = completions[activeIndex];
+              // While the menu is open, return inserts the highlighted entry,
+              // even for a bare / or @. Only a fully typed slash name runs or
+              // sends as typed; Escape closes the menu to send the text as is.
               const exactSlash =
                 selected?.kind === 'slash' &&
                 (inlineSlash
                   ? `/${inlineSlash.query}`
                   : store.prompt.value.trim()
                 ).toLowerCase() === selected.value.toLowerCase();
-              // A bare token after prompt text is often just punctuation, so
-              // return sends it unless the user has started typing a name.
-              const bareToken =
-                selected?.kind === 'slash' ? inlineSlash?.query === '' : mention?.query === '';
               if (
                 selected &&
-                (event.key === 'Tab' ||
-                  (event.key === 'Enter' && !event.shiftKey && !exactSlash && !bareToken))
+                (event.key === 'Tab' || (event.key === 'Enter' && !event.shiftKey && !exactSlash))
               ) {
                 event.preventDefault();
                 choose(selected);

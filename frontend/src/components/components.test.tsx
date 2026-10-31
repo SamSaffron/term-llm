@@ -5902,7 +5902,7 @@ describe('Preact-owned chat surfaces', () => {
     ];
     store.invokeSkill = vi.fn(async () => undefined);
     store.send = vi.fn(async () => undefined);
-    const view = render(
+    render(
       <StoreContext.Provider value={store}>
         <Composer />
       </StoreContext.Provider>,
@@ -5918,21 +5918,45 @@ describe('Preact-owned chat surfaces', () => {
     await userEvent.type(input, 'this{Enter}');
     expect(store.send).toHaveBeenCalledOnce();
     expect(store.invokeSkill).not.toHaveBeenCalled();
-    view.unmount();
-
-    const bare = createStore();
-    bare.skills.value = store.skills.value;
-    bare.send = vi.fn(async () => undefined);
-    render(
-      <StoreContext.Provider value={bare}>
-        <Composer />
-      </StoreContext.Provider>,
-    );
-    await userEvent.type(screen.getByRole('textbox', { name: 'Message' }), 'this and /');
-    expect(screen.getByRole('option', { name: /review/ })).toBeInTheDocument();
-    await userEvent.keyboard('{Enter}');
-    expect(bare.send).toHaveBeenCalledOnce();
   });
+
+  it.each([
+    ['slash', 'this and /', ['/explain', '/review'], 'this and /review '],
+    ['mention', 'ask @', ['@jarvis', '@kit'], 'ask @kit '],
+  ])(
+    'inserts the highlighted entry on Enter for a bare %s token',
+    async (_kind, typed, options, completed) => {
+      const store = createStore({ agentNames: ['jarvis', 'kit'] });
+      store.skills.value = [
+        { name: 'review', description: 'Review', execution: 'main', source: 'local' },
+        { name: 'explain', description: 'Explain', execution: 'main', source: 'local' },
+      ];
+      store.send = vi.fn(async () => undefined);
+      pendingMentionSearch(store);
+      render(
+        <StoreContext.Provider value={store}>
+          <Composer />
+        </StoreContext.Provider>,
+      );
+      const input = screen.getByRole('textbox', { name: 'Message' });
+      await userEvent.type(input, typed);
+      expect(
+        within(screen.getByRole('listbox'))
+          .getAllByRole('option')
+          .map((option) => option.querySelector('strong')?.textContent),
+      ).toEqual(options);
+      await userEvent.keyboard('{ArrowDown}{Enter}');
+      expect(store.prompt.value).toBe(completed);
+      expect(store.send).not.toHaveBeenCalled();
+
+      // Escape closes the menu, so return sends the bare token as typed.
+      await userEvent.type(input, typed.slice(-1));
+      expect(screen.getByRole('listbox')).toBeInTheDocument();
+      await userEvent.keyboard('{Escape}{Enter}');
+      expect(store.send).toHaveBeenCalledOnce();
+      expect(store.prompt.value).toBe(`${completed}${typed.slice(-1)}`);
+    },
+  );
 
   it('keeps Back to Hub inside the persisted collapsible Agents section', async () => {
     const store = new AppStore({
