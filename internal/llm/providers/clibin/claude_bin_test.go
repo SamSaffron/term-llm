@@ -2235,3 +2235,77 @@ printf '%s\n' '{"type":"result","is_error":false,"result":"handover brief","usag
 		t.Fatalf("live provider mutated: session=%q messages=%d", live.sessionID, live.messagesSent)
 	}
 }
+
+func TestClaudeBinProvider_BuildCommandEnvIgnoresInteractiveOnlyShellEnv(t *testing.T) {
+	origGetEuid := getEuid
+	defer func() { getEuid = origGetEuid }()
+	getEuid = func() int { return 1000 }
+
+	// CLAUDE_CODE_SIMPLE skips OAuth ("Not logged in"), a shell effort level
+	// would override term-llm's, and a shell MCP cap would undo the raised one.
+	t.Setenv("CLAUDE_CODE_SIMPLE", "1")
+	t.Setenv("CLAUDE_CODE_EFFORT_LEVEL", "low")
+	t.Setenv("MAX_MCP_OUTPUT_TOKENS", "1000")
+	t.Setenv("ENABLE_TOOL_SEARCH", "true")
+
+	env := envSliceMap(NewClaudeBinProvider("opus", nil).buildCommandEnv(""))
+	for _, key := range []string{"CLAUDE_CODE_SIMPLE", "CLAUDE_CODE_EFFORT_LEVEL"} {
+		if got, ok := env[key]; ok {
+			t.Fatalf("inherited %s survived as %q", key, got)
+		}
+	}
+	if got := env["MAX_MCP_OUTPUT_TOKENS"]; got != claudeCodeDefaultEnv["MAX_MCP_OUTPUT_TOKENS"] {
+		t.Fatalf("MAX_MCP_OUTPUT_TOKENS = %q, want default %q", got, claudeCodeDefaultEnv["MAX_MCP_OUTPUT_TOKENS"])
+	}
+	if got := env["ENABLE_TOOL_SEARCH"]; got != "false" {
+		t.Fatalf("ENABLE_TOOL_SEARCH = %q, want forced false", got)
+	}
+}
+
+func TestClaudeBinProvider_BuildCommandEnvHonoursExplicitProviderEnv(t *testing.T) {
+	origGetEuid := getEuid
+	defer func() { getEuid = origGetEuid }()
+	getEuid = func() int { return 1000 }
+
+	t.Setenv("MAX_MCP_OUTPUT_TOKENS", "1000")
+	p := NewClaudeBinProvider("opus", map[string]string{
+		"CLAUDE_CODE_SIMPLE":       "1",
+		"CLAUDE_CODE_EFFORT_LEVEL": "high",
+		"MAX_MCP_OUTPUT_TOKENS":    "50000",
+	})
+	env := envSliceMap(p.buildCommandEnv(""))
+	want := map[string]string{
+		"CLAUDE_CODE_SIMPLE":       "1",
+		"CLAUDE_CODE_EFFORT_LEVEL": "high",
+		"MAX_MCP_OUTPUT_TOKENS":    "50000",
+	}
+	for key, value := range want {
+		if env[key] != value {
+			t.Fatalf("%s = %q, want configured %q", key, env[key], value)
+		}
+	}
+	if n := strings.Count(strings.Join(p.buildCommandEnv(""), "\n"), "MAX_MCP_OUTPUT_TOKENS="); n != 1 {
+		t.Fatalf("MAX_MCP_OUTPUT_TOKENS appears %d times, want 1", n)
+	}
+}
+
+func TestClaudeMCPToolSpecsPublishClaudeCodeHints(t *testing.T) {
+	specs := claudeMCPToolSpecs([]core.ToolSpec{
+		{Name: "shell", Schema: map[string]any{"type": "object"}},
+		{Name: "read_file", Schema: map[string]any{"type": "object"}},
+	})
+	if len(specs) != 2 {
+		t.Fatalf("specs = %d, want 2", len(specs))
+	}
+	for _, spec := range specs {
+		if spec.Meta["anthropic/alwaysLoad"] != true {
+			t.Fatalf("%s alwaysLoad = %#v", spec.Name, spec.Meta)
+		}
+		if spec.Meta["anthropic/maxResultSizeChars"] != claudeMCPMaxResultSizeChars {
+			t.Fatalf("%s maxResultSizeChars = %#v", spec.Name, spec.Meta)
+		}
+		if !spec.Parallelizable {
+			t.Fatalf("%s lost the shared parallel hint", spec.Name)
+		}
+	}
+}

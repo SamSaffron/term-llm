@@ -170,7 +170,7 @@ func (p *ClaudeBinProvider) buildModelListEnv() []string {
 	}
 	for _, e := range os.Environ() {
 		key, _, _ := strings.Cut(e, "=")
-		if _, ok := p.extraEnv[key]; ok || skip(key) {
+		if _, ok := p.extraEnv[key]; ok || skip(key) || ignoredInheritedClaudeCodeEnv[key] {
 			continue
 		}
 		env = append(env, e)

@@ -269,3 +269,11 @@ func TestMapModelToClaudeArg(t *testing.T) {
 		})
 	}
 }
+
+func TestClaudeBinModelListEnvIgnoresSimpleMode(t *testing.T) {
+	t.Setenv("CLAUDE_CODE_SIMPLE", "1")
+	env := envSliceMap(NewClaudeBinProvider("opus", nil).buildModelListEnv())
+	if got, ok := env["CLAUDE_CODE_SIMPLE"]; ok {
+		t.Fatalf("inherited CLAUDE_CODE_SIMPLE survived model listing as %q", got)
+	}
+}

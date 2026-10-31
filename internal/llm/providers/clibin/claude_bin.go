@@ -61,7 +61,38 @@ var forcedClaudeCodeIsolationEnv = map[string]string{
 	"CLAUDE_CODE_DISABLE_GIT_INSTRUCTIONS":     "1",
 	"CLAUDE_CODE_DISABLE_ADVISOR_TOOL":         "1",
 	"CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS":   "1",
+	// Tool search defers MCP tools until the model searches for them. Every
+	// term-llm tool is an MCP tool, so it must never hide the catalogue.
+	"ENABLE_TOOL_SEARCH": "false",
 }
+
+// ignoredInheritedClaudeCodeEnv lists shell variables aimed at interactive
+// Claude Code that silently break or override claude-bin. Values set
+// explicitly in the claude-bin provider env are still honoured.
+//   - CLAUDE_CODE_SIMPLE skips OAuth, so subscription logins report "Not
+//     logged in" even with CLAUDE_CODE_OAUTH_TOKEN set.
+//   - CLAUDE_CODE_EFFORT_LEVEL would override term-llm's effort selection.
+//   - MAX_MCP_OUTPUT_TOKENS would replace claudeCodeDefaultEnv's raised cap.
+var ignoredInheritedClaudeCodeEnv = map[string]bool{
+	"CLAUDE_CODE_SIMPLE":       true,
+	"CLAUDE_CODE_EFFORT_LEVEL": true,
+	"MAX_MCP_OUTPUT_TOKENS":    true,
+}
+
+// claudeCodeDefaultEnv is applied unless the provider env sets the key.
+// term-llm truncates tool output itself (tools.max_tool_output_chars), so
+// Claude Code's own MCP output cap must sit above it. When that cap trips,
+// Claude Code replaces the result with "saved to a file, read it with Read",
+// and claude-bin runs with Read disabled, so the model cannot recover.
+var claudeCodeDefaultEnv = map[string]string{
+	"MAX_MCP_OUTPUT_TOKENS": "200000",
+}
+
+// claudeMCPMaxResultSizeChars is published per tool as
+// _meta["anthropic/maxResultSizeChars"]. Claude Code otherwise persists any
+// result above ~50k characters to disk and shows the model a 2KB preview,
+// which claude-bin's model cannot read past without the built-in Read tool.
+const claudeMCPMaxResultSizeChars = 500_000
 
 // getEuid returns the effective user ID. Overridable in tests.
 var getEuid = os.Geteuid
@@ -570,7 +601,7 @@ func (p *ClaudeBinProvider) buildCommandEnv(effort string) []string {
 		if p.preferOAuth && key == "ANTHROPIC_API_KEY" {
 			continue
 		}
-		if effort != "" && key == "CLAUDE_CODE_EFFORT_LEVEL" {
+		if ignoredInheritedClaudeCodeEnv[key] {
 			continue
 		}
 		// Claude Code refuses bypassPermissions as root unless it sees an
@@ -608,6 +639,11 @@ func (p *ClaudeBinProvider) buildCommandEnv(effort string) []string {
 			continue
 		}
 		filtered = append(filtered, k+"="+v)
+	}
+	for k, v := range claudeCodeDefaultEnv {
+		if _, ok := p.extraEnv[k]; !ok {
+			filtered = append(filtered, k+"="+v)
+		}
 	}
 	if runningAsRoot && !envHasTruthy(filtered, "CLAUDE_CODE_BUBBLEWRAP") {
 		filtered = append(filtered, "IS_SANDBOX=1")
@@ -1509,7 +1545,7 @@ func (p *ClaudeBinProvider) CleanupTurn() {
 // Tool execution events are routed through p.currentEvents (set by getOrCreateMCPConfig).
 func (p *ClaudeBinProvider) createHTTPMCPConfig(ctx context.Context, tools []core.ToolSpec, debug bool) string {
 	// Convert llm.ToolSpec to mcphttp.ToolSpec
-	mcpTools := mcpToolSpecs(tools)
+	mcpTools := claudeMCPToolSpecs(tools)
 	if debug {
 		for _, tool := range tools {
 			runtimeoutput.Printf("[claude-bin] Registering tool: %s\n", tool.Name)
@@ -1577,6 +1613,20 @@ func (p *ClaudeBinProvider) createHTTPMCPConfig(ctx context.Context, tools []cor
 	p.mcpConfigPath = configPath
 
 	return configPath
+}
+
+// claudeMCPToolSpecs adds Claude Code's per-tool hints to the shared bridge
+// specs: never defer the tool behind tool search, and let results up to
+// claudeMCPMaxResultSizeChars through inline.
+func claudeMCPToolSpecs(tools []core.ToolSpec) []mcphttp.ToolSpec {
+	specs := mcpToolSpecs(tools)
+	for i := range specs {
+		specs[i].Meta = map[string]any{
+			"anthropic/alwaysLoad":         true,
+			"anthropic/maxResultSizeChars": claudeMCPMaxResultSizeChars,
+		}
+	}
+	return specs
 }
 
 // extractSystemPrompt joins all RoleSystem message parts into a single string.
