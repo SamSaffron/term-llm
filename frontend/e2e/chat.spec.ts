@@ -1074,6 +1074,117 @@ test('lightbox iPhone controls fit the screen and copying writes image bytes wit
   await screenshot('copy-error');
 });
 
+test('unconfirmed send warnings fit the iPhone screen and confirm dismissal in place', async ({
+  page,
+  isMobile,
+}) => {
+  test.skip(!isMobile, 'Touch layout of the composer warnings');
+  const long = [
+    'How is disk perf now? Earlier the build box was crawling and the Go cache kept missing.',
+    'Compare against last week and tell me which NVMe slot is slow before rebooting anything.',
+    `/var/lib/docker/overlay2/${'9f3c7a2b4e5d6f70'.repeat(6)}/merged`,
+  ].join('\n\n');
+  await page.addInitScript((content) => {
+    const intent = (owner: string, id: string, text: string, attachments?: object[]) =>
+      localStorage.setItem(
+        `term_llm_pending_intent:${owner}:${id}`,
+        JSON.stringify({
+          id: `pending-${id}`,
+          clientMessageId: id,
+          content: text,
+          created: Date.now(),
+          state: 'unconfirmed',
+          attachments,
+        }),
+      );
+    intent('draft_lost', 'client-lost', content, [
+      { id: 'a1', name: `${'iostat-and-zpool-side-by-side-'.repeat(3)}.png`, type: 'image/png' },
+      { id: 'a2', name: 'fio-randread-4k-qd32-results.csv', type: 'text/csv' },
+      { id: 'a3', name: 'notes.txt', type: 'text/plain' },
+    ]);
+    intent('s1', 'client-active', 'Is the pool heated in October?');
+  }, long);
+  const requests = await open(page, 'chat/s1');
+  const region = page.getByRole('region', { name: 'Unconfirmed new conversations' });
+  await expect(region).toBeVisible();
+  const assertFits = async (state: string) => {
+    const layout = await page.evaluate(() => {
+      const rect = (element: Element) => element.getBoundingClientRect();
+      const actions = /^(Check status|Dismiss warning|Keep warning|Dismiss anyway)$/;
+      return {
+        width: innerWidth,
+        height: innerHeight,
+        overflow: document.documentElement.scrollWidth - innerWidth,
+        prompt: rect(document.getElementById('promptInput')!).bottom,
+        warnings: rect(document.querySelector('[aria-label="Unconfirmed new conversations"]')!)
+          .height,
+        buttons: [...document.querySelectorAll('button')]
+          .filter((button) => actions.test(button.textContent || ''))
+          .map((button) => {
+            const box = rect(button);
+            const hit = document.elementFromPoint(
+              box.left + box.width / 2,
+              box.top + box.height / 2,
+            );
+            return {
+              name: button.textContent,
+              left: box.left,
+              right: box.right,
+              height: box.height,
+              hittable: Boolean(hit && button.contains(hit)),
+              selectable: getComputedStyle(button).userSelect !== 'none',
+            };
+          }),
+      };
+    });
+    expect(layout.overflow, state).toBeLessThanOrEqual(1);
+    expect(layout.prompt, state).toBeLessThanOrEqual(layout.height);
+    expect(layout.warnings, state).toBeLessThanOrEqual(layout.height * 0.45 + 1);
+    for (const button of layout.buttons) {
+      const label = `${state}: ${button.name}`;
+      expect(button.height, label).toBeGreaterThanOrEqual(44);
+      expect(button.left, label).toBeGreaterThanOrEqual(0);
+      expect(button.right, label).toBeLessThanOrEqual(layout.width);
+      expect(button.hittable, label).toBe(true);
+      expect(button.selectable, label).toBe(false);
+    }
+  };
+  await assertFits('initial');
+  const lost = page.locator('[data-pending-owner="draft_lost"]');
+  const active = page.locator('[data-pending-owner="s1"]');
+  await expect(lost.getByText('+1 more')).toBeVisible();
+  await expect(active).toBeVisible();
+
+  const opener = lost.getByRole('button', { name: 'Dismiss warning' });
+  const tapped = (await opener.boundingBox())!;
+  await opener.tap();
+  const keep = lost.getByRole('button', { name: 'Keep warning' });
+  await expect(keep).toBeFocused();
+  await assertFits('confirming');
+  // The safe choice takes the opener's place, so a repeated tap keeps the warning.
+  const x = tapped.x + tapped.width / 2;
+  const y = tapped.y + tapped.height / 2;
+  const kept = (await keep.boundingBox())!;
+  expect(x).toBeGreaterThanOrEqual(kept.x);
+  expect(x).toBeLessThanOrEqual(kept.x + kept.width);
+  expect(y).toBeGreaterThanOrEqual(kept.y);
+  expect(y).toBeLessThanOrEqual(kept.y + kept.height);
+  await page.touchscreen.tap(x, y);
+  await expect(opener).toBeFocused();
+  await opener.tap();
+  await page.keyboard.press('Escape');
+  await expect(opener).toBeFocused();
+  await opener.tap();
+  await lost.getByRole('button', { name: 'Dismiss anyway' }).tap();
+  await expect(lost).toHaveCount(0);
+  // Dismissal never raises the on-screen keyboard; the open chat's warning stays.
+  await expect(page.getByRole('textbox', { name: 'Message', exact: true })).not.toBeFocused();
+  await expect(active.getByRole('status')).toHaveText(/Could not confirm whether this was sent/);
+  expect(
+    requests.filter((request) => request.method !== 'GET' && request.url.includes('/responses')),
+  ).toEqual([]);
+});
+
 test('production build does not expose the browser-test bridge', async ({ page }) => {
   await open(page, '?test_bridge=1');
   expect(await page.evaluate(() => Boolean(window.__TERM_LLM_TEST__))).toBe(false);

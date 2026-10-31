@@ -820,3 +820,226 @@
   outline: 1px solid currentcolor;
   outline-offset: -1px;
 }
+
+/* Unconfirmed sends. A send whose outcome is unknown may still be running, so
+   its notice and the dismissal acknowledgement share one card above the input:
+   confirming swaps the actions in place instead of reflowing the composer. */
+.unconfirmed-sends {
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
+  margin-bottom: 0.45rem;
+
+  /* Follows the visual viewport, so an open keyboard keeps the input reachable. */
+  max-height: max(10rem, calc(var(--app-height) * 0.45));
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.unconfirmed-send {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem 0.75rem;
+  margin: 0 0.3rem 0.45rem;
+  padding: 0.6rem 0.6rem 0.6rem 0.75rem;
+  border: 1px solid color-mix(in srgb, var(--accent-amber) 40%, var(--border));
+  border-radius: 14px;
+  background: color-mix(in srgb, var(--accent-amber) 7%, var(--surface));
+  color: var(--text);
+  font-size: 0.875rem;
+  line-height: 1.4;
+}
+
+.unconfirmed-sends > .unconfirmed-send {
+  flex: none;
+  margin-bottom: 0;
+}
+
+/* Beside a taller preview, actions line up with the copy they act on. */
+.unconfirmed-send.has-preview {
+  align-items: flex-end;
+}
+
+.unconfirmed-send.is-confirming {
+  border-color: color-mix(in srgb, var(--danger) 45%, var(--border));
+}
+
+.unconfirmed-send-summary {
+  display: flex;
+  flex: 1 1 18rem;
+  align-items: flex-start;
+  gap: 0.55rem;
+  min-width: 0;
+}
+
+/* One copy line tall, so the mark stays level with the first line. */
+.unconfirmed-send-mark {
+  flex: none;
+  width: 1rem;
+  height: 1.4em;
+  color: var(--accent-amber);
+}
+
+.unconfirmed-send.is-confirming .unconfirmed-send-mark {
+  color: var(--danger);
+}
+
+.unconfirmed-send-content {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: 0.3rem;
+  min-width: 0;
+}
+
+.unconfirmed-send-title {
+  font-weight: 650;
+}
+
+.unconfirmed-send-copy {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+/* The only copy of a new conversation's message: bounded, but still scrollable
+   and selectable. A partly visible last line shows there is more. */
+.unconfirmed-send-preview {
+  max-height: calc(1.4em * 3.5);
+  margin: 0;
+  padding-inline-start: 0.6rem;
+  border-inline-start: 3px solid color-mix(in srgb, var(--accent-amber) 45%, var(--border));
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
+.unconfirmed-send-attachments {
+  display: flex;
+  gap: 0.35rem;
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  overflow: hidden;
+  list-style: none;
+}
+
+.unconfirmed-send-attachment {
+  display: inline-flex;
+  flex: 0 1 auto;
+  align-items: center;
+  gap: 0.3rem;
+  min-width: 0;
+  padding: 0.15rem 0.55rem;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--surface);
+  color: var(--text-muted);
+  font-size: 0.78rem;
+}
+
+.unconfirmed-send-attachment.is-count {
+  flex: none;
+}
+
+.unconfirmed-send-attachment svg {
+  flex: none;
+  width: 0.9rem;
+  height: 0.9rem;
+}
+
+.unconfirmed-send-attachment span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.unconfirmed-send-actions {
+  display: flex;
+  flex: none;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 0.4rem;
+  margin-inline-start: auto;
+}
+
+/* Scoped so these win over the generic .btn rules loaded later (modals.css).
+   Labels are not selectable, so a long press or quick second tap on iOS does
+   not start a text selection instead of pressing the button. */
+.unconfirmed-send .unconfirmed-send-actions .btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.4rem;
+  min-height: 36px;
+  padding: 0.35rem 0.8rem;
+  border-radius: 8px;
+  font-size: 0.875rem;
+  line-height: 1.2;
+  white-space: nowrap;
+  touch-action: manipulation;
+  -webkit-touch-callout: none;
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+.unconfirmed-send .unconfirmed-send-actions .btn:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.unconfirmed-send .unconfirmed-send-actions .btn.unconfirmed-send-danger {
+  border-color: color-mix(in srgb, var(--danger) 45%, var(--border));
+  background: var(--surface);
+  color: var(--danger);
+}
+
+.unconfirmed-send .unconfirmed-send-actions .btn.unconfirmed-send-danger:hover:not(:disabled) {
+  border-color: var(--danger);
+  background: color-mix(in srgb, var(--danger) 8%, var(--surface));
+}
+
+.unconfirmed-send-check[aria-busy='true']::before {
+  content: '';
+  width: 0.8rem;
+  height: 0.8rem;
+  border: 2px solid var(--border-strong);
+  border-top-color: var(--text);
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .unconfirmed-send-check[aria-busy='true']::before {
+    animation: none;
+  }
+}
+
+@media (width <= 700px) {
+  .unconfirmed-send {
+    margin: 0 0.15rem 0.4rem;
+    padding: 0.55rem 0.5rem 0.5rem 0.65rem;
+    border-radius: 16px;
+  }
+
+  .unconfirmed-send-preview {
+    max-height: calc(1.4em * 2.5);
+  }
+}
+
+@media (width <= 700px), (hover: none), (pointer: coarse) {
+  .unconfirmed-send .unconfirmed-send-actions .btn {
+    min-height: 44px;
+  }
+}
+
+/* While typing on a touch screen the keyboard takes most of the visual
+   viewport: other conversations' warnings shrink to a scrollable strip so the
+   message box stays in view. */
+@media (hover: none) and (pointer: coarse) {
+  .composer-inner:has(.prompt:focus) .unconfirmed-sends {
+    max-height: max(4.5rem, calc(var(--app-height) * 0.2));
+  }
+}

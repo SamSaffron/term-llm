@@ -1,10 +1,178 @@
-import { fireEvent, render, screen } from '@testing-library/preact';
+import { act, fireEvent, render, screen, within } from '@testing-library/preact';
 import { expect, it, vi } from 'vitest';
 import { StoreContext } from '../app/context';
 import { AppStore } from '../stores/app-store';
 import { testConfig, testSession } from '../stores/store-test-fixtures';
 import { Composer } from './Composer';
 import { DEFAULT_ATTACHMENT_POLICY } from '../domain/attachments';
+
+const unconfirmed = (clientMessageId: string, content: string) => ({
+  id: `pending-${clientMessageId}`,
+  clientMessageId,
+  content,
+  created: Date.now(),
+  state: 'unconfirmed',
+});
+
+const activeUnconfirmedStore = () => {
+  const store = new AppStore(testConfig);
+  store.sessions.value = [testSession()];
+  store.activeSessionId.value = 's1';
+  store.draftActive.value = false;
+  store.startupDone.value = true;
+  store.runEngine.trackIntent('s1', unconfirmed('client-one', 'possibly sent'));
+  store.endpoints.createResponse = vi.fn();
+  store.endpoints.cancelResponse = vi.fn();
+  return store;
+};
+
+it.each([
+  ['keyboard', false],
+  ['touch-only', true],
+])(
+  'confirms dismissal in place with %s focus handling and never resends or cancels',
+  async (_input, touchOnly) => {
+    vi.spyOn(window, 'matchMedia').mockImplementation(
+      (query: string) =>
+        ({
+          matches: touchOnly && query === '(hover: none) and (pointer: coarse)',
+          addEventListener: vi.fn(),
+          removeEventListener: vi.fn(),
+        }) as unknown as MediaQueryList,
+    );
+    const store = activeUnconfirmedStore();
+    let finishCheck!: () => void;
+    const check = vi.spyOn(store, 'checkSendStatus').mockReturnValue(
+      new Promise<void>((resolve) => {
+        finishCheck = resolve;
+      }),
+    );
+    // Escape must not also reach page-level handlers such as panel dismissal.
+    const pageKeys = vi.fn();
+    window.addEventListener('keydown', pageKeys);
+    const view = render(
+      <StoreContext.Provider value={store}>
+        <Composer />
+      </StoreContext.Provider>,
+    );
+    try {
+      const checkStatus = screen.getByRole('button', { name: 'Check status' });
+      fireEvent.click(checkStatus);
+      fireEvent.click(checkStatus);
+      expect(checkStatus).toHaveAttribute('aria-busy', 'true');
+      expect(check).toHaveBeenCalledOnce();
+      await act(async () => finishCheck());
+      expect(checkStatus).not.toHaveAttribute('aria-busy');
+
+      fireEvent.click(screen.getByRole('button', { name: 'Dismiss warning' }));
+      const confirmation = screen.getByRole('group', { name: 'Confirm warning dismissal' });
+      expect(confirmation).toHaveAccessibleDescription(/dismissing does not cancel it/);
+      const keep = within(confirmation).getByRole('button', { name: 'Keep warning' });
+      expect(keep).toHaveFocus();
+      fireEvent.keyDown(keep, { key: 'Escape' });
+      expect(pageKeys).not.toHaveBeenCalled();
+      expect(screen.queryByRole('group', { name: 'Confirm warning dismissal' })).toBeNull();
+      expect(screen.getByRole('button', { name: 'Dismiss warning' })).toHaveFocus();
+      expect(store.sendBlocked.value).toBe(true);
+
+      fireEvent.click(screen.getByRole('button', { name: 'Dismiss warning' }));
+      fireEvent.click(screen.getByRole('button', { name: 'Keep warning' }));
+      expect(screen.getByRole('button', { name: 'Dismiss warning' })).toHaveFocus();
+      expect(store.sendBlocked.value).toBe(true);
+
+      fireEvent.click(screen.getByRole('button', { name: 'Dismiss warning' }));
+      fireEvent.click(screen.getByRole('button', { name: 'Dismiss anyway' }));
+      expect(store.sendBlocked.value).toBe(false);
+      expect(screen.queryByText(/Could not confirm whether this was sent/)).toBeNull();
+      // Unlocking hands focus to the message box, except where that would
+      // raise the on-screen keyboard.
+      const message = screen.getByRole('textbox', { name: 'Message' });
+      if (touchOnly) expect(message).not.toHaveFocus();
+      else expect(message).toHaveFocus();
+      expect(store.prompt.value).toBe('');
+      expect(store.endpoints.createResponse).not.toHaveBeenCalled();
+      expect(store.endpoints.cancelResponse).not.toHaveBeenCalled();
+    } finally {
+      window.removeEventListener('keydown', pageKeys);
+      view.unmount();
+      store.dispose();
+    }
+  },
+);
+
+it("never carries an open dismissal acknowledgement to another conversation's warning", () => {
+  const store = activeUnconfirmedStore();
+  store.sessions.value = [testSession(), testSession({ id: 's2', title: 'Other' })];
+  store.runEngine.trackIntent('s2', unconfirmed('client-two', 'also possibly sent'));
+  const view = render(
+    <StoreContext.Provider value={store}>
+      <Composer />
+    </StoreContext.Provider>,
+  );
+  try {
+    fireEvent.click(screen.getByRole('button', { name: 'Dismiss warning' }));
+    expect(screen.getByRole('button', { name: 'Keep warning' })).toHaveFocus();
+    // Focus has moved on (say, to the chat list) before the switch lands.
+    const elsewhere = screen.getByRole('textbox', { name: 'Message' });
+    elsewhere.focus();
+    act(() => {
+      store.activeSessionId.value = 's2';
+    });
+    expect(screen.queryByRole('group', { name: 'Confirm warning dismissal' })).toBeNull();
+    expect(elsewhere).toHaveFocus();
+    act(() => {
+      store.activeSessionId.value = 's1';
+    });
+    expect(screen.queryByRole('group', { name: 'Confirm warning dismissal' })).toBeNull();
+    expect(store.pendingIntents.value.s1[0].state).toBe('unconfirmed');
+    expect(store.pendingIntents.value.s2[0].state).toBe('unconfirmed');
+  } finally {
+    view.unmount();
+    store.dispose();
+  }
+});
+
+it('keeps local new-chat warnings, one per owner, in the composer and in a delegated child view', () => {
+  const store = activeUnconfirmedStore();
+  store.runEngine.trackIntent('draft_lost', unconfirmed('client-a', 'first part'));
+  store.runEngine.trackIntent('draft_lost', unconfirmed('client-b', 'second part'));
+  const view = render(
+    <StoreContext.Provider value={store}>
+      <Composer />
+    </StoreContext.Provider>,
+  );
+  try {
+    const region = screen.getByRole('region', { name: 'Unconfirmed new conversations' });
+    expect(region.closest('.composer-inner')).not.toBeNull();
+    expect(within(region).getAllByRole('button', { name: 'Dismiss warning' })).toHaveLength(1);
+    expect(within(region).getByText('first part')).toBeInTheDocument();
+    expect(within(region).getByText('second part')).toBeInTheDocument();
+
+    const child = {
+      ...testSession({ id: 'child-1', title: 'Research task' }),
+      parentSessionId: 's1',
+      delegated: true,
+      activeRun: false,
+    };
+    act(() => {
+      store.sessionStore.transientSession.value = child;
+      store.activeSessionId.value = child.id;
+    });
+    expect(screen.queryByRole('textbox', { name: 'Message' })).toBeNull();
+    const standalone = screen.getByRole('region', { name: 'Unconfirmed new conversations' });
+    expect(within(standalone).getByText('first part')).toBeInTheDocument();
+    fireEvent.click(within(standalone).getByRole('button', { name: 'Dismiss warning' }));
+    fireEvent.click(within(standalone).getByRole('button', { name: 'Dismiss anyway' }));
+    expect(store.pendingIntents.value.draft_lost.map((intent) => intent.state)).toEqual([
+      'dismissed-unconfirmed',
+      'dismissed-unconfirmed',
+    ]);
+    expect(view.container).toBeEmptyDOMElement();
+  } finally {
+    view.unmount();
+    store.dispose();
+  }
+});
 
 it('offers read-only Check status and warning-confirmed Dismiss, never Retry or a progress spinner for a paused send', async () => {
   const store = new AppStore(testConfig);

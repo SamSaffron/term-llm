@@ -21,6 +21,7 @@ import type { LiveStore } from '../stores/live-store';
 import { Icon } from './Icon';
 import { useMenuKeyboard } from './Menu';
 import { requestTranscriptScrollToTail } from './transcript-scroll';
+import { LocalUnconfirmedSends, UnconfirmedSendNotice } from './UnconfirmedSends';
 
 function resizePrompt(element: HTMLTextAreaElement | null): void {
   if (!element) return;
@@ -281,78 +282,10 @@ export function Composer() {
   const store = useStore();
   const session = store.activeSession.value;
   const delegated = Boolean(session?.delegated || session?.parentSessionId);
-  return (
-    <>
-      <LocalUnconfirmedSends />
-      {delegated && !store.runActive.value ? null : <ConversationComposer />}
-    </>
-  );
-}
-
-/** New-chat runtime IDs have no server/sidebar owner after a reload. */
-function LocalUnconfirmedSends() {
-  const store = useStore();
-  const active = store.activeSessionId.value;
-  const pending = Object.entries(store.pendingIntents.value).flatMap(([ownerId, intents]) =>
-    ownerId.startsWith('draft_') && ownerId !== active
-      ? intents
-          .filter((intent) => intent.state === 'unconfirmed')
-          .map((intent) => ({ ownerId, intent }))
-      : [],
-  );
-  if (!pending.length) return null;
-  return (
-    <section aria-label="Unconfirmed new conversations">
-      {pending.map(({ ownerId, intent }) => (
-        <div key={intent.clientMessageId} data-pending-owner={ownerId}>
-          <strong>Unconfirmed new conversation</strong>
-          {intent.content && <p>{intent.content}</p>}
-          {Boolean(intent.attachments?.length) && (
-            <ul aria-label="Unconfirmed attachments">
-              {intent.attachments!.map((attachment, index) => (
-                <li key={attachment.id || index}>{attachment.name}</li>
-              ))}
-            </ul>
-          )}
-          <UnconfirmedSendNotice ownerId={ownerId} />
-        </div>
-      ))}
-    </section>
-  );
-}
-
-function UnconfirmedSendNotice({ ownerId }: { ownerId: string }) {
-  const store = useStore();
-  const [dismissOwner, setDismissOwner] = useState<string | null>(null);
-  return (
-    <div role="status">
-      Could not confirm whether this was sent. It may still be running.{' '}
-      <button type="button" class="btn" onClick={() => void store.checkSendStatus()}>
-        Check status
-      </button>{' '}
-      {dismissOwner === ownerId ? (
-        <div role="group" aria-label="Confirm warning dismissal">
-          <p>
-            This message may still be running; dismissing does not cancel it. Sending it again could
-            duplicate the work.
-          </p>
-          <button type="button" class="btn" onClick={() => setDismissOwner(null)}>
-            Keep warning
-          </button>{' '}
-          <button
-            type="button"
-            class="btn"
-            onClick={() => store.runEngine.dismissUnconfirmed(ownerId)}
-          >
-            Dismiss anyway
-          </button>
-        </div>
-      ) : (
-        <button type="button" class="btn" onClick={() => setDismissOwner(ownerId)}>
-          Dismiss warning
-        </button>
-      )}
-    </div>
+  return delegated && !store.runActive.value ? (
+    <LocalUnconfirmedSends standalone />
+  ) : (
+    <ConversationComposer />
   );
 }
 
@@ -910,6 +843,7 @@ function ConversationComposer() {
         </div>
       )}
       <div class="composer-inner">
+        <LocalUnconfirmedSends />
         {compacting && (
           <div
             class="interaction-attention-banner compaction-status"
