@@ -187,7 +187,8 @@ func TestClaudeBinProvider_CleanupTurn_DoesNotStopMCPServer(t *testing.T) {
 
 func TestClaudeBinProvider_prepareClaudeCommand_ConfiguresProcessGroupWaitDelayAndWorkingDir(t *testing.T) {
 	provider := NewClaudeBinProvider("sonnet", nil)
-	workingDir := t.TempDir()
+	// Production code cleans paths; TMPDIR may end in "/" (macOS).
+	workingDir := filepath.Clean(t.TempDir())
 
 	cmd, stdin, cleanup, err := provider.prepareClaudeCommand(context.Background(), []string{"--version"}, "", workingDir)
 	if err != nil {

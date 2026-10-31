@@ -421,7 +421,8 @@ func TestCLIProvidersUseSharedCommandConstructor(t *testing.T) {
 }
 
 func TestNewCLICommandAppliesWorkingDirectoryPolicy(t *testing.T) {
-	workingDir := t.TempDir()
+	// Production code cleans paths; TMPDIR may end in "/" (macOS).
+	workingDir := filepath.Clean(t.TempDir())
 	cwd, err := os.Getwd()
 	if err != nil {
 		t.Fatalf("Getwd: %v", err)

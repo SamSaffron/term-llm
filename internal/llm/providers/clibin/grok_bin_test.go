@@ -17,7 +17,8 @@ import (
 
 func TestGrokBinProviderPrepareCommandUsesWorkingDir(t *testing.T) {
 	provider := NewGrokBinProvider("grok-4.5", nil)
-	workingDir := t.TempDir()
+	// Production code cleans paths; TMPDIR may end in "/" (macOS).
+	workingDir := filepath.Clean(t.TempDir())
 
 	cmd, cleanup, err := provider.prepareGrokCommand(context.Background(), []string{"--version"}, workingDir)
 	if err != nil {
@@ -43,7 +44,8 @@ func TestGrokBinProviderStreamSeparatesProcessAndCLICWD(t *testing.T) {
 	}
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 
-	workingDir := t.TempDir()
+	// Production code cleans paths; TMPDIR may end in "/" (macOS).
+	workingDir := filepath.Clean(t.TempDir())
 	provider := NewGrokBinProvider("grok-4.5", nil)
 	provider.grokHome = t.TempDir()
 	args, _, err := provider.buildArgs(core.Request{Messages: []core.Message{core.UserText("hello")}}, filepath.Join(provider.grokHome, "prompt.json"))
