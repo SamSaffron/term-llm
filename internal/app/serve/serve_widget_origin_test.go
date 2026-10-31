@@ -8,16 +8,19 @@ import (
 )
 
 // Widget forms/fetches need cookie authentication, unlike ordinary API writes.
-// A different port (or sibling host) is a different origin but can still send
-// SameSite=Strict cookies. Model a widget mutation without running local code.
+// A sibling host can send SameSite=Strict cookies but cannot read the host-only
+// cookie. Different-port cases test the guard, not port isolation of cookies.
 func TestWidgetCookieMutationBoundary(t *testing.T) {
 	for _, method := range []string{http.MethodPost, http.MethodPut, http.MethodPatch, http.MethodDelete} {
 		t.Run(method, func(t *testing.T) {
 			for _, tc := range []struct {
-				name, origin, site, auth, apiKey, publicURL, hubURL string
-				cors                                                []string
-				want                                                bool
+				name, origin, site, auth, apiKey, publicURL, hubURL, target string
+				cors                                                        []string
+				want                                                        bool
 			}{
+				{name: "sibling host", target: "https://chat.example.test", origin: "https://untrusted.example.test", site: "same-site"},
+				{name: "sibling host without metadata", target: "https://chat.example.test", origin: "https://untrusted.example.test"},
+				{name: "sandboxed origin", origin: "null", site: "cross-site"},
 				{name: "same origin", origin: "http://localhost:8080", site: "same-origin", want: true},
 				{name: "same site different port", origin: "http://localhost:8997", site: "same-site"},
 				{name: "same site without metadata", origin: "http://localhost:8997"},
@@ -27,7 +30,7 @@ func TestWidgetCookieMutationBoundary(t *testing.T) {
 				{name: "non browser", want: true},
 				{name: "configured public URL", origin: "https://chat.example", publicURL: "https://chat.example/ui", want: true},
 				{name: "configured hub URL", origin: "https://hub.example", hubURL: "https://hub.example/hub", want: true},
-				{name: "hub metadata", origin: "https://hub.example", site: "same-origin", want: true},
+				{name: "same-origin proxy metadata (synthetic cookie client)", origin: "https://hub.example", site: "same-origin", want: true},
 				{name: "explicit origin", origin: "https://app.example", site: "cross-site", cors: []string{"https://app.example"}, want: true},
 				{name: "explicit wildcard", origin: "https://app.example", site: "cross-site", cors: []string{"*"}, want: true},
 				{name: "explicit bearer", origin: "http://localhost:8997", site: "same-site", auth: "Bearer synthetic-token", want: true},
@@ -38,7 +41,11 @@ func TestWidgetCookieMutationBoundary(t *testing.T) {
 					srv := &serveServer{cfg: serveServerConfig{requireAuth: true, token: "synthetic-token", corsOrigins: tc.cors, publicURL: tc.publicURL, hubURL: tc.hubURL}}
 					mutations := 0
 					h := srv.auth(func(w http.ResponseWriter, r *http.Request) { mutations++; w.WriteHeader(http.StatusNoContent) })
-					r := httptest.NewRequest(method, "http://localhost:8080/widgets/example/action", strings.NewReader("action=synthetic"))
+					target := tc.target
+					if target == "" {
+						target = "http://localhost:8080"
+					}
+					r := httptest.NewRequest(method, target+"/widgets/example/action", strings.NewReader("action=synthetic"))
 					r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 					r.Header.Set("Origin", tc.origin)
 					r.Header.Set("Sec-Fetch-Site", tc.site)
@@ -67,7 +74,7 @@ func TestWidgetCookieRouteBoundary(t *testing.T) {
 	srv := &serveServer{cfg: serveServerConfig{requireAuth: true, token: "synthetic-token"}}
 	mux := http.NewServeMux()
 	srv.registerWidgetRoutes(mux)
-	for method, want := range map[string]int{http.MethodGet: http.StatusTemporaryRedirect, http.MethodPost: http.StatusUnauthorized} {
+	for method, want := range map[string]int{http.MethodGet: http.StatusTemporaryRedirect, http.MethodHead: http.StatusTemporaryRedirect, http.MethodPost: http.StatusUnauthorized} {
 		r := httptest.NewRequest(method, "http://localhost:8080/widgets/example", nil)
 		r.AddCookie(&http.Cookie{Name: "term_llm_token", Value: "synthetic-token"})
 		r.Header.Set("Origin", "http://localhost:8997")
