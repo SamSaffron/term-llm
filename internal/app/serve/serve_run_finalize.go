@@ -32,36 +32,46 @@ func (p *serveRunPersistence) reconcileFailure(ctx, runCtx context.Context, runE
 	// Persist their resume cursor even for the initial, non-stateful child run.
 	defer p.rt.persistProviderState(ctx, p.sessionID)
 	p.mu.Lock()
+	defer p.mu.Unlock()
 	if len(p.produced) == 0 && resultText != "" {
 		p.produced = append(p.produced, tagResponseRunMessage(runCtx, core.AssistantText(resultText), 0))
 	}
-	hasProduced := len(p.produced) > 0
-	p.mu.Unlock()
-	if !hasProduced {
-		if p.replaceHistory && !p.initialPersisted {
-			restoreReplaceHistory()
-		} else if p.stateful && p.initialPersisted {
-			// The user input was committed even though the provider produced no
-			// reply. Keep warm runtimes aligned with cold hydration so a retry or
-			// model swap cannot lose that failed turn from its context.
-			p.rt.history = p.snapshot()
-			p.rt.historyPersisted = true
-		}
+	if len(p.produced) == 0 && p.replaceHistory && !p.initialPersisted {
+		restoreReplaceHistory()
 		return
 	}
 	deferCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
 	defer cancel()
-	if p.appendOnlyPersisted {
-		p.mu.Lock()
-		p.updateStateAndAppendLocked(deferCtx)
-		caughtUp := p.appendOnlyCaughtUpLocked()
-		p.mu.Unlock()
-		if caughtUp {
-			p.rt.historyPersisted = true
+	if len(p.produced) > 0 {
+		p.persistFailureOutputLocked(deferCtx)
+	}
+	p.persistPlatformInjectionLocked()
+	if p.stateful {
+		// Durable callbacks may have advanced beyond this run's snapshot. Use
+		// the stored active context, or leave hydration pending if loading fails.
+		p.rt.history = nil
+		p.rt.historyPersisted = false
+		p.rt.restorePersistedHistory(deferCtx, p.rt.sessionMeta)
+	}
+}
+
+// persistFailureOutputLocked retries only uncommitted input/output and a pending
+// assistant upsert. A failed run never owns a transcript replacement: even a
+// seemingly complete snapshot can be stale after incremental writes or a swap.
+func (p *serveRunPersistence) persistFailureOutputLocked(ctx context.Context) {
+	if !p.initialPersisted && !p.appendInitialLocked(ctx) {
+		return
+	}
+	if (p.assistantSnapshotDirty || p.assistantSnapshotNeedsReconcile) && p.pendingAssistantIdx >= 0 && p.pendingAssistantIdx < len(p.produced) {
+		p.upsertAssistantLocked(ctx, p.produced[p.pendingAssistantIdx], true)
+		if p.assistantSnapshotDirty {
 			return
 		}
 	}
-	p.persistProducedSnapshot(deferCtx)
+	if p.lastAppendedIdx < len(p.produced) {
+		result := p.rt.appendMessagesDetailed(ctx, p.sessionID, p.produced[p.lastAppendedIdx:], p.turnIndex)
+		p.lastAppendedIdx += result.Written
+	}
 }
 
 // finalizeSuccess reconciles the successful transcript and accounting after the

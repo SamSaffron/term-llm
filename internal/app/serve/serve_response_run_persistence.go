@@ -11,6 +11,7 @@ import (
 
 	"github.com/samsaffron/term-llm/internal/llm/core"
 	"github.com/samsaffron/term-llm/internal/session"
+	transcriptstore "github.com/samsaffron/term-llm/internal/session/transcript"
 )
 
 func (r *responseRun) appendEvent(event string, payload map[string]any) error {
@@ -19,49 +20,12 @@ func (r *responseRun) appendEvent(event string, payload map[string]any) error {
 	return r.appendEventLocked(event, payload, false)
 }
 
-func responseRunOwnedOutputKeys(runID string, messages []core.Message) []string {
-	keys := make([]string, 0, len(messages))
-	for _, msg := range messages {
-		if msg.ResponseID != runID {
-			continue
-		}
-		switch msg.Role {
-		case core.RoleAssistant:
-			keys = append(keys, fmt.Sprintf("assistant:%d", msg.AssistantSegmentOrdinal))
-		case core.RoleTool:
-			callID := ""
-			for _, part := range msg.Parts {
-				if part.ToolResult != nil && part.ToolResult.ID != "" {
-					callID = part.ToolResult.ID
-					break
-				}
-				if part.ToolCall != nil && part.ToolCall.ID != "" {
-					callID = part.ToolCall.ID
-					break
-				}
-			}
-			if callID != "" {
-				keys = append(keys, "tool:"+callID)
-			} else {
-				keys = append(keys, "")
-			}
-		case core.RoleEvent:
-			if msg.SegmentStartSequence > 0 || msg.SegmentEndSequence > 0 {
-				keys = append(keys, fmt.Sprintf("event:%d:%d", msg.SegmentStartSequence, msg.SegmentEndSequence))
-			} else {
-				keys = append(keys, "")
-			}
-		}
-	}
-	return keys
-}
-
 func beginResponseRunPersistence(ctx context.Context, messages []core.Message) (func(int64, error), int) {
 	run, _ := ctx.Value(responseRunContextKey{}).(*responseRun)
 	if run == nil || run.persistence == nil {
 		return func(int64, error) {}, 0
 	}
-	keys := responseRunOwnedOutputKeys(run.id, messages)
+	keys := transcriptstore.ResponseRunOwnedOutputKeys(run.id, messages)
 	if len(keys) == 0 {
 		return func(int64, error) {}, 0
 	}
@@ -140,67 +104,6 @@ func runResponseRunPersistence(ctx context.Context, messages []core.Message, per
 		run.mu.Unlock()
 	}
 	return persist(fence)
-}
-
-func addResponseRunMessage(ctx context.Context, store session.Store, sessionID string, message *session.Message) (int64, error) {
-	writer, ok := store.(session.TranscriptRevisionWriter)
-	if !ok {
-		if err := store.AddMessage(ctx, sessionID, message); err != nil {
-			return 0, err
-		}
-		return 0, nil
-	}
-	rev, err := writer.AddMessageWithTranscriptRev(ctx, sessionID, message)
-	if errors.Is(err, session.ErrTranscriptRevisionUnsupported) {
-		if err := store.AddMessage(ctx, sessionID, message); err != nil {
-			return 0, err
-		}
-		return 0, nil
-	}
-	return rev, err
-}
-
-// replaceResponseRunMessages replaces the session's active context; the store
-// keeps a compacted session's archive.
-func replaceResponseRunMessages(ctx context.Context, store session.Store, sessionID string, messages []session.Message) (int64, error) {
-	return writeResponseRunTranscript(ctx, store, sessionID, messages, false)
-}
-
-// writeResponseRunTranscript writes through ReplaceMessages, or ResetMessages
-// when reset, reporting the committed transcript revision when supported.
-func writeResponseRunTranscript(ctx context.Context, store session.Store, sessionID string, messages []session.Message, reset bool) (int64, error) {
-	plain := store.ReplaceMessages
-	if reset {
-		plain = store.ResetMessages
-	}
-	if writer, ok := store.(session.TranscriptRevisionWriter); ok {
-		withRev := writer.ReplaceMessagesWithTranscriptRev
-		if reset {
-			withRev = writer.ResetMessagesWithTranscriptRev
-		}
-		if rev, err := withRev(ctx, sessionID, messages); !errors.Is(err, session.ErrTranscriptRevisionUnsupported) {
-			return rev, err
-		}
-	}
-	return 0, plain(ctx, sessionID, messages)
-}
-
-func updateResponseRunStreamingMessage(ctx context.Context, store session.Store, sessionID string, message *session.Message, finalizeText bool) (int64, error) {
-	writer, ok := store.(session.TranscriptRevisionWriter)
-	if !ok {
-		if err := session.UpdateStreamingMessage(ctx, store, sessionID, message, finalizeText); err != nil {
-			return 0, err
-		}
-		return 0, nil
-	}
-	rev, err := writer.UpdateStreamingMessageWithTranscriptRev(ctx, sessionID, message, finalizeText)
-	if errors.Is(err, session.ErrTranscriptRevisionUnsupported) {
-		if err := session.UpdateStreamingMessage(ctx, store, sessionID, message, finalizeText); err != nil {
-			return 0, err
-		}
-		return 0, nil
-	}
-	return rev, err
 }
 
 func (r *responseRun) readDurableHandoff() responseRunDurableHandoff {

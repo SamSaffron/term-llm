@@ -3,6 +3,7 @@ package opencompat
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -351,6 +352,69 @@ func TestXAIProviderStreamSendsExplicitParallelToolCallsFalse(t *testing.T) {
 	}
 	if !got.Stream {
 		t.Fatal("expected stream=true")
+	}
+}
+
+func TestXAIStream_FinishReasonLengthWithToolCallsReturnsOutputLimitError(t *testing.T) {
+	origClient := defaultHTTPClient
+	defer func() { defaultHTTPClient = origClient }()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		// Tool call chunk followed by finish_reason "length"
+		_, _ = io.WriteString(w,
+			"data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call-1\",\"type\":\"function\",\"function\":{\"name\":\"shell\",\"arguments\":\"{\\\"cmd\\\":\\\"ls\"}}]}}]}\n\n"+
+				"data: {\"choices\":[{\"finish_reason\":\"length\"}]}\n\n"+
+				"data: [DONE]\n\n",
+		)
+	}))
+	defer server.Close()
+
+	defaultHTTPClient = server.Client()
+	parsedURL, _ := url.Parse(server.URL)
+	provider := &XAIProvider{apiKey: "test-key", model: "grok-test"}
+	// Override the xAI base URL by using a transport that redirects.
+	defaultHTTPClient = &http.Client{
+		Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			req.URL.Host = parsedURL.Host
+			req.URL.Scheme = parsedURL.Scheme
+			return http.DefaultTransport.RoundTrip(req)
+		}),
+	}
+
+	stream, err := provider.Stream(context.Background(), Request{
+		Messages: []Message{UserText("hello")},
+	})
+	if err != nil {
+		t.Fatalf("stream: %v", err)
+	}
+	defer stream.Close()
+
+	var sawToolCall, sawError bool
+	for {
+		event, err := stream.Recv()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatalf("recv: %v", err)
+		}
+		switch event.Type {
+		case EventToolCall:
+			sawToolCall = true
+		case EventError:
+			sawError = true
+			var outputErr *OutputLimitError
+			if !errors.As(event.Err, &outputErr) {
+				t.Fatalf("expected OutputLimitError, got %T: %v", event.Err, event.Err)
+			}
+		}
+	}
+	if sawToolCall {
+		t.Fatal("tool call should not be emitted when finish_reason is length")
+	}
+	if !sawError {
+		t.Fatal("expected OutputLimitError")
 	}
 }
 

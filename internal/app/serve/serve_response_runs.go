@@ -201,6 +201,7 @@ type startResponseRunOptions struct {
 	uiSession                 bool
 	resetResponseIDsOnSuccess bool
 	modelSwap                 *responseModelSwapExecution
+	effortChange              *responseEffortChange
 	idempotencyKey            string
 	idempotencyScope          string
 	requestFingerprint        string

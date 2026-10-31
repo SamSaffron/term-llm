@@ -13,6 +13,7 @@ import (
 	"github.com/samsaffron/term-llm/internal/llm/mockprovider"
 	runpkg "github.com/samsaffron/term-llm/internal/run"
 	"github.com/samsaffron/term-llm/internal/session"
+	transcriptstore "github.com/samsaffron/term-llm/internal/session/transcript"
 	"github.com/samsaffron/term-llm/internal/tools"
 )
 
@@ -89,7 +90,7 @@ func TestCmdRunnerChildDoesNotInheritParentResponseOwnership(t *testing.T) {
 	// The parent must still persist and terminalize using its own ownership.
 	assistant := tagResponseRunMessage(parentCtx, core.AssistantText("parent result"), 0)
 	if _, err := runResponseRunPersistence(parentCtx, []core.Message{assistant}, func(fence session.ResponseRunFence) (int64, error) {
-		return addResponseRunMessage(session.WithResponseRunFence(ctx, fence), store, parentID, session.NewMessage(parentID, assistant, -1))
+		return transcriptstore.AddMessageWithTranscriptRev(session.WithResponseRunFence(ctx, fence), store, parentID, session.NewMessage(parentID, assistant, -1))
 	}); err != nil {
 		t.Fatal(err)
 	}

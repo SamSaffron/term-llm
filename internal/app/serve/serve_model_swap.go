@@ -13,6 +13,7 @@ import (
 	"github.com/samsaffron/term-llm/internal/llm/core"
 	"github.com/samsaffron/term-llm/internal/llm/engine"
 	"github.com/samsaffron/term-llm/internal/session"
+	transcriptstore "github.com/samsaffron/term-llm/internal/session/transcript"
 )
 
 type responseRuntimeSettings struct {
@@ -108,6 +109,14 @@ func isModelSwapRequest(req responsesCreateRequest, persisted, requested respons
 		return true
 	}
 	return false
+}
+
+// isEffortOnlySwap excludes real model changes, including selecting a known
+// model when the persisted model is unknown. An omitted target keeps the model.
+func isEffortOnlySwap(plan responseModelSwapPlan) bool {
+	return plan.enabled && plan.requestedProvider == plan.previousProvider &&
+		(plan.requestedModel == "" || plan.requestedModel == plan.previousModel) &&
+		plan.requestedEffort != plan.previousEffort
 }
 
 func buildResponseModelSwapPlan(req responsesCreateRequest, persisted, requested responseRuntimeSettings) responseModelSwapPlan {
@@ -506,7 +515,7 @@ func (s *serveServer) persistModelSwapMarker(ctx context.Context, sessionID stri
 		dbCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
 		defer cancel()
 		_, _ = runResponseRunPersistence(ctx, []core.Message{msg}, func(fence session.ResponseRunFence) (int64, error) {
-			return addResponseRunMessage(session.WithResponseRunFence(dbCtx, fence), s.store, sessionID, sm)
+			return transcriptstore.AddMessageWithTranscriptRev(session.WithResponseRunFence(dbCtx, fence), s.store, sessionID, sm)
 		})
 	}
 }
@@ -516,31 +525,29 @@ func (s *serveServer) restoreModelSwapRollback(ctx context.Context, sessionID st
 		return
 	}
 	msg := tagResponseRunMessage(ctx, modelSwapMarkerMessage(exec.plan, candidate, status, strategy), -1)
-	// The failed trigger turn is intentionally omitted from restored history so
-	// the previous runtime cannot resume with an orphaned user message. The
-	// failure marker is therefore the terminal event of the restored transcript.
-	restoredHistory := copyLLMMessageSlice(exec.restoreHistory)
-	restoredHistory = append(restoredHistory, msg)
-	if exec.previous != nil {
-		setRuntimeHistoryPreserveEngine(exec.previous, restoredHistory)
-	}
+	// Roll back provider selection, not the conversation. The candidate may
+	// have already committed the trigger input and many tool rounds. Replacing
+	// them with restoreHistory would erase those durable rows and their IDs.
 	if s.store != nil && sessionID != "" {
-		dbMessages := make([]session.Message, 0, len(restoredHistory))
-		for _, llmMsg := range restoredHistory {
-			if llmMsg.Role == "" {
-				continue
-			}
-			dbMessages = append(dbMessages, *session.NewMessage(sessionID, llmMsg, -1))
-		}
+		setRuntimeHistoryPreserveEngine(exec.previous, nil)
 		dbCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
 		defer cancel()
-		_, _ = runResponseRunPersistence(ctx, restoredHistory, func(fence session.ResponseRunFence) (int64, error) {
-			return replaceResponseRunMessages(session.WithResponseRunFence(dbCtx, fence), s.store, sessionID, dbMessages)
+		_, _ = runResponseRunPersistence(ctx, []core.Message{msg}, func(fence session.ResponseRunFence) (int64, error) {
+			return transcriptstore.AddMessageWithTranscriptRev(session.WithResponseRunFence(dbCtx, fence), s.store, sessionID, session.NewMessage(sessionID, msg, -1))
 		})
 		if exec.previous != nil {
 			s.syncPersistedSessionRuntime(dbCtx, sessionID, exec.previous, exec.plan.previousModel, exec.plan.previousEffort, "", false, "", false)
 		}
+		return
 	}
+	// Without storage, retain whatever the candidate produced in memory.
+	restoredHistory := copyLLMMessageSlice(exec.restoreHistory)
+	if candidate != nil {
+		if history := candidate.snapshotHistory(); len(history) > 0 {
+			restoredHistory = history
+		}
+	}
+	setRuntimeHistoryPreserveEngine(exec.previous, append(restoredHistory, msg))
 }
 
 func addRuntimeUsage(rt *serveRuntime, usage core.Usage) {

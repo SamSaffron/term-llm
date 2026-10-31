@@ -122,6 +122,7 @@ func (p *XAIProvider) streamStandard(ctx context.Context, req Request) (Stream, 
 		tagStripper := newXAITagStripper()
 		var lastUsage *Usage
 		sawVisibleText := false
+		sawLengthFinish := false
 		skippedJSONChunks := 0
 
 		for {
@@ -174,6 +175,9 @@ func (p *XAIProvider) streamStandard(ctx context.Context, req Request) (Stream, 
 			}
 
 			for _, choice := range chatResp.Choices {
+				if choice.FinishReason == "length" {
+					sawLengthFinish = true
+				}
 				if choice.Delta != nil {
 					reasoningDelta := choice.Delta.Reasoning
 					if reasoningDelta == "" {
@@ -230,6 +234,14 @@ func (p *XAIProvider) streamStandard(ctx context.Context, req Request) (Stream, 
 			}
 		}
 
+		if sawLengthFinish {
+			if len(toolState.order) > 0 {
+				return &OutputLimitError{Provider: "xAI", Limit: req.MaxOutputTokens, TruncTool: true}
+			}
+			if !sawVisibleText {
+				return &OutputLimitError{Provider: "xAI", Limit: req.MaxOutputTokens}
+			}
+		}
 		for _, call := range toolState.Calls() {
 			if err := send.Send(Event{Type: EventToolCall, Tool: &call}); err != nil {
 				return err

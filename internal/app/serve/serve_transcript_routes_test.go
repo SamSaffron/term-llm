@@ -2618,7 +2618,7 @@ func TestHandleResponses_ModelSwapNaiveFailureFallsBackToHandover(t *testing.T) 
 	}
 }
 
-func TestHandleResponses_ModelSwapFallbackFailureRollsBackOriginalRuntimeAndHistory(t *testing.T) {
+func TestHandleResponses_ModelSwapFallbackFailureRollsBackRuntimeButPreservesDurableHistory(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "sessions.db")
 	store, err := session.NewStore(session.Config{Enabled: true, Path: dbPath})
 	if err != nil {
@@ -2705,8 +2705,8 @@ func TestHandleResponses_ModelSwapFallbackFailureRollsBackOriginalRuntimeAndHist
 	if err != nil {
 		t.Fatalf("GetMessages after failed swap: %v", err)
 	}
-	if !sessionMessagesContainText(storedMessages, "hello") || !sessionMessagesContainText(storedMessages, "old-1") {
-		t.Fatalf("rollback did not restore original conversation messages: %#v", storedMessages)
+	if !sessionMessagesContainText(storedMessages, "hello") || !sessionMessagesContainText(storedMessages, "old-1") || !sessionMessagesContainText(storedMessages, "continue") {
+		t.Fatalf("rollback lost original conversation or durable trigger input: %#v", storedMessages)
 	}
 	if sessionMessagesContainText(storedMessages, "handover doc") {
 		t.Fatalf("rollback history should not persist handover retry context: %#v", storedMessages)
@@ -2724,7 +2724,10 @@ func TestHandleResponses_ModelSwapFallbackFailureRollsBackOriginalRuntimeAndHist
 		t.Fatalf("expected failed model-swap marker after rollback: %#v", storedMessages)
 	}
 
-	code, resp3 := doResponses(t, srv, `{"input":"still old","previous_response_id":"`+respID+`"}`)
+	// The failed trigger remains durable, so continuing must use its cursor,
+	// not the now-stale cursor from before the attempted model swap.
+	continuation := srv.latestDurableResponseIDForSession(context.Background(), "swap-fail")
+	code, resp3 := doResponses(t, srv, `{"input":"still old","previous_response_id":"`+continuation+`"}`)
 	if code != http.StatusOK {
 		t.Fatalf("post-rollback status = %d, want 200 body=%#v", code, resp3)
 	}

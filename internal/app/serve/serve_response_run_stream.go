@@ -17,6 +17,7 @@ import (
 	"github.com/samsaffron/term-llm/internal/llm/core"
 	"github.com/samsaffron/term-llm/internal/restart"
 	"github.com/samsaffron/term-llm/internal/session"
+	transcriptstore "github.com/samsaffron/term-llm/internal/session/transcript"
 )
 
 type responseRunStreamState struct {
@@ -97,7 +98,7 @@ func (s *serveServer) persistResponseRunErrorEvent(ctx context.Context, runtime 
 	})
 	msg.ResponseID = respID
 	_, err := runResponseRunPersistence(ctx, []core.Message{msg}, func(fence session.ResponseRunFence) (int64, error) {
-		return addResponseRunMessage(session.WithResponseRunFence(dbCtx, fence), runtime.store, sessionID, session.NewMessage(sessionID, msg, -1))
+		return transcriptstore.AddMessageWithTranscriptRev(session.WithResponseRunFence(dbCtx, fence), runtime.store, sessionID, session.NewMessage(sessionID, msg, -1))
 	})
 	if err != nil {
 		log.Printf("[serve] persist response run error event failed for %s: %v", sessionID, err)
@@ -743,6 +744,9 @@ func (s *serveServer) startResponseRun(runtime *serveRuntime, stateful bool, rep
 	//    response, excluding time spent waiting for an interactive answer.
 	// Hosted runs inherit their caller's lifetime; HTTP runs use a detached root.
 	runCtx, runTimer := newResponseRunTimerFrom(options.parentContext, s.responseTimeout(), realResponseRunClock{})
+	if options.effortChange != nil {
+		runCtx = context.WithValue(runCtx, responseEffortChangeKey{}, options.effortChange)
+	}
 	var releaseReload func()
 	var reloadErr error
 	if options.parentContext != nil {

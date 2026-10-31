@@ -2366,8 +2366,10 @@ func TestServeRuntimePersistsPartialAssistantTextOnErrorBeforeCallbacks(t *testi
 	if !errors.Is(err, disconnectErr) {
 		t.Fatalf("RunWithEvents() error = %v, want %v", err, disconnectErr)
 	}
-	if store.addMessageCalls != 0 {
-		t.Fatalf("addMessageCalls = %d, want 0 when no callbacks fire", store.addMessageCalls)
+	// With no completed callback, failure recovery appends the synthesized
+	// partial reply instead of replacing the transcript with a snapshot.
+	if store.addMessageCalls == 0 {
+		t.Fatal("failure recovery did not append the partial assistant reply")
 	}
 	if store.updateMessageCalls != 0 {
 		t.Fatalf("updateMessageCalls = %d, want 0 when no callbacks fire", store.updateMessageCalls)
@@ -2378,7 +2380,7 @@ func TestServeRuntimePersistsPartialAssistantTextOnErrorBeforeCallbacks(t *testi
 		t.Fatalf("GetMessages() error = %v", err)
 	}
 	if len(msgs) != 2 {
-		t.Fatalf("stored message count = %d, want 2", len(msgs))
+		t.Fatalf("stored message count = %d, want 2: %+v", len(msgs), msgs)
 	}
 	if msgs[0].Role != core.RoleUser || msgs[0].TextContent != "hello" {
 		t.Fatalf("message[0] = %+v, want user hello", msgs[0])

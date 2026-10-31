@@ -11,6 +11,9 @@ type preparedResponseRuntimePlan struct {
 	swap            responseModelSwapPlan
 	provider        string
 	defaultProvider string
+	// Effort-only changes retarget the admitted request without replacing its
+	// runtime or tying acceptance to the entire response succeeding.
+	effortOnlyChange bool
 }
 
 // prepareResponseRuntimePlan resolves requested and durable identities without
@@ -36,18 +39,28 @@ func (s *serveServer) prepareResponseRuntimePlan(ctx context.Context, req *respo
 	if !fresh {
 		swap = buildResponseModelSwapPlan(*req, persisted, requested)
 	}
+	// Reasoning effort is a request parameter. Reusing the same provider/model
+	// requires neither a candidate runtime nor a compatibility/handover probe.
+	effortOnly := isEffortOnlySwap(swap)
+	if effortOnly {
+		swap = responseModelSwapPlan{}
+	}
 	provider := strings.TrimSpace(req.Provider)
 	if !fresh && !swap.enabled && s.store != nil && persisted.provider != "" {
 		provider = persisted.provider
 		if persisted.model != "" {
 			req.Model = persisted.model
 		}
-		req.ReasoningEffort = persisted.effort
+		if effortOnly {
+			req.ReasoningEffort = requested.effort
+		} else {
+			req.ReasoningEffort = persisted.effort
+		}
 	}
 	if swap.enabled {
 		provider = swap.requestedProvider
 		req.Model = swap.requestedModel
 		req.ReasoningEffort = swap.requestedEffort
 	}
-	return preparedResponseRuntimePlan{requested: requested, persisted: persisted, swap: swap, provider: provider, defaultProvider: defaultProvider}
+	return preparedResponseRuntimePlan{requested: requested, persisted: persisted, swap: swap, provider: provider, defaultProvider: defaultProvider, effortOnlyChange: effortOnly}
 }

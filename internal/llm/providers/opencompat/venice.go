@@ -121,7 +121,7 @@ func (p *VeniceProvider) Stream(ctx context.Context, req Request) (Stream, error
 	}
 
 	return newEventStreamWithCancelHook(ctx, func() { _ = resp.Body.Close() }, func(ctx context.Context, send eventSender) error {
-		return readVeniceStream(p.name, resp.Body, send)
+		return readVeniceStream(p.name, resp.Body, send, req.MaxOutputTokens)
 	}), nil
 }
 
@@ -129,21 +129,23 @@ func (p *VeniceProvider) Stream(ctx context.Context, req Request) (Stream, error
 // across SSE deltas. Unlike the generic compat parser, Venice may put reasoning
 // in both a dedicated field and split <think> tags in content.
 type veniceStreamState struct {
-	name           string
-	send           eventSender
-	toolState      *compatToolState
-	lastUsage      *Usage
-	lastEventType  string
-	inlineThink    inlineThinkParser
-	sawVisibleText bool
+	name            string
+	send            eventSender
+	toolState       *compatToolState
+	lastUsage       *Usage
+	lastEventType   string
+	inlineThink     inlineThinkParser
+	sawVisibleText  bool
+	sawLengthFinish bool
+	sentLimit       int // max_tokens sent in the request, 0 if unset
 }
 
-func readVeniceStream(name string, body io.ReadCloser, send eventSender) error {
+func readVeniceStream(name string, body io.ReadCloser, send eventSender, sentLimit int) error {
 	defer body.Close()
 
 	scanner := bufio.NewScanner(body)
 	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
-	state := veniceStreamState{name: name, send: send, toolState: newCompatToolState()}
+	state := veniceStreamState{name: name, send: send, toolState: newCompatToolState(), sentLimit: sentLimit}
 	for scanner.Scan() {
 		line := scanner.Text()
 		if strings.HasPrefix(line, "event: ") {
@@ -199,6 +201,9 @@ func (s *veniceStreamState) processData(data string) error {
 		}
 	}
 	for _, choice := range chatResp.Choices {
+		if choice.FinishReason == "length" {
+			s.sawLengthFinish = true
+		}
 		if choice.Delta != nil {
 			if err := s.processDelta(choice.Delta); err != nil {
 				return err
@@ -265,6 +270,14 @@ func (s *veniceStreamState) finish() error {
 			if err := s.sendText(part.Text, ""); err != nil {
 				return err
 			}
+		}
+	}
+	if s.sawLengthFinish {
+		if len(s.toolState.order) > 0 {
+			return &OutputLimitError{Provider: s.name, Limit: s.sentLimit, TruncTool: true}
+		}
+		if !s.sawVisibleText {
+			return &OutputLimitError{Provider: s.name, Limit: s.sentLimit}
 		}
 	}
 	if err := s.toolState.Validate(); err != nil {

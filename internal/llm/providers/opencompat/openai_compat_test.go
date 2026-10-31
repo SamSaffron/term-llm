@@ -2163,6 +2163,468 @@ func TestOpenAICompatStream_ReturnsIncompleteErrorWithoutDone(t *testing.T) {
 	}
 }
 
+// Configured output budgets and explicit length-truncation handling.
+
+func TestClampCompatOutputTokens_FallsBackToConfiguredLimitWhenUnset(t *testing.T) {
+	// When the request does not set max_output_tokens (0), the configured
+	// per-model limit should be used as the default.
+	if got := clampCompatOutputTokens(0, "unknown-model", 4096); got != 4096 {
+		t.Fatalf("clampCompatOutputTokens(0, _, 4096) = %d, want 4096", got)
+	}
+}
+
+func TestClampCompatOutputTokens_ConfiguredDefaultStillRespectsGlobalCap(t *testing.T) {
+	previous := ParentHooks
+	t.Cleanup(func() { ParentHooks = previous })
+	ParentHooks.ClampOutputTokens = func(requested int, _ string) int { return min(requested, 2048) }
+	if got := clampCompatOutputTokens(0, "known-model", 4096); got != 2048 {
+		t.Fatalf("configured fallback bypassed model cap: got %d, want 2048", got)
+	}
+}
+
+func TestClampCompatOutputTokens_NoFallbackWhenUnconfigured(t *testing.T) {
+	// When neither the request nor the config sets a limit, return 0.
+	if got := clampCompatOutputTokens(0, "unknown-model", 0); got != 0 {
+		t.Fatalf("clampCompatOutputTokens(0, _, 0) = %d, want 0", got)
+	}
+}
+
+func TestClampCompatOutputTokens_ClampsToConfiguredLimit(t *testing.T) {
+	// When the request exceeds the configured limit, clamp to configured.
+	if got := clampCompatOutputTokens(9999, "unknown-model", 2048); got != 2048 {
+		t.Fatalf("clampCompatOutputTokens(9999, _, 2048) = %d, want 2048", got)
+	}
+}
+
+func TestClampCompatOutputTokens_PassesThroughWhenWithinLimit(t *testing.T) {
+	// When request is within the configured limit, it should pass through.
+	if got := clampCompatOutputTokens(1000, "unknown-model", 2048); got != 1000 {
+		t.Fatalf("clampCompatOutputTokens(1000, _, 2048) = %d, want 1000", got)
+	}
+}
+
+func TestClampCompatOutputTokens_NegativeRequestUsesConfiguredLimit(t *testing.T) {
+	// A negative request value should also fall back to configured limit.
+	if got := clampCompatOutputTokens(-1, "unknown-model", 4096); got != 4096 {
+		t.Fatalf("clampCompatOutputTokens(-1, _, 4096) = %d, want 4096", got)
+	}
+}
+
+func TestOpenAICompatStream_ConfiguredMaxOutputTokensSentWhenRequestUnset(t *testing.T) {
+	// When the request doesn't set MaxOutputTokens but the model config has one,
+	// the configured limit should be sent as max_tokens.
+	requestCh := make(chan oaiChatRequest, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var got oaiChatRequest
+		if err := json.NewDecoder(r.Body).Decode(&got); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		requestCh <- got
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, "data: {\"choices\":[{\"delta\":{\"content\":\"ok\"}}]}\n\ndata: [DONE]\n\n")
+	}))
+	defer server.Close()
+
+	provider := NewOpenAICompatProvider(server.URL, "", "my-model", "Compat")
+	provider.SetModelConfigs([]config.ProviderModelConfig{{
+		ID:              "my-model",
+		MaxOutputTokens: 8192,
+	}})
+	stream, err := provider.Stream(context.Background(), Request{
+		Messages: []Message{UserText("hello")},
+		// MaxOutputTokens intentionally not set (0)
+	})
+	if err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+	drainStreamToDone(t, stream)
+
+	select {
+	case got := <-requestCh:
+		if got.MaxTokens == nil {
+			t.Fatal("expected max_tokens to be set from configured limit, got nil")
+		}
+		if *got.MaxTokens != 8192 {
+			t.Fatalf("max_tokens = %d, want 8192", *got.MaxTokens)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for request")
+	}
+}
+
+func TestOpenAICompatStream_FinishReasonLengthWithToolCallsReturnsOutputLimitError(t *testing.T) {
+	// When finish_reason is "length" and tool calls were in progress,
+	// the stream should return an OutputLimitError and never emit tool calls.
+	chunk1 := oaiChatResponse{
+		Choices: []oaiChoice{{
+			Delta: &oaiMessage{ToolCalls: []oaiToolCall{{}}},
+		}},
+	}
+	chunk1.Choices[0].Delta.ToolCalls[0].ID = "call-1"
+	chunk1.Choices[0].Delta.ToolCalls[0].Function.Name = "shell"
+	chunk1.Choices[0].Delta.ToolCalls[0].Function.Arguments = `{"command":"rm -`
+
+	chunk2 := oaiChatResponse{
+		Choices: []oaiChoice{{
+			FinishReason: "length",
+		}},
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		for _, chunk := range []oaiChatResponse{chunk1, chunk2} {
+			data, err := json.Marshal(chunk)
+			if err != nil {
+				t.Fatalf("marshal chunk: %v", err)
+			}
+			_, _ = w.Write([]byte("data: "))
+			_, _ = w.Write(data)
+			_, _ = w.Write([]byte("\n\n"))
+		}
+		_, _ = w.Write([]byte("data: [DONE]\n\n"))
+	}))
+	defer server.Close()
+
+	provider := NewOpenAICompatProvider(server.URL, "", "test-model", "Test")
+	provider.SetMaxOutputTokens(4096)
+	stream, err := provider.Stream(context.Background(), Request{
+		Messages: []Message{UserText("hello")},
+	})
+	if err != nil {
+		t.Fatalf("stream: %v", err)
+	}
+	defer stream.Close()
+
+	var sawToolCall, sawDone, sawError bool
+	for {
+		event, err := stream.Recv()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatalf("recv: %v", err)
+		}
+		switch event.Type {
+		case EventToolCall:
+			sawToolCall = true
+		case EventDone:
+			sawDone = true
+		case EventError:
+			sawError = true
+			var outputErr *OutputLimitError
+			if !errors.As(event.Err, &outputErr) {
+				t.Fatalf("expected OutputLimitError, got %T: %v", event.Err, event.Err)
+			}
+			if outputErr.Limit != 4096 || !strings.Contains(event.Err.Error(), "4096") {
+				t.Fatalf("error must name the configured wire limit: %v", event.Err)
+			}
+			if !strings.Contains(event.Err.Error(), "output token limit") {
+				t.Fatalf("error should mention output token limit, got: %v", event.Err)
+			}
+			if !strings.Contains(event.Err.Error(), "not executed") {
+				t.Fatalf("error should mention tool call not executed, got: %v", event.Err)
+			}
+		}
+	}
+	if sawToolCall {
+		t.Fatal("tool call should not have been emitted when finish_reason is length")
+	}
+	if sawDone {
+		t.Fatal("EventDone should not be emitted when finish_reason is length with tool calls")
+	}
+	if !sawError {
+		t.Fatal("expected OutputLimitError")
+	}
+}
+
+func TestOpenAICompatStream_FinishReasonLengthWithValidToolJSONStillBlocked(t *testing.T) {
+	// Even if the truncated tool call happens to be valid JSON,
+	// it must not be executed when finish_reason is "length".
+	chunk := oaiChatResponse{
+		Choices: []oaiChoice{{
+			Delta:        &oaiMessage{ToolCalls: []oaiToolCall{{}}},
+			FinishReason: "length",
+		}},
+	}
+	chunk.Choices[0].Delta.ToolCalls[0].ID = "call-1"
+	chunk.Choices[0].Delta.ToolCalls[0].Function.Name = "shell"
+	// Valid JSON but the model was truncated — it might have intended more args.
+	chunk.Choices[0].Delta.ToolCalls[0].Function.Arguments = `{"command":"echo hello"}`
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		data, err := json.Marshal(chunk)
+		if err != nil {
+			t.Fatalf("marshal chunk: %v", err)
+		}
+		_, _ = w.Write([]byte("data: "))
+		_, _ = w.Write(data)
+		_, _ = w.Write([]byte("\n\ndata: [DONE]\n\n"))
+	}))
+	defer server.Close()
+
+	provider := NewOpenAICompatProvider(server.URL, "", "test-model", "Test")
+	stream, err := provider.Stream(context.Background(), Request{
+		Messages: []Message{UserText("hello")},
+	})
+	if err != nil {
+		t.Fatalf("stream: %v", err)
+	}
+	defer stream.Close()
+
+	var sawToolCall, sawError bool
+	for {
+		event, err := stream.Recv()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatalf("recv: %v", err)
+		}
+		switch event.Type {
+		case EventToolCall:
+			sawToolCall = true
+		case EventError:
+			sawError = true
+			var outputErr *OutputLimitError
+			if !errors.As(event.Err, &outputErr) {
+				t.Fatalf("expected OutputLimitError, got %T: %v", event.Err, event.Err)
+			}
+		}
+	}
+	if sawToolCall {
+		t.Fatal("valid JSON tool call must still be blocked when finish_reason is length")
+	}
+	if !sawError {
+		t.Fatal("expected OutputLimitError")
+	}
+}
+
+func TestOpenAICompatStream_FinishReasonLengthWithoutToolCallsAllowed(t *testing.T) {
+	// When finish_reason is "length" but there are no tool calls (just text),
+	// the stream should complete normally — it's just a long text response.
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w,
+			"data: {\"choices\":[{\"delta\":{\"content\":\"truncated text\"}}]}\n\n"+
+				"data: {\"choices\":[{\"finish_reason\":\"length\"}]}\n\n"+
+				"data: [DONE]\n\n",
+		)
+	}))
+	defer server.Close()
+
+	provider := NewOpenAICompatProvider(server.URL, "", "test-model", "Test")
+	stream, err := provider.Stream(context.Background(), Request{
+		Messages: []Message{UserText("hello")},
+	})
+	if err != nil {
+		t.Fatalf("stream: %v", err)
+	}
+	defer stream.Close()
+
+	var sawDone bool
+	var gotText string
+	for {
+		event, err := stream.Recv()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatalf("recv: %v", err)
+		}
+		switch event.Type {
+		case EventTextDelta:
+			gotText += event.Text
+		case EventDone:
+			sawDone = true
+		case EventError:
+			t.Fatalf("unexpected error: %v", event.Err)
+		}
+	}
+	if !sawDone {
+		t.Fatal("expected EventDone for text-only response with finish_reason length")
+	}
+	if gotText != "truncated text" {
+		t.Fatalf("text = %q, want %q", gotText, "truncated text")
+	}
+}
+
+func TestOutputLimitError_ErrorMessageVariants(t *testing.T) {
+	t.Run("tool_truncation", func(t *testing.T) {
+		err := &OutputLimitError{Provider: "P", TruncTool: true}
+		msg := err.Error()
+		if !strings.Contains(msg, "tool call not executed") {
+			t.Fatalf("tool error should mention tool call not executed, got: %s", msg)
+		}
+	})
+	t.Run("no_usable_output", func(t *testing.T) {
+		err := &OutputLimitError{Provider: "P"}
+		msg := err.Error()
+		if !strings.Contains(msg, "no usable output") {
+			t.Fatalf("no-output error should mention no usable output, got: %s", msg)
+		}
+	})
+	t.Run("includes_limit", func(t *testing.T) {
+		err := &OutputLimitError{Provider: "P", Limit: 4096, TruncTool: true}
+		msg := err.Error()
+		if !strings.Contains(msg, "4096") {
+			t.Fatalf("error should include limit value, got: %s", msg)
+		}
+	})
+	t.Run("includes_provider", func(t *testing.T) {
+		err := &OutputLimitError{Provider: "TestProv"}
+		if !strings.Contains(err.Error(), "TestProv") {
+			t.Fatalf("error should contain provider name, got: %s", err.Error())
+		}
+	})
+}
+
+func TestOpenAICompatStream_FinishReasonLengthWithReasoningAndVisibleTextCompletes(t *testing.T) {
+	// Reasoning plus a usable partial answer may complete even at the limit.
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w,
+			"data: {\"choices\":[{\"delta\":{\"reasoning_content\":\"deep thought\"}}]}\n\n"+
+				"data: {\"choices\":[{\"delta\":{\"content\":\"answer\"},\"finish_reason\":\"length\"}]}\n\n"+
+				"data: [DONE]\n\n",
+		)
+	}))
+	defer server.Close()
+
+	provider := NewOpenAICompatProvider(server.URL, "", "test-model", "Test")
+	stream, err := provider.Stream(context.Background(), Request{
+		Messages: []Message{UserText("hello")},
+	})
+	if err != nil {
+		t.Fatalf("stream: %v", err)
+	}
+	defer stream.Close()
+
+	var sawDone, sawReasoning, sawText bool
+	for {
+		event, err := stream.Recv()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatalf("recv: %v", err)
+		}
+		switch event.Type {
+		case EventReasoningDelta:
+			sawReasoning = true
+		case EventTextDelta:
+			sawText = true
+		case EventDone:
+			sawDone = true
+		case EventError:
+			t.Fatalf("unexpected error for reasoning-only length: %v", event.Err)
+		}
+	}
+	if !sawDone {
+		t.Fatal("expected EventDone for reasoning-only response with finish_reason length")
+	}
+	if !sawReasoning {
+		t.Fatal("expected reasoning delta")
+	}
+	if !sawText {
+		t.Fatal("expected text delta")
+	}
+}
+
+func TestOpenAICompatStream_FinishReasonLengthReasoningOnlyNoVisibleTextReturnsError(t *testing.T) {
+	// Pure reasoning with no visible text and finish_reason "length" means the
+	// model consumed all output tokens on thinking and produced nothing usable.
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w,
+			"data: {\"choices\":[{\"delta\":{\"reasoning_content\":\"long chain of thought\"}}]}\n\n"+
+				"data: {\"choices\":[{\"finish_reason\":\"length\"}]}\n\n"+
+				"data: [DONE]\n\n",
+		)
+	}))
+	defer server.Close()
+
+	provider := NewOpenAICompatProvider(server.URL, "", "test-model", "Test")
+	stream, err := provider.Stream(context.Background(), Request{
+		Messages: []Message{UserText("hello")},
+	})
+	if err != nil {
+		t.Fatalf("stream: %v", err)
+	}
+	defer stream.Close()
+
+	var sawError bool
+	for {
+		event, err := stream.Recv()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatalf("recv: %v", err)
+		}
+		if event.Type == EventError {
+			sawError = true
+			var outputErr *OutputLimitError
+			if !errors.As(event.Err, &outputErr) {
+				t.Fatalf("expected OutputLimitError, got %T: %v", event.Err, event.Err)
+			}
+		}
+		if event.Type == EventDone {
+			t.Fatal("should not reach EventDone for reasoning-only truncated response")
+		}
+	}
+	if !sawError {
+		t.Fatal("expected OutputLimitError for reasoning-only length truncation")
+	}
+}
+
+func TestOpenAICompatStream_FinishReasonLengthToolCallsNoDone(t *testing.T) {
+	// finish_reason "length" is authoritative even when [DONE] is missing.
+	// Should produce OutputLimitError, not StreamIncompleteError.
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w,
+			"data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call-1\",\"type\":\"function\",\"function\":{\"name\":\"shell\",\"arguments\":\"{\\\"cmd\\\":\\\"rm\"}}]}}]}\n\n"+
+				"data: {\"choices\":[{\"finish_reason\":\"length\"}]}\n\n",
+			// No [DONE] sentinel
+		)
+	}))
+	defer server.Close()
+
+	provider := NewOpenAICompatProvider(server.URL, "", "test-model", "Test")
+	stream, err := provider.Stream(context.Background(), Request{
+		Messages: []Message{UserText("hello")},
+	})
+	if err != nil {
+		t.Fatalf("stream: %v", err)
+	}
+	defer stream.Close()
+
+	var sawError bool
+	for {
+		event, err := stream.Recv()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatalf("recv: %v", err)
+		}
+		if event.Type == EventToolCall {
+			t.Fatal("truncated tool call must not be emitted")
+		}
+		if event.Type == EventError {
+			sawError = true
+			var outputErr *OutputLimitError
+			if !errors.As(event.Err, &outputErr) {
+				t.Fatalf("expected OutputLimitError (not StreamIncompleteError), got %T: %v", event.Err, event.Err)
+			}
+		}
+	}
+	if !sawError {
+		t.Fatal("expected OutputLimitError")
+	}
+}
+
 func TestOpenAICompatStream_EmitsToolCallBeforeIncompleteError(t *testing.T) {
 	chunk := oaiChatResponse{
 		Choices: []oaiChoice{{

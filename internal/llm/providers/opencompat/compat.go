@@ -66,6 +66,29 @@ const (
 
 type StreamIncompleteError = stream.StreamIncompleteError
 
+// OutputLimitError is returned when the provider's finish_reason is "length"
+// and either tool calls were being generated (truncated JSON, never safe to
+// execute) or the response produced no usable visible text (e.g. the entire
+// budget was consumed by reasoning tokens).
+type OutputLimitError struct {
+	Provider  string
+	Limit     int  // max_tokens sent in the request, 0 if unknown
+	TruncTool bool // true when tool-call JSON was in progress
+}
+
+func (e *OutputLimitError) Error() string {
+	var detail string
+	if e.TruncTool {
+		detail = "response truncated, tool call not executed"
+	} else {
+		detail = "response truncated with no usable output"
+	}
+	if e.Limit > 0 {
+		return fmt.Sprintf("%s: output token limit (%d) reached — %s", e.Provider, e.Limit, detail)
+	}
+	return fmt.Sprintf("%s: output token limit reached — %s", e.Provider, detail)
+}
+
 // Hooks supplies behaviour owned by the parent llm package's model registry
 // and limit tables, which this package cannot import without a cycle. Nil
 // fields fall back to neutral defaults (no limits, no pricing).
