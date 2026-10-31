@@ -12,7 +12,7 @@ func TestBrowserMutationAllowed(t *testing.T) {
 			r := httptest.NewRequest(method, "http://localhost:8080/", nil)
 			r.Header.Set("Origin", "https://untrusted.example")
 			r.Header.Set("Sec-Fetch-Site", "cross-site")
-			allowed := browserMutationAllowed(r, nil, "")
+			allowed := BrowserMutationAllowed(r, nil, "")
 			wantAllowed := method == http.MethodGet || method == http.MethodHead || method == http.MethodOptions
 			if allowed != wantAllowed {
 				t.Errorf("allowed = %v, want %v", allowed, wantAllowed)
@@ -34,7 +34,7 @@ func TestBrowserMutationAllowed(t *testing.T) {
 			r.Header.Set("Origin", tc.origin)
 			r.Header.Set("X-Forwarded-Proto", tc.forwarded)
 			r.Header.Set("X-Forwarded-Host", "untrusted.example")
-			if got := browserMutationAllowed(r, nil, tc.publicURL); got != tc.want {
+			if got := BrowserMutationAllowed(r, nil, tc.publicURL); got != tc.want {
 				t.Errorf("allowed = %v, want %v", got, tc.want)
 			}
 		})
