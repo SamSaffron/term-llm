@@ -1,6 +1,7 @@
 package agents
 
 import (
+	"slices"
 	"strings"
 	"testing"
 )
@@ -28,6 +29,9 @@ func TestBuiltinSysadmin(t *testing.T) {
 	}
 	if !strings.Contains(a.SystemPrompt, "{{host_facts}}") || !strings.Contains(a.SystemPrompt, "{{host_notes}}") || !strings.Contains(a.SystemPrompt, "Always use absolute paths") {
 		t.Fatal("prompt missing host variables or guidance")
+	}
+	if !slices.Contains(a.Tools.Enabled, "show_media") {
+		t.Fatal("show_media must be enabled")
 	}
 	for _, tool := range a.Tools.Enabled {
 		if tool == "spawn_agent" {
