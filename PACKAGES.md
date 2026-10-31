@@ -163,6 +163,7 @@ One line per root-module package, generated from package doc comments by `make d
 - `internal/serveui` — embeds and serves the built web UI assets, manifests and index shell.
 - `internal/session` — owns durable sessions, messages, steering persistence and SQLite storage.
 - `internal/session/notificationdb` — implements durable logical-turn ownership and fenced notification delivery on the session SQLite transaction.
+- `internal/session/transcript` — adapts session writes to optional revision capabilities and identifies response-owned output.
 - `internal/sessiontitle` — generates and validates short and long LLM session titles.
 - `internal/share` — defines provider-neutral transcript sharing.
 - `internal/sidequestion` — builds and runs private side questions over a conversation snapshot.

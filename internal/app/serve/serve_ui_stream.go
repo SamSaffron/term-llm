@@ -42,6 +42,7 @@ func (s *serveServer) streamUIResponses(w http.ResponseWriter, r *http.Request, 
 }
 
 func (s *serveServer) streamResponseRun(ctx context.Context, w http.ResponseWriter, runtime *serveRuntime, stateful bool, replaceHistory bool, inputMessages []core.Message, llmReq core.Request, sessionID string, options startResponseRunOptions) bool {
+	options.effortChange, _ = ctx.Value(responseEffortChangeKey{}).(*responseEffortChange)
 	run, err := s.startResponseRun(runtime, stateful, replaceHistory, inputMessages, llmReq, sessionID, options)
 	if err != nil {
 		if options.modelSwap != nil && options.modelSwap.plan.enabled {

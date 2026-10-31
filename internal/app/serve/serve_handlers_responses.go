@@ -614,6 +614,10 @@ func (s *serveServer) handleResolvedResponses(w http.ResponseWriter, r *http.Req
 	// new runtime settings and syncPersistedSessionRuntime will update the row.
 	// First-party UI append requests are stateful appends.
 	runtimePlan := s.prepareResponseRuntimePlan(ctx, &req, sessionID, freshConversation)
+	if runtimePlan.effortOnlyChange {
+		ctx = withResponseEffortChange(ctx, sessionID, req.ReasoningEffort)
+		r = r.WithContext(ctx)
+	}
 	defaultProvider, requestedRuntime := runtimePlan.defaultProvider, runtimePlan.requested
 	swapPlan, reqProvider := runtimePlan.swap, runtimePlan.provider
 

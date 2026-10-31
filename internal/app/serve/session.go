@@ -146,7 +146,7 @@ func ResolveSettingsInDir(cfg *config.Config, agent *agents.Agent, cli CLIFlags,
 		s.MaxTurns = defaultMaxTurns
 	}
 
-	// MaxOutputTokens: CLI only (no agent/config fallback — provider defaults are fine)
+	// MaxOutputTokens: CLI override; providers apply configured defaults when unset.
 	s.MaxOutputTokens = cli.MaxOutputTokens
 
 	// Search: --no-search disables agent defaults; otherwise CLI or agent enables it.

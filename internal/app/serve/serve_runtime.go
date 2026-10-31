@@ -24,6 +24,7 @@ import (
 	"github.com/samsaffron/term-llm/internal/mcp"
 	"github.com/samsaffron/term-llm/internal/modelpolicy"
 	"github.com/samsaffron/term-llm/internal/session"
+	transcriptstore "github.com/samsaffron/term-llm/internal/session/transcript"
 	"github.com/samsaffron/term-llm/internal/tools"
 )
 
@@ -1251,8 +1252,16 @@ func (rt *serveRuntime) persistInitialSnapshot(ctx context.Context, sessionID st
 // keeps a compacted archive. publishInitialBoundary republishes the final
 // branchable row of provider-complete initial context.
 func (rt *serveRuntime) persistSnapshotWithInitialBoundary(ctx context.Context, sessionID string, snapshot []core.Message, reset, publishInitialBoundary bool) bool {
+	committed, published := rt.persistSnapshotWithInitialBoundaryResult(ctx, sessionID, snapshot, reset, publishInitialBoundary)
+	return committed && published
+}
+
+// persistSnapshotWithInitialBoundaryResult distinguishes a committed transcript
+// from publication of its initial boundary. Failure recovery must not append
+// input a second time if only boundary publication failed after the commit.
+func (rt *serveRuntime) persistSnapshotWithInitialBoundaryResult(ctx context.Context, sessionID string, snapshot []core.Message, reset, publishInitialBoundary bool) (committed, published bool) {
 	if rt.store == nil || sessionID == "" {
-		return false
+		return false, false
 	}
 	dbCtx, cancel := inlinePersistContext(ctx, 10*time.Second)
 	defer cancel()
@@ -1266,11 +1275,11 @@ func (rt *serveRuntime) persistSnapshotWithInitialBoundary(ctx context.Context, 
 		messages = append(messages, *sessionMsg)
 	}
 	_, err := runResponseRunPersistence(ctx, snapshot, func(fence session.ResponseRunFence) (int64, error) {
-		return writeResponseRunTranscript(session.WithResponseRunFence(dbCtx, fence), rt.store, sessionID, messages, reset)
+		return transcriptstore.WriteTranscriptWithRev(session.WithResponseRunFence(dbCtx, fence), rt.store, sessionID, messages, reset)
 	})
 	if err != nil {
 		log.Printf("[serve] session snapshot replacement (reset=%t) failed for %s: %v", reset, sessionID, err)
-		return false
+		return false, false
 	}
 	boundaryPublished := true
 	if run := responseRunFromContext(ctx); run != nil {
@@ -1294,7 +1303,7 @@ func (rt *serveRuntime) persistSnapshotWithInitialBoundary(ctx context.Context, 
 	if statusErr := rt.store.UpdateStatus(dbCtx, sessionID, session.StatusActive); statusErr != nil {
 		log.Printf("[serve] session UpdateStatus(active) failed for %s: %v", sessionID, statusErr)
 	}
-	return boundaryPublished
+	return true, boundaryPublished
 }
 
 // refreshSessionMetaAfterSnapshot reloads session metadata after a transcript
@@ -1365,7 +1374,7 @@ func (rt *serveRuntime) appendMessagesDetailed(ctx context.Context, sessionID st
 		sessionMsg := session.NewMessage(sessionID, msg, -1)
 		sessionMsg.TurnIndex = turnIndex
 		_, err := runResponseRunPersistence(ctx, []core.Message{msg}, func(fence session.ResponseRunFence) (int64, error) {
-			return addResponseRunMessage(session.WithResponseRunFence(dbCtx, fence), rt.store, sessionID, sessionMsg)
+			return transcriptstore.AddMessageWithTranscriptRev(session.WithResponseRunFence(dbCtx, fence), rt.store, sessionID, sessionMsg)
 		})
 		if err != nil {
 			log.Printf("[serve] session AddMessage failed for %s: %v", sessionID, err)
@@ -2042,6 +2051,12 @@ func (rt *serveRuntime) runOnce(ctx context.Context, stateful bool, replaceHisto
 		}
 	}
 
+	if err := rt.acceptResponseEffortChange(ctx, req.SessionID); err != nil {
+		// Reload durable input if metadata persistence aborts this admitted run.
+		rt.history, rt.historyPersisted = nil, false
+		return serveRunResult{}, err
+	}
+
 	// Keep runtime-owned history in sync with engine compaction. The engine only
 	// replaces its in-flight request; without this callback serve/web would later
 	// rebuild snapshots from stale persistence.baseHistory/persistence.inputMessages/persistence.produced and
@@ -2073,11 +2088,9 @@ func (rt *serveRuntime) runOnce(ctx context.Context, stateful bool, replaceHisto
 	rt.engine.SetTurnCompletedCallback(persistence.turnCompleted)
 	defer rt.engine.SetTurnCompletedCallback(nil)
 
-	// Safety net: on error exits, persist a full snapshot so the final DB
-	// state is consistent. If streamed text was shown before any callback fired,
-	// synthesize an assistant message from result.Text so the partial reply is
-	// not dropped. Successful runs stay on the incremental path unless a
-	// fallback snapshot is still needed to reconcile missed writes.
+	// Safety net: on error exits, retry incremental writes without replacing
+	// already-durable rows. If text arrived before any callback fired, retain it
+	// as a partial assistant reply. Success can still reconcile via a snapshot.
 	result := serveRunResult{}
 	var runErr error
 	defer func() {

@@ -253,6 +253,7 @@ func buildConstructors() map[config.ProviderType]Constructor {
 			p.SetNoStreamOptions(cfg.NoStreamOptions)
 			p.SetVLLMThinkingParam(cfg.VLLMThinkingParam)
 			p.SetModelConfigs(cfg.ModelConfigs)
+			p.SetMaxOutputTokens(cfg.MaxOutputTokens)
 			return p, nil
 		}
 		p := opencompat.NewOpenAICompatProviderFull(baseURL, chatURL, cfg.ResolvedAPIKey, cfg.Model, displayName, nil)
@@ -260,6 +261,7 @@ func buildConstructors() map[config.ProviderType]Constructor {
 		parseReasoning, includeReasoning, thinkingParam := OpenAICompatReasoningParserOptions(cfg)
 		p.SetReasoningParser(parseReasoning, includeReasoning, thinkingParam)
 		p.SetModelConfigs(cfg.ModelConfigs)
+		p.SetMaxOutputTokens(cfg.MaxOutputTokens)
 		return p, nil
 	}
 	m[config.ProviderTypeOpenAICompat] = compat

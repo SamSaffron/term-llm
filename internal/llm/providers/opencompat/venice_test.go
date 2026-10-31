@@ -3,6 +3,7 @@ package opencompat
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -663,5 +664,57 @@ func TestVeniceStream_ClaudeGetsCacheBreakpointOthersDoNot(t *testing.T) {
 		if usage == nil || usage.CachedInputTokens != 60 || usage.CacheWriteTokens != 30 || usage.InputTokens != 10 {
 			t.Fatalf("%s: usage = %+v, want input 10 cached 60 write 30", tc.model, usage)
 		}
+	}
+}
+
+func TestVeniceStream_FinishReasonLengthWithToolCallsReturnsOutputLimitError(t *testing.T) {
+	// Venice should return OutputLimitError when finish_reason "length" arrives
+	// while tool calls are in progress.
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		// Tool call chunk
+		_, _ = io.WriteString(w,
+			"data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"id\":\"call-1\",\"type\":\"function\",\"function\":{\"name\":\"shell\",\"arguments\":\"{\\\"command\\\":\\\"echo\"}}]}}]}\n\n"+
+				// finish_reason length
+				"data: {\"choices\":[{\"finish_reason\":\"length\"}]}\n\n"+
+				"data: [DONE]\n\n",
+		)
+	}))
+	defer server.Close()
+
+	provider := &VeniceProvider{OpenAICompatProvider: NewOpenAICompatProvider(server.URL, "test-key", "test-model", "Venice")}
+	stream, err := provider.Stream(context.Background(), Request{
+		Messages: []Message{UserText("hello")},
+	})
+	if err != nil {
+		t.Fatalf("stream: %v", err)
+	}
+	defer stream.Close()
+
+	var sawToolCall, sawError bool
+	for {
+		event, err := stream.Recv()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatalf("recv: %v", err)
+		}
+		switch event.Type {
+		case EventToolCall:
+			sawToolCall = true
+		case EventError:
+			sawError = true
+			var outputErr *OutputLimitError
+			if !errors.As(event.Err, &outputErr) {
+				t.Fatalf("expected OutputLimitError, got %T: %v", event.Err, event.Err)
+			}
+		}
+	}
+	if sawToolCall {
+		t.Fatal("tool call should not be emitted when finish_reason is length")
+	}
+	if !sawError {
+		t.Fatal("expected OutputLimitError")
 	}
 }

@@ -10,6 +10,7 @@ import (
 	"github.com/samsaffron/term-llm/internal/llm/core"
 	"github.com/samsaffron/term-llm/internal/llm/engine"
 	"github.com/samsaffron/term-llm/internal/session"
+	transcriptstore "github.com/samsaffron/term-llm/internal/session/transcript"
 )
 
 // serveRunSpec gives the run's durability modes explicit names at construction.
@@ -83,30 +84,21 @@ func (p *serveRunPersistence) snapshot() []core.Message {
 	defer p.mu.Unlock()
 	return p.buildSnapshotLocked()
 }
-func (p *serveRunPersistence) persistProducedSnapshot(ctx context.Context) {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	snapshot := p.buildSnapshotLocked()
-	if p.stateful {
-		p.rt.history = snapshot
-		p.rt.historyPersisted = false
-	}
-	if p.persisted {
-		p.rt.historyPersisted = p.writeSnapshotLocked(ctx, snapshot, false)
-	}
-	p.persistPlatformInjectionLocked()
-}
 
 // writeSnapshotLocked persists a whole-run snapshot: an active-context
 // replacement, or a transcript reset for an explicit fresh-history run.
 func (p *serveRunPersistence) writeSnapshotLocked(ctx context.Context, snapshot []core.Message, initial bool) bool {
-	return p.rt.persistSnapshotWithInitialBoundary(ctx, p.sessionID, snapshot, p.resetTranscript, initial)
+	committed, published := p.rt.persistSnapshotWithInitialBoundaryResult(ctx, p.sessionID, snapshot, p.resetTranscript, initial)
+	if initial && committed {
+		p.initialAppendedIdx = len(p.initialMessages)
+	}
+	return committed && published
 }
 func (p *serveRunPersistence) appendOnlyCaughtUpLocked() bool {
 	return p.appendOnlyPersisted && p.initialPersisted && p.initialAppendedIdx >= len(p.initialMessages) && p.lastAppendedIdx >= len(p.produced) && !p.assistantSnapshotDirty && !p.assistantSnapshotNeedsReconcile
 }
 func (p *serveRunPersistence) appendInitialLocked(ctx context.Context) bool {
-	if !p.appendOnlyPersisted || p.initialAppendedIdx >= len(p.initialMessages) {
+	if p.initialAppendedIdx >= len(p.initialMessages) {
 		p.initialPersisted = true
 		return true
 	}
@@ -230,7 +222,7 @@ func (p *serveRunPersistence) upsertAssistantLocked(ctx context.Context, assista
 	if p.pendingAssistantMsgID != 0 {
 		message.ID = p.pendingAssistantMsgID
 		_, err := runResponseRunPersistence(ctx, []core.Message{assistant}, func(fence session.ResponseRunFence) (int64, error) {
-			return updateResponseRunStreamingMessage(session.WithResponseRunFence(dbCtx, fence), p.rt.store, p.sessionID, message, finalize)
+			return transcriptstore.UpdateStreamingMessageWithTranscriptRev(session.WithResponseRunFence(dbCtx, fence), p.rt.store, p.sessionID, message, finalize)
 		})
 		if err == nil {
 			p.assistantSnapshotDirty = false
@@ -254,7 +246,7 @@ func (p *serveRunPersistence) upsertAssistantLocked(ctx context.Context, assista
 		message.TurnIndex = p.turnIndex
 	}
 	_, err := runResponseRunPersistence(ctx, []core.Message{assistant}, func(fence session.ResponseRunFence) (int64, error) {
-		return addResponseRunMessage(session.WithResponseRunFence(dbCtx, fence), p.rt.store, p.sessionID, message)
+		return transcriptstore.AddMessageWithTranscriptRev(session.WithResponseRunFence(dbCtx, fence), p.rt.store, p.sessionID, message)
 	})
 	if err != nil {
 		p.assistantSnapshotNeedsReconcile = true

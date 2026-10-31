@@ -22,6 +22,7 @@ import (
 	"github.com/samsaffron/term-llm/internal/llm/engine"
 	"github.com/samsaffron/term-llm/internal/llm/mockprovider"
 	"github.com/samsaffron/term-llm/internal/session"
+	transcriptstore "github.com/samsaffron/term-llm/internal/session/transcript"
 	"github.com/samsaffron/term-llm/internal/tools"
 )
 
@@ -726,7 +727,7 @@ func TestResponseRunUsesFallbackRevisionForCapabilitylessStore(t *testing.T) {
 	assistant := tagResponseRunMessage(runCtx, core.AssistantText("persisted"), 0)
 	message := session.NewMessage(sess.ID, assistant, -1)
 	if _, err := runResponseRunPersistence(runCtx, []core.Message{assistant}, func(fence session.ResponseRunFence) (int64, error) {
-		return addResponseRunMessage(session.WithResponseRunFence(ctx, fence), server.store, sess.ID, message)
+		return transcriptstore.AddMessageWithTranscriptRev(session.WithResponseRunFence(ctx, fence), server.store, sess.ID, message)
 	}); err != nil {
 		t.Fatalf("persist: %v", err)
 	}
