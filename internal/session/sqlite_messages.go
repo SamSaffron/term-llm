@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
@@ -1240,17 +1241,9 @@ func nullableTime(value time.Time) any {
 }
 
 func (s *SQLiteStore) reconcilePlanProjection(ctx context.Context, q sqliteQueryRowsExecer, sessionID string) error {
-	rows, err := q.QueryContext(ctx, `SELECT `+s.messageSelectCols()+` FROM messages WHERE session_id = ? ORDER BY sequence, id`, sessionID)
-	if err != nil {
-		return fmt.Errorf("load transcript for plan reconciliation: %w", err)
-	}
-	messages, err := scanMessageRows(rows)
-	closeErr := rows.Close()
+	messages, err := queryMessages(ctx, q, "load transcript for plan reconciliation", `SELECT `+s.messageSelectCols()+` FROM messages WHERE session_id = ? ORDER BY sequence, id`, sessionID)
 	if err != nil {
 		return err
-	}
-	if closeErr != nil {
-		return closeErr
 	}
 	llmMessages := make([]core.Message, 0, len(messages))
 	for i := range messages {
@@ -1324,26 +1317,28 @@ func (s *SQLiteStore) UndoLastUserTurn(ctx context.Context, sessionID string, ex
 	if err != nil {
 		return TranscriptMutationResult{}, fmt.Errorf("find undo user turn: %w", err)
 	}
-	rows, err := conn.QueryContext(ctx, `SELECT `+s.messageSelectCols()+` FROM messages
-		WHERE session_id = ? AND (sequence > ? OR (sequence = ? AND id >= ?))
-		ORDER BY sequence, id`, sessionID, targetSeq, targetSeq, targetID)
-	if err != nil {
-		return TranscriptMutationResult{}, fmt.Errorf("load undo suffix: %w", err)
-	}
-	suffix, err := scanMessageRows(rows)
-	closeErr := rows.Close()
+	// A direct skill invocation writes its hidden instructions just before the
+	// user row; undo and redo move them with the turn.
+	preceding, err := queryMessages(ctx, conn, "load undo turn preamble", `SELECT `+s.messageSelectCols()+` FROM messages
+		WHERE session_id = ? AND sequence >= ? AND (sequence < ? OR (sequence = ? AND id < ?))
+		ORDER BY sequence DESC, id DESC LIMIT 8`, sessionID, compactionSeq, targetSeq, targetSeq, targetID)
 	if err != nil {
 		return TranscriptMutationResult{}, err
 	}
-	if closeErr != nil {
-		return TranscriptMutationResult{}, closeErr
+	startID, startSeq := undoTurnStart(preceding, targetID, targetSeq)
+	suffix, err := queryMessages(ctx, conn, "load undo suffix", `SELECT `+s.messageSelectCols()+` FROM messages
+		WHERE session_id = ? AND (sequence > ? OR (sequence = ? AND id >= ?))
+		ORDER BY sequence, id`, sessionID, startSeq, startSeq, startID)
+	if err != nil {
+		return TranscriptMutationResult{}, err
 	}
-	if len(suffix) == 0 || suffix[0].ID != targetID {
+	target := slices.IndexFunc(suffix, func(msg Message) bool { return msg.ID == targetID })
+	if len(suffix) == 0 || suffix[0].ID != startID || target < 0 {
 		return TranscriptMutationResult{}, fmt.Errorf("undo suffix lost target row")
 	}
 	attachmentsOmitted := false
 	var composerText strings.Builder
-	for _, part := range suffix[0].Parts {
+	for _, part := range suffix[target].Parts {
 		switch part.Type {
 		case core.PartText:
 			composerText.WriteString(part.Text)
@@ -1360,7 +1355,7 @@ func (s *SQLiteStore) UndoLastUserTurn(ctx context.Context, sessionID string, ex
 	if err != nil {
 		return TranscriptMutationResult{}, fmt.Errorf("encode undo metadata: %w", err)
 	}
-	if _, err := conn.ExecContext(ctx, `DELETE FROM messages WHERE session_id = ? AND (sequence > ? OR (sequence = ? AND id >= ?))`, sessionID, targetSeq, targetSeq, targetID); err != nil {
+	if _, err := conn.ExecContext(ctx, `DELETE FROM messages WHERE session_id = ? AND (sequence > ? OR (sequence = ? AND id >= ?))`, sessionID, startSeq, startSeq, startID); err != nil {
 		return TranscriptMutationResult{}, fmt.Errorf("delete undo suffix: %w", err)
 	}
 	if _, err := conn.ExecContext(ctx, `DELETE FROM session_provider_state WHERE session_id = ?`, sessionID); err != nil {
@@ -1837,13 +1832,32 @@ func (s *SQLiteStore) GetMessagesFrom(ctx context.Context, sessionID string, fro
 		args = append(args, limit)
 	}
 
-	rows, err := s.queryDB().QueryContext(ctx, query, args...)
-	if err != nil {
-		return nil, fmt.Errorf("query messages from seq %d: %w", fromSeq, err)
-	}
-	defer rows.Close()
+	return queryMessages(ctx, s.queryDB(), fmt.Sprintf("query messages from seq %d", fromSeq), query, args...)
+}
 
-	return scanMessageRows(rows)
+// undoTurnStart moves an undo target back over the direct skill activation rows
+// written just before its user row; preceding is ordered newest first.
+func undoTurnStart(preceding []Message, id int64, sequence int) (int64, int) {
+	for i := 0; i < len(preceding) && core.IsDirectSkillActivation(preceding[i].Role, preceding[i].Parts); i++ {
+		id, sequence = preceding[i].ID, preceding[i].Sequence
+	}
+	return id, sequence
+}
+
+// queryMessages runs a message query and scans every row, wrapping a query
+// failure with label and reporting close errors that scanning did not.
+func queryMessages(ctx context.Context, q interface {
+	QueryContext(context.Context, string, ...any) (*sql.Rows, error)
+}, label, query string, args ...any) ([]Message, error) {
+	rows, err := q.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", label, err)
+	}
+	messages, err := scanMessageRows(rows)
+	if closeErr := rows.Close(); err == nil {
+		err = closeErr
+	}
+	return messages, err
 }
 
 func scanMessageRows(rows *sql.Rows) ([]Message, error) {
@@ -1888,13 +1902,7 @@ func (s *SQLiteStore) GetMessagesPageDescending(ctx context.Context, sessionID s
 		args = append(args, limit)
 	}
 
-	rows, err := s.queryDB().QueryContext(ctx, query, args...)
-	if err != nil {
-		return nil, fmt.Errorf("query messages descending: %w", err)
-	}
-	defer rows.Close()
-
-	return scanMessageRows(rows)
+	return queryMessages(ctx, s.queryDB(), "query messages descending", query, args...)
 }
 
 // GetMessageByID retrieves a single message by its global message id.
@@ -2122,30 +2130,18 @@ func (s *SQLiteStore) GetMessages(ctx context.Context, sessionID string, limit, 
 		args = append(args, offset)
 	}
 
-	rows, err := s.queryDB().QueryContext(ctx, query, args...)
-	if err != nil {
-		return nil, fmt.Errorf("query messages: %w", err)
-	}
-	defer rows.Close()
-
-	return scanMessageRows(rows)
+	return queryMessages(ctx, s.queryDB(), "query messages", query, args...)
 }
 
 // GetDiffCommentMessages retrieves only messages whose serialized parts can
 // contain typed inline-diff comment metadata. The final typed-part check remains
 // with the caller; LIKE is used only as a conservative SQLite row prefilter.
 func (s *SQLiteStore) GetDiffCommentMessages(ctx context.Context, sessionID string) ([]Message, error) {
-	rows, err := s.queryDB().QueryContext(ctx, `
+	return queryMessages(ctx, s.queryDB(), "query diff comment messages", `
 		SELECT `+s.messageSelectCols()+`
 		FROM messages
 		WHERE session_id = ? AND parts LIKE ?
 		ORDER BY sequence ASC`, sessionID, `%"Type":"diff_comment"%`)
-	if err != nil {
-		return nil, fmt.Errorf("query diff comment messages: %w", err)
-	}
-	defer rows.Close()
-
-	return scanMessageRows(rows)
 }
 
 // SetCurrent marks a session as the current one.

@@ -666,10 +666,10 @@ func (m *Model) sendMessage(content string) (tea.Model, tea.Cmd) {
 	// before the first user turn.
 	m.ensureContextMessages()
 
-	// Deferred model-switch markers from non-submitting shortcuts (Ctrl+R) are
-	// appended only when the next user turn is submitted, so repeatedly cycling
-	// effort while drafting does not spam the visible scrollback.
-	m.appendPendingModelSwitchMarker()
+	// Deferred model-switch markers (Ctrl+R) and a pending direct skill
+	// activation are written only once the turn is claimed, so drafting never
+	// spams scrollback and a refused turn leaves no skill instructions behind.
+	m.appendTurnPreamble()
 
 	// Create user message and store it
 	userMsg := &session.Message{

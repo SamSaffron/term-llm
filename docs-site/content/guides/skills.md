@@ -73,19 +73,24 @@ User-invocable skills appear alongside built-in slash commands in the terminal a
 
 Only an exact listed name invokes a skill. Prefixes such as `/rev` and unknown slash text remain ordinary prompt input. Built-in commands win collisions; use `/skills run <name> [arguments]` in the TUI to run a colliding skill explicitly.
 
+In the terminal completion menu, Enter on a partly typed skill that declares an `argument-hint` inserts `/name ` so you can add arguments; Enter again runs it. Skills without an argument hint run immediately.
+
 In the Web composer, typing `/` after other prompt text completes skill names in place, for example `please follow /review on this branch`. This only inserts the name: the message is sent as ordinary text, and the model decides whether to activate the skill. Built-in commands only complete at the start of the prompt.
 
-Useful TUI commands:
+Useful TUI commands (`/skill` and `/sk` are aliases of `/skills`):
 
 ```text
 /skills list                     # user-invocable skills and execution mode
 /skills show review              # metadata and source
 /skills run review staged        # explicit invocation, including collisions
+/skills review staged            # shorthand for /skills run
 /skills active                   # running isolated skills
 /skills cancel skill-1           # cancel only this child run
 ```
 
-A normal skill runs in the current conversation. Its expanded body is stored as hidden developer context while the concise slash invocation remains visible. A `context: fork` skill starts an isolated child with no parent transcript, displays independent progress, and returns a linked result block. Forked skills can run while the parent is streaming; Esc still targets the parent response, while the skill-run cancel action or `/skills cancel` targets the child.
+Listings open in a scrollable panel; press Esc to close it. `/skills` commands also work while a response is streaming: a normal skill is queued for the next turn and a `context: fork` skill starts right away.
+
+A normal skill runs in the current conversation. Its expanded body is stored as hidden developer context while the concise slash invocation remains visible; `/undo` and `/redo` remove and restore that context together with the turn. A `context: fork` skill starts an isolated child with no parent transcript, displays independent progress, and returns a linked result block. Forked skills can run while the parent is streaming; Esc still targets the parent response, while the skill-run cancel action or `/skills cancel` targets the child.
 
 The browser uses the same server-owned catalog and activation service. Reloading or switching sessions reconnects to active isolated runs instead of converting skill files into client-side prompt text.
 

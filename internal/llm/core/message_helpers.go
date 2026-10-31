@@ -37,3 +37,19 @@ func FlattenSystemUser(messages []Message) (string, string) {
 	}
 	return strings.Join(systemParts, "\n\n"), strings.Join(userParts, "\n\n")
 }
+
+// IsDirectSkillActivation reports whether role and parts form the hidden
+// developer row that holds a user's main-context skill instructions. Clients
+// write it directly before the user row that invokes the skill, so it belongs
+// to that turn. Isolated-run results carry a run ID and do not.
+func IsDirectSkillActivation(role Role, parts []Part) bool {
+	if role != RoleDeveloper {
+		return false
+	}
+	for _, part := range parts {
+		if part.Type == PartSkillActivation && part.SkillActivation != nil {
+			return part.SkillActivation.Execution == "main" && part.SkillActivation.RunID == ""
+		}
+	}
+	return false
+}

@@ -283,7 +283,29 @@ func (r *MessageBlockRenderer) renderEventMessage(msg *session.Message) string {
 		text = "↔ Session event"
 	}
 	style := lipgloss.NewStyle().Foreground(r.theme.Muted).Italic(true)
+	if header, output, ok := isolatedSkillResult(msg, text); ok {
+		// The child agent's answer is Markdown; render it like assistant text
+		// beneath the muted run status line.
+		return style.Render(header) + "\n\n" + r.renderMarkdown(output) + "\n\n"
+	}
 	return style.Render(text) + "\n\n"
+}
+
+// isolatedSkillResult splits the event recorded when an isolated skill run
+// finishes into its status header and the child agent's output, if any.
+func isolatedSkillResult(msg *session.Message, text string) (header, output string, ok bool) {
+	for _, part := range msg.Parts {
+		if part.Type != core.PartSkillActivation || part.SkillActivation == nil {
+			continue
+		}
+		if part.SkillActivation.RunID == "" || part.SkillActivation.CompletedAt == "" {
+			return "", "", false
+		}
+		header, output, _ = strings.Cut(text, "\n\n")
+		output = strings.TrimSpace(output)
+		return header, output, output != ""
+	}
+	return "", "", false
 }
 
 func (r *MessageBlockRenderer) renderPathNotePlaceholder() string {

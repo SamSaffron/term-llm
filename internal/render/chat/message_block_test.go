@@ -422,3 +422,34 @@ func TestMessageBlockRenderer_PathNoteUsesCompactPlaceholder(t *testing.T) {
 		t.Fatalf("path-note placeholder segment type = (%v, %v, %v), want tool-like activity", block.HasSegmentTypes, block.FirstSegmentType, block.LastSegmentType)
 	}
 }
+
+func TestMessageBlockRenderer_IsolatedSkillResultRendersMarkdown(t *testing.T) {
+	renderer := NewMessageBlockRenderer(80, ui.RenderMarkdown, false)
+	event := func(text string, provenance core.SkillActivationProvenance) *session.Message {
+		return &session.Message{ID: 1, Role: core.RoleEvent, TextContent: text, Parts: []core.Part{
+			{Type: core.PartSkillActivation, SkillActivation: &provenance},
+			{Type: core.PartText, Text: text},
+		}}
+	}
+	result := "↳ Skill /review · @reviewer · complete · 2s · run skill-1\n\n## Findings\n\n- **bug** in `parse`"
+	rendered := ui.StripANSI(renderer.Render(event(result, core.SkillActivationProvenance{
+		Name: "review", Execution: "isolated", RunID: "skill-1", Status: "complete", CompletedAt: "2026-10-31T00:00:00Z",
+	})).Rendered)
+	if !strings.Contains(rendered, "↳ Skill /review") || !strings.Contains(rendered, "Findings") || !strings.Contains(rendered, "• bug in parse") {
+		t.Fatalf("isolated skill result = %q", rendered)
+	}
+	for _, raw := range []string{"- **bug**", "`parse`"} {
+		if strings.Contains(rendered, raw) {
+			t.Fatalf("isolated skill result kept raw markdown %q: %q", raw, rendered)
+		}
+	}
+
+	// The invocation event of a still-running run stays a plain status line.
+	invocation := "↳ Skill invocation /review **x** · isolated · skill-1"
+	running := ui.StripANSI(renderer.Render(event(invocation, core.SkillActivationProvenance{
+		Name: "review", Execution: "isolated", RunID: "skill-1", Status: "running",
+	})).Rendered)
+	if !strings.Contains(running, invocation) {
+		t.Fatalf("running invocation event = %q", running)
+	}
+}

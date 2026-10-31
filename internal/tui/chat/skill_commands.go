@@ -3,11 +3,14 @@ package chat
 import (
 	"context"
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 	"time"
 
 	tea "charm.land/bubbletea/v2"
+	"github.com/muesli/reflow/wordwrap"
+	"github.com/muesli/reflow/wrap"
 	"github.com/samsaffron/term-llm/internal/llm/core"
 	"github.com/samsaffron/term-llm/internal/session"
 	"github.com/samsaffron/term-llm/internal/skills"
@@ -48,6 +51,50 @@ func (m *Model) skillSlashEntries() []Command {
 	return entries
 }
 
+const skillsCommandName = "skills"
+
+// isSkillsCommandToken reports whether a slash token names /skills or one of
+// its aliases.
+func isSkillsCommandToken(token string) bool {
+	token = strings.ToLower(strings.TrimPrefix(token, "/"))
+	for _, command := range AllCommands() {
+		if command.Name == skillsCommandName {
+			return token == command.Name || slices.Contains(command.Aliases, token)
+		}
+	}
+	return false
+}
+
+// isSkillSlashInput reports whether input invokes /skills or a user-invocable
+// skill by its exact slash name, following ExecuteCommand's resolution order.
+func (m *Model) isSkillSlashInput(input string) bool {
+	token, _ := splitRawCommandToken(input)
+	if !strings.HasPrefix(token, "/") {
+		return false
+	}
+	if isSkillsCommandToken(token) {
+		return true
+	}
+	name := strings.ToLower(strings.TrimPrefix(token, "/"))
+	if builtInSlashNames()[name] {
+		return false
+	}
+	_, _, ok := m.userInvocableSkill(name)
+	return ok
+}
+
+// handleStreamingSkillCommand runs skill slash input while the parent streams
+// instead of sending it as steering. /skills subcommands are UI-local, isolated
+// skills start immediately, and executeSkill queues main-context skills for the
+// next parent turn. Failures keep the composer text for editing.
+func (m *Model) handleStreamingSkillCommand(input string) (tea.Model, tea.Cmd, bool) {
+	if !m.isSkillSlashInput(input) {
+		return m, nil, false
+	}
+	updated, cmd := m.ExecuteCommand(input)
+	return updated, cmd, true
+}
+
 func completionHintSuffix(hint string) string {
 	if strings.TrimSpace(hint) == "" {
 		return ""
@@ -80,14 +127,9 @@ func (m *Model) filterStreamingSlashEntries(query string) []Command {
 	items := m.filterSlashEntries(query)
 	streaming := make([]Command, 0, len(items))
 	for _, item := range items {
-		if item.Kind == SlashEntrySkill {
-			_, metadata, ok := m.userInvocableSkill(item.Name)
-			if ok && metadata.Execution == skills.SkillExecutionIsolatedAgent {
-				streaming = append(streaming, item)
-			}
-			continue
-		}
-		if isStreamingLocalSlashCommand("/" + item.Name) {
+		// executeSkill queues main-context skills for the next parent turn and
+		// starts isolated ones immediately, so every skill entry is safe.
+		if item.Kind == SlashEntrySkill || item.Name == skillsCommandName || isStreamingLocalSlashCommand("/"+item.Name) {
 			streaming = append(streaming, item)
 		}
 	}
@@ -127,18 +169,6 @@ func (m *Model) isSlashCommandLike(input string) bool {
 	name := strings.TrimPrefix(parts[0], "/")
 	_, _, ok := m.userInvocableSkill(name)
 	return ok
-}
-
-func (m *Model) isStreamingSlashCommand(input string) bool {
-	if isStreamingLocalSlashCommand(input) {
-		return true
-	}
-	parts := strings.Fields(input)
-	if len(parts) == 0 || !strings.HasPrefix(parts[0], "/") {
-		return false
-	}
-	_, metadata, ok := m.userInvocableSkill(strings.TrimPrefix(parts[0], "/"))
-	return ok && metadata.Execution == skills.SkillExecutionIsolatedAgent
 }
 
 type queuedMainSkillActivation struct {
@@ -182,38 +212,48 @@ func (m *Model) executeMainSkillActivation(activation *skills.Activation, displa
 		return m.showFooterError(err.Error())
 	}
 	m.applySkillAllowedTools(activation)
-	m.persistSkillActivationContext(activation)
-	return m.sendMessage(displayInvocation)
+	m.pendingSkillActivation = activation
+	updated, cmd := m.sendMessage(displayInvocation)
+	if m.pendingSkillActivation != nil {
+		// sendMessage refused before claiming the turn (another process owns
+		// it, a shell command is running, ...), so nothing was written. Drop the
+		// activation's scoped tools and filter instead of leaking them.
+		m.pendingSkillActivation = nil
+		m.restoreSkillAllowedTools()
+	}
+	return updated, cmd
 }
 
-func (m *Model) queueMainSkillDuringStream(input string) (tea.Model, tea.Cmd, bool) {
-	token, rawArgs := splitRawCommandToken(input)
-	name := strings.ToLower(strings.TrimPrefix(token, "/"))
-	if name == "" || builtInSlashNames()[name] {
-		return m, nil, false
+// appendTurnPreamble writes the rows that belong directly before a claimed
+// user turn: a deferred model-switch marker, then the pending direct skill
+// activation, which /undo removes together with the turn.
+func (m *Model) appendTurnPreamble() {
+	m.appendPendingModelSwitchMarker()
+	if activation := m.pendingSkillActivation; activation != nil {
+		m.pendingSkillActivation = nil
+		m.persistSkillActivationContext(activation)
 	}
-	_, metadata, ok := m.userInvocableSkill(name)
-	if !ok || metadata.Execution != skills.SkillExecutionMain {
-		return m, nil, false
-	}
-	activation, err := skills.NewActivator(m.skillsSetup.Registry).Activate(skills.ActivationRequest{
-		Name: name, RawArgs: rawArgs, Origin: skills.SkillActivationUser,
-	})
-	if err != nil {
-		updated, cmd := m.showFooterError(err.Error())
-		return updated, cmd, true
-	}
-	if err := m.validateMainSkillAgentMentions(activation, strings.TrimSpace(input)); err != nil {
-		updated, cmd := m.showFooterError(err.Error())
-		return updated, cmd, true
+}
+
+// SetSkillsSetup installs the session-bound skill registry used for slash
+// discovery and direct activation. The setup is reused across keystrokes; its
+// registry cache notices ordinary SKILL.md edits through file fingerprints.
+func (m *Model) SetSkillsSetup(setup *skills.Setup) {
+	m.skillsSetup = setup
+}
+
+// queueMainSkillActivation defers a main-context skill while the parent turn
+// owns the engine; startNextQueuedMainSkill runs it at the turn boundary.
+func (m *Model) queueMainSkillActivation(activation *skills.Activation, displayInvocation string) (tea.Model, tea.Cmd) {
+	if err := m.validateMainSkillAgentMentions(activation, displayInvocation); err != nil {
+		return m.showFooterError(err.Error())
 	}
 	m.queuedMainSkillActivations = append(m.queuedMainSkillActivations, queuedMainSkillActivation{
-		Activation: activation, DisplayInvocation: strings.TrimSpace(input),
+		Activation: activation, DisplayInvocation: displayInvocation,
 	})
 	m.setTextareaValue("")
 	m.completions.Hide()
-	updated, cmd := m.showFooterMuted("Queued " + strings.TrimSpace(input) + " for the next parent turn.")
-	return updated, cmd, true
+	return m.showFooterMuted("Queued " + displayInvocation + " for the next parent turn.")
 }
 
 func (m *Model) startNextQueuedMainSkill() tea.Cmd {
@@ -239,20 +279,22 @@ func (m *Model) executeSkill(name, rawArgs, displayInvocation string) (tea.Model
 	if m.skillsSetup == nil || m.skillsSetup.Registry == nil {
 		return m.showFooterError("Skills are not enabled for this session.")
 	}
-	name = strings.ToLower(strings.TrimSpace(name))
-	if m.worktreeOperationBusy() {
-		return m.showFooterWarning("Wait for the current worktree operation to finish before invoking a skill.")
-	}
-
 	activation, err := skills.NewActivator(m.skillsSetup.Registry).Activate(skills.ActivationRequest{
-		Name:    name,
+		Name:    strings.ToLower(strings.TrimSpace(name)),
 		RawArgs: rawArgs,
 		Origin:  skills.SkillActivationUser,
 	})
 	if err != nil {
 		return m.showFooterError(err.Error())
 	}
-	if activation.Metadata.Execution == skills.SkillExecutionIsolatedAgent {
+	isolated := activation.Metadata.Execution == skills.SkillExecutionIsolatedAgent
+	if m.streaming && !isolated {
+		return m.queueMainSkillActivation(activation, displayInvocation)
+	}
+	if m.worktreeOperationBusy() {
+		return m.showFooterWarning("Wait for the current worktree operation to finish before invoking a skill.")
+	}
+	if isolated {
 		return m.startIsolatedSkillActivation(activation, displayInvocation)
 	}
 	return m.executeMainSkillActivation(activation, displayInvocation)
@@ -405,45 +447,45 @@ func skillActivationProvenance(activation *skills.Activation) *core.SkillActivat
 	}
 }
 
+// executeSkillsCommand handles /skills. Listings open a content dialog because
+// tea.Println output is dropped while the chat owns the alternate screen.
 func (m *Model) executeSkillsCommand(args []string, rawArgs string) (tea.Model, tea.Cmd) {
 	if m.skillsSetup == nil || m.skillsSetup.Registry == nil {
 		return m.showFooterError("Skills are not enabled for this session.")
 	}
-	if len(args) == 0 || args[0] == "list" {
-		content, err := m.skillListMarkdown()
+	subcommand := ""
+	if len(args) > 0 {
+		subcommand = strings.ToLower(args[0])
+	}
+	switch subcommand {
+	case "", "list":
+		content, err := m.skillListText()
 		if err != nil {
 			return m.showFooterError(err.Error())
 		}
-		return m.showSystemMessage(content)
-	}
-
-	switch args[0] {
+		return m.showSkillsDialog("Skills", content)
 	case "show":
 		if len(args) != 2 {
 			return m.showFooterError("Usage: /skills show <name>")
 		}
-		content, err := m.skillShowMarkdown(args[1])
+		content, err := m.skillShowText(args[1])
 		if err != nil {
 			return m.showFooterError(err.Error())
 		}
-		return m.showSystemMessage(content)
+		return m.showSkillsDialog("Skill: "+strings.ToLower(args[1]), content)
 	case "run":
 		_, afterSubcommand := splitRawCommandToken(rawArgs)
 		name, invocationArgs := splitRawCommandToken(afterSubcommand)
 		if name == "" {
 			return m.showFooterError("Usage: /skills run <name> [arguments]")
 		}
-		display := "/skills run " + name
-		if invocationArgs != "" {
-			display += " " + invocationArgs
-		}
-		return m.executeSkill(name, invocationArgs, display)
+		return m.executeSkill(name, invocationArgs, joinInvocation("/skills run "+name, invocationArgs))
 	case "active":
-		content := m.activeSkillRunsMarkdown()
-		if strings.Contains(content, "\n") {
-			return m.showSystemMessage(content)
+		if content := m.activeSkillRunsText(); content != "" {
+			return m.showSkillsDialog("Active skill runs", content)
 		}
-		return m.showFooterMuted(content)
+		m.setTextareaValue("")
+		return m.showFooterMuted("No active isolated skill runs.")
 	case "cancel":
 		if len(args) != 2 {
 			return m.showFooterError("Usage: /skills cancel <run-id>")
@@ -451,10 +493,35 @@ func (m *Model) executeSkillsCommand(args []string, rawArgs string) (tea.Model, 
 		if err := m.cancelSkillRun(args[1]); err != nil {
 			return m.showFooterError(err.Error())
 		}
+		m.setTextareaValue("")
 		return m.showFooterMuted("Cancelling isolated skill run " + args[1] + "…")
-	default:
-		return m.showFooterError("Usage: /skills [list|show|run|active|cancel]")
 	}
+	// "/skills <name> [arguments]" is shorthand for /skills run.
+	name, invocationArgs := splitRawCommandToken(rawArgs)
+	if _, _, ok := m.userInvocableSkill(name); ok {
+		name = strings.ToLower(name)
+		display := "/" + name
+		if builtInSlashNames()[name] {
+			display = "/skills run " + name
+		}
+		return m.executeSkill(name, invocationArgs, joinInvocation(display, invocationArgs))
+	}
+	return m.showFooterError(fmt.Sprintf("Unknown skill %q. Usage: /skills [list|show|run|active|cancel] or /skills <name> [arguments]", name))
+}
+
+func joinInvocation(command, args string) string {
+	if args == "" {
+		return command
+	}
+	return command + " " + args
+}
+
+func (m *Model) showSkillsDialog(title, content string) (tea.Model, tea.Cmd) {
+	m.setTextareaValue("")
+	m.completions.Hide()
+	m.clearFooterMessage()
+	m.dialog.ShowContent(title, content)
+	return m, nil
 }
 
 func splitRawCommandToken(raw string) (token, rest string) {
@@ -469,52 +536,37 @@ func splitRawCommandToken(raw string) (token, rest string) {
 	return raw[:index], strings.TrimSpace(raw[index:])
 }
 
+// skillArgumentCompletionItems completes /skills (and its aliases): the
+// subcommand itself, skill names after run/show, and active run IDs after
+// cancel. Every /skills subcommand is safe while the parent streams.
 func (m *Model) skillArgumentCompletionItems(query string) ([]Command, bool) {
-	lower := strings.ToLower(query)
-	var prefix, partial string
-	switch {
-	case strings.HasPrefix(lower, "skills run "):
-		prefix = "skills run "
-		partial = strings.TrimSpace(query[len(prefix):])
-	case strings.HasPrefix(lower, "sk run "):
-		prefix = "sk run "
-		partial = strings.TrimSpace(query[len(prefix):])
-	case strings.HasPrefix(lower, "skills show "):
-		prefix = "skills show "
-		partial = strings.TrimSpace(query[len(prefix):])
-	case strings.HasPrefix(lower, "sk show "):
-		prefix = "sk show "
-		partial = strings.TrimSpace(query[len(prefix):])
-	case strings.HasPrefix(lower, "skills cancel "):
-		prefix = "skills cancel "
-		partial = strings.TrimSpace(query[len(prefix):])
-	case strings.HasPrefix(lower, "sk cancel "):
-		prefix = "sk cancel "
-		partial = strings.TrimSpace(query[len(prefix):])
-	default:
+	token, rest, ok := strings.Cut(query, " ")
+	if !ok || !isSkillsCommandToken(token) {
 		return nil, false
 	}
-	if strings.Contains(prefix, " cancel ") {
+	subcommand, partial, ok := strings.Cut(rest, " ")
+	if !ok {
+		return filterCommandEntries(AllCommands(), query), true
+	}
+	subcommand = strings.ToLower(subcommand)
+	prefix := strings.ToLower(token) + " " + subcommand + " "
+	partial = strings.ToLower(strings.TrimSpace(partial))
+	if subcommand == "cancel" {
 		var items []Command
 		for _, state := range m.skillRuns {
-			if state == nil || (state.Status != "running" && state.Status != "cancelling") {
-				continue
+			if state != nil && (state.Status == "running" || state.Status == "cancelling") && strings.HasPrefix(state.ID, partial) {
+				items = append(items, Command{Name: prefix + state.ID, Description: "/" + state.Name + " · " + state.Status})
 			}
-			if partial != "" && !strings.HasPrefix(state.ID, partial) {
-				continue
-			}
-			items = append(items, Command{Name: prefix + state.ID, Description: "/" + state.Name + " · " + state.Status})
 		}
 		sort.Slice(items, func(i, j int) bool { return items[i].Name < items[j].Name })
 		return items, true
 	}
-	if m.skillsSetup == nil || m.skillsSetup.Registry == nil {
+	if (subcommand != "run" && subcommand != "show") || m.skillsSetup == nil || m.skillsSetup.Registry == nil {
 		return nil, true
 	}
-
 	var catalog []*skills.Skill
 	var err error
-	if strings.Contains(prefix, " run ") {
+	if subcommand == "run" {
 		catalog, _, err = m.skillsSetup.Registry.ListUserInvocable()
 	} else {
 		catalog, err = m.skillsSetup.Registry.List()
@@ -525,58 +577,62 @@ func (m *Model) skillArgumentCompletionItems(query string) ([]Command, bool) {
 	reserved := builtInSlashNames()
 	items := make([]Command, 0, len(catalog))
 	for _, skill := range catalog {
-		if partial != "" && !strings.HasPrefix(skill.Name, strings.ToLower(partial)) {
+		if !strings.HasPrefix(skill.Name, partial) {
 			continue
 		}
-		if m.streaming && strings.Contains(prefix, " run ") {
+		item := Command{Name: prefix + skill.Name, Description: skill.Description + " · " + skill.Source.SourceName(), Kind: SlashEntrySkill}
+		if reserved[skill.Name] {
+			item.Description += " · built-in collision"
+		}
+		if subcommand == "run" {
 			metadata, metadataErr := skills.InvocationFor(skill)
-			if metadataErr != nil || metadata.Execution != skills.SkillExecutionIsolatedAgent {
+			if metadataErr != nil {
 				continue
 			}
+			item.ArgumentHint = metadata.ArgumentHint
 		}
-		description := skill.Description + " · " + skill.Source.SourceName()
-		if reserved[skill.Name] {
-			description += " · built-in collision"
-		}
-		items = append(items, Command{Name: prefix + skill.Name, Description: description, Kind: SlashEntrySkill})
+		items = append(items, item)
 	}
 	return items, true
 }
 
-func (m *Model) skillListMarkdown() (string, error) {
+func (m *Model) skillListText() (string, error) {
 	catalog, diagnostics, err := m.skillsSetup.Registry.ListUserInvocable()
 	if err != nil {
 		return "", fmt.Errorf("list skills: %w", err)
 	}
-	var builder strings.Builder
-	builder.WriteString("## User-invocable skills\n\n")
-	if len(catalog) == 0 {
-		builder.WriteString("No user-invocable skills are installed.\n")
-	}
 	reserved := builtInSlashNames()
+	var rows [][2]string
+	width := 0
 	for _, skill := range catalog {
 		metadata, err := skills.InvocationFor(skill)
 		if err != nil {
 			continue
 		}
-		invocation := "/" + skill.Name
+		invocation, detail := "/"+skill.Name, skill.Description+" · "+skill.Source.SourceName()
 		if reserved[skill.Name] {
-			invocation = "/skills run " + skill.Name + " (built-in collision)"
+			invocation = "/skills run " + skill.Name
+			detail += " · /" + skill.Name + " is a built-in command"
 		}
-		builder.WriteString(fmt.Sprintf("- `%s%s` — %s · %s", invocation, completionHintSuffix(metadata.ArgumentHint), skill.Description, skill.Source.SourceName()))
 		if metadata.Execution == skills.SkillExecutionIsolatedAgent {
-			builder.WriteString(" · isolated agent `" + metadata.Agent + "`")
+			detail += " · isolated @" + metadata.Agent
 		}
-		builder.WriteString("\n")
+		invocation += completionHintSuffix(metadata.ArgumentHint)
+		rows = append(rows, [2]string{invocation, detail})
+		width = max(width, len(invocation))
+	}
+	content := ""
+	if len(rows) == 0 {
+		content = "No user-invocable skills are installed.\n"
 	}
 	for _, diagnostic := range diagnostics {
-		builder.WriteString(fmt.Sprintf("- ⚠ `%s` — %v\n", diagnostic.Name, diagnostic.Err))
+		rows = append(rows, [2]string{"⚠ " + diagnostic.Name, diagnostic.Err.Error()})
 	}
-	builder.WriteString("\nUse `/skills show <name>` for metadata or `/skills run <name> ...` for explicit invocation.\n")
-	return builder.String(), nil
+	content += m.alignedDialogRows(rows, min(width, 32))
+	return content + "\n" + wordwrap.String("Run a skill with /<name> [arguments]. /skills show <name> shows its details.", m.dialogTextWidth()), nil
 }
 
-func (m *Model) skillShowMarkdown(name string) (string, error) {
+func (m *Model) skillShowText(name string) (string, error) {
 	skill, err := m.skillsSetup.Registry.Get(strings.ToLower(strings.TrimSpace(name)))
 	if err != nil {
 		return "", err
@@ -585,25 +641,51 @@ func (m *Model) skillShowMarkdown(name string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	var builder strings.Builder
-	builder.WriteString("## Skill: `" + skill.Name + "`\n\n")
-	builder.WriteString("- Description: " + skill.Description + "\n")
-	builder.WriteString("- Source: " + skill.Source.SourceName() + "\n")
-	builder.WriteString("- Path: `" + skill.SourcePath + "`\n")
-	builder.WriteString("- User invocable: " + fmt.Sprint(metadata.UserInvocable) + "\n")
-	builder.WriteString("- Model invocable: " + fmt.Sprint(!metadata.DisableModelInvocation) + "\n")
-	builder.WriteString("- Execution: " + metadata.Execution.String() + "\n")
-	if metadata.Agent != "" {
-		builder.WriteString("- Agent: `" + metadata.Agent + "`\n")
+	invocation := "/" + skill.Name + completionHintSuffix(metadata.ArgumentHint)
+	if builtInSlashNames()[skill.Name] {
+		invocation = "/skills run " + skill.Name + completionHintSuffix(metadata.ArgumentHint) + " (/" + skill.Name + " is a built-in command)"
+	}
+	if !metadata.UserInvocable {
+		invocation = "model only (user-invocable: false)"
+	}
+	execution := "main (adds instructions to this conversation)"
+	if metadata.Execution == skills.SkillExecutionIsolatedAgent {
+		execution = "isolated child agent @" + metadata.Agent
+	}
+	modelInvocable := "yes"
+	if metadata.DisableModelInvocation {
+		modelInvocable = "no (disable-model-invocation)"
+	}
+	rows := [][2]string{
+		{"Description", skill.Description},
+		{"Invoke", invocation},
+		{"Execution", execution},
+		{"Model invocable", modelInvocable},
+		{"Source", skill.Source.SourceName()},
+		{"Path", skill.SourcePath},
 	}
 	if metadata.Model != "" {
-		builder.WriteString("- Model: `" + metadata.Model + "`\n")
+		rows = append(rows, [2]string{"Model", metadata.Model})
 	}
-	if builtInSlashNames()[skill.Name] {
-		builder.WriteString("- Collision: reserved built-in; invoke with `/skills run " + skill.Name + "`\n")
-	}
+	content := m.alignedDialogRows(rows, 15)
 	if skill.HasResources() {
-		builder.WriteString("\n" + skill.ResourceTree() + "\n")
+		content += "\n" + skill.ResourceTree()
 	}
-	return builder.String(), nil
+	return content, nil
+}
+
+// alignedDialogRows formats label/detail rows for a content dialog, wrapping
+// each detail under its column (at word boundaries where possible).
+func (m *Model) alignedDialogRows(rows [][2]string, labelWidth int) string {
+	indent := strings.Repeat(" ", labelWidth+4)
+	detailWidth := max(20, m.dialogTextWidth()-len(indent))
+	var builder strings.Builder
+	for _, row := range rows {
+		lines := strings.Split(wrap.String(wordwrap.String(row[1], detailWidth), detailWidth), "\n")
+		fmt.Fprintf(&builder, "  %-*s  %s\n", labelWidth, row[0], lines[0])
+		for _, line := range lines[1:] {
+			builder.WriteString(indent + line + "\n")
+		}
+	}
+	return builder.String()
 }

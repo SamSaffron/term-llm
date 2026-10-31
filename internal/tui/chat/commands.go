@@ -250,9 +250,9 @@ func AllCommands() []Command {
 		},
 		{
 			Name:        "skills",
-			Aliases:     []string{"sk"},
+			Aliases:     []string{"sk", "skill"},
 			Description: "List, inspect, invoke, and cancel skills",
-			Usage:       "/skills [list|show|run|active|cancel]",
+			Usage:       "/skills [list|show|run|active|cancel|<name>]",
 			Subcommands: []Subcommand{
 				{Name: "list", Description: "List user-invocable skills"},
 				{Name: "show", Description: "Show skill metadata and resources"},
@@ -673,6 +673,10 @@ func (m *Model) showSystemMessage(content string) (tea.Model, tea.Cmd) {
 	}
 
 	m.clearFooterMessage()
+	if m.altScreen && trimmed != "" {
+		// tea.Println output is dropped while the alternate screen is active.
+		return m.showAltScreenSystemMessage(trimmed)
+	}
 
 	// Fall back to scrollback for rich / multiline output.
 	rendered := m.renderMarkdown(content)

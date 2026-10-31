@@ -10,12 +10,18 @@ import (
 func (m *Model) handleCompletionKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd, bool) {
 	switch {
 	case key.Matches(msg, key.NewBinding(key.WithKeys("enter"))):
-		// Enter executes immediately with the selected command
+		// Enter executes the selected command; a partly typed skill that takes
+		// arguments is completed first so they can be added.
 		selected := m.completions.Selected()
 		if selected != nil {
 			// Capture typed input before clearing. Worktree commands clear their own
 			// composer only after validation succeeds so failed commands remain editable.
 			input := m.textarea.Value()
+			if completesBeforeRunning(*selected, input) {
+				m.setTextareaValue("/" + selected.Name + " ")
+				m.updateCompletions()
+				return m, nil, true
+			}
 			m.completions.Hide()
 			clearBeforeExecute := selected.Kind != SlashEntrySkill && !strings.HasPrefix(selected.Name, "worktree")
 			if clearBeforeExecute {
@@ -73,24 +79,19 @@ func (m *Model) handleCompletionKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd, bo
 	case key.Matches(msg, key.NewBinding(key.WithKeys("down", "ctrl+n"))):
 		m.completions.Update(msg)
 		return m, nil, true
-	case key.Matches(msg, key.NewBinding(key.WithKeys("backspace"))):
-		// Update query on backspace
-		value := m.textarea.Value()
-		if len(value) > 1 {
-			m.setTextareaValue(value[:len(value)-1])
-			m.updateCompletions()
-		} else if len(value) == 1 {
-			m.setTextareaValue("")
-			m.completions.Hide()
-		}
-		return m, nil, true
-	default:
-		// Add character to query
-		if len(msg.String()) == 1 {
-			m.setTextareaValue(m.textarea.Value() + msg.String())
-			m.updateCompletions()
-			return m, nil, true
-		}
 	}
+	// Typing and deletion edit the composer at the cursor; the composer key
+	// handlers then refresh or hide the popup for the new text.
 	return m, nil, false
+}
+
+// completesBeforeRunning reports whether Enter should only insert a selected
+// skill that takes arguments: a partially typed name has had no chance to
+// receive them. An exactly typed name, or one followed by arguments, runs.
+func completesBeforeRunning(selected Command, input string) bool {
+	if selected.Kind != SlashEntrySkill || strings.TrimSpace(selected.ArgumentHint) == "" {
+		return false
+	}
+	typed := strings.Fields(strings.ToLower(strings.TrimPrefix(strings.TrimSpace(input), "/")))
+	return len(typed) <= len(strings.Fields(selected.Name)) && strings.Join(typed, " ") != selected.Name
 }

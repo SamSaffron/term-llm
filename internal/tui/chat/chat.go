@@ -335,6 +335,7 @@ type Model struct {
 	skillDynamicToolNames        []string
 	skillDynamicEnginePrevious   map[string]core.Tool
 	skillDynamicRegistryPrevious map[string]core.Tool
+	pendingSkillActivation       *skills.Activation // written by sendMessage once the turn is claimed
 	sessionInputsObserver        func(*session.Session, string, string)
 	systemPromptOverridden       bool
 	systemPromptOverride         string
@@ -1839,13 +1840,6 @@ func (m *Model) SetRuntimeSystemContextResolver(resolver func(agent *agents.Agen
 	m.runtimeSystemContextResolver = resolver
 	m.runtimeSystemContext = current
 	m.SetSkillsSetup(current.Skills)
-}
-
-// SetSkillsSetup installs the session-bound skill registry used for slash
-// discovery and direct activation. The setup is reused across keystrokes; its
-// registry cache notices ordinary SKILL.md edits through file fingerprints.
-func (m *Model) SetSkillsSetup(setup *skills.Setup) {
-	m.skillsSetup = setup
 }
 
 // SetGuardianReviewerRefresh configures reviewer replacement after model changes.

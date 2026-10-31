@@ -68,7 +68,7 @@ Skill compact
 	if !m.isSlashCommandLike("/Review internal/config") {
 		t.Fatal("mixed-case skill invocation was not recognized")
 	}
-	if _, err := m.skillShowMarkdown("Review"); err != nil {
+	if _, err := m.skillShowText("Review"); err != nil {
 		t.Fatalf("mixed-case /skills show lookup failed: %v", err)
 	}
 	if m.isSlashCommandLike("/rev internal/config") {
@@ -232,7 +232,7 @@ func TestMainContextSkillQueuesDuringParentStream(t *testing.T) {
 	m.streaming = true
 	m.setTextareaValue("/explain internal/config")
 
-	updated, _, handled := m.queueMainSkillDuringStream(m.textarea.Value())
+	updated, _, handled := m.handleStreamingSkillCommand(m.textarea.Value())
 	m = updated.(*Model)
 	if !handled || len(m.queuedMainSkillActivations) != 1 {
 		t.Fatalf("queued activations = %#v handled=%v", m.queuedMainSkillActivations, handled)
@@ -263,7 +263,7 @@ func TestQueuedMainContextSkillWaitsForWorktreeOperation(t *testing.T) {
 	m := newTestChatModel(false)
 	m.SetSkillsSetup(&skills.Setup{Registry: registry})
 	m.streaming = true
-	updated, _, handled := m.queueMainSkillDuringStream("/explain internal/config")
+	updated, _, handled := m.handleStreamingSkillCommand("/explain internal/config")
 	m = updated.(*Model)
 	m.streaming = false
 	m.worktreeOperation = "promote"

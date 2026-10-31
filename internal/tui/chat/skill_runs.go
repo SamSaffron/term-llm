@@ -266,9 +266,12 @@ func (m *Model) handleSkillRunDone(message skillRunDoneMsg) tea.Cmd {
 		return m.quitCmd()
 	}
 
-	notice := m.skillRunResultText(state, message.Err)
 	if m.altScreen {
 		return nil
+	}
+	notice := m.skillRunResultText(state, message.Err)
+	if header, output, ok := strings.Cut(notice, "\n\n"); ok {
+		notice = header + "\n\n" + m.renderMarkdown(output)
 	}
 	return tea.Println(notice)
 }
@@ -397,7 +400,8 @@ func (m *Model) flushPendingSkillResults() {
 	}
 }
 
-func (m *Model) activeSkillRunsMarkdown() string {
+// activeSkillRunsText lists running isolated skills, or returns "" when none.
+func (m *Model) activeSkillRunsText() string {
 	var states []*skillRunState
 	for _, state := range m.skillRuns {
 		if state != nil && (state.Status == "running" || state.Status == "cancelling") {
@@ -406,14 +410,13 @@ func (m *Model) activeSkillRunsMarkdown() string {
 	}
 	sort.Slice(states, func(i, j int) bool { return states[i].StartedAt.Before(states[j].StartedAt) })
 	if len(states) == 0 {
-		return "No active isolated skill runs."
+		return ""
 	}
 	var builder strings.Builder
-	builder.WriteString("## Active isolated skill runs\n\n")
 	for _, state := range states {
-		builder.WriteString(fmt.Sprintf("- `%s` · `/%s` · @%s · %s · %s\n", state.ID, state.Name, state.Agent, state.Status, time.Since(state.StartedAt).Round(time.Second)))
+		fmt.Fprintf(&builder, "  %s  /%s · @%s · %s · %s\n", state.ID, state.Name, state.Agent, state.Status, time.Since(state.StartedAt).Round(time.Second))
 	}
-	builder.WriteString("\nUse `/skills cancel <run-id>` to cancel a run.\n")
+	builder.WriteString("\nCancel a run with /skills cancel <run-id>.")
 	return builder.String()
 }
 

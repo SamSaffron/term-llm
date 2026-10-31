@@ -118,12 +118,12 @@ func (m *Model) handleStreamingSend() (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	if strings.HasPrefix(raw, "/") {
-		if updated, cmd, handled := m.queueMainSkillDuringStream(raw); handled {
+		if updated, cmd, handled := m.handleStreamingSkillCommand(raw); handled {
 			m.invalidateAltScreenStreamingViewportCache()
 			return updated, tea.Sequence(tea.ClearScreen, cmd)
 		}
 	}
-	if strings.HasPrefix(raw, "/") && m.isStreamingSlashCommand(raw) {
+	if strings.HasPrefix(raw, "/") && isStreamingLocalSlashCommand(raw) {
 		m.setTextareaValue("")
 		m.completions.Hide()
 		m.invalidateAltScreenStreamingViewportCache()
@@ -345,10 +345,15 @@ func (m *Model) updateIdleComposerKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) 
 		m.resetPromptHistoryIfEdited()
 	}
 	m.updateTextareaHeight()
-	// Show argument completions for commands that support them
-	// (e.g., /handover @<partial> triggers agent name completions)
-	if newVal != old && !m.directShellComposerActive() && strings.HasPrefix(newVal, "/") && !m.completions.IsVisible() {
-		m.updateCompletions()
+	// Keep slash completions in step with every edit the popup does not consume
+	// (space, word deletion, clearing the line): a stale popup would let Enter
+	// run a command the composer no longer contains.
+	if newVal != old && !m.directShellComposerActive() {
+		if strings.HasPrefix(newVal, "/") {
+			m.updateCompletions()
+		} else if m.completions.IsVisible() {
+			m.completions.Hide()
+		}
 	}
 	if newVal != old || newCursor != oldCursor {
 		return m, tea.Batch(cmd, m.updateMentionQuery())
