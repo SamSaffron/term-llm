@@ -207,6 +207,8 @@ A widget command is trusted local code. It runs as the same OS user as term-llm 
 
 The Web UI authentication layer protects widget routes, but the proxy strips `Authorization`, `Cookie`, and `X-Api-Key` before forwarding requests. A widget therefore does not receive the Web UI token, login cookie, authenticated username, or per-user identity. Do not implement behavior that assumes those values are present.
 
+Cookie-authenticated widget writes must be same-origin (not merely same-site). Explicit `--cors-origin` grants and configured public/Hub origins remain supported; `--cors-origin "*"` deliberately trusts every origin. Non-browser clients can continue using bearer or API-key headers. This check does not make widget code untrusted or sandboxed, and widgets should keep state-changing actions off GET endpoints.
+
 Keep secrets out of HTML, JavaScript, CSS, generated images, manifests, and client-visible API responses. Validate mutating input and write persistent data safely even though the outer route is authenticated.
 
 ## Troubleshooting
