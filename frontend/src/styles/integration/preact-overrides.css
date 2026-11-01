@@ -366,7 +366,7 @@ a.message-file:focus-visible {
 }
 
 .tool-group {
-  width: min(100%, 820px);
+  width: 100%;
   display: grid;
   gap: 0.5rem;
 }
@@ -729,7 +729,6 @@ mark.diff-word {
 
   .message-body {
     padding: 0.72rem 0.8rem;
-    font-size: 0.94rem;
   }
 
   .message.assistant {
@@ -737,7 +736,7 @@ mark.diff-word {
   }
 
   .message.user {
-    width: min(88%, 820px);
+    max-width: 85%;
   }
 
   .modal-overlay {

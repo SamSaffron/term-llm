@@ -13,7 +13,7 @@
   align-items: center;
   gap: 0.65rem;
   flex: 0 0 auto;
-  width: min(900px, calc(100% - 2.2rem));
+  width: min(var(--content-width), calc(100% - 2.2rem));
   margin: 0.7rem auto 0;
   padding: 0.65rem 0.8rem;
   border: 1px solid var(--border);
@@ -52,7 +52,7 @@
 
 .messages {
   width: 100%;
-  max-width: 900px;
+  max-width: var(--content-width);
   min-width: 0;
   margin: 0 auto;
   box-sizing: border-box;
@@ -133,7 +133,7 @@
 }
 
 .message {
-  width: min(100%, 820px);
+  width: 100%;
   max-width: 100%;
   min-width: 0;
   box-sizing: border-box;
@@ -148,7 +148,8 @@
 
 .message.user {
   align-self: flex-end;
-  width: min(78%, 820px);
+  width: auto;
+  max-width: 80%;
 }
 
 .message.assistant,
@@ -162,7 +163,7 @@
 }
 
 .message.skill-run {
-  width: min(100%, 820px);
+  width: 100%;
 }
 
 .message.skill-run .message-body {
@@ -177,10 +178,10 @@
   min-width: 0;
   box-sizing: border-box;
   border: 1px solid var(--border);
-  border-radius: 12px;
+  border-radius: var(--radius-lg);
   padding: 0.85rem 1rem;
   line-height: 1.6;
-  font-size: 0.96rem;
+  font-size: var(--message-font-size);
   overflow-x: hidden;
   overflow-wrap: anywhere;
   white-space: pre-wrap;
@@ -194,15 +195,31 @@
   text-align: right;
 }
 
+/* Your messages are a tinted bubble; replies sit on the page without a card. */
 .message.user .message-body {
   background: var(--surface-2);
-  border-color: var(--border-strong);
+  border-width: 0;
+  padding: 0.625rem 1rem;
   color: var(--text);
   white-space: pre-wrap;
 }
 
 .message.assistant .message-body {
-  background: var(--surface);
+  background: transparent;
+  border-width: 0;
+  border-radius: 0;
+  padding-inline: 0;
+  padding-block: 0.15rem;
+}
+
+/* Without the card, a reply's first and last blocks keep no outer margin, so its
+   buttons sit just under the text. */
+.message.assistant .message-body > .markdown-body > :first-child {
+  margin-top: 0;
+}
+
+.message.assistant .message-body > .markdown-body > :last-child {
+  margin-bottom: 0;
 }
 
 /* A user message has the same copy button, after its time and mirrored to the
@@ -224,7 +241,7 @@
 
 .message.model-swap-divider {
   align-self: stretch;
-  width: min(100%, 820px);
+  width: 100%;
   display: flex;
   flex-direction: row;
   align-items: center;
@@ -288,7 +305,7 @@
 
 .message.compaction,
 .message.compaction-boundary {
-  width: min(100%, 820px);
+  width: 100%;
 }
 
 .message.compaction .message-body,
@@ -301,7 +318,7 @@
 }
 
 .message.job-notice {
-  width: min(100%, 820px);
+  width: 100%;
 }
 
 .message.job-notice .message-body {

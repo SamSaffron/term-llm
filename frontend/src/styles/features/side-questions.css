@@ -50,7 +50,7 @@
 }
 
 .side-question-transcript .message.user {
-  width: min(84%, 620px);
+  max-width: min(84%, 620px);
   margin-left: auto;
 }
 
@@ -68,15 +68,6 @@
 .side-question-modal .side-question-transcript .markdown-body p {
   color: inherit;
   font-size: inherit;
-}
-
-.side-question-transcript .message.assistant .message-body {
-  border: 1px solid var(--border);
-  background: color-mix(in srgb, var(--surface-2) 55%, transparent);
-}
-
-.side-question-transcript .message.user .message-body {
-  border-color: color-mix(in srgb, var(--border-strong) 65%, var(--border));
 }
 
 .side-question-empty {
