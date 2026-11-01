@@ -17,7 +17,7 @@ func GuardNoAuthBrowser(next http.Handler, noAuth bool, corsOrigins []string, tr
 		return next
 	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if !browserMutationAllowed(r, corsOrigins, trustedURLs...) {
+		if !BrowserMutationAllowed(r, corsOrigins, trustedURLs...) {
 			wire.WriteOpenAIError(w, http.StatusForbidden, "invalid_origin", "cross-origin requests require an explicit --cors-origin in no-auth mode")
 			return
 		}
@@ -25,11 +25,12 @@ func GuardNoAuthBrowser(next http.Handler, noAuth bool, corsOrigins []string, tr
 	})
 }
 
-// browserMutationAllowed checks browser signals before exercising unauthenticated
-// loopback authority. It allows safe methods, explicitly configured CORS origins,
-// same-origin browser traffic, and non-browser clients without browser signals.
+// BrowserMutationAllowed checks browser signals before exercising ambient
+// authority (unauthenticated loopback access or cookie authentication). It allows
+// safe methods, explicit CORS origins, same-origin browser traffic, and
+// non-browser clients without browser signals.
 // This is not an authentication boundary against other local processes.
-func browserMutationAllowed(r *http.Request, corsOrigins []string, trustedURLs ...string) bool {
+func BrowserMutationAllowed(r *http.Request, corsOrigins []string, trustedURLs ...string) bool {
 	switch r.Method {
 	case http.MethodGet, http.MethodHead, http.MethodOptions:
 		return true

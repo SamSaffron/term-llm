@@ -7,6 +7,7 @@ import (
 	"net/url"
 	"strings"
 
+	appserver "github.com/samsaffron/term-llm/internal/app/serve/server"
 	"github.com/samsaffron/term-llm/internal/app/serve/wire"
 	"github.com/samsaffron/term-llm/internal/linkeddevices"
 )
@@ -50,11 +51,10 @@ func (s *serveServer) bearerTokenValid(r *http.Request) bool {
 	if gotToken == "" {
 		gotToken = strings.TrimSpace(r.Header.Get("x-api-key"))
 	}
-	if gotToken == "" && cookieAuthAllowed(r) {
-		// Cookie fallback is needed for browser-initiated requests that cannot set
-		// Authorization headers. Keep it GET-only for normal API/UI routes, but
-		// allow all widget methods: widget iframe fetches include same-site cookies,
-		// and the widget proxy strips Cookie before forwarding to the app.
+	if gotToken == "" && cookieAuthAllowed(r) &&
+		appserver.BrowserMutationAllowed(r, s.cfg.corsOrigins, s.cfg.publicURL, s.cfg.hubURL) {
+		// Cookie fallback supports GETs and origin-checked widget writes. The
+		// proxy strips Cookie before forwarding to the widget.
 		if cookie, err := r.Cookie("term_llm_token"); err == nil && cookie.Value != "" {
 			if decoded, decErr := url.QueryUnescape(cookie.Value); decErr == nil {
 				gotToken = decoded
