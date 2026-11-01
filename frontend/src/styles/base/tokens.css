@@ -1,33 +1,51 @@
-/* Design tokens: color scheme, spacing, layout and syntax palettes. */
+/* Design tokens: color scheme, spacing, layout and syntax palettes.
+
+   A theme sets the seeds (--bg, --text, --accent-blue, and optionally --accent
+   with --btn-accent-text); surfaces, borders and states are mixed from them.
+   --accent is the action color (send, primary buttons) and is the text color by
+   default; --accent-blue marks status and, through --link, links. */
 
 :root {
-  --bg: #212121;
+  --bg: #0f0f0f;
   --bg-accent: rgb(255 255 255 / 3%);
   --bg-accent-2: rgb(255 255 255 / 2%);
-  --surface: #2f2f2f;
-  --surface-strong: #2f2f2f;
-  --surface-2: #373737;
-  --surface-3: #424242;
-  --border: rgb(255 255 255 / 8%);
-  --border-strong: rgb(255 255 255 / 15%);
+  --surface: color-mix(in oklab, var(--text) 8%, var(--bg));
+  --surface-strong: var(--surface);
+  --surface-2: color-mix(in oklab, var(--text) 12%, var(--bg));
+  --surface-3: color-mix(in oklab, var(--text) 17%, var(--bg));
+  --border: color-mix(in oklab, var(--text) 10%, transparent);
+  --border-strong: color-mix(in oklab, var(--text) 18%, transparent);
   --text: #ececec;
   --text-muted: #9a9a9a;
-  --accent: #ececec;
-  --accent-strong: #fff;
+  --accent: var(--text);
+  --accent-strong: var(--text);
+  --accent-blue: #60a5fa;
   --accent-green: #34d399;
   --accent-amber: #e5a210;
   --danger: #f87171;
   --backdrop: rgb(0 0 0 / 50%);
   --overlay: rgb(0 0 0 / 60%);
   --error-text: #fecaca;
-  --btn-accent-text: #212121;
+  --btn-accent-text: var(--bg);
   --stop-btn-text: #fecaca;
   --spinner-ring: rgb(33 33 33 / 35%);
   --shadow-soft: 0 1px 2px rgb(0 0 0 / 10%);
   --shadow-strong: 0 2px 8px rgb(0 0 0 / 15%);
   --gradient-accent: var(--surface-2);
   --gradient-accent-strong: var(--accent-strong);
-  --link: #60a5fa;
+  --link: var(--accent-blue);
+  --link-underline: color-mix(in oklab, var(--link) 40%, transparent);
+  --code-inline-text: var(--text);
+  --code-inline-bg: var(--surface-2);
+  --accent-hover: color-mix(in oklab, var(--accent), var(--bg) 15%);
+  --accent-active: color-mix(in oklab, var(--accent), var(--bg) 25%);
+  --radius-sm: 4px;
+  --radius-md: 8px;
+  --radius-lg: 12px;
+  --radius-full: 999px;
+  --shadow-composer: 0 0 0 1px var(--border), 0 2px 8px rgb(0 0 0 / 6%);
+  --content-width: 48rem;
+  --message-font-size: 0.9375rem;
   --safe-top: env(safe-area-inset-top, 0px);
   --safe-right: env(safe-area-inset-right, 0px);
   --safe-bottom: env(safe-area-inset-bottom, 0px);
@@ -39,7 +57,7 @@
   --diff-sidebar-width: clamp(300px, 28vw, 460px);
   --plan-sidebar-width: clamp(300px, 27vw, 430px);
   --header-action-height: 34px;
-  --header-action-radius: 10px;
+  --header-action-radius: var(--radius-md);
   --header-action-padding-x: 0.65rem;
   --header-cluster-gap: 0.35rem;
   --header-action-bg: transparent;
@@ -99,33 +117,27 @@
 
 @media (prefers-color-scheme: light) {
   :root {
-    --bg: #fff;
+    --bg: #fcfcfc;
     --bg-accent: rgb(0 0 0 / 2%);
     --bg-accent-2: rgb(0 0 0 / 1%);
-    --surface: #fff;
-    --surface-strong: #fff;
-    --surface-2: #f7f7f8;
-    --surface-3: #ececec;
-    --border: rgb(0 0 0 / 8%);
-    --border-strong: rgb(0 0 0 / 15%);
+    --surface: color-mix(in oklab, var(--bg), #fff 70%);
+    --surface-2: color-mix(in oklab, var(--text) 5%, var(--bg));
+    --surface-3: color-mix(in oklab, var(--text) 9%, var(--bg));
+    --border: color-mix(in oklab, var(--text) 8%, transparent);
+    --border-strong: color-mix(in oklab, var(--text) 15%, transparent);
     --text: #0d0d0d;
-    --text-muted: #6e6e6e;
-    --accent: #0d0d0d;
-    --accent-strong: #0d0d0d;
+    --text-muted: #666;
+    --accent-blue: #2563eb;
     --accent-green: #059669;
     --accent-amber: #b45309;
     --danger: #dc2626;
     --backdrop: rgb(0 0 0 / 30%);
     --overlay: rgb(0 0 0 / 40%);
     --error-text: #991b1b;
-    --btn-accent-text: #fff;
     --stop-btn-text: #991b1b;
     --spinner-ring: rgb(255 255 255 / 45%);
     --shadow-soft: 0 1px 2px rgb(0 0 0 / 5%);
     --shadow-strong: 0 2px 8px rgb(0 0 0 / 8%);
-    --gradient-accent: var(--surface-2);
-    --gradient-accent-strong: var(--accent-strong);
-    --link: #2563eb;
     --diff-add-bg: rgb(31 136 61 / 12%);
     --diff-add-ln-bg: rgb(31 136 61 / 22%);
     --diff-del-bg: rgb(207 34 46 / 10%);
