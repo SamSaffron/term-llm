@@ -9,7 +9,7 @@
 }
 
 .composer-inner {
-  max-width: 900px;
+  max-width: var(--content-width);
   margin: 0 auto;
   display: flex;
   flex-direction: column;
@@ -354,15 +354,17 @@
   border-color: var(--border-strong);
 }
 
+/* A raised surface: lighter than the page, with a hairline ring and a soft shadow. */
 .composer-box {
-  --composer-control-size: 36px;
+  --composer-control-size: 32px;
 
   display: grid;
   grid-template-columns: auto minmax(0, 1fr) auto;
   align-items: end;
   border: 1px solid var(--border);
-  border-radius: 24px;
-  background: var(--surface-2);
+  border-radius: var(--radius-lg);
+  background: var(--surface);
+  box-shadow: var(--shadow-composer);
   padding: 6px;
   position: relative;
 }
@@ -453,7 +455,7 @@
 }
 
 .composer-icon-btn:hover {
-  background: var(--surface-3);
+  background: var(--surface-2);
   color: var(--text);
 }
 
@@ -673,8 +675,8 @@
   width: var(--composer-control-size);
   height: var(--composer-control-size);
   border: none;
-  border-radius: 999px;
-  background: var(--gradient-accent-strong);
+  border-radius: var(--radius-full);
+  background: var(--accent);
   color: var(--btn-accent-text);
   display: inline-flex;
   align-items: center;
@@ -682,11 +684,17 @@
   font-weight: 700;
   cursor: pointer;
   flex-shrink: 0;
-  transition: opacity 0.15s ease;
+  transition:
+    opacity 0.15s ease,
+    background 0.15s ease;
 }
 
 .send-btn:hover:not(:disabled) {
-  opacity: 0.85;
+  background: var(--accent-hover);
+}
+
+.send-btn:active:not(:disabled) {
+  background: var(--accent-active);
 }
 
 .send-btn.steer {

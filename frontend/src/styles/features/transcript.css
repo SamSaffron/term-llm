@@ -13,7 +13,7 @@
   align-items: center;
   gap: 0.65rem;
   flex: 0 0 auto;
-  width: min(900px, calc(100% - 2.2rem));
+  width: min(var(--content-width), calc(100% - 2.2rem));
   margin: 0.7rem auto 0;
   padding: 0.65rem 0.8rem;
   border: 1px solid var(--border);
@@ -52,7 +52,7 @@
 
 .messages {
   width: 100%;
-  max-width: 900px;
+  max-width: var(--content-width);
   min-width: 0;
   margin: 0 auto;
   box-sizing: border-box;
@@ -133,7 +133,7 @@
 }
 
 .message {
-  width: min(100%, 820px);
+  width: 100%;
   max-width: 100%;
   min-width: 0;
   box-sizing: border-box;
@@ -148,7 +148,8 @@
 
 .message.user {
   align-self: flex-end;
-  width: min(78%, 820px);
+  width: auto;
+  max-width: 80%;
 }
 
 .message.assistant,
@@ -162,7 +163,7 @@
 }
 
 .message.skill-run {
-  width: min(100%, 820px);
+  width: 100%;
 }
 
 .message.skill-run .message-body {
@@ -177,10 +178,10 @@
   min-width: 0;
   box-sizing: border-box;
   border: 1px solid var(--border);
-  border-radius: 12px;
+  border-radius: var(--radius-lg);
   padding: 0.85rem 1rem;
   line-height: 1.6;
-  font-size: 0.96rem;
+  font-size: var(--message-font-size);
   overflow-x: hidden;
   overflow-wrap: anywhere;
   white-space: pre-wrap;
@@ -194,15 +195,42 @@
   text-align: right;
 }
 
+/* Your messages are a tinted bubble; replies sit on the page without a card. */
 .message.user .message-body {
   background: var(--surface-2);
-  border-color: var(--border-strong);
+  border-width: 0;
+  padding: 0.625rem 1rem;
   color: var(--text);
   white-space: pre-wrap;
 }
 
 .message.assistant .message-body {
-  background: var(--surface);
+  background: transparent;
+  border-width: 0;
+  border-radius: 0;
+  padding-inline: 0;
+  padding-block: 0.15rem;
+}
+
+/* Without the card, a reply's first and last blocks keep no outer margin, so its
+   buttons sit just under the text. */
+.message.assistant .message-body > .markdown-body > :first-child {
+  margin-top: 0;
+}
+
+.message.assistant .message-body > .markdown-body > :last-child {
+  margin-bottom: 0;
+}
+
+/* A user message has the same copy button, after its time and mirrored to the
+   bubble's edge by the icon's stroke. */
+.message.user > .message-meta {
+  margin-top: -0.35rem;
+  padding-inline-end: 0;
+}
+
+.message.user .turn-copy-btn {
+  margin-inline-end: calc((16px - var(--action-btn-size)) / 2);
 }
 
 .message.error .message-body {
@@ -213,7 +241,7 @@
 
 .message.model-swap-divider {
   align-self: stretch;
-  width: min(100%, 820px);
+  width: 100%;
   display: flex;
   flex-direction: row;
   align-items: center;
@@ -277,7 +305,7 @@
 
 .message.compaction,
 .message.compaction-boundary {
-  width: min(100%, 820px);
+  width: 100%;
 }
 
 .message.compaction .message-body,
@@ -290,7 +318,7 @@
 }
 
 .message.job-notice {
-  width: min(100%, 820px);
+  width: 100%;
 }
 
 .message.job-notice .message-body {
@@ -397,8 +425,25 @@
 .markdown-body h4,
 .markdown-body h5,
 .markdown-body h6 {
-  margin: 0.4em 0 0.3em;
-  line-height: 1.25;
+  margin: 1em 0 0.4em;
+  font-size: 1em;
+  font-weight: 600;
+  line-height: 1.3;
+}
+
+/* Headings stay close to the body size: a reply is conversation, not a document. */
+.markdown-body h1 {
+  font-size: 1.25em;
+}
+
+.markdown-body h2 {
+  font-size: 1.125em;
+}
+
+.markdown-body hr {
+  margin: 1.5em 0;
+  border: 0;
+  border-top: 1px solid var(--border);
 }
 
 .markdown-body p {
@@ -413,11 +458,9 @@
 
 .markdown-body blockquote {
   margin: 0.7em 0;
-  padding: 0.15em 0.8em;
+  padding: 0 0 0 0.9em;
   border-left: 3px solid var(--border-strong);
   color: var(--text-muted);
-  background: var(--surface-2);
-  border-radius: 4px;
 }
 
 .markdown-body pre {
@@ -426,16 +469,16 @@
   box-sizing: border-box;
   margin: 0.6em 0;
   padding: 0;
-  border-radius: 8px;
+  border-radius: var(--radius-lg);
   overflow: auto;
-  border: 1px solid var(--border);
+  background: var(--surface-2);
 }
 
 .markdown-body pre code {
   display: block;
-  padding: 0.85rem;
-  line-height: 1.45;
-  font-size: 0.87rem;
+  padding: 0.85rem 1rem;
+  line-height: 1.5;
+  font-size: 0.875em;
 }
 
 .code-copy-btn {
@@ -444,9 +487,9 @@
   right: 6px;
   width: 28px;
   height: 28px;
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  background: var(--surface);
+  border: 0;
+  border-radius: var(--radius-md);
+  background: var(--surface-2);
   color: var(--text-muted);
   display: inline-flex;
   align-items: center;
@@ -472,7 +515,7 @@
 }
 
 .code-copy-btn:hover {
-  background: var(--surface-2);
+  background: var(--surface-3);
   color: var(--text);
 }
 
@@ -492,20 +535,22 @@
   }
 }
 
+/* The row starts where the reply's text does: the first 16px icon lines up with it. */
 .turn-action-panel {
   display: inline-flex;
   align-items: center;
   gap: 0.25rem;
   align-self: flex-start;
-  padding: 0 0.2rem;
+  padding: 0;
   margin-top: -0.1rem;
+  margin-inline-start: calc((16px - var(--action-btn-size)) / 2);
 }
 
 .turn-action-btn {
-  width: 30px;
-  height: 30px;
+  width: var(--action-btn-size);
+  height: var(--action-btn-size);
   border: 1px solid transparent;
-  border-radius: 8px;
+  border-radius: var(--radius-md);
   background: transparent;
   color: var(--text-muted);
   display: inline-flex;
@@ -607,11 +652,11 @@
 .markdown-body :not(pre) > code {
   font-family: var(--font-mono);
   font-variant-ligatures: none;
-  background: var(--surface-2);
-  border: 1px solid var(--border);
-  padding: 0.11rem 0.35rem;
-  border-radius: 4px;
-  font-size: 0.88em;
+  background: var(--code-inline-bg);
+  color: var(--code-inline-text);
+  padding: 0.1em 0.35em;
+  border-radius: var(--radius-sm);
+  font-size: 0.875em;
 }
 
 .markdown-body pre,
@@ -635,20 +680,28 @@
 
 .markdown-body th,
 .markdown-body td {
-  border: 1px solid var(--border);
-  padding: 0.35rem 0.5rem;
+  border-bottom: 1px solid var(--border);
+  padding: 0.5rem 0.75rem 0.5rem 0;
   overflow-wrap: anywhere;
   text-align: left;
   vertical-align: top;
 }
 
+/* Tables use row rules only; the header is set off by weight and a stronger rule. */
 .markdown-body th {
-  background: var(--surface-2);
+  border-bottom-color: var(--border-strong);
+  font-weight: 600;
 }
 
 .markdown-body a {
   color: var(--link);
   text-decoration: underline;
+  text-decoration-color: var(--link-underline);
+  text-underline-offset: 0.15em;
+}
+
+.markdown-body a:hover {
+  text-decoration-color: currentcolor;
 }
 
 .markdown-body .katex {
