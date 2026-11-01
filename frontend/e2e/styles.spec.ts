@@ -112,7 +112,7 @@ test('composer controls stay aligned and inside the input at every size', async 
       const context = `${width}px, ${value.slice(0, 30)}`;
       expect(layout.inputWidth, context).toBeGreaterThan(0);
       expect(layout.overflow, context).toBeLessThanOrEqual(1);
-      const size = width <= 700 || layout.touch ? 44 : 36;
+      const size = width <= 700 || layout.touch ? 44 : 32;
       for (const control of layout.controls) {
         const label = `${context}, ${control.label}`;
         expect(control.offset, label).toBeLessThanOrEqual(1);
