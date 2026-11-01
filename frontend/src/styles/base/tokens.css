@@ -43,7 +43,7 @@
   --radius-md: 8px;
   --radius-lg: 12px;
   --radius-full: 999px;
-  --shadow-composer: 0 0 0 1px var(--border), 0 2px 8px rgb(0 0 0 / 6%);
+  --shadow-composer: 0 2px 8px rgb(0 0 0 / 6%);
   --content-width: 48rem;
   --message-font-size: 0.9375rem;
   --safe-top: env(safe-area-inset-top, 0px);
