@@ -45,6 +45,7 @@
   --radius-full: 999px;
   --shadow-composer: 0 2px 8px rgb(0 0 0 / 6%);
   --content-width: 48rem;
+  --action-btn-size: 24px;
   --message-font-size: 0.9375rem;
   --safe-top: env(safe-area-inset-top, 0px);
   --safe-right: env(safe-area-inset-right, 0px);
@@ -113,6 +114,13 @@
   --syntax-tag: #7ee787;
   --syntax-heading: #58a6ff;
   --syntax-bullet: #f2cc60;
+}
+
+/* Message actions keep a larger target where there is no fine pointer. */
+@media (hover: none), (pointer: coarse) {
+  :root {
+    --action-btn-size: 30px;
+  }
 }
 
 @media (prefers-color-scheme: light) {

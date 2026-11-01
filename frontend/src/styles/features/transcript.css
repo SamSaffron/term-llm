@@ -230,7 +230,7 @@
 }
 
 .message.user .turn-copy-btn {
-  margin-inline-end: calc((16px - 30px) / 2 - 16px / 12);
+  margin-inline-end: calc((16px - var(--action-btn-size)) / 2);
 }
 
 .message.error .message-body {
@@ -535,20 +535,22 @@
   }
 }
 
+/* The row starts where the reply's text does: the first 16px icon lines up with it. */
 .turn-action-panel {
   display: inline-flex;
   align-items: center;
   gap: 0.25rem;
   align-self: flex-start;
-  padding: 0 0.2rem;
+  padding: 0;
   margin-top: -0.1rem;
+  margin-inline-start: calc((16px - var(--action-btn-size)) / 2);
 }
 
 .turn-action-btn {
-  width: 30px;
-  height: 30px;
+  width: var(--action-btn-size);
+  height: var(--action-btn-size);
   border: 1px solid transparent;
-  border-radius: 8px;
+  border-radius: var(--radius-md);
   background: transparent;
   color: var(--text-muted);
   display: inline-flex;
