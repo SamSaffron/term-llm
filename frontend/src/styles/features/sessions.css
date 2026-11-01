@@ -348,15 +348,22 @@
   display: inline-block;
   width: 7px;
   height: 7px;
-  border-radius: 50%;
-  background: #22c55e;
+  border-radius: var(--radius-full);
+  background: var(--accent-blue);
   margin-right: 0.4em;
   flex-shrink: 0;
   vertical-align: middle;
 }
 
+/* A new reply is blue; a running chat pulses in a neutral, so colour only marks
+   something to read; a chat waiting on you is amber. */
 .session-row.is-active .session-title::before {
+  background: color-mix(in oklab, var(--text) 35%, var(--bg));
   animation: pulse-dot 1.8s ease-in-out infinite;
+}
+
+.session-row.is-input-required .session-title::before {
+  background: var(--accent-amber);
 }
 
 @keyframes pulse-dot {
