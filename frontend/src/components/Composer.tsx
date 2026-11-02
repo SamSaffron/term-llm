@@ -1,3 +1,5 @@
+import { cycleThinking, detailsShortcutLabel } from '../domain/thinking';
+import { useThinkingShortcut } from '../hooks/use-thinking-shortcut';
 import { signal, type ReadonlySignal } from '@preact/signals';
 import type { ComponentType } from 'preact';
 import { rushActive } from '../domain/steering';
@@ -280,6 +282,7 @@ let queuePreviewImport: Promise<ComponentType<{ selectedSteering: string | null 
 
 export function Composer() {
   const store = useStore();
+  useThinkingShortcut(store.thinking);
   const session = store.activeSession.value;
   const delegated = Boolean(session?.delegated || session?.parentSessionId);
   return delegated && !store.runActive.value ? (
@@ -307,7 +310,7 @@ function ConversationComposer() {
   const voiceSnapshot = useMemo(() => signal(voice.snapshot), [voice]);
   const [voiceState, setVoiceState] = useState<VoiceControls>(voice.snapshot);
   const appliedVoiceGeneration = useRef(0);
-  const [completionIndex, setCompletionIndex] = useState(0);
+  const [completionIndex, setCompletionIndex] = useState(-1);
   const [cursor, setCursor] = useState(store.prompt.value.length);
   const [dismissed, setDismissed] = useState('');
   const [dragging, setDragging] = useState(false);
@@ -487,6 +490,8 @@ function ConversationComposer() {
     runActive,
     store.shellStore.enabled.value,
     store.config.approvals !== false,
+    store.thinking.display.value,
+    store.thinking.serverPolicy.value.raw,
   );
   const currentMentions =
     projectMentions?.context === mentionContext ? projectMentions.payload : null;
@@ -497,7 +502,20 @@ function ConversationComposer() {
       : [...new Map(combined.map((entry) => [`${entry.kind}:${entry.value}`, entry])).values()];
   // Clamp at render time so a shrunken list never highlights or applies an
   // entry that is not displayed.
-  const activeIndex = completions.length ? Math.min(completionIndex, completions.length - 1) : 0;
+  const activeIndex = completions.length
+    ? Math.min(
+        completionIndex < 0
+          ? Math.max(
+              0,
+              completions.findIndex(
+                (entry) =>
+                  entry.thinking && entry.value === cycleThinking(store.thinking.display.value),
+              ),
+            )
+          : completionIndex,
+        completions.length - 1,
+      )
+    : 0;
   const project = store.projects.value.find((entry) => entry.id === store.activeProjectId.value);
   const bindingBlocked = store.draftActive.value && Boolean(project && project.available === false);
   const approvalChanged = Boolean(
@@ -511,7 +529,7 @@ function ConversationComposer() {
   const choose = (completion: Completion) => {
     const nextCursor = completedCursor(store.prompt.value, completion);
     store.prompt.value = applyCompletion(store.prompt.value, completion);
-    setCompletionIndex(0);
+    setCompletionIndex(-1);
     setDismissed('');
     setCursor(nextCursor);
     requestAnimationFrame(() => {
@@ -529,12 +547,17 @@ function ConversationComposer() {
   };
   const sendOrCommand = () => {
     const value = store.prompt.value.trim();
+    if (voiceBusy || (store.workspaceShown.peek() && !store.startupDone.peek())) return;
+    const thinkingCommand = value.match(/^\/(thinking|reasoning)(?:\s+([\s\S]*))?$/i);
+    if (thinkingCommand) {
+      const result = store.thinking.command(thinkingCommand[2]);
+      // As in the TUI, a rejected command stays in the composer to be corrected.
+      if (result.kind === 'success') store.prompt.value = '';
+      store.toast(result.message, result.kind);
+      return;
+    }
     // Compaction can accept queued guidance, not commands that mutate the session.
-    if (
-      voiceBusy ||
-      (store.runEngine.compacting.peek() && (!store.canSteer.peek() || value.startsWith('/'))) ||
-      (store.workspaceShown.peek() && !store.startupDone.peek())
-    )
+    if (store.runEngine.compacting.peek() && (!store.canSteer.peek() || value.startsWith('/')))
       return;
     const command = value.toLowerCase();
     if (command === '/stats' || command === '/inspect') {
@@ -730,6 +753,7 @@ function ConversationComposer() {
     store.attachments.value.length === 0;
   const sendPending = store.sendPending.value;
   const sendBlocked = store.sendBlocked.value;
+  const thinkingCommandReady = /^\/(thinking|reasoning)(?:\s|$)/i.test(store.prompt.value.trim());
   const unconfirmedSend =
     store.pendingIntents.value[store.activeSessionId.value]?.some(
       (intent) => intent.state === 'unconfirmed',
@@ -1112,7 +1136,7 @@ function ConversationComposer() {
           )}
           {completions.length > 0 && (
             <div
-              class="slash-command-menu"
+              class={`slash-command-menu${completions[0]?.thinking ? ' thinking-args' : ''}`}
               id="slashCommandMenu"
               role="listbox"
               aria-label="Composer completions"
@@ -1123,6 +1147,7 @@ function ConversationComposer() {
                   type="button"
                   role="option"
                   aria-selected={activeIndex === index}
+                  aria-disabled={entry.unavailable || undefined}
                   class={`slash-command-option ${activeIndex === index ? 'selected' : ''}`}
                   key={`${entry.kind}:${entry.value}`}
                   onMouseDown={(event) => {
@@ -1143,8 +1168,25 @@ function ConversationComposer() {
                       : entry.label}
                   </strong>
                   <span class="slash-command-description">{entry.description}</span>
+                  {entry.current ? (
+                    <span class="slash-command-badge current">current</span>
+                  ) : entry.unavailable ? (
+                    <span class="slash-command-badge">disabled in config</span>
+                  ) : null}
                 </button>
               ))}
+              {completions[0]?.thinking && (
+                <div class="slash-command-footer">
+                  <span>
+                    <code>/thinking</code> alone cycles collapsed → expanded → off
+                  </span>
+                  <span>{detailsShortcutLabel()} expand all thoughts + tools</span>
+                  <span>Click a thought to toggle it</span>
+                  <span>
+                    Alias <code>/reasoning</code>
+                  </span>
+                </div>
+              )}
             </div>
           )}
           <textarea
@@ -1182,7 +1224,7 @@ function ConversationComposer() {
               setCursor(nextCursor);
               setDismissed('');
               resizePrompt(event.currentTarget);
-              setCompletionIndex(0);
+              setCompletionIndex(-1);
             }}
             onKeyUp={(event) => {
               if (['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) {
@@ -1195,7 +1237,7 @@ function ConversationComposer() {
                 event.preventDefault();
                 setCompletionIndex(
                   (index) =>
-                    (Math.min(index, completions.length - 1) +
+                    (Math.min(index < 0 ? activeIndex : index, completions.length - 1) +
                       (event.key === 'ArrowDown' ? 1 : -1) +
                       completions.length) %
                     completions.length,
@@ -1206,12 +1248,20 @@ function ConversationComposer() {
               // While the menu is open, return inserts the highlighted entry,
               // even for a bare / or @. Only a fully typed slash name runs or
               // sends as typed; Escape closes the menu to send the text as is.
+              // A typed /thinking command runs as typed unless the user moved the
+              // highlight, in which case return picks the highlighted mode.
+              const thinkingTyped =
+                completionIndex < 0 &&
+                /^\/(thinking|reasoning)(?:\s+(off|status|collapsed|expanded|raw|auto))?$/i.test(
+                  store.prompt.value.trim(),
+                );
               const exactSlash =
-                selected?.kind === 'slash' &&
-                (inlineSlash
-                  ? `/${inlineSlash.query}`
-                  : store.prompt.value.trim()
-                ).toLowerCase() === selected.value.toLowerCase();
+                thinkingTyped ||
+                (selected?.kind === 'slash' &&
+                  (inlineSlash
+                    ? `/${inlineSlash.query}`
+                    : store.prompt.value.trim()
+                  ).toLowerCase() === selected.value.toLowerCase());
               if (
                 selected &&
                 (event.key === 'Tab' || (event.key === 'Enter' && !event.shiftKey && !exactSlash))
@@ -1302,17 +1352,20 @@ function ConversationComposer() {
               aria-label={sendLabel}
               aria-pressed={liveButton ? liveActive : undefined}
               disabled={
-                (compacting && !canSteer && !(liveButton && liveActive)) ||
+                (voiceBusy && thinkingCommandReady) ||
                 connecting ||
-                (liveButton
-                  ? !liveActive && (voiceBusy || bindingBlocked)
-                  : liveTextMode
-                    ? false
-                    : (sendBlocked && !loading) ||
-                      voiceBusy ||
-                      bindingBlocked ||
-                      attachmentBlocked ||
-                      (!hasDraft && !loading))
+                (!thinkingCommandReady &&
+                  ((compacting && !canSteer && !(liveButton && liveActive)) ||
+                    connecting ||
+                    (liveButton
+                      ? !liveActive && (voiceBusy || bindingBlocked)
+                      : liveTextMode
+                        ? false
+                        : (sendBlocked && !loading) ||
+                          voiceBusy ||
+                          bindingBlocked ||
+                          attachmentBlocked ||
+                          (!hasDraft && !loading))))
               }
               onClick={liveButton ? toggleLiveCall : sendOrCommand}
             >

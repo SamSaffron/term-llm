@@ -80,42 +80,45 @@ func Create(name string, cfg *config.ProviderConfig, opts Options) (Provider, er
 	return constructor(name, providerType, cfg, opts)
 }
 
-var binProviderConstructors = map[config.ProviderType]func(string, map[string]string, bool) (Provider, error){
-	config.ProviderTypeClaudeBin: func(model string, env map[string]string, enableHooks bool) (Provider, error) {
-		if err := clibin.ValidateClaudeBinModel(model); err != nil {
+var binProviderConstructors = map[config.ProviderType]func(*config.ProviderConfig) (Provider, error){
+	config.ProviderTypeClaudeBin: func(cfg *config.ProviderConfig) (Provider, error) {
+		if err := clibin.ValidateClaudeBinModel(cfg.Model); err != nil {
 			return nil, err
 		}
-		provider := clibin.NewClaudeBinProvider(model, env)
-		provider.SetEnableHooks(enableHooks)
+		provider := clibin.NewClaudeBinProvider(cfg.Model, cfg.Env)
+		provider.SetEnableHooks(cfg.EnableHooks)
+		if cfg.ThinkingSummaries != nil {
+			provider.SetThinkingSummaries(*cfg.ThinkingSummaries)
+		}
 		return provider, nil
 	},
-	config.ProviderTypeGrokBin: func(model string, env map[string]string, enableHooks bool) (Provider, error) {
-		if err := clibin.ValidateGrokBinModel(model); err != nil {
+	config.ProviderTypeGrokBin: func(cfg *config.ProviderConfig) (Provider, error) {
+		if err := clibin.ValidateGrokBinModel(cfg.Model); err != nil {
 			return nil, err
 		}
-		return clibin.NewGrokBinProvider(model, env), nil
+		return clibin.NewGrokBinProvider(cfg.Model, cfg.Env), nil
 	},
-	config.ProviderTypeCursorBin: func(model string, env map[string]string, enableHooks bool) (Provider, error) {
-		if err := clibin.ValidateCursorBinModel(model); err != nil {
+	config.ProviderTypeCursorBin: func(cfg *config.ProviderConfig) (Provider, error) {
+		if err := clibin.ValidateCursorBinModel(cfg.Model); err != nil {
 			return nil, err
 		}
-		return clibin.NewCursorBinProvider(model, env), nil
+		return clibin.NewCursorBinProvider(cfg.Model, cfg.Env), nil
 	},
-	config.ProviderTypeAgyBin: func(model string, env map[string]string, enableHooks bool) (Provider, error) {
-		if err := clibin.ValidateAgyBinModel(model); err != nil {
+	config.ProviderTypeAgyBin: func(cfg *config.ProviderConfig) (Provider, error) {
+		if err := clibin.ValidateAgyBinModel(cfg.Model); err != nil {
 			return nil, err
 		}
-		return clibin.NewAgyBinProvider(model, env), nil
+		return clibin.NewAgyBinProvider(cfg.Model, cfg.Env), nil
 	},
 }
 
 // NewBinProvider validates model overrides before creating a CLI-backed provider.
-func NewBinProvider(providerType config.ProviderType, model string, env map[string]string, enableHooks bool) (Provider, error) {
+func NewBinProvider(providerType config.ProviderType, cfg *config.ProviderConfig) (Provider, error) {
 	constructor := binProviderConstructors[providerType]
 	if constructor == nil {
 		return nil, fmt.Errorf("unsupported bin provider type %q", providerType)
 	}
-	return constructor(model, env, enableHooks)
+	return constructor(cfg)
 }
 
 var apiKeyProviderConstructors = map[config.ProviderType]func(string, string, *config.ProviderConfig, Options) (Provider, error){
@@ -213,7 +216,7 @@ func buildConstructors() map[config.ProviderType]Constructor {
 		return bedrock.New(cfg.Model, cfg.Region, cfg.Profile, cfg.AccessKey, cfg.SecretKey, cfg.SessionToken, cfg.ModelMap, cfg.Headers)
 	}
 	bin := func(name string, providerType config.ProviderType, cfg *config.ProviderConfig, _ Options) (Provider, error) {
-		return NewBinProvider(providerType, cfg.Model, cfg.Env, cfg.EnableHooks)
+		return NewBinProvider(providerType, cfg)
 	}
 	for t := range binProviderConstructors {
 		m[t] = bin

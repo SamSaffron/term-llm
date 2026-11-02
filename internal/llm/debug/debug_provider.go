@@ -500,53 +500,6 @@ func (d *DebugProvider) streamCompletionText(ctx context.Context, send stream.Se
 	}})
 }
 
-// streamActionSequence streams a sequence of interleaved text and tool calls.
-func (d *DebugProvider) streamActionSequence(ctx context.Context, send stream.Sender, actions []debugAction) error {
-	chunkSize := d.preset.ChunkSize
-	delay := d.preset.Delay
-	var totalTextLen, toolCount int
-
-	for _, action := range actions {
-		switch action.Type {
-		case actionText:
-			totalTextLen += len(action.Text)
-			text := action.Text
-			for len(text) > 0 {
-				end := chunkSize
-				if end > len(text) {
-					end = len(text)
-				}
-				chunk := text[:end]
-				text = text[end:]
-
-				if err := send.Send(Event{Type: EventTextDelta, Text: chunk}); err != nil {
-					return err
-				}
-
-				if delay > 0 && len(text) > 0 {
-					select {
-					case <-ctx.Done():
-						return ctx.Err()
-					case <-time.After(delay):
-					}
-				}
-			}
-
-		case actionTool:
-			toolCount++
-			if err := send.Send(Event{Type: EventToolCall, Tool: action.ToolCall}); err != nil {
-				return err
-			}
-		}
-	}
-
-	// Emit usage stats
-	return send.Send(Event{Type: EventUsage, Use: &Usage{
-		InputTokens:  10,
-		OutputTokens: totalTextLen/4 + toolCount*10,
-	}})
-}
-
 // GetPresets returns a copy of available presets for testing.
 func GetPresets() map[string]debugPreset {
 	result := make(map[string]debugPreset)
@@ -567,6 +520,8 @@ type debugActionType int
 const (
 	actionText debugActionType = iota
 	actionTool
+	actionThink
+	actionThinkRaw
 )
 
 // debugAction represents a single action in a DSL sequence.
@@ -581,64 +536,6 @@ var markdownLengthRegex = regexp.MustCompile(`^markdown(?:\*(\d+))?$`)
 
 // writeLinesRegex matches "write*N" where N is the number of lines to generate.
 var writeLinesRegex = regexp.MustCompile(`^write\*(\d+)$`)
-
-// parseSequenceDSL parses a comma-separated DSL prompt into a sequence of actions.
-// Example: "markdown*50,read README.md,glob **/*.go,markdown*200"
-// Returns nil if the prompt doesn't look like a DSL sequence.
-func parseSequenceDSL(prompt string, tools []ToolSpec) []debugAction {
-	prompt = strings.TrimSpace(prompt)
-	if prompt == "" || !strings.Contains(prompt, ",") {
-		return nil
-	}
-
-	// NOTE: Simple comma split - tool arguments containing commas will be split unexpectedly.
-	// This is a known limitation; escape sequences are not supported.
-	segments := strings.Split(prompt, ",")
-	var actions []debugAction
-
-	for _, seg := range segments {
-		seg = strings.TrimSpace(seg)
-		if seg == "" {
-			continue
-		}
-
-		// Check for markdown segment (with optional length)
-		if match := markdownLengthRegex.FindStringSubmatch(strings.ToLower(seg)); match != nil {
-			length := 50 // default length
-			if match[1] != "" {
-				if n, err := strconv.Atoi(match[1]); err == nil && n > 0 {
-					length = n
-					if length > len(debugMarkdown) {
-						length = len(debugMarkdown)
-					}
-				}
-			}
-			actions = append(actions, debugAction{
-				Type: actionText,
-				Text: debugMarkdown[:length],
-			})
-			continue
-		}
-
-		// Try to parse as a tool command
-		if calls := parseCommand(seg, tools); len(calls) > 0 {
-			for _, call := range calls {
-				actions = append(actions, debugAction{
-					Type:     actionTool,
-					ToolCall: call,
-				})
-			}
-		}
-		// Invalid segments are silently skipped
-	}
-
-	// Only return if we have at least one action
-	if len(actions) == 0 {
-		return nil
-	}
-
-	return actions
-}
 
 // debugCallID generates unique tool call IDs for the debug provider.
 var debugCallID atomic.Uint64

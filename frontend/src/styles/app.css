@@ -29,4 +29,5 @@
 @import './features/branching.css';
 @import './features/projects.css';
 @import './features/worktrees.css';
+@import './features/thinking.css';
 @import './integration/preact-overrides.css';

@@ -1,3 +1,4 @@
+import { ThinkingStore } from './thinking-store';
 import type { RushOperation } from '../domain/steering';
 import {
   computed,
@@ -125,6 +126,7 @@ const STARTUP_CACHE_READ_TIMEOUT_MS = 500;
 const EVENT_FEED_HEAD_START_MS = 150;
 
 export class AppStore {
+  readonly thinking: ThinkingStore;
   readonly services: AppStoreServices;
   readonly runtime: RuntimeStore;
   readonly interactionStore: InteractionStore;
@@ -315,6 +317,7 @@ export class AppStore {
     readonly storage: Storage = localStorage,
     persistentCache?: PersistentCache,
   ) {
+    this.thinking = new ThinkingStore(storage);
     this.services = new AppStoreServices(config, storage, persistentCache);
     this.linkedDevicesMode.value = config.linkedDevicesScope === 'web-v1';
     this.startupMetrics = this.services.startupMetrics;
@@ -1347,6 +1350,7 @@ export class AppStore {
   }
 
   private applyCapabilities(data: Record<string, unknown>): void {
+    this.thinking.applyCapabilities(data.reasoning);
     const linkedDevices = recordValue(data.linked_devices);
     const linkedDevicesActive =
       this.config.linkedDevicesScope === 'web-v1' || linkedDevices?.active === true;

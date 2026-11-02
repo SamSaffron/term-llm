@@ -566,6 +566,8 @@ providers:
       CLAUDE_CODE_OAUTH_TOKEN: "your-oauth-token-here"
     # Optional: Claude Code hooks are disabled by default; set to true to opt back in
     # enable_hooks: true
+    # Optional: stop requesting Claude's thinking summaries (on by default)
+    # thinking_summaries: false
 ```
 
 **Features:**
@@ -574,6 +576,7 @@ providers:
 - Model selection: `opus`, `fable`, `sonnet` (default), `haiku`; model/account availability still applies
 - Claude Code hooks are disabled by default to keep user hook automation out of term-llm inference sessions
 - Optional `providers.claude-bin.enable_hooks: true` to opt back into Claude Code hooks
+- Claude's thinking summaries are requested by default. Terminal chat shows collapsed "Thinking..." blocks; the web UI keeps them hidden unless you opt in with `/thinking`. Claude Code returns summaries only when asked with `--thinking-display summarized` and allowed to send its first-party API betas. This setting therefore leaves `CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS` unset, overriding both inherited and `providers.<name>.env` values. Set `providers.claude-bin.thinking_summaries: false` to stop requesting summaries and keep the betas disabled, including when using a gateway that rejects beta headers. If the installed Claude Code rejects the flag, term-llm warns once and continues without summaries.
 - Optional `providers.claude-bin.env` passthrough for Claude subprocess settings (for example `IS_SANDBOX=1` in trusted root-run containers)
 - `providers.<name>.env` values support the same deferred resolution as other config values, including `file://...#nested.field` (JSON or YAML), `op://...`, and `$()`
 - Works immediately if Claude Code is installed and logged in

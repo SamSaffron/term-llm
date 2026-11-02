@@ -1887,6 +1887,13 @@ export class RunEngine {
                 : String(raw.content || raw.text || ''),
             created: Number(raw.created || raw.created_at) || Date.now(),
             responseId: projectedResponseId || responseId,
+            ...(role === 'reasoning'
+              ? {
+                  reasoningKind: String(raw.kind || ''),
+                  reasoningTitle: String(raw.title || ''),
+                  reasoningIndex: Number(raw.reasoning_index) || 0,
+                }
+              : {}),
             ...(tools ? { tools } : {}),
             ...(clientMessageId ? { clientMessageId } : {}),
             ...(Number.isFinite(segmentOrdinal) ? { assistantSegmentOrdinal: segmentOrdinal } : {}),

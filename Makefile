@@ -9,8 +9,8 @@ TERM_LLM_LDFLAGS := -s -w \
 	-X github.com/samsaffron/term-llm/cmd.Commit=$(COMMIT) \
 	-X github.com/samsaffron/term-llm/cmd.Date=$(BUILD_DATE)
 
-# Override to select a certificate explicitly; otherwise retain an existing
-# signing authority instead of silently replacing it with an ad-hoc signature.
+# Optional override; otherwise prefer this user's persistent signing choice,
+# then retain the existing binary's authority. Fresh clones need no certificate.
 export CODESIGN_IDENTITY ?=
 
 build: frontend
@@ -19,6 +19,27 @@ build: frontend
 	macos=false; \
 	if [ "$$(go env GOHOSTOS)" = "darwin" ] && [ "$$(go env GOOS)" = "darwin" ]; then \
 		macos=true; \
+		if [ -z "$$identity" ]; then \
+			case "$${XDG_CONFIG_HOME:-}" in \
+				/*) config_home="$$XDG_CONFIG_HOME" ;; \
+				*) config_home="$$HOME/.config" ;; \
+			esac; \
+			identity_file="$$config_home/term-llm/codesign-identity"; \
+			if [ -e "$$identity_file" ] || [ -L "$$identity_file" ]; then \
+				if [ ! -f "$$identity_file" ] || [ ! -r "$$identity_file" ]; then \
+					printf '%s\n' "Cannot read signing identity file: $$identity_file" >&2; exit 1; \
+				fi; \
+				bytes=$$(wc -c < "$$identity_file"); \
+				clean_bytes=$$(LC_ALL=C tr -d '\000-\011\013-\037\177' < "$$identity_file" | wc -c); \
+				if [ "$$bytes" -ne "$$clean_bytes" ] || [ "$$(wc -l < "$$identity_file")" -gt 1 ]; then \
+					printf '%s\n' "Invalid signing identity in $$identity_file: expected one nonempty line." >&2; exit 1; \
+				fi; \
+				identity=$$(cat "$$identity_file"); \
+				case "$$identity" in \
+					''|*[[:cntrl:]]*) printf '%s\n' "Invalid signing identity in $$identity_file: expected one nonempty line." >&2; exit 1 ;; \
+				esac; \
+			fi; \
+		fi; \
 		if [ -z "$$identity" ]; then \
 			identity=$$(codesign -dvv ./term-llm 2>&1 | sed -n 's/^Authority=//p' | head -n 1); \
 		fi; \

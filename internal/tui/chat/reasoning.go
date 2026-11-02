@@ -193,6 +193,7 @@ func (m *Model) currentReasoningDisplayPart() (core.Part, bool) {
 }
 
 func reasoningSegmentFromPart(part core.Part) ui.ReasoningSegment {
+	part = reasoningDisplayPart(part)
 	return ui.ReasoningSegment{
 		Content: part.ReasoningContent,
 		Kind:    string(part.ReasoningKind),
@@ -222,7 +223,7 @@ func (m *Model) renderReasoningPartBlockWithConfig(part core.Part, cfg config.Re
 	r.SetReasoningConfig(cfg)
 	block := r.Render(&session.Message{
 		Role:  core.RoleAssistant,
-		Parts: []core.Part{part},
+		Parts: []core.Part{reasoningDisplayPart(part)},
 	})
 	if block == nil {
 		return ""

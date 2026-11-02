@@ -236,7 +236,7 @@ func TestClaudeBinReportsMaxTurnsWithoutFailingTheTurn(t *testing.T) {
 	send := eventSender{ctx: context.Background(), ch: events}
 
 	line := `{"type":"result","subtype":"error_max_turns","is_error":true,"errors":["Reached maximum number of turns (2)"],"usage":{"input_tokens":10,"output_tokens":5}}`
-	if err := p.handleClaudeLine(context.Background(), line, false, send, &lastUsage, &sawTextDelta, &fallbackText, &handledTerminal, false); err != nil {
+	if err := p.handleClaudeLine(context.Background(), line, false, send, &lastUsage, &sawTextDelta, &fallbackText, &handledTerminal, nil, false); err != nil {
 		t.Fatalf("handleClaudeLine returned an error for a bounded loop: %v", err)
 	}
 	close(events)

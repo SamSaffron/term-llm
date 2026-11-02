@@ -35,6 +35,9 @@ type responseRunRecoveryTool struct {
 }
 
 type responseRunRecoveryMessage struct {
+	ReasoningIndex          int
+	ReasoningKind           string
+	ReasoningTitle          string
 	ID                      string
 	Role                    string
 	Content                 []byte

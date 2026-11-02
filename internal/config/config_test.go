@@ -857,7 +857,7 @@ func TestReasoningDefaultsAndKnownKeys(t *testing.T) {
 		"reasoning.persist_summaries": true,
 		"reasoning.chat.display":      ReasoningInherit,
 		"reasoning.ask.display":       ReasoningInherit,
-		"reasoning.serve.display":     ReasoningInherit,
+		"reasoning.serve.display":     ReasoningDisplayOff,
 		"reasoning.jobs.display":      ReasoningInherit,
 	}
 	for key, want := range checks {
@@ -1985,6 +1985,36 @@ func writeTestConfig(t *testing.T, configHome, content string) string {
 		t.Fatalf("write config: %v", err)
 	}
 	return path
+}
+
+func TestClaudeBinThinkingSummariesOptOutLoads(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	path, err := GetConfigPath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	content := `providers:
+  claude-bin:
+    thinking_summaries: false
+  claude-work:
+    type: claude-bin
+`
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := cfg.Providers["claude-bin"].ThinkingSummaries; got == nil || *got {
+		t.Fatalf("explicit opt-out = %v, want false", got)
+	}
+	if got := cfg.Providers["claude-work"].ThinkingSummaries; got != nil {
+		t.Fatalf("omitted = %v, want nil (summaries on)", got)
+	}
 }
 
 func TestResponsesProviderOptionsLoadAndSave(t *testing.T) {

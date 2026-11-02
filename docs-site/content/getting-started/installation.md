@@ -54,11 +54,53 @@ make build
 
 `make build` generates the embedded web UI and packages its readable source archive before compiling the Go binary. Those generated bundles are not checked into Git, so plain `go build` from a fresh checkout is not sufficient. Use the one-line installer for a self-contained release binary without source-build dependencies.
 
-On macOS, `make build` also ad-hoc signs macOS binaries with the explicit identifier
-`com.term-llm.cli`, replacing Go's default `a.out` identifier after each rebuild.
-This requires no signing certificate. It is not Developer ID signing or
-notarization, and does not guarantee that Local Network permissions survive
-rebuilds. Cross-builds on other operating systems are not signed by this step.
+On macOS, both `make` and `make build` sign the native macOS binary with the
+identifier `com.term-llm.cli`. Signing identity is selected in this order:
+
+1. A nonempty `CODESIGN_IDENTITY` environment variable or Make command-line override.
+2. A user-local, plain-text `codesign-identity` file under
+   `$XDG_CONFIG_HOME/term-llm/` when `XDG_CONFIG_HOME` is absolute, otherwise
+   `~/.config/term-llm/`.
+3. The existing binary's certificate authority, read **before** rebuilding.
+4. Ad-hoc signing (`-`) when nothing else is configured, so a fresh clone builds
+   without a signing certificate.
+
+To opt this machine into certificate signing, choose an existing identity from
+`security find-identity -v -p codesigning` and save its exact name or fingerprint
+as the file's only line. For example, with the default config location:
+
+```sh
+mkdir -p ~/.config/term-llm
+printf '%s\n' 'Apple Development: Your Name (CERTIFICATE_ID)' > ~/.config/term-llm/codesign-identity
+chmod 600 ~/.config/term-llm/codesign-identity
+make
+codesign --verify --strict ./term-llm
+codesign -dr - ./term-llm
+```
+
+The file is outside the checkout, applies to other clones built by this user,
+and is read as **data**, never sourced as shell code. An empty, malformed or
+unreadable configured file fails the build; an unavailable certificate or signing
+failure also fails rather than silently falling back to ad-hoc signing. Use an
+explicit `CODESIGN_IDENTITY=- make build` to request ad-hoc signing deliberately.
+No keys or certificates are created or imported by the build. Because this
+personal identity also signs other checkouts, build untrusted branches or pull
+requests with `CODESIGN_IDENTITY=- make build` so they do not inherit the trusted
+binary's signing identity and existing macOS privacy grants.
+
+`make check-changed` deliberately uses ad-hoc signing for its verification build:
+its isolated HOME hides the user's keychain. Normal `make build` retains the
+certificate-selection and fail-closed behavior above.
+
+Certificate signing gives successive builds a consistent identity under the same
+certificate and identifier; it does not grant macOS privacy permissions,
+notarize the binary, or guarantee that permissions survive certificate changes.
+After changing signing identity, restart already-running term-llm processes and,
+if required, refresh their specific permission entries in System Settings.
+Ad-hoc signing binds the designated requirement to a particular binary hash and
+may require new permission grants after rebuilding. Direct `go build` bypasses
+this Make signing policy. Cross-builds to non-macOS targets and builds on other
+operating systems do not use this signing step.
 
 ### Shell completions
 

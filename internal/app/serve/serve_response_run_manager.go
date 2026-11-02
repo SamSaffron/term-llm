@@ -14,6 +14,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/samsaffron/term-llm/internal/app/serve/wire"
 	"github.com/samsaffron/term-llm/internal/llm/core"
 	"github.com/samsaffron/term-llm/internal/restart"
 	"github.com/samsaffron/term-llm/internal/session"
@@ -1020,39 +1021,7 @@ func stringValue(v any) string {
 	return s
 }
 
-// appendJSONString appends a JSON-encoded string to dst without allocating a
-// separate []byte (unlike json.Marshal). Handles all characters that require
-// escaping in JSON strings; non-ASCII UTF-8 bytes pass through unchanged.
-func appendJSONString(dst []byte, s string) []byte {
-	const hexChars = "0123456789abcdef"
-	dst = append(dst, '"')
-	start := 0
-	for i := 0; i < len(s); i++ {
-		b := s[i]
-		if b >= 0x20 && b != '"' && b != '\\' {
-			continue
-		}
-		dst = append(dst, s[start:i]...)
-		start = i + 1
-		switch b {
-		case '"':
-			dst = append(dst, '\\', '"')
-		case '\\':
-			dst = append(dst, '\\', '\\')
-		case '\n':
-			dst = append(dst, '\\', 'n')
-		case '\r':
-			dst = append(dst, '\\', 'r')
-		case '\t':
-			dst = append(dst, '\\', 't')
-		default:
-			dst = append(dst, '\\', 'u', '0', '0', hexChars[b>>4], hexChars[b&0xf])
-		}
-	}
-	dst = append(dst, s[start:]...)
-	dst = append(dst, '"')
-	return dst
-}
+var appendJSONString = wire.AppendJSONString
 
 func mapValue(v any) map[string]any {
 	m, _ := v.(map[string]any)
@@ -1117,31 +1086,7 @@ func appendUniqueWebMedia(dst []webMediaEntry, values ...webMediaEntry) []webMed
 	return dst
 }
 
-func cloneJSONMap(src map[string]any) map[string]any {
-	if len(src) == 0 {
-		return nil
-	}
-	cloned := make(map[string]any, len(src))
-	for key, value := range src {
-		cloned[key] = cloneJSONValue(value)
-	}
-	return cloned
-}
-
-func cloneJSONValue(value any) any {
-	switch typed := value.(type) {
-	case map[string]any:
-		return cloneJSONMap(typed)
-	case []any:
-		out := make([]any, len(typed))
-		for i := range typed {
-			out[i] = cloneJSONValue(typed[i])
-		}
-		return out
-	default:
-		return typed
-	}
-}
+var cloneJSONMap = wire.CloneJSONMap
 
 func writeStoredResponseEvent(w io.Writer, ev responseRunEvent) error {
 	var payload any

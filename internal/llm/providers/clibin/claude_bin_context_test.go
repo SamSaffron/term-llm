@@ -44,7 +44,7 @@ func TestClaudeBinReportsContextPerAPICall(t *testing.T) {
 		`{"type":"result","subtype":"success","is_error":false,"result":"done","usage":{"input_tokens":6,"cache_creation_input_tokens":13071,"cache_read_input_tokens":63699,"output_tokens":184},"modelUsage":{"claude-opus-5-5":{"inputTokens":6,"contextWindow":1000000,"maxOutputTokens":128000}}}`,
 	}
 	for _, line := range lines {
-		if err := p.handleClaudeLine(context.Background(), line, false, send, &lastUsage, &sawTextDelta, &fallbackText, &handledTerminal, false); err != nil {
+		if err := p.handleClaudeLine(context.Background(), line, false, send, &lastUsage, &sawTextDelta, &fallbackText, &handledTerminal, nil, false); err != nil {
 			t.Fatalf("handleClaudeLine: %v", err)
 		}
 	}
@@ -75,7 +75,7 @@ func TestClaudeBinReportsContextPerAPICall(t *testing.T) {
 	// it with every mid-turn checkpoint.
 	events = make(chan core.Event, 4)
 	send = eventSender{ctx: context.Background(), ch: events}
-	if err := p.handleClaudeLine(context.Background(), claudeAssistantUsageLine("msg_4", "", 3, 25700, 200), false, send, &lastUsage, &sawTextDelta, &fallbackText, &handledTerminal, false); err != nil {
+	if err := p.handleClaudeLine(context.Background(), claudeAssistantUsageLine("msg_4", "", 3, 25700, 200), false, send, &lastUsage, &sawTextDelta, &fallbackText, &handledTerminal, nil, false); err != nil {
 		t.Fatalf("handleClaudeLine: %v", err)
 	}
 	close(events)
@@ -89,7 +89,7 @@ func TestClaudeBinReportsContextPerAPICall(t *testing.T) {
 	events = make(chan core.Event, 4)
 	send = eventSender{ctx: context.Background(), ch: events}
 	sonnet := strings.Replace(claudeAssistantUsageLine("msg_5", "", 3, 26000, 0), "claude-opus-5-5", "claude-sonnet-5", 1)
-	if err := p.handleClaudeLine(context.Background(), sonnet, false, send, &lastUsage, &sawTextDelta, &fallbackText, &handledTerminal, false); err != nil {
+	if err := p.handleClaudeLine(context.Background(), sonnet, false, send, &lastUsage, &sawTextDelta, &fallbackText, &handledTerminal, nil, false); err != nil {
 		t.Fatalf("handleClaudeLine: %v", err)
 	}
 	close(events)
@@ -109,7 +109,7 @@ func TestClaudeBinEphemeralRequestsDoNotReportContext(t *testing.T) {
 		fallbackText    string
 		handledTerminal bool
 	)
-	if err := p.handleClaudeLine(context.Background(), claudeAssistantUsageLine("msg_1", "", 2, 100, 100), false, send, &lastUsage, &sawTextDelta, &fallbackText, &handledTerminal, true); err != nil {
+	if err := p.handleClaudeLine(context.Background(), claudeAssistantUsageLine("msg_1", "", 2, 100, 100), false, send, &lastUsage, &sawTextDelta, &fallbackText, &handledTerminal, nil, true); err != nil {
 		t.Fatalf("handleClaudeLine: %v", err)
 	}
 	close(events)

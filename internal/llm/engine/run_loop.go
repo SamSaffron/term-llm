@@ -245,17 +245,25 @@ func buildAssistantMessageWithReasoningMetadata(text string, toolCalls []core.To
 }
 
 func buildInterleavedAssistantMessageWithReasoningMetadata(orderedParts []core.Part, reasoning string, reasoningSummaryParts []string, reasoningItemID, reasoningEncryptedContent string, reasoningKind core.ReasoningKind) core.Message {
-	parts := append([]core.Part(nil), orderedParts...)
+	parts := core.CloneParts(orderedParts)
+	hasBursts := false
+	for _, part := range parts {
+		hasBursts = hasBursts || part.ReasoningDisplay != nil
+	}
 	metadata := buildAssistantMessageWithReasoningMetadata("", nil, reasoning, reasoningSummaryParts, reasoningItemID, reasoningEncryptedContent, reasoningKind)
 	if len(metadata.Parts) == 0 {
 		return core.Message{Role: core.RoleAssistant, Parts: parts}
 	}
 
 	metadataPart := metadata.Parts[0]
+	metadataPart.ReasoningReplayOnly = hasBursts
 	for i := range parts {
-		if parts[i].Type != core.PartText {
+		// Display-only text parts must not change where legacy replay metadata
+		// is attached: use the first provider-visible text, or prepend it below.
+		if parts[i].Type != core.PartText || (parts[i].ReasoningDisplay != nil && parts[i].Text == "") {
 			continue
 		}
+		parts[i].ReasoningReplayOnly = metadataPart.ReasoningReplayOnly
 		parts[i].ReasoningContent = metadataPart.ReasoningContent
 		parts[i].ReasoningSummaryParts = metadataPart.ReasoningSummaryParts
 		parts[i].ReasoningItemID = metadataPart.ReasoningItemID

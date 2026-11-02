@@ -271,6 +271,11 @@ func CloneParts(parts []Part) []Part {
 // ClonePart deep-copies a part; ok is false when it is malformed and must be dropped.
 func ClonePart(part Part) (Part, bool) {
 	cloned := part
+	if part.ReasoningDisplay != nil {
+		display := *part.ReasoningDisplay
+		display.SummaryParts = append([]string(nil), display.SummaryParts...)
+		cloned.ReasoningDisplay = &display
+	}
 
 	switch part.Type {
 	case PartImage:

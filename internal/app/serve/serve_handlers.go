@@ -1635,6 +1635,7 @@ func askUserResultSummary(content string) string {
 }
 
 type sessionMessageProjectionIndex struct {
+	reasoningConfig       *config.ReasoningConfig
 	failedToolCalls       map[string]bool
 	guardianReviewsByCall map[string][]core.GuardianReview
 	planToolCalls         map[string]bool
@@ -1681,6 +1682,8 @@ func (index *sessionMessageProjectionIndex) recordSessionMessagePart(part core.P
 
 func (s *serveServer) sessionMessageEntries(msgs []session.Message) []sessionMessageEntry {
 	index := buildSessionMessageProjectionIndex(msgs)
+	cfg := s.cfgRef.ResolveReasoning("serve")
+	index.reasoningConfig = &cfg
 	result := make([]sessionMessageEntry, 0, len(msgs))
 	for i := range msgs {
 		entry, ok := s.sessionMessageEntryForMessage(&msgs[i], index)
@@ -1781,12 +1784,17 @@ func appendSessionMessageEventParts(entry *sessionMessageEntry, msg *session.Mes
 }
 
 func (s *serveServer) appendSessionMessageParts(entry *sessionMessageEntry, msg *session.Message, index sessionMessageProjectionIndex, embeddedFiles map[string]bool, displayText string) {
+	cfg := index.reasoningConfig
+	if cfg == nil {
+		resolved := s.cfgRef.ResolveReasoning("serve")
+		cfg = &resolved
+	}
 	for _, p := range msg.Parts {
 		switch p.Type {
 		case core.PartDiffComment:
 			appendSessionMessageDiffCommentPart(entry, p)
 		case core.PartText:
-			appendSessionMessageText(entry, msg, p, embeddedFiles, displayText)
+			appendSessionMessageTextWithReasoning(entry, msg, p, embeddedFiles, displayText, *cfg)
 		case core.PartFile:
 			entry.Parts = append(entry.Parts, s.sessionMessageFilePart(p))
 		case core.PartImage:

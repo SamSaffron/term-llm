@@ -406,6 +406,7 @@ var fields = []FieldSpec{
 	{Path: "env", Placeholder: map[string]any{}},
 	{Path: "headers", Placeholder: map[string]any{}},
 	{Path: "enable_hooks", Placeholder: false},
+	{Path: "thinking_summaries", Placeholder: true, Description: "claude-bin: stream Claude's thinking summaries (default true); false keeps them hidden and Claude Code's experimental betas off"},
 	{Path: "use_websocket", Placeholder: false},
 	{Path: "use_previous_response_id", Placeholder: true, Description: "OpenAI Responses: use server-state continuation (default true)"},
 	{Path: "request_encrypted_reasoning", Placeholder: true, Description: "OpenAI Responses: request encrypted reasoning for full-history replay (default true)"},

@@ -1,3 +1,5 @@
+import { thinkingTranscript } from '../domain/thinking-transcript';
+import { ThoughtRow } from './ThoughtRow';
 import { relativeTime } from '../domain/time';
 import { createTranscriptIndexes } from '../domain/transcript-indexes';
 import { createMessageMediaResolvers } from '../domain/media-resolvers';
@@ -583,7 +585,9 @@ const Tool = memo(function Tool({
   const store = useStore();
   const failed = tool.status === 'error' || tool.resultStatus === 'error';
   const stopped = tool.status === 'cancelled';
-  const [localExpanded, setLocalExpanded] = useState(false);
+  const [localExpanded, setLocalExpanded] = useState(store.thinking.detailsExpanded.value);
+  const detailsEpoch = store.thinking.detailsEpoch.value;
+  useEffect(() => setLocalExpanded(store.thinking.detailsExpanded.peek()), [store, detailsEpoch]);
   const expanded = controlledExpanded ?? localExpanded;
   const summary = toolSummary(tool);
   const failureReason = failed ? String(tool.result || tool.subagent?.error || '').trim() : '';
@@ -734,7 +738,9 @@ function ToolGroup({
       !(tool.name === 'update_plan' && tool.status === 'done' && tool.resultStatus !== 'error'),
   );
   const running = visible.some((tool) => tool.status === 'running');
-  const [expanded, setExpanded] = useState(false);
+  const [expanded, setExpanded] = useState(store.thinking.detailsExpanded.value);
+  const detailsEpoch = store.thinking.detailsEpoch.value;
+  useEffect(() => setExpanded(store.thinking.detailsExpanded.peek()), [store, detailsEpoch]);
   const [visited, setVisited] = useState(false);
   const toggle = useCallback(() => {
     setVisited(true);
@@ -1184,9 +1190,15 @@ const MessageRow = memo(function MessageRow({
   const media = (src: string, type: 'image' | 'video') => {
     if (!streaming) openMediaGallery(store, src, type);
   };
+  if (message.role === 'reasoning') return <ThoughtRow message={message} live={streaming} />;
   if (message.role === 'tool-group')
     return (
-      <div class="tool-group" data-message-id={message.id} data-durable-id={message.durableRowId}>
+      <div
+        class="tool-group"
+        data-message-id={message.id}
+        data-durable-id={message.durableRowId}
+        data-durable-ids={((message.durableSourceRowIds as Array<string | number>) || []).join(' ')}
+      >
         <ToolGroup tools={message.tools || []} resolveMedia={resolveMedia} />
       </div>
     );
@@ -1466,7 +1478,12 @@ export function Transcript() {
   const historySentinel = useRef<HTMLButtonElement>(null);
   const localExpanding = useRef(false);
   const prependAnchor = useRef<{ id: string; top: number } | null>(null);
-  const messages = store.visibleMessages.value;
+  const sourceMessages = store.visibleMessages.value;
+  const thinkingPolicy = store.thinking.policy.value;
+  const messages = useMemo(
+    () => thinkingTranscript(sourceMessages, thinkingPolicy),
+    [sourceMessages, thinkingPolicy],
+  );
   const sessionId = store.activeSession.value?.id;
   // Attention is only acknowledged while the completed outcome is in view.
   useEffect(() => {
@@ -1620,8 +1637,12 @@ export function Transcript() {
     const scrollToDurable = (event: Event) => {
       const durableId = Number((event as CustomEvent<unknown>).detail);
       if (!Number.isSafeInteger(durableId) || durableId <= 0) return;
-      const row = [...element.querySelectorAll<HTMLElement>('[data-durable-id]')].find(
-        (candidate) => Number(candidate.dataset.durableId) === durableId,
+      const row = [
+        ...element.querySelectorAll<HTMLElement>('[data-durable-id], [data-durable-ids]'),
+      ].find(
+        (candidate) =>
+          Number(candidate.dataset.durableId) === durableId ||
+          candidate.dataset.durableIds?.split(' ').includes(String(durableId)),
       );
       if (!row) return;
       stickToTail.current = false;
@@ -1677,7 +1698,12 @@ export function Transcript() {
   }, [turnLimit, messages]);
   const activeRun = store.activeProjection.value;
   const activity = activeRun
-    ? responseActivity(activeRun, store.currentPlan.value, activeRun.run.status)
+    ? responseActivity(
+        activeRun,
+        store.currentPlan.value,
+        activeRun.run.status,
+        store.thinking.policy.value,
+      )
     : null;
   const activeOutput = activeRun?.messages.at(-1);
   const streamingText = Boolean(
@@ -1685,8 +1711,18 @@ export function Transcript() {
     activeOutput?.role === 'assistant' &&
     activeOutput.responseId === activeRun.run.responseId,
   );
+  // A visible live thought row already says what the model is doing; the
+  // indicator below it only repeats that when thought rows are hidden.
+  const thoughtShown = Boolean(
+    activeOutput?.role === 'reasoning' &&
+    activeOutput.content &&
+    store.thinking.visible(activeOutput),
+  );
   const showActivity = Boolean(
-    store.streaming.value && activity && !(streamingText && activity.kind === 'working'),
+    store.streaming.value &&
+    activity &&
+    !(streamingText && activity.kind === 'working') &&
+    !(thoughtShown && activity.kind === 'thinking'),
   );
   const livenessUnknown = store.runLivenessUnknown.value;
   const livenessText = activeRun?.run.responseId.startsWith('pending_')
@@ -1779,7 +1815,9 @@ export function Transcript() {
                 const messageStreaming = Boolean(
                   store.streaming.value &&
                   activeRun &&
-                  message.role === 'assistant' &&
+                  (message.role === 'assistant' ||
+                    (message.role === 'reasoning' &&
+                      message.id === activeRun.messages.at(-1)?.id)) &&
                   message.responseId === activeRun.run.responseId &&
                   ['connecting', 'streaming'].includes(activeRun.run.status),
                 );
@@ -1815,8 +1853,8 @@ export function Transcript() {
         {showActivity && activity && (
           <div
             class={`streaming-indicator streaming-indicator-${activity.kind}`}
-            role="status"
-            aria-live="polite"
+            role={activity.kind === 'thinking' ? undefined : 'status'}
+            aria-live={activity.kind === 'thinking' ? 'off' : 'polite'}
             aria-atomic="true"
             aria-label={
               activity.kind === 'stopping'

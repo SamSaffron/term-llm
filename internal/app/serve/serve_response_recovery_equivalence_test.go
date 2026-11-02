@@ -26,6 +26,9 @@ type responseRecoveryToolShape struct {
 }
 
 type responseRecoveryMessageShape struct {
+	ReasoningIndex  int                         `json:"reasoning_index,omitempty"`
+	ReasoningKind   string                      `json:"kind,omitempty"`
+	ReasoningTitle  string                      `json:"title,omitempty"`
 	Role            string                      `json:"role"`
 	Content         string                      `json:"content,omitempty"`
 	ClientMessageID string                      `json:"client_message_id,omitempty"`
@@ -61,6 +64,29 @@ func foldResponseEventStream(events []responseRunEvent) (responseRecoveryShape, 
 			return shape, err
 		}
 		switch event.Event {
+		case "response.reasoning.delta":
+			index := responseRunIntValue(payload["reasoning_index"], 0)
+			found := -1
+			for i, message := range shape.Messages {
+				if message.Role == "reasoning" && message.ReasoningIndex == index {
+					found = i
+					break
+				}
+			}
+			if found < 0 {
+				closeReferenceToolGroup(&shape, &currentToolGroup)
+				currentAssistant = -1
+				shape.Messages = append(shape.Messages, responseRecoveryMessageShape{Role: "reasoning", ReasoningIndex: index})
+				found = len(shape.Messages) - 1
+			}
+			msg := &shape.Messages[found]
+			msg.ReasoningKind = stringValue(payload["kind"])
+			msg.ReasoningTitle = stringValue(payload["title"])
+			if text, ok := payload["text"].(string); ok {
+				msg.Content = text
+			} else {
+				msg.Content += stringValue(payload["delta"])
+			}
 		case "response.ask_user.prompt", "response.approval.prompt":
 			shape.Interactive = append(shape.Interactive, event.Event)
 		case "response.steering":
@@ -77,7 +103,7 @@ func foldResponseEventStream(events []responseRunEvent) (responseRecoveryShape, 
 		case "response.attempt.discard":
 			kept := shape.Messages[:0]
 			for _, message := range shape.Messages {
-				if message.Role == "assistant" || message.Role == "tool-group" {
+				if message.Role == "assistant" || message.Role == "tool-group" || message.Role == "reasoning" {
 					continue
 				}
 				kept = append(kept, message)
@@ -177,6 +203,11 @@ func normalizeResponseRecovery(recovery map[string]any) responseRecoveryShape {
 			Role: stringValue(message["role"]), Content: stringValue(message["content"]),
 			ClientMessageID: stringValue(message["client_message_id"]), Status: stringValue(message["status"]),
 		}
+		if entry.Role == "reasoning" {
+			entry.ReasoningIndex = responseRunIntValue(message["reasoning_index"], 0)
+			entry.ReasoningKind = stringValue(message["kind"])
+			entry.ReasoningTitle = stringValue(message["title"])
+		}
 		if entry.Role == "assistant" {
 			entry.SegmentOrdinal = responseRunIntValue(message["assistant_segment_ordinal"], 0)
 		}
@@ -205,6 +236,7 @@ func TestResponseRunEventFoldStructurallyEqualsRecoveryProjection(t *testing.T) 
 		name   string
 		events []responseRecoveryEventFixture
 	}{
+		{name: "reasoning", events: []responseRecoveryEventFixture{{event: "response.reasoning.delta", payload: map[string]any{"reasoning_index": 0, "kind": "summary", "title": "", "delta": "**partial"}}, {event: "response.reasoning.delta", payload: map[string]any{"reasoning_index": 0, "kind": "summary", "title": "Title", "text": "body"}}, text(0, "answer"), {event: "response.reasoning.delta", payload: map[string]any{"reasoning_index": 1, "kind": "raw", "title": "", "delta": "next"}}, {event: "response.attempt.discard", payload: map[string]any{}}, {event: "response.reasoning.delta", payload: map[string]any{"reasoning_index": 2, "kind": "summary", "title": "Retry", "delta": "new"}}}},
 		{name: "tools", events: []responseRecoveryEventFixture{toolAdded, {event: "response.output_item.done", payload: map[string]any{"item": map[string]any{"type": "function_call", "call_id": "call-1", "arguments": `{"command":"false"}`}}}, {event: "response.tool_exec.end", payload: map[string]any{"call_id": "call-1", "success": false}}, {event: "response.completed", payload: map[string]any{}}}},
 		{name: "multiple assistant segments", events: []responseRecoveryEventFixture{text(0, "first"), {event: "response.output_text.new_segment", payload: map[string]any{}}, text(1, "second"), {event: "response.completed", payload: map[string]any{}}}},
 		{name: "steering", events: []responseRecoveryEventFixture{text(0, "before"), {event: "response.steering", payload: map[string]any{"text": "clarify", "client_message_id": "client-steering"}}, text(1, "after")}},

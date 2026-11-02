@@ -7,6 +7,7 @@ import (
 	"log"
 	"time"
 
+	"github.com/samsaffron/term-llm/internal/app/serve/wire"
 	"github.com/samsaffron/term-llm/internal/llm/core"
 	"github.com/samsaffron/term-llm/internal/process"
 	"github.com/samsaffron/term-llm/internal/restart"
@@ -51,6 +52,7 @@ type webStreamView struct {
 	ReasoningEffort          string
 	ReasoningEffortSet       bool
 	ToolStartedAt            map[string]int64
+	ReasoningNext            int // next thought index; indices are never reused within a run
 }
 type webRunView struct {
 	Id                      string
@@ -118,7 +120,7 @@ func snapshotWebRun(run *responseRun, stream *responseRunStreamState, engine *co
 	}
 	saved := &webRunContinuation{Engine: engine, Provider: runtimeProviderKey(runtime), Stateful: stateful, UI: options.uiSession, ClientTools: run.typedClientTools != nil, AwaitedEvents: append([]session.AgentRun(nil), run.awaitedEvents...), AgentCompletion: options.agentCompletion, AgentBarrier: options.agentBarrier, AgentEvents: options.agentEvents,
 		Ledger: webLedgerView{run.persistence.maxRev, run.persistence.outputKeys, run.persistence.nextOutputID},
-		Stream: webStreamView{stream.outputIndex, stream.toolsSeen, stream.assistantBoundaryPending, stream.assistantSegmentOrdinal, stream.model, stream.reasoningEffort, stream.reasoningEffortSet, stream.toolStartedAt},
+		Stream: webStreamView{stream.outputIndex, stream.toolsSeen, stream.assistantBoundaryPending, stream.assistantSegmentOrdinal, stream.model, stream.reasoningEffort, stream.reasoningEffortSet, stream.toolStartedAt, stream.thought.NextIndex()},
 		View: webRunView{
 			Id:                      run.id,
 			SessionID:               run.sessionID,
@@ -239,7 +241,7 @@ func restoreWebRun(saved *webRunContinuation, cancel context.CancelFunc) *respon
 }
 func (saved *webRunContinuation) streamState() *responseRunStreamState {
 	v := saved.Stream
-	return &responseRunStreamState{outputIndex: v.OutputIndex, toolsSeen: v.ToolsSeen, assistantBoundaryPending: v.AssistantBoundaryPending, assistantSegmentOrdinal: v.AssistantSegmentOrdinal, model: v.Model, reasoningEffort: v.ReasoningEffort, reasoningEffortSet: v.ReasoningEffortSet, toolStartedAt: v.ToolStartedAt}
+	return &responseRunStreamState{outputIndex: v.OutputIndex, toolsSeen: v.ToolsSeen, assistantBoundaryPending: v.AssistantBoundaryPending, assistantSegmentOrdinal: v.AssistantSegmentOrdinal, model: v.Model, reasoningEffort: v.ReasoningEffort, reasoningEffortSet: v.ReasoningEffortSet, toolStartedAt: v.ToolStartedAt, thought: wire.ResumeReasoningStream(v.ReasoningNext)}
 }
 
 func (s *serveServer) installWebReload() error {

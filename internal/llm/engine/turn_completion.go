@@ -108,6 +108,9 @@ func (e *Engine) completeTextTurn(c *engineTurnCompletion) (bool, error) {
 				reasoningEncryptedContent,
 				reasoningKind,
 			)
+			if c.preserveInlineToolOrder && len(c.inlineSyncParts) > 0 {
+				finalMsg = c.buildOrderedInlineAssistant(c.inlineSyncParts)
+			}
 			finalMsg = attachProviderReplayParts(finalMsg, providerReplayParts)
 			if compaction.softActive {
 				brief := ContinuationBriefFromAssistantMessage(finalMsg)

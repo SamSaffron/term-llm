@@ -1,6 +1,7 @@
 export type MessageRole =
   | 'user'
   | 'assistant'
+  | 'reasoning'
   | 'error'
   | 'guardian-notice'
   | 'tool-group'
@@ -129,6 +130,9 @@ export interface Usage {
 }
 
 export interface Message {
+  reasoningKind?: string;
+  reasoningTitle?: string;
+  reasoningIndex?: number;
   id: string;
   role: MessageRole;
   content: string;

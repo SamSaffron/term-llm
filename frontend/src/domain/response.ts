@@ -450,6 +450,37 @@ export function reduceResponse(
         retry: undefined,
       };
     }
+    case 'response.reasoning.delta': {
+      const index = number(event.reasoning_index);
+      const existing = messages.find(
+        (message) =>
+          message.role === 'reasoning' &&
+          message.responseId === responseId &&
+          message.reasoningIndex === index,
+      );
+      const target: Message = existing || {
+        id: `${responseId}_reasoning_${index}`,
+        role: 'reasoning',
+        responseId,
+        reasoningIndex: index,
+        content: '',
+        created: Date.now(),
+      };
+      if (!existing) messages = [...closeToolGroups(messages), target];
+      messages = replaceMessage(messages, target, {
+        content: typeof event.text === 'string' ? event.text : target.content + text(event.delta),
+        reasoningKind: text(event.kind),
+        reasoningTitle: text(event.title),
+      });
+      return {
+        ...next,
+        messages,
+        run: { ...run, status: 'streaming' },
+        phase: undefined,
+        modelSwap: undefined,
+        retry: undefined,
+      };
+    }
     case 'response.output_text.delta': {
       const delta = text(event.delta);
       if (!delta) return next;
@@ -842,7 +873,7 @@ export function reduceResponse(
         messages: messages.filter(
           (message) =>
             message.responseId !== responseId ||
-            !['assistant', 'tool-group'].includes(message.role),
+            !['assistant', 'tool-group', 'reasoning'].includes(message.role),
         ),
         pendingGuardian: {},
         phase: undefined,
@@ -967,6 +998,7 @@ export function reduceResponse(
 }
 
 export const RESPONSE_EVENT_TYPES = [
+  'response.reasoning.delta',
   'response.created',
   'response.output_text.new_segment',
   'response.output_text.delta',

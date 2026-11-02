@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/samsaffron/term-llm/internal/app/serve/wire"
 	"github.com/samsaffron/term-llm/internal/app/uploads"
 	"github.com/samsaffron/term-llm/internal/linkeddevices"
 	"github.com/samsaffron/term-llm/internal/session"
@@ -36,9 +37,11 @@ func (s *serveServer) handleCapabilities(w http.ResponseWriter, r *http.Request)
 	}
 	shellEnabled := s.cfg.ui && platformServeShellSupported() && s.store != nil
 	liveCapability := s.liveCapability(r.Context())
-	w.Header().Set("ETag", fmt.Sprintf(`W/"projects-%t-worktrees-%t-shell-%t-live-%t-%s-%v-%v-upload-refs-1-2-admission-1-%s"`,
-		s.projectsEnabled, worktreesEnabled, shellEnabled, liveCapability["enabled"], liveCapability["provider"], liveCapability["transport"], liveCapability["version"], s.responseAdmissionInstance()))
+	thought := s.reasoningCapability()
+	w.Header().Set("ETag", fmt.Sprintf(`W/"projects-%t-worktrees-%t-shell-%t-live-%t-%s-%v-%v-upload-refs-1-2-admission-1-%s-reasoning-%v"`,
+		s.projectsEnabled, worktreesEnabled, shellEnabled, liveCapability["enabled"], liveCapability["provider"], liveCapability["transport"], liveCapability["version"], s.responseAdmissionInstance(), wire.ReasoningETag(thought)))
 	payload := map[string]any{
+		"reasoning":          thought,
 		"response_admission": map[string]any{"version": 1, "instance_id": s.responseAdmissionInstance()},
 		"projects":           map[string]bool{"enabled": s.projectsEnabled},
 		"worktrees":          map[string]bool{"enabled": worktreesEnabled},

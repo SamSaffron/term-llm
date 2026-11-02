@@ -143,6 +143,25 @@ func TestCreateProviderFromConfigClaudeBinPreservesHooks(t *testing.T) {
 	}
 }
 
+func TestCreateProviderFromConfigClaudeBinThinkingSummaries(t *testing.T) {
+	off := false
+	for _, tc := range []struct {
+		option *bool
+		want   bool
+	}{{nil, true}, {&off, false}} {
+		provider, err := factory.Create("claude-bin", &config.ProviderConfig{
+			Type: config.ProviderTypeClaudeBin, ThinkingSummaries: tc.option,
+		}, factoryOptions())
+		if err != nil {
+			t.Fatal(err)
+		}
+		claude, ok := provider.(*clibin.ClaudeBinProvider)
+		if !ok || claude.ThinkingSummariesEnabled() != tc.want {
+			t.Fatalf("thinking_summaries %v: provider %T, want summaries %v", tc.option, provider, tc.want)
+		}
+	}
+}
+
 func TestCreateProviderFromConfigRejectsInvalidOllamaThinkLevel(t *testing.T) {
 	_, err := factory.Create("local", &config.ProviderConfig{
 		Type:       config.ProviderTypeOllama,

@@ -68,21 +68,38 @@ func FormatSkillActivationProvenance(provenance *core.SkillActivationProvenance)
 	return strings.Join(lines, "\n")
 }
 
-// ReasoningSummaryDisplayContent joins display-safe summary parts, preferring them to legacy text.
+// ReasoningSummaryDisplayContent joins selected summary parts, preferring them to text.
+// Replay-only aggregates have no display content.
 func ReasoningSummaryDisplayContent(part core.Part) string {
-	if len(part.ReasoningSummaryParts) == 0 {
-		return part.ReasoningContent
+	display := core.ReasoningForDisplay(part)
+	if display == nil {
+		return ""
+	}
+	if len(display.SummaryParts) == 0 {
+		return display.Content
 	}
 	var parts []string
-	for _, text := range part.ReasoningSummaryParts {
+	for _, text := range display.SummaryParts {
 		if trimmed := strings.TrimSpace(text); trimmed != "" {
 			parts = append(parts, trimmed)
 		}
 	}
 	if len(parts) == 0 {
-		return part.ReasoningContent
+		return display.Content
 	}
 	return strings.Join(parts, "\n\n")
+}
+
+// encryptedReasoningBytes counts replay bytes independently of the display kind:
+// a readable burst may accompany encrypted aggregate metadata on the same part.
+func encryptedReasoningBytes(part core.Part) int {
+	n := len(part.ReasoningEncryptedContent)
+	kind := core.NormalizeStoredReasoningKind(part.ReasoningKind, part.ReasoningContent != "" || len(part.ReasoningSummaryParts) > 0)
+	legacyEncryptedOnly := part.ReasoningDisplay == nil && !part.ReasoningReplayOnly && n > 0 && strings.TrimSpace(ReasoningSummaryDisplayContent(part)) == ""
+	if kind == core.ReasoningKindEncrypted || legacyEncryptedOnly {
+		n += len(part.ReasoningContent)
+	}
+	return n
 }
 
 // ExtractSessionIDFromSpawnAgentResult returns the CLI's first child candidate.

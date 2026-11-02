@@ -5,11 +5,10 @@ import (
 	"fmt"
 	"log"
 	"sort"
-	"strconv"
 	"strings"
 	"time"
-	"unicode/utf8"
 
+	"github.com/samsaffron/term-llm/internal/app/serve/wire"
 	"github.com/samsaffron/term-llm/internal/llm/core"
 	"github.com/samsaffron/term-llm/internal/session"
 )
@@ -286,53 +285,9 @@ func (r *responseRun) storeEventLocked(stored responseRunEvent, terminal bool) {
 	}
 }
 
-func responseRunInt64Value(value any, fallback int64) int64 {
-	switch typed := value.(type) {
-	case int:
-		return int64(typed)
-	case int64:
-		return typed
-	case float64:
-		return int64(typed)
-	case json.Number:
-		if parsed, err := typed.Int64(); err == nil {
-			return parsed
-		}
-	}
-	return fallback
-}
-
-func responseRunIntValue(value any, fallback int) int {
-	return int(responseRunInt64Value(value, int64(fallback)))
-}
-
-func encodeTextDeltaPayloadWithIdentity(responseID string, runEpoch int64, outputIndex, segmentOrdinal int, segmentStartSequence int64, delta string, sequenceNumber int64) ([]byte, error) {
-	data := make([]byte, 0, 160+len(responseID)+len(delta))
-	data = append(data, `{"response_id":`...)
-	data = appendJSONString(data, responseID)
-	data = append(data, `,"run_epoch":`...)
-	data = strconv.AppendInt(data, runEpoch, 10)
-	data = append(data, `,"assistant_segment_ordinal":`...)
-	data = strconv.AppendInt(data, int64(segmentOrdinal), 10)
-	data = append(data, `,"segment_start_sequence":`...)
-	data = strconv.AppendInt(data, segmentStartSequence, 10)
-	data = append(data, `,"output_index":`...)
-	data = strconv.AppendInt(data, int64(outputIndex), 10)
-	data = append(data, `,"delta":`...)
-	if utf8.ValidString(delta) {
-		data = appendJSONString(data, delta)
-	} else {
-		encoded, err := json.Marshal(delta)
-		if err != nil {
-			return nil, err
-		}
-		data = append(data, encoded...)
-	}
-	data = append(data, `,"sequence_number":`...)
-	data = strconv.AppendInt(data, sequenceNumber, 10)
-	data = append(data, '}')
-	return data, nil
-}
+var responseRunInt64Value = wire.Int64Value
+var responseRunIntValue = wire.IntValue
+var encodeTextDeltaPayloadWithIdentity = wire.EncodeTextDeltaPayloadWithIdentity
 
 // appendTextDeltaSegmentEvent is a fast path for response.output_text.delta that avoids
 // allocating a map[string]any or a typed payload on every streamed token.

@@ -408,7 +408,7 @@ var keySpecs = []KeySpec{
 	def("reasoning.ask.history", ReasoningInherit),
 	def("reasoning.ask.export", ReasoningInherit),
 	optional("reasoning.ask.raw", withPlaceholder(false)),
-	def("reasoning.serve.display", ReasoningInherit),
+	def("reasoning.serve.display", ReasoningDisplayOff, described("Web display default; inherits an explicit reasoning.display unless overridden.")),
 	def("reasoning.serve.status", ReasoningInherit),
 	def("reasoning.serve.history", ReasoningInherit),
 	def("reasoning.serve.export", ReasoningInherit),

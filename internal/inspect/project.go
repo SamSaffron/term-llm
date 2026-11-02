@@ -216,16 +216,14 @@ func decoratePart(block *Block, part core.Part) {
 }
 
 func (d *Document) addReasoning(msg session.Message, prefix string, index int, part core.Part, tail bool, summaryID string) {
-	if part.ReasoningContent == "" && len(part.ReasoningSummaryParts) == 0 && part.ReasoningEncryptedContent == "" {
+	encryptedBytes := encryptedReasoningBytes(part)
+	if core.ReasoningForDisplay(part) == nil && encryptedBytes == 0 {
 		return
 	}
 	kind, title, text := ReasoningDisplay(part)
 	block := blockForMessage(msg, prefix, index, "reasoning")
 	block.Title, block.ReasoningKind = title, kind
-	block.EncryptedBytes = len(part.ReasoningEncryptedContent)
-	if kind == core.ReasoningKindEncrypted {
-		block.EncryptedBytes += len(part.ReasoningContent)
-	}
+	block.EncryptedBytes = encryptedBytes
 	block.CompactionTail = msg.CompactionTail || tail
 	if tail {
 		block.CompactionSummaryID = summaryID

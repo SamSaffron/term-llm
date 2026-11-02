@@ -115,9 +115,12 @@ func (p *ClaudeBinProvider) buildCommandEnv(effort string) []string {
 	}
 	// Always disable Claude Code features that can bleed first-party prompt/tool
 	// behavior into term-llm runs; these must win over inherited or configured
-	// values.
+	// values. Thinking summaries keep the experimental betas, and inherited or
+	// configured values of that key stay dropped above.
 	for k, v := range forcedClaudeCodeIsolationEnv {
-		filtered = append(filtered, k+"="+v)
+		if p.forcesIsolationEnv(k) {
+			filtered = append(filtered, k+"="+v)
+		}
 	}
 	return filtered
 }

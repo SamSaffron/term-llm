@@ -403,6 +403,8 @@ func prepareMessagesForSummaryHelper(messages []core.Message) []core.Message {
 					part.Text = SummaryPrefix + summary
 				}
 			}
+			part.ReasoningDisplay = nil
+			part.ReasoningReplayOnly = false
 			part.ReasoningContent = ""
 			part.ReasoningSummaryParts = nil
 			part.ReasoningItemID = ""

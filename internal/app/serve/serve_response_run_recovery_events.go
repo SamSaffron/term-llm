@@ -115,7 +115,7 @@ func (r *responseRun) applyRecoveryResponseSteering(event string, payload map[st
 func (r *responseRun) applyRecoveryResponseAttemptDiscard(event string, payload map[string]any) {
 	kept := r.recoveryMessages[:0]
 	for _, message := range r.recoveryMessages {
-		if message.Role == "assistant" || message.Role == "tool-group" {
+		if message.Role == "assistant" || message.Role == "tool-group" || message.Role == "reasoning" {
 			continue
 		}
 		kept = append(kept, message)

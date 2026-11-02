@@ -34,6 +34,25 @@ func names(p Plan) string {
 	return strings.Join(n, ",")
 }
 
+func TestVerificationBuildExplicitlyUsesAdHocSigning(t *testing.T) {
+	for _, p := range []Plan{plan(true), plan(false, "internal/a/x.go"), plan(false, "frontend/src/a.ts")} {
+		found := false
+		for _, step := range p.Steps {
+			if step.Name == "make build" {
+				found = true
+				if want := []string{"make", "build", "CODESIGN_IDENTITY=-"}; !reflect.DeepEqual(step.Args, want) {
+					t.Fatalf("verification build = %v, want %v", step.Args, want)
+				}
+			} else if strings.Contains(strings.Join(step.Args, " "), "CODESIGN_IDENTITY") {
+				t.Fatalf("signing override escaped the build step: %v", step.Args)
+			}
+		}
+		if !found {
+			t.Fatal("missing verification build")
+		}
+	}
+}
+
 func TestReverseDeps(t *testing.T) {
 	got := ReverseDeps(testPkgs, []string{"m/internal/b"})
 	want := []string{"m", "m/cmd", "m/cmd/gendocs", "m/internal/a", "m/internal/b", "m/internal/c"}

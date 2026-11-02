@@ -3642,6 +3642,15 @@ describe('AppStore compatibility behavior', () => {
         ...projection,
         messages: [
           {
+            id: 'live-thought',
+            role: 'reasoning',
+            content: 'thinking body',
+            reasoningKind: 'summary',
+            reasoningIndex: 0,
+            responseId: 'r1',
+            created: 1,
+          },
+          {
             id: 'r1:assistant:0',
             role: 'assistant',
             content: 'identical answer',
@@ -3669,7 +3678,10 @@ describe('AppStore compatibility behavior', () => {
               id: 42,
               sequence: 1,
               role: 'assistant',
-              parts: [{ type: 'text', text: 'identical answer' }],
+              parts: [
+                { type: 'reasoning', text: 'thinking body', reasoning_kind: 'summary' },
+                { type: 'text', text: 'identical answer' },
+              ],
             },
           ],
         },
@@ -3690,6 +3702,7 @@ describe('AppStore compatibility behavior', () => {
       run: { responseId: 'r1', status: 'completed', summary: 'identical answer' },
     });
     expect(store.visibleMessages.value.map((message) => message.content)).toEqual([
+      'thinking body',
       'identical answer',
     ]);
     await internals.resumeResponse('s1', 'r1');
@@ -5500,6 +5513,15 @@ describe('AppStore compatibility behavior', () => {
           sequence_number: 1,
           messages: [
             {
+              id: 'peer-thought',
+              role: 'reasoning',
+              content: 'recovered thought',
+              kind: 'summary',
+              title: 'Checking recovery',
+              reasoning_index: 3,
+              response_id: 'peer-response',
+            },
+            {
               id: 'peer-response:assistant:0',
               role: 'assistant',
               content: 'streamed reply',
@@ -5528,6 +5550,7 @@ describe('AppStore compatibility behavior', () => {
     expect(order).toEqual(['transcript', 'response', 'stream']);
     expect(store.visibleMessages.value.map((message) => message.content)).toEqual([
       'peer prompt',
+      'recovered thought',
       'streamed reply',
     ]);
     expect(store.sessions.value[0]).toMatchObject({

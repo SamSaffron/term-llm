@@ -8,6 +8,8 @@ import (
 // sessionMessagePartEntry is one part of a session message as returned by the
 // web messages API.
 type sessionMessagePartEntry struct {
+	ReasoningKind       string                          `json:"reasoning_kind,omitempty"`
+	ReasoningTitle      string                          `json:"reasoning_title,omitempty"`
 	CreatedAt           int64                           `json:"created_at,omitempty"`
 	Type                string                          `json:"type"`
 	Text                string                          `json:"text,omitempty"`

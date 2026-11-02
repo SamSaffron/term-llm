@@ -20,7 +20,7 @@ import type { RuntimeOption } from './store-types';
  * - Any 401/403 purges the scope. Records carry a schema version and age.
  */
 
-export const WORKSPACE_CACHE_SCHEMA = 1;
+export const WORKSPACE_CACHE_SCHEMA = 2;
 
 const DAY = 24 * 60 * 60 * 1_000;
 /** Older workspace snapshots are more misleading than useful. */

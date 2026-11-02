@@ -56,6 +56,7 @@ type providerTurnFrame struct {
 	syncToolResults                []core.Message
 	syncTools                      *syncToolSupervisor
 	inlineSyncParts                []core.Part
+	inlineReasoning                inlineReasoningState
 	scratchpadHasDiscardableOutput bool
 	scratchpadCommitted            bool
 	recoveryCompleted              bool
@@ -330,16 +331,6 @@ func (e *Engine) runProviderTurn(state *engineRunTurnContext, attempt int) error
 	capabilities := e.provider.Capabilities()
 	inlineToolLoop := capabilities.InlineToolLoop
 	preserveInlineToolOrder := inlineToolLoop && capabilities.OrderedInlineToolEvents
-	appendInlineText := func(text string) {
-		if !preserveInlineToolOrder || text == "" {
-			return
-		}
-		if n := len(turn.inlineSyncParts); n > 0 && turn.inlineSyncParts[n-1].Type == core.PartText {
-			turn.inlineSyncParts[n-1].Text += text
-			return
-		}
-		turn.inlineSyncParts = append(turn.inlineSyncParts, core.Part{Type: core.PartText, Text: text, CreatedAt: time.Now().UnixMilli()})
-	}
 	buildOrderedInlineAssistant := func(parts []core.Part) core.Message {
 		return buildInterleavedAssistantMessageWithReasoningMetadata(
 			parts,
@@ -369,10 +360,12 @@ func (e *Engine) runProviderTurn(state *engineRunTurnContext, attempt int) error
 		partial := ensureToolCallIDs(calls)
 		partial = dedupeToolCalls(partial)
 		var msg core.Message
-		if preserveInlineToolOrder && len(partial) > 0 {
+		if preserveInlineToolOrder && (len(turn.inlineSyncParts) > 0 || len(partial) > 0) {
 			parts := append([]core.Part(nil), turn.inlineSyncParts...)
-			latest := e.withToolPreview(partial[len(partial)-1:])[0]
-			parts = append(parts, core.Part{Type: core.PartToolCall, ToolCall: &latest, CreatedAt: time.Now().UnixMilli()})
+			if len(partial) > 0 {
+				latest := e.withToolPreview(partial[len(partial)-1:])[0]
+				parts = append(parts, core.Part{Type: core.PartToolCall, ToolCall: &latest, CreatedAt: time.Now().UnixMilli()})
+			}
 			msg = buildOrderedInlineAssistant(parts)
 		} else {
 			msg = buildAssistantMessageWithReasoningMetadata(
@@ -459,6 +452,9 @@ func (e *Engine) runProviderTurn(state *engineRunTurnContext, attempt int) error
 		}
 		if run.req.DebugRaw {
 			env.debugRawEvent(true, event)
+		}
+		if preserveInlineToolOrder {
+			turn.observeInlineReasoning(event)
 		}
 		if event.Type == core.EventAttemptDiscard {
 			turn.textBuilder.Reset()
@@ -547,7 +543,9 @@ func (e *Engine) runProviderTurn(state *engineRunTurnContext, attempt int) error
 		// Accumulate text for callback
 		if event.Type == core.EventTextDelta && event.Text != "" {
 			turn.textBuilder.WriteString(event.Text)
-			appendInlineText(event.Text)
+			if preserveInlineToolOrder {
+				turn.appendInlineText(event.Text)
+			}
 			if compaction.softActive {
 				continue
 			}

@@ -13,6 +13,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/samsaffron/term-llm/internal/app/serve/wire"
 	"github.com/samsaffron/term-llm/internal/llm"
 	"github.com/samsaffron/term-llm/internal/llm/core"
 	"github.com/samsaffron/term-llm/internal/restart"
@@ -21,6 +22,7 @@ import (
 )
 
 type responseRunStreamState struct {
+	thought                  wire.ReasoningStream
 	outputIndex              int
 	toolsSeen                bool
 	assistantBoundaryPending bool
@@ -108,7 +110,12 @@ func (s *serveServer) persistResponseRunErrorEvent(ctx context.Context, runtime 
 }
 
 func (s *serveServer) appendResponseRunEvent(runtime *serveRuntime, run *responseRun, state *responseRunStreamState, ev core.Event) error {
+	if wire.ReasoningBoundary(ev) {
+		state.thought.Active = false
+	}
 	switch ev.Type {
+	case core.EventReasoningDelta:
+		return s.appendResponseReasoning(run, state, ev)
 	case core.EventTextDelta:
 		return s.appendResponseTextDelta(runtime, run, state, ev)
 	case core.EventAttemptDiscard:

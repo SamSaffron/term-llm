@@ -474,7 +474,7 @@ func (m *Model) viewAltScreenEnsureHistory() {
 		m.viewCache.historyWidth == m.width &&
 		m.viewCache.historyScrollOffset == m.scrollOffset
 	if !historyValid {
-		historySig := m.chatRenderer.CachedHistorySignature(m.messages)
+		historySig := m.chatRenderer.CachedHistorySignature(reasoningDisplayMessages(m.messages))
 		if m.viewCache.historyValid && m.viewCache.historySignature == historySig && m.viewCache.historyWidth == m.width {
 			// Content unchanged despite invalidation (e.g. scroll offset change) — restore validity.
 			m.viewCache.historyScrollOffset = m.scrollOffset
@@ -2176,7 +2176,7 @@ func (m *Model) renderHistory() string {
 		// Include up to the last user message
 		messages = messages[:i+1]
 	}
-	messages = visibleDirectShellMessages(messages)
+	messages = reasoningDisplayMessages(visibleDirectShellMessages(messages))
 
 	state := render.RenderState{
 		Messages: messages,

@@ -39,19 +39,30 @@ func CompactionBoundaryIndex(messages []session.Message, hasBoundary bool, seque
 	return idx
 }
 
-// StoredReasoningKind applies the same legacy summary classification as the CLI.
+// StoredReasoningKind classifies the selected display burst, preserving legacy summaries.
 func StoredReasoningKind(part core.Part) core.ReasoningKind {
-	return core.NormalizeStoredReasoningKind(part.ReasoningKind, part.ReasoningContent != "" || len(part.ReasoningSummaryParts) > 0)
+	if display := core.ReasoningForDisplay(part); display != nil {
+		return core.NormalizeStoredReasoningKind(display.Kind, display.Content != "" || len(display.SummaryParts) > 0)
+	}
+	return core.NormalizeStoredReasoningKind(part.ReasoningKind, false)
 }
 
-// ReasoningDisplay returns display-safe content, never encrypted replay material.
+// ReasoningDisplay returns inspector content, including unknown non-encrypted
+// reasoning, but never encrypted replay material or replay-only aggregate text.
 func ReasoningDisplay(part core.Part) (kind core.ReasoningKind, title, body string) {
+	display := core.ReasoningForDisplay(part)
+	if display == nil {
+		if encryptedReasoningBytes(part) > 0 {
+			return core.ReasoningKindEncrypted, "Encrypted reasoning", ""
+		}
+		return StoredReasoningKind(part), "Thinking...", ""
+	}
 	kind = StoredReasoningKind(part)
-	content := strings.TrimSpace(part.ReasoningContent)
+	content := strings.TrimSpace(display.Content)
 	if kind == core.ReasoningKindEncrypted || (strings.TrimSpace(ReasoningSummaryDisplayContent(part)) == "" && part.ReasoningEncryptedContent != "") {
 		return core.ReasoningKindEncrypted, "Encrypted reasoning", ""
 	}
-	title = strings.TrimSpace(part.ReasoningSummaryTitle)
+	title = strings.TrimSpace(display.SummaryTitle)
 	body = content
 	if kind == core.ReasoningKindSummary {
 		content = strings.TrimSpace(ReasoningSummaryDisplayContent(part))

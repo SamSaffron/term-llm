@@ -1,3 +1,4 @@
+import { thinkingCompletions, type ThinkingDisplay } from './thinking';
 import type {
   ServeMentionSearchResponse,
   ServeMentionToken,
@@ -14,6 +15,9 @@ export interface SkillCommand {
 }
 
 export interface Completion {
+  thinking?: boolean;
+  current?: boolean;
+  unavailable?: boolean;
   value: string;
   label: string;
   description: string;
@@ -28,6 +32,7 @@ export type MentionSearchItem = ServeMentionSearchItem;
 export type MentionSearchResponse = ServeMentionSearchResponse;
 
 export const SLASH_COMMANDS = [
+  { command: '/thinking', description: 'Toggle reasoning display', streamingSafe: true },
   {
     command: '/inspect',
     description: 'Inspect the full conversation and current runtime definitions',
@@ -145,7 +150,11 @@ export function composerCompletions(
   streaming = false,
   shellEnabled = false,
   approvalsEnabled = true,
+  thinkingDisplay: ThinkingDisplay = 'collapsed',
+  rawAllowed = false,
 ): Completion[] {
+  const thoughts = thinkingCompletions(value, thinkingDisplay, rawAllowed);
+  if (thoughts) return thoughts;
   const slash = value.match(/^\/[\w-]*$/);
   if (slash) {
     const entries: Completion[] = [
@@ -258,7 +267,13 @@ export function applyCompletion(value: string, completion: string | Completion):
   if (replacement) {
     const after = value.slice(replacement.end);
     const separator = !after || !/^\s/u.test(after) ? ' ' : '';
-    return value.slice(0, replacement.start) + inserted + separator + after;
+    return (
+      value.slice(0, replacement.start) +
+      (item?.thinking && !/\s$/.test(value.slice(0, replacement.start)) ? ' ' : '') +
+      inserted +
+      separator +
+      after
+    );
   }
   return value.replace(/(?:\/[\w-]*|@[\w-]*)$/, `${inserted} `);
 }
@@ -267,6 +282,9 @@ export function completedCursor(value: string, completion: Completion): number {
   if (!completion.replacement) return applyCompletion(value, completion).length;
   const after = value.slice(completion.replacement.end);
   return (
-    completion.replacement.start + completion.value.length + (!after || !/^\s/u.test(after) ? 1 : 0)
+    completion.replacement.start +
+    (completion.thinking && !/\s$/.test(value.slice(0, completion.replacement.start)) ? 1 : 0) +
+    completion.value.length +
+    (!after || !/^\s/u.test(after) ? 1 : 0)
   );
 }

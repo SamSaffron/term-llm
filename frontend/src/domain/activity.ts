@@ -1,9 +1,10 @@
+import { DEFAULT_THINKING, thinkingStatus, type ThinkingPolicy } from './thinking';
 import type { ResponseProjection } from './response';
 import type { CurrentPlan, RunStatus, ToolCall } from './types';
 
 export interface ResponseActivity {
   text: string;
-  kind: 'working' | 'plan' | 'tool' | 'retrying' | 'stopping';
+  kind: 'working' | 'plan' | 'tool' | 'retrying' | 'stopping' | 'thinking';
 }
 
 const TOOL_ACTIVITY: Record<string, string> = {
@@ -32,6 +33,7 @@ export function responseActivity(
   projection: Pick<ResponseProjection, 'messages' | 'retry'> | null,
   plan: CurrentPlan | null,
   status: RunStatus,
+  thinking: ThinkingPolicy = DEFAULT_THINKING,
 ): ResponseActivity {
   if (status === 'cancelling') return { text: 'Stopping', kind: 'stopping' };
   if (projection?.retry)
@@ -39,6 +41,13 @@ export function responseActivity(
       text: `Retrying provider${projection.retry.attempt ? ` · attempt ${projection.retry.attempt}` : ''}`,
       kind: 'retrying',
     };
+
+  const newest = projection?.messages.at(-1);
+  const toolsRunning = projection?.messages.some((message) =>
+    message.tools?.some((tool) => tool.status === 'running'),
+  );
+  if (status === 'streaming' && newest?.role === 'reasoning' && !toolsRunning)
+    return { text: thinkingStatus(newest, thinking), kind: 'thinking' };
 
   const activeStep = plan?.plan.find((step) => step.status === 'in_progress')?.step.trim();
   if (activeStep) return { text: activeStep, kind: 'plan' };

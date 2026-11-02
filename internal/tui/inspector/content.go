@@ -10,7 +10,6 @@ import (
 	appconfig "github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/inspect"
 	"github.com/samsaffron/term-llm/internal/llm/core"
-	internalreasoning "github.com/samsaffron/term-llm/internal/reasoning"
 	"github.com/samsaffron/term-llm/internal/session"
 	"github.com/samsaffron/term-llm/internal/ui"
 )
@@ -580,13 +579,6 @@ func compactionDebugMessageText(msg session.Message) string {
 	return strings.Join(sections, "\n\n")
 }
 
-func compactionDebugReasoningText(part core.Part) string {
-	if len(part.ReasoningSummaryParts) > 0 {
-		return strings.Join(part.ReasoningSummaryParts, "\n\n")
-	}
-	return strings.TrimSpace(part.ReasoningContent)
-}
-
 func compactionDebugImageText(part core.Part) string {
 	if part.ImageData != nil {
 		return fmt.Sprintf("[Image: %s, %d bytes]", part.ImageData.MediaType, len(part.ImageData.Base64))
@@ -999,94 +991,6 @@ func (r *ContentRenderer) renderAssistantContentWithItems(msg session.Message, m
 		return "(empty)", items
 	}
 	return b.String(), items
-}
-
-func reasoningSummaryDisplayContent(part core.Part) string {
-	return inspect.ReasoningSummaryDisplayContent(part)
-}
-
-func (r *ContentRenderer) renderReasoningForPart(part core.Part) string {
-	hasReasoningContent := part.ReasoningContent != "" || len(part.ReasoningSummaryParts) > 0
-	kind := core.NormalizeStoredReasoningKind(part.ReasoningKind, hasReasoningContent)
-	switch kind {
-	case core.ReasoningKindSummary:
-		return r.renderReasoningSummary(part)
-	case core.ReasoningKindRaw, core.ReasoningKindUnknown:
-		return r.renderProviderReasoning(part)
-	default:
-		return ""
-	}
-}
-
-func (r *ContentRenderer) renderProviderReasoning(part core.Part) string {
-	content := strings.TrimSpace(part.ReasoningContent)
-	if content == "" {
-		return ""
-	}
-	title := strings.TrimSpace(part.ReasoningSummaryTitle)
-	if title == "" {
-		title = "Thinking..."
-	}
-	header := title
-	if title != "Thinking..." {
-		header = "Thought: " + title
-	}
-	return r.renderReasoningBlock(header, content, true)
-}
-
-func (r *ContentRenderer) renderReasoningSummary(part core.Part) string {
-	hasReasoningContent := part.ReasoningContent != "" || len(part.ReasoningSummaryParts) > 0
-	if core.NormalizeStoredReasoningKind(part.ReasoningKind, hasReasoningContent) != core.ReasoningKindSummary {
-		return ""
-	}
-	content := strings.TrimSpace(reasoningSummaryDisplayContent(part))
-	if content == "" {
-		return ""
-	}
-	parsed := internalreasoning.ParseReasoningSummary(content)
-	title := strings.TrimSpace(part.ReasoningSummaryTitle)
-	if title == "" {
-		title = parsed.Title
-	}
-	body := strings.TrimSpace(parsed.Body)
-	if body == "" {
-		body = content
-	}
-	if title == "" {
-		title = "Thinking..."
-	}
-	header := title
-	if title != "Thinking..." {
-		header = "Thought: " + title
-	}
-	return r.renderReasoningBlock(header, body, false)
-}
-
-func (r *ContentRenderer) renderReasoningBlock(header, body string, raw bool) string {
-	innerWidth := max(r.width-4, 20)
-	theme := r.styles.Theme()
-	headerStyle := lipgloss.NewStyle().Foreground(theme.ReasoningHeader).Italic(true)
-	bodyColor := theme.ReasoningSummary
-	if raw {
-		bodyColor = theme.ReasoningRaw
-	}
-	bodyStyle := lipgloss.NewStyle().Foreground(bodyColor).Italic(true)
-	var b strings.Builder
-	for i, line := range wrapLine(header, innerWidth) {
-		if i > 0 {
-			b.WriteString("\n")
-		}
-		b.WriteString(headerStyle.Render(line))
-	}
-	if strings.TrimSpace(body) != "" {
-		for _, line := range strings.Split(body, "\n") {
-			for _, wrapped := range wrapLine(line, innerWidth) {
-				b.WriteString("\n")
-				b.WriteString(bodyStyle.Render(wrapped))
-			}
-		}
-	}
-	return b.String()
 }
 
 // renderToolCall renders a tool call with its arguments

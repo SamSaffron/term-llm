@@ -122,6 +122,8 @@ func (r *responseRun) applyRecoveryEventLocked(event string, payload map[string]
 		r.flushPendingGuardianReviewsLocked()
 	}
 	switch event {
+	case "response.reasoning.delta":
+		r.applyRecoveryReasoning(payload)
 	case "response.ask_user.prompt":
 		r.applyRecoveryResponseAskUserPrompt(event, payload)
 	case "response.approval.prompt":
@@ -437,6 +439,11 @@ func (r *responseRun) recoveryMessagePayloadLocked(msg responseRunRecoveryMessag
 }
 
 func (r *responseRun) appendRecoveryMessageRoleFieldsLocked(entry map[string]any, msg responseRunRecoveryMessage) {
+	if msg.Role == "reasoning" {
+		entry["reasoning_index"] = msg.ReasoningIndex
+		entry["kind"] = msg.ReasoningKind
+		entry["title"] = msg.ReasoningTitle
+	}
 	if msg.Role == "assistant" {
 		entry["assistantSegmentOrdinal"] = msg.AssistantSegmentOrdinal
 		entry["assistant_segment_ordinal"] = msg.AssistantSegmentOrdinal

@@ -290,7 +290,9 @@ func goSteps(targets []string, pkgs []Pkg) []Step {
 		}
 	}
 	sort.Strings(all)
-	steps := []Step{{Name: "make build", Args: []string{"make", "build"}}}
+	// The checker isolates HOME, including macOS keychains. Verification builds
+	// must not inherit a personal signing identity from the existing binary.
+	steps := []Step{{Name: "make build", Args: []string{"make", "build", "CODESIGN_IDENTITY=-"}}}
 	if len(all) > 0 {
 		steps = append(steps, Step{Name: "go build", Args: append([]string{"go", "build"}, all...)})
 	}

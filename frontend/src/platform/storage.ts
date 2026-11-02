@@ -2,6 +2,7 @@ import type { Attachment, DiffComment } from '../domain/types';
 import type { HubContext } from '../app/config';
 
 export const STORAGE_BASE_KEYS = {
+  thinkingDisplay: 'term_llm_thinking_display',
   token: 'term_llm_token',
   activeSession: 'term_llm_active_session',
   draftSessionActive: 'term_llm_draft_session_active',
@@ -38,8 +39,11 @@ export function storageKeys(hub: HubContext | null): StorageKeys {
   const scope = hub?.nodeId ? `:${hub.nodeId}` : '';
   return Object.fromEntries(
     Object.entries(STORAGE_BASE_KEYS).map(([name, key]) => {
-      // Direct node auth uses the unscoped token even when Hub context is injected.
-      const scoped = name === 'token' && hub && !hub.nodeBasePath ? key : `${key}${scope}`;
+      // Thinking is browser-wide. Direct node auth also keeps its unscoped token.
+      const scoped =
+        name === 'thinkingDisplay' || (name === 'token' && hub && !hub.nodeBasePath)
+          ? key
+          : `${key}${scope}`;
       return [name, scoped];
     }),
   ) as StorageKeys;

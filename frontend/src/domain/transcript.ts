@@ -207,7 +207,7 @@ function withSource(entry: Message, message: ServerMessage): Message {
       ...new Set([...((entry.durableSourceRowIds as Array<string | number>) || []), row]),
     ];
     if (
-      ['user', 'assistant', 'tool-group'].includes(entry.role) &&
+      ['user', 'assistant', 'tool-group', 'reasoning'].includes(entry.role) &&
       Number.isSafeInteger(Number(row)) &&
       Number(row) > 0
     )
@@ -606,18 +606,44 @@ export function convertServerMessages(
         );
       continue;
     }
-    const activities = parts
-      .map((part, index) => ({ part, index }))
-      .filter(({ part }) => part.type === 'tool_activity');
+    const indexed = parts.map((part, index) => ({ part, index }));
+    const activities = indexed.filter(({ part }) => part.type === 'tool_activity');
+    // Provider-side tool activity renders before the answer. As in the TUI, the
+    // thought on the first text part comes before both.
+    const first = indexed.find(({ part }) =>
+      ['reasoning', 'text', 'output_text'].includes(text(part.type)),
+    );
+    const lead = first?.part.type === 'reasoning' ? [first] : [];
+    // The server emits a part's thought just before its text, so a leading
+    // thought must not cost the first text segment its timestamp.
+    const firstSegment = parts[0]?.type === 'reasoning' ? 1 : 0;
     const ordered = activities.length
       ? [
+          ...lead,
           ...activities,
-          ...parts
-            .map((part, index) => ({ part, index }))
-            .filter(({ part }) => part.type !== 'tool_activity'),
+          ...indexed.filter(
+            (entry) => entry.part.type !== 'tool_activity' && !lead.includes(entry),
+          ),
         ]
-      : parts.map((part, index) => ({ part, index }));
+      : indexed;
     for (const { part, index } of ordered) {
+      if (part.type === 'reasoning') {
+        flush();
+        output.push(
+          withSource(
+            {
+              id: `${messageID}_reasoning_${index}`,
+              role: 'reasoning',
+              content: text(part.text),
+              reasoningKind: text(part.reasoning_kind),
+              reasoningTitle: text(part.reasoning_title),
+              created: at,
+            },
+            message,
+          ),
+        );
+        continue;
+      }
       if (['text', 'output_text'].includes(text(part.type)) && text(part.text).trim()) {
         flush();
         output.push(
@@ -628,7 +654,7 @@ export function convertServerMessages(
               content: text(part.text),
               // A legacy inline row only timestamps its beginning. Do not label
               // every later segment with that time when its own time is unknown.
-              created: optionalTimestamp(part.created_at) || (index === 0 ? at : 0),
+              created: optionalTimestamp(part.created_at) || (index === firstSegment ? at : 0),
               segmentCreatedAt: optionalTimestamp(part.created_at),
             },
             message,
@@ -1099,6 +1125,45 @@ function matchAssistantSegments(
     anchored.add(candidate);
     adopted.add(message);
   });
+  // Ordered inline rows can also split text around thoughts without a tool.
+  // Saved parts share a provider-turn ordinal, so use adjacent completed
+  // thoughts as evidence before falling back to that ambiguous ordinal.
+  const adjacentThought = (rows: Message[], index: number, side: number) => {
+    const neighbor = rows[index + side];
+    return neighbor?.role === 'reasoning' && neighbor.responseId === rows[index].responseId
+      ? neighbor
+      : undefined;
+  };
+  durable.forEach((saved, savedIndex) => {
+    if (saved.role !== 'assistant' || !saved.responseId || adopted.has(saved)) return;
+    const candidate = projected.find((live, liveIndex) => {
+      if (
+        live.role !== 'assistant' ||
+        live.responseId !== saved.responseId ||
+        matches.has(live) ||
+        !(live.content.startsWith(saved.content) || saved.content.startsWith(live.content))
+      )
+        return false;
+      let evidence = false;
+      for (const side of [-1, 1]) {
+        const before = adjacentThought(durable, savedIndex, side);
+        const after = adjacentThought(projected, liveIndex, side);
+        if (!before || !after) continue;
+        if (
+          before.reasoningKind !== after.reasoningKind ||
+          before.content.trim() !== after.content.trim()
+        )
+          return false;
+        evidence = true;
+      }
+      return evidence;
+    });
+    if (candidate) {
+      matches.set(candidate, saved);
+      anchored.add(candidate);
+      adopted.add(saved);
+    }
+  });
   const ordinalKey = (message: Message) =>
     JSON.stringify([message.responseId, message.assistantSegmentOrdinal || 0]);
   const ordinals = new Map<string, Message | null>();
@@ -1122,13 +1187,12 @@ function matchAssistantSegments(
 }
 
 export function mergeDurableProjection(durable: Message[], projected: Message[]): Message[] {
-  // A model change is a hard provider-turn boundary. Older servers may not have
-  // persisted that boundary, allowing conversion to coalesce tools from both
-  // sides into one durable group. Split that group using the ordered live stream
-  // before adopting durable rows so the marker can never jump around it.
+  // A visible boundary can split a group from a partially saved snapshot. Older
+  // servers also coalesced tools across model changes. Use the live stream to
+  // recover both boundaries before adopting durable rows.
   const durableRows = [...durable];
   for (let markerIndex = 0; markerIndex < projected.length; markerIndex += 1) {
-    if (projected[markerIndex].role !== 'model-swap') continue;
+    if (!['model-swap', 'reasoning'].includes(projected[markerIndex].role)) continue;
     const before = projected[markerIndex - 1];
     const after = projected[markerIndex + 1];
     if (before?.role !== 'tool-group' || after?.role !== 'tool-group') continue;
@@ -1330,6 +1394,63 @@ export function mergeDurableProjection(durable: Message[], projected: Message[])
       patchedTools.set(durableMessage, patched);
     }
   }
+  const projectedPositions = new Map(projected.map((message, index) => [message, index]));
+  const durableAnchorFor = (message: Message): Message | undefined => {
+    const adopted = adoptedCompactions.get(message) || adoptedModelSwaps.get(message);
+    if (adopted) return adopted;
+    if (message.role === 'assistant' && message.responseId) return responseSegments.get(message);
+    if (message.role === 'tool-group') {
+      for (const tool of message.tools || []) {
+        const durableMessage = durableToolMessage(message, tool);
+        if (durableMessage) return durableMessage;
+      }
+    }
+    return undefined;
+  };
+  // A saved row may contain several reasoning bursts. Only retire a live burst
+  // when that content has actually been saved, not merely because an earlier
+  // burst in the same provider turn exists. Partial inline-tool snapshots can
+  // otherwise erase post-tool thoughts during reconciliation.
+  const durableThoughts = durableRows.filter((message) => message.role === 'reasoning');
+  const durablePositions = new Map(durableRows.map((message, index) => [message, index]));
+  const previousAnchors = new Map<Message, Message>();
+  const lastSavedAnchor = new Map<string, Message>();
+  for (const message of projected) {
+    const responseId = message.responseId || '';
+    const previous = lastSavedAnchor.get(responseId);
+    if (previous) previousAnchors.set(message, previous);
+    const anchor = durableAnchorFor(message);
+    if (anchor) lastSavedAnchor.set(responseId, anchor);
+  }
+  const savedThoughts = new Set<Message>();
+  const nextSavedAnchor = new Map<string, Message>();
+  for (let index = projected.length - 1; index >= 0; index -= 1) {
+    const message = projected[index];
+    const responseId = message.responseId || '';
+    if (message.role === 'reasoning') {
+      const previous = previousAnchors.get(message);
+      const following = nextSavedAnchor.get(responseId);
+      const start = previous ? (durablePositions.get(previous) ?? -1) : -1;
+      const end = following
+        ? (durablePositions.get(following) ?? durableRows.length)
+        : durableRows.length;
+      if (
+        message.content.trim() &&
+        durableThoughts.some(
+          (saved) =>
+            saved.responseId === message.responseId &&
+            durablePositions.get(saved)! > start &&
+            durablePositions.get(saved)! < end &&
+            saved.reasoningKind === message.reasoningKind &&
+            saved.content.includes(message.content.trim()),
+        )
+      )
+        savedThoughts.add(message);
+      continue;
+    }
+    const anchor = durableAnchorFor(message);
+    if (anchor) nextSavedAnchor.set(responseId, anchor);
+  }
   const pending = projected.filter((message) => {
     if (
       message.role === 'user' &&
@@ -1347,22 +1468,9 @@ export function mergeDurableProjection(durable: Message[], projected: Message[])
       message.tools.every((tool) => hasDurableTool(message, tool))
     )
       return false;
-    return true;
+    return !savedThoughts.has(message);
   });
   const insertBefore = new Map<Message, Message>();
-  const projectedPositions = new Map(projected.map((message, index) => [message, index]));
-  const durableAnchorFor = (message: Message): Message | undefined => {
-    const adopted = adoptedCompactions.get(message) || adoptedModelSwaps.get(message);
-    if (adopted) return adopted;
-    if (message.role === 'assistant' && message.responseId) return responseSegments.get(message);
-    if (message.role === 'tool-group') {
-      for (const tool of message.tools || []) {
-        const durableMessage = durableToolMessage(message, tool);
-        if (durableMessage) return durableMessage;
-      }
-    }
-    return undefined;
-  };
   const followingAnchor = (marker: Message): Message | undefined => {
     const start = projectedPositions.get(marker);
     if (start == null) return undefined;

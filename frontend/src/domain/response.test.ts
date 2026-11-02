@@ -5,7 +5,7 @@ import {
   RESPONSE_EVENT_TYPES,
   ResponseProtocolError,
 } from './response';
-import { convertServerMessages } from './transcript';
+import { convertServerMessages, mergeDurableProjection } from './transcript';
 import type { ActiveRun } from './types';
 
 const run: ActiveRun = {
@@ -545,6 +545,85 @@ describe('response projection', () => {
       'r1:assistant:0',
       'r1:assistant:1',
     ]);
+  });
+
+  it('keeps server text/thought segment boundaries aligned with replay and saved parts', () => {
+    // Matches TestWebReasoningTextSegmentsMatchRecoveryAndReload on the server.
+    const events = [
+      event('response.reasoning.delta', 1, {
+        reasoning_index: 0,
+        kind: 'summary',
+        delta: 'first',
+      }),
+      event('response.output_text.delta', 2, { assistant_segment_ordinal: 0, delta: 'A' }),
+      event('response.reasoning.delta', 3, {
+        reasoning_index: 1,
+        kind: 'summary',
+        delta: 'second',
+      }),
+      event('response.reasoning.delta', 4, {
+        reasoning_index: 1,
+        kind: 'summary',
+        delta: ' thought',
+      }),
+      event('response.output_text.new_segment', 5, { assistant_segment_ordinal: 1 }),
+      event('response.output_text.delta', 6, { assistant_segment_ordinal: 1, delta: 'B' }),
+      event('response.output_text.delta', 7, { assistant_segment_ordinal: 1, delta: 'C' }),
+    ];
+    const live = events.reduce(reduceResponse, initialProjection(run));
+    expect(live.messages.map((message) => [message.role, message.content])).toEqual([
+      ['reasoning', 'first'],
+      ['assistant', 'A'],
+      ['reasoning', 'second thought'],
+      ['assistant', 'BC'],
+    ]);
+    expect(
+      live.messages
+        .filter((message) => message.role === 'assistant')
+        .map((message) => message.assistantSegmentOrdinal),
+    ).toEqual([0, 1]);
+    for (const cut of [2, 4, 5]) {
+      const before = events.slice(0, cut).reduce(reduceResponse, initialProjection(run));
+      const resumed = events.slice(cut).reduce(reduceResponse, before);
+      expect(
+        resumed.messages.map((message) => [
+          message.role,
+          message.content,
+          message.assistantSegmentOrdinal,
+          message.reasoningIndex,
+        ]),
+      ).toEqual(
+        live.messages.map((message) => [
+          message.role,
+          message.content,
+          message.assistantSegmentOrdinal,
+          message.reasoningIndex,
+        ]),
+      );
+    }
+    const saved = convertServerMessages([
+      {
+        id: 12,
+        role: 'assistant',
+        response_id: run.responseId,
+        assistant_segment_ordinal: 0,
+        parts: [
+          { type: 'reasoning', reasoning_kind: 'summary', text: 'first' },
+          { type: 'text', text: 'A' },
+          { type: 'reasoning', reasoning_kind: 'summary', text: 'second thought' },
+          { type: 'text', text: 'BC' },
+        ],
+      },
+    ]);
+    expect(saved.map((message) => [message.role, message.content])).toEqual(
+      live.messages.map((message) => [message.role, message.content]),
+    );
+    expect(
+      mergeDurableProjection(saved, live.messages).map((message) => [
+        message.role,
+        message.content,
+      ]),
+    ).toEqual(saved.map((message) => [message.role, message.content]));
   });
 
   it('assembles tool calls, arguments, guardian review and completion', () => {

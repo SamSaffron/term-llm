@@ -163,6 +163,40 @@ The Web UI discovers local applications under `<base-path>/widgets/` by default.
 
 LLM job runs now expose a `session_id` and persist to the same sessions store by default, which makes web/API integrations much easier to inspect while a progressive run is still executing.
 
+## Thinking display
+
+The web UI defaults to thinking **off**, while terminal chat (TUI) retains its
+collapsed default. Configure `reasoning.serve.display` to change the web default
+(for example, `collapsed`). If you explicitly configure top-level `reasoning.display`,
+the web inherits it unless `reasoning.serve.display` is also explicitly set;
+`reasoning.serve.display: inherit` always follows the top-level policy.
+Use `/thinking [off|status|collapsed|expanded|raw]`, or its alias `/reasoning`, even
+while a response is streaming. Without an argument it cycles collapsed → expanded → off.
+The selection persists per browser, across chats, and takes precedence over the
+server's configured display default. Raw mode requires `reasoning.raw: true`.
+Click a thought header to toggle that thought. Ctrl+E expands/collapses thoughts and
+tool details together (Control, not Command, on macOS); it only handles the composer
+when it is empty, so normal text-editing shortcuts remain available. The live status
+shows the current reasoning title when configured and no tool is running.
+
+API clients receive assistant message parts shaped as
+`{"type":"reasoning","reasoning_kind":"summary","reasoning_title":"Checking the path","text":"Display body"}`,
+immediately before the text part they accompany (including reasoning-only turns).
+New inline-tool turns preserve separate reasoning bursts in their original order:
+thinking before a tool stays above it, and thinking after it stays below it, including
+after completion or reload. Hidden thought blocks do not split adjacent tool groups;
+visible thoughts remain in their original position between tools.
+Older saved turns that combined reasoning cannot be
+split retrospectively.
+The replayable `response.reasoning.delta` SSE event carries `response_id`, `run_epoch`,
+`sequence_number`, `reasoning_index`, `kind`, `title`, and either `delta` (append to the
+body) or `text` (replace the entire body, including an empty replacement). Indices are
+response-local and never reused after an attempt discard. Recovery snapshots include
+`role: "reasoning"` rows with `reasoning_index`, `kind`, `title` and `content`.
+`/v1/capabilities.reasoning` supplies display, status, history, raw and hidden-label defaults.
+The server filters reasoning by source/kind, never sends encrypted or unknown content,
+and applies persistence and character limits independently of the browser display mode.
+
 ## Interactive shell
 
 On supported Unix servers, enter `/shell` in an existing Web UI conversation to open a full-screen terminal in that conversation's authoritative project or worktree. **Back to chat** detaches the browser while leaving the one session shell running; opening `/shell` again reattaches and replays bounded output. **Close shell** explicitly terminates the shell and its process group.

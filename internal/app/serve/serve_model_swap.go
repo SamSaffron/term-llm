@@ -761,7 +761,7 @@ func (s *serveServer) executeResponseRunModelSwap(runCtx context.Context, runtim
 	appendProgress("handover_done", fmt.Sprintf("Handover ready; retrying on %s…", exec.plan.targetLabel(runtime)))
 	seedRuntimeHistory(runtime, nil)
 	fallbackInput := append(copyLLMMessageSlice(handover.NewMessages), inputMessages...)
-	streamState = &responseRunStreamState{}
+	streamState = &responseRunStreamState{thought: streamState.thought.Continue()}
 	result, retryErr := runtime.RunWithEventsAndStart(runCtx, true, true, fallbackInput, llmReq, func() {
 		mgr.setActiveRun(sessionID, respID)
 	}, func(ev core.Event) error {

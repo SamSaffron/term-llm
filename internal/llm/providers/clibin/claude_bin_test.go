@@ -680,6 +680,7 @@ func TestHandleClaudeLine_ContextCancelledDoesNotBlock(t *testing.T) {
 		&sawTextDelta,
 		&assistantFallbackText,
 		nil,
+		nil,
 		false,
 	)
 	if err == nil {
@@ -1130,6 +1131,7 @@ func TestClaudeBinProvider_EphemeralSystemLineDoesNotReplaceSession(t *testing.T
 		&sawTextDelta,
 		&assistantFallbackText,
 		nil,
+		nil,
 		true,
 	); err != nil {
 		t.Fatalf("handleClaudeLine: %v", err)
@@ -1155,6 +1157,7 @@ func TestClaudeBinProviderParsesCacheCreationInputTokens(t *testing.T) {
 		&sawText,
 		&fallback,
 		&handled,
+		nil,
 		true,
 	)
 	if err != nil {
@@ -1278,6 +1281,10 @@ func TestClaudeBinProvider_BuildCommandEnv(t *testing.T) {
 		}
 		if strings.Contains(joined, key+"=config-value-should-be-overridden") {
 			t.Fatalf("expected config %s to be overridden", key)
+		}
+		// Thinking summaries (on by default) need Claude Code's experimental betas.
+		if key == claudeExperimentalBetasEnv {
+			continue
 		}
 		if !strings.Contains(joined, key+"="+want) {
 			t.Fatalf("expected %s=%s to be forced unconditionally", key, want)

@@ -436,17 +436,19 @@ func IsEncryptedReasoningDelta(event Event) bool {
 type Part struct {
 	Type                      PartType
 	Text                      string
-	CreatedAt                 int64          `json:",omitempty"` // Display-only first-observed Unix milliseconds for an ordered inline part.
-	ReasoningContent          string         // Reasoning summary text or provider thinking content (classified by ReasoningKind)
-	ReasoningSummaryParts     []string       // Display-safe Responses reasoning summary array elements, when provider supplies structure
-	ReasoningItemID           string         // Responses API reasoning item ID for replay
-	ReasoningEncryptedContent string         // Provider encrypted reasoning/signature content for replay; never displayed
-	ReasoningKind             ReasoningKind  // Classification for ReasoningContent/replay metadata
-	ReasoningSummaryTitle     string         // Optional parsed display title for summary reasoning
-	ImageData                 *ToolImageData // User-supplied image (base64-encoded)
-	ImagePath                 string         // Local filesystem path to the image (when available, e.g. Telegram uploads)
-	FileData                  *ToolFileData  // User-supplied file (base64-encoded)
-	FilePath                  string         // Local filesystem path to the file (when available)
+	CreatedAt                 int64             `json:",omitempty"` // Display-only first-observed Unix milliseconds for an ordered inline part.
+	ReasoningDisplay          *ReasoningDisplay `json:",omitempty"` // Ordered display-only burst; never provider replay.
+	ReasoningReplayOnly       bool              `json:",omitempty"` // Aggregate reasoning fields are replay-only; display ReasoningDisplay instead.
+	ReasoningContent          string            // Reasoning summary text or provider thinking content (classified by ReasoningKind)
+	ReasoningSummaryParts     []string          // Display-safe Responses reasoning summary array elements, when provider supplies structure
+	ReasoningItemID           string            // Responses API reasoning item ID for replay
+	ReasoningEncryptedContent string            // Provider encrypted reasoning/signature content for replay; never displayed
+	ReasoningKind             ReasoningKind     // Classification for ReasoningContent/replay metadata
+	ReasoningSummaryTitle     string            // Optional parsed display title for summary reasoning
+	ImageData                 *ToolImageData    // User-supplied image (base64-encoded)
+	ImagePath                 string            // Local filesystem path to the image (when available, e.g. Telegram uploads)
+	FileData                  *ToolFileData     // User-supplied file (base64-encoded)
+	FilePath                  string            // Local filesystem path to the file (when available)
 	ToolCall                  *ToolCall
 	ToolResult                *ToolResult
 	ToolActivity              *ToolActivity

@@ -226,7 +226,7 @@ The index below follows the canonical config schema. A dash means no default or 
 | `reasoning.ask.history` | string | `inherit` | — |
 | `reasoning.ask.export` | string | `inherit` | — |
 | `reasoning.ask.raw` | boolean | — | — |
-| `reasoning.serve.display` | string | `inherit` | — |
+| `reasoning.serve.display` | string | `off` | Web display default; inherits an explicit reasoning.display unless overridden. |
 | `reasoning.serve.status` | string | `inherit` | — |
 | `reasoning.serve.history` | string | `inherit` | — |
 | `reasoning.serve.export` | string | `inherit` | — |
@@ -821,19 +821,20 @@ Use `term-llm lifecycle status [--json]` for read-only discovery details. See [T
 
 Reasoning display controls how provider-marked thinking/summary content is shown in term-llm. It is separate from provider reasoning effort suffixes such as `openai:gpt-5.2-high`, `anthropic:...-thinking`, or `vllm` provider `-high`.
 
-By default, term-llm shows display-safe provider summaries and non-encrypted provider thinking as collapsed thought blocks in interactive chat:
+By default, terminal chat (TUI) shows display-safe provider summaries and non-encrypted provider thinking as collapsed thought blocks. The web UI defaults to thinking **off**; it remains configurable:
 
 - Generic provider thinking renders as `▸ Thinking...`.
 - Provider/summary titles render as `▸ Thought: <title>`.
 - Expanding a block shows the body; encrypted reasoning/signatures are never displayed.
-- In chat, `Ctrl+E` toggles thought detail globally and clicking a thought header toggles that block.
+- In terminal chat and the web UI, `Ctrl+E` toggles thought and tool details globally; clicking a thought header toggles only that block.
 - Ctrl+O inspector shows non-encrypted reasoning details for saved messages.
+- `claude-bin` streams Claude's thinking summaries as provider thinking; `providers.claude-bin.thinking_summaries: false` turns them off (see [Claude Code](/reference/provider-setup-details/#option-11-use-claude-code-claude-bin)).
 
 Default policy:
 
 ```yaml
 reasoning:
-  display: auto                  # auto => collapsed
+  display: auto                  # auto => collapsed in terminal chat
   source: summary_or_provider_safe
   status: title
   history: collapsed
@@ -844,6 +845,8 @@ reasoning:
   extract_titles: true
   hidden_label: Thinking...
   persist_summaries: true
+  serve:
+    display: off                 # web default when no display is explicitly configured
 ```
 
 Important options:
@@ -858,7 +861,12 @@ Important options:
 | `raw` | boolean | Explicit safety gate for raw reasoning display/export. |
 | `hidden_label` | string | Label for untitled collapsed blocks, default `Thinking...`. |
 
-Per-surface overrides inherit the top-level reasoning policy:
+Per-surface overrides inherit the top-level reasoning policy. Web display is the
+exception to the default: with no explicit display setting it resolves to `off`,
+while terminal chat retains `auto` (collapsed). An explicit top-level
+`reasoning.display` also applies to the web unless `reasoning.serve.display` is
+explicitly set. Setting `reasoning.serve.display: inherit` explicitly follows the
+top-level policy, including its default `auto` value:
 
 ```yaml
 reasoning:
@@ -871,6 +879,15 @@ reasoning:
   serve:
     display: off
 ```
+
+The web UI honours `reasoning.serve.*`, with display defaulting to `off` as described
+above. Use `/thinking [off|status|collapsed|expanded|raw]` (alias `/reasoning`) to change the
+display while idle or streaming. `/thinking` alone cycles collapsed → expanded → off;
+`auto` is also accepted as collapsed. This choice persists per browser, applies to
+all chats, and takes precedence over the server's configured display default.
+Ctrl+E is transient; in a non-empty composer it keeps its normal text-editing
+behaviour. Source/kind filtering, persistence policy and text limits remain server-controlled:
+changing the display cannot reveal encrypted, unclassified or source-disallowed content.
 
 For local debugging only, `TERM_LLM_SHOW_RAW_REASONING=1` forces `display: raw`, `source: all`, and `raw: true` for the resolved surface.
 
@@ -1045,6 +1062,8 @@ providers:
       CLAUDE_CODE_OAUTH_TOKEN: "your-oauth-token-here"
     # Optional: re-enable Claude Code hooks for this provider
     # enable_hooks: true
+    # Optional: stop requesting Claude's thinking summaries (on by default)
+    # thinking_summaries: false
 ```
 
 `providers.<name>.env` values support the same resolution rules as other deferred config values:

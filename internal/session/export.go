@@ -282,24 +282,30 @@ func exportToMarkdown(sess *Session, messages []Message, opts ExportOptions, ima
 // RenderExportReasoning renders non-encrypted reasoning metadata according to
 // explicit export options. Raw reasoning is never included unless requested.
 func RenderExportReasoning(part core.Part, opts ExportOptions) string {
-	hasReasoningContent := part.ReasoningContent != "" || len(part.ReasoningSummaryParts) > 0
-	kind := core.NormalizeStoredReasoningKind(part.ReasoningKind, hasReasoningContent)
-	if part.ReasoningContent == "" {
+	display := core.ReasoningForDisplay(part)
+	if display == nil {
 		return ""
 	}
-	switch kind {
+	content := display.Content
+	if content == "" {
+		content = strings.Join(display.SummaryParts, "\n\n")
+	}
+	if strings.TrimSpace(content) == "" {
+		return ""
+	}
+	switch core.NormalizeStoredReasoningKind(display.Kind, display.Content != "" || len(display.SummaryParts) > 0) {
 	case core.ReasoningKindSummary:
 		if !opts.IncludeReasoningSummaries {
 			return ""
 		}
-		parsed := internalreasoning.ParseReasoningSummary(part.ReasoningContent)
-		title := strings.TrimSpace(part.ReasoningSummaryTitle)
+		parsed := internalreasoning.ParseReasoningSummary(content)
+		title := strings.TrimSpace(display.SummaryTitle)
 		if title == "" {
 			title = parsed.Title
 		}
 		body := parsed.Body
 		if strings.TrimSpace(body) == "" {
-			body = strings.TrimSpace(part.ReasoningContent)
+			body = strings.TrimSpace(content)
 		}
 		if title != "" {
 			return fmt.Sprintf("_Reasoning summary: %s_\n\n%s\n\n", title, strings.TrimSpace(body))
@@ -309,7 +315,7 @@ func RenderExportReasoning(part core.Part, opts ExportOptions) string {
 		if !opts.IncludeRawReasoning {
 			return ""
 		}
-		return fmt.Sprintf("_Raw reasoning (explicitly included):_\n\n%s\n\n", strings.TrimSpace(part.ReasoningContent))
+		return fmt.Sprintf("_Raw reasoning (explicitly included):_\n\n%s\n\n", strings.TrimSpace(content))
 	default:
 		return ""
 	}

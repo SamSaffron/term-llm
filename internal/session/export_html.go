@@ -404,22 +404,24 @@ func isHTMLExportToolMessage(message htmlExportMessage) bool {
 }
 
 func htmlReasoningBlock(part core.Part, opts ExportOptions, markdown goldmark.Markdown) (htmlExportBlock, bool) {
-	hasReasoning := part.ReasoningContent != "" || len(part.ReasoningSummaryParts) > 0
-	kind := core.NormalizeStoredReasoningKind(part.ReasoningKind, hasReasoning)
-	content := strings.TrimSpace(part.ReasoningContent)
+	display := core.ReasoningForDisplay(part)
+	if display == nil {
+		return htmlExportBlock{}, false
+	}
+	content := strings.TrimSpace(display.Content)
 	if content == "" {
-		content = strings.TrimSpace(strings.Join(part.ReasoningSummaryParts, "\n\n"))
+		content = strings.TrimSpace(strings.Join(display.SummaryParts, "\n\n"))
 	}
 	if content == "" {
 		return htmlExportBlock{}, false
 	}
-	switch kind {
+	switch core.NormalizeStoredReasoningKind(display.Kind, display.Content != "" || len(display.SummaryParts) > 0) {
 	case core.ReasoningKindSummary:
 		if !opts.IncludeReasoningSummaries {
 			return htmlExportBlock{}, false
 		}
 		parsed := internalreasoning.ParseReasoningSummary(content)
-		title := strings.TrimSpace(part.ReasoningSummaryTitle)
+		title := strings.TrimSpace(display.SummaryTitle)
 		if title == "" {
 			title = parsed.Title
 		}

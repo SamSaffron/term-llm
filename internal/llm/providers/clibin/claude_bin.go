@@ -65,10 +65,13 @@ type ClaudeBinProvider struct {
 	transcriptDigest string // Fingerprint of that prefix; a mismatch means the transcript diverged
 	forkSession      bool   // Add --fork-session when resuming an isolated branch.
 	toolExecutor     mcphttp.ToolExecutor
-	preferOAuth      bool                // If true, clear ANTHROPIC_API_KEY to force OAuth auth
-	extraEnv         map[string]string   // Extra subprocess env vars from provider config
-	enableHooks      bool                // Opt in to Claude Code hooks (disabled by default)
-	commandRunner    claudeCommandRunner // Optional command transport override used by focused harnesses.
+	preferOAuth      bool              // If true, clear ANTHROPIC_API_KEY to force OAuth auth
+	extraEnv         map[string]string // Extra subprocess env vars from provider config
+	enableHooks      bool              // Opt in to Claude Code hooks (disabled by default)
+	// thinkingSummaries requests Claude's thinking summaries (default true);
+	// they need Claude Code's first-party API betas left enabled.
+	thinkingSummaries bool
+	commandRunner     claudeCommandRunner // Optional command transport override used by focused harnesses.
 	// NativeCompact state: test seam, plus the last turn's --system-prompt and
 	// cwd (--resume only finds a session from its own project directory).
 	nativeCompactRunner                 claudeNativeCompactRunner
@@ -119,9 +122,10 @@ var claudeToolLineDrainGrace = loadCLIToolLineDrainGrace(claudeToolLineDrainGrac
 func NewClaudeBinProvider(model string, env map[string]string) *ClaudeBinProvider {
 	actualModel, effort := parseClaudeEffort(model)
 	provider := &ClaudeBinProvider{
-		model:       actualModel,
-		effort:      effort,
-		preferOAuth: true, // Default to OAuth to avoid API key limits
+		model:             actualModel,
+		effort:            effort,
+		preferOAuth:       true, // Default to OAuth to avoid API key limits
+		thinkingSummaries: true,
 	}
 	provider.tempFileTracker.logName = "claude-bin"
 	if len(env) > 0 {
@@ -193,6 +197,7 @@ func (p *ClaudeBinProvider) cloneHelperProvider() *ClaudeBinProvider {
 	clone.effort = p.effort
 	clone.preferOAuth = p.preferOAuth
 	clone.enableHooks = p.enableHooks
+	clone.thinkingSummaries = p.thinkingSummaries
 	clone.commandRunner = p.commandRunner
 	if len(p.extraEnv) > 0 {
 		clone.extraEnv = make(map[string]string, len(p.extraEnv))
@@ -499,6 +504,13 @@ func (p *ClaudeBinProvider) Stream(ctx context.Context, req core.Request) (core.
 		// conversation while still allowing standalone one-shot tool requests.
 		exposeToolBridge := len(req.Tools) > 0
 		err := p.executeClaudeCommand(ctx, args, effort, userPrompt, req.WorkingDir, debug, send, req.Ephemeral, exposeToolBridge)
+		if err != nil && p.requestThinkingSummaries() && claudeRejectedThinkingDisplay(err) {
+			// An older Claude Code fails at argument parsing, before any output.
+			claudeThinkingDisplayUnsupported.Store(true)
+			runtimeoutput.Warn("claude-bin: Claude Code rejected " + claudeThinkingDisplayFlag + "; continuing without thinking summaries")
+			args = withoutThinkingDisplay(args)
+			err = p.executeClaudeCommand(ctx, args, effort, userPrompt, req.WorkingDir, debug, send, req.Ephemeral, exposeToolBridge)
+		}
 		if err != nil && isPromptTooLong(err) {
 			// Retry with progressively more aggressive truncation
 			retryLimits := []int{maxToolResultCharsOnRetry, maxToolResultCharsOnAggressiveRetry}
@@ -633,7 +645,9 @@ func (p *ClaudeBinProvider) commandEnvDebugFields(effort string) (map[string]str
 		env["CLAUDE_CODE_EFFORT_LEVEL"] = effort
 	}
 	for k, v := range forcedClaudeCodeIsolationEnv {
-		env[k] = v
+		if p.forcesIsolationEnv(k) {
+			env[k] = v
+		}
 	}
 	for k, v := range p.extraEnv {
 		if p.preferOAuth && k == "ANTHROPIC_API_KEY" {
@@ -971,6 +985,7 @@ func (p *ClaudeBinProvider) dispatchClaudeEvents(
 		assistantFallbackText string
 		toolsExecuted         bool
 		handledTerminalResult bool
+		thinking              claudeThinkingStream
 	)
 
 	for linesOpen {
@@ -984,7 +999,7 @@ func (p *ClaudeBinProvider) dispatchClaudeEvents(
 					break
 				}
 				hadLine = true
-				if err := p.handleClaudeLine(ctx, line, debug, send, &lastUsage, &sawTextDelta, &assistantFallbackText, &handledTerminalResult, ephemeral); err != nil {
+				if err := p.handleClaudeLine(ctx, line, debug, send, &lastUsage, &sawTextDelta, &assistantFallbackText, &handledTerminalResult, &thinking, ephemeral); err != nil {
 					return nil, false, false, err
 				}
 			default:
@@ -1002,11 +1017,11 @@ func (p *ClaudeBinProvider) dispatchClaudeEvents(
 				linesOpen = false
 				continue
 			}
-			if err := p.handleClaudeLine(ctx, line, debug, send, &lastUsage, &sawTextDelta, &assistantFallbackText, &handledTerminalResult, ephemeral); err != nil {
+			if err := p.handleClaudeLine(ctx, line, debug, send, &lastUsage, &sawTextDelta, &assistantFallbackText, &handledTerminalResult, &thinking, ephemeral); err != nil {
 				return nil, false, false, err
 			}
 		case req := <-toolReqCh:
-			if err := p.drainClaudeLinesWithGrace(ctx, lineCh, debug, send, &lastUsage, &sawTextDelta, &assistantFallbackText, &handledTerminalResult, ephemeral); err != nil {
+			if err := p.drainClaudeLinesWithGrace(ctx, lineCh, debug, send, &lastUsage, &sawTextDelta, &assistantFallbackText, &handledTerminalResult, &thinking, ephemeral); err != nil {
 				return nil, false, false, err
 			}
 			toolsExecuted = true
@@ -1050,6 +1065,7 @@ func (p *ClaudeBinProvider) handleClaudeLine(
 	sawTextDelta *bool,
 	assistantFallbackText *string,
 	handledTerminalResult *bool,
+	thinking *claudeThinkingStream,
 	ephemeral bool,
 ) error {
 	var baseMsg struct {
@@ -1071,7 +1087,8 @@ func (p *ClaudeBinProvider) handleClaudeLine(
 		// deliberately ignore Claude CLI session ids so they cannot replace or
 		// corrupt the parent conversation's resume state.
 		var sysMsg claudeSystemMessage
-		if err := json.Unmarshal([]byte(line), &sysMsg); err == nil {
+		// Thinking-token estimates stream alongside summaries; they carry nothing claude-bin uses.
+		if err := json.Unmarshal([]byte(line), &sysMsg); err == nil && sysMsg.Subtype != "thinking_tokens" {
 			if !ephemeral {
 				p.sessionID = sysMsg.SessionID
 			}
@@ -1096,6 +1113,9 @@ func (p *ClaudeBinProvider) handleClaudeLine(
 			if sawTextDelta != nil {
 				*sawTextDelta = true
 			}
+		}
+		if err := handleClaudeThinking(streamEvent.Event, thinking, send); err != nil {
+			return err
 		}
 
 	case "streamlined_text":
@@ -1205,10 +1225,11 @@ func (p *ClaudeBinProvider) drainClaudeLinesWithGrace(
 	sawTextDelta *bool,
 	assistantFallbackText *string,
 	handledTerminalResult *bool,
+	thinking *claudeThinkingStream,
 	ephemeral bool,
 ) error {
 	return drainCLILinesWithGrace(ctx, lineCh, claudeToolLineDrainGrace, func(line string) error {
-		return p.handleClaudeLine(ctx, line, debug, send, lastUsage, sawTextDelta, assistantFallbackText, handledTerminalResult, ephemeral)
+		return p.handleClaudeLine(ctx, line, debug, send, lastUsage, sawTextDelta, assistantFallbackText, handledTerminalResult, thinking, ephemeral)
 	})
 }
 
@@ -1296,6 +1317,9 @@ func (p *ClaudeBinProvider) buildArgs(ctx context.Context, req core.Request, sen
 	}
 	if !p.enableHooks {
 		args = append(args, "--settings", `{"disableAllHooks":true}`)
+	}
+	if p.requestThinkingSummaries() {
+		args = append(args, claudeThinkingDisplayFlag, "summarized")
 	}
 
 	// Claude Code owns the tool loop for this turn (see Capabilities:
@@ -1957,6 +1981,7 @@ func mediaTypeFromPath(path string) string {
 
 type claudeSystemMessage struct {
 	Type      string   `json:"type"`
+	Subtype   string   `json:"subtype"`
 	SessionID string   `json:"session_id"`
 	Model     string   `json:"model"`
 	Tools     []string `json:"tools"`
@@ -2050,12 +2075,18 @@ func (m claudeResultMessage) permissionDenialTools() []string {
 }
 
 type claudeStreamEvent struct {
-	Type  string `json:"type"`
-	Event struct {
-		Type  string `json:"type"`
-		Delta struct {
-			Type string `json:"type"`
-			Text string `json:"text"`
-		} `json:"delta"`
-	} `json:"event"`
+	Type  string                `json:"type"`
+	Event claudeStreamEventBody `json:"event"`
+}
+
+type claudeStreamEventBody struct {
+	Type         string `json:"type"`
+	ContentBlock struct {
+		Type string `json:"type"`
+	} `json:"content_block"`
+	Delta struct {
+		Type     string `json:"type"`
+		Text     string `json:"text"`
+		Thinking string `json:"thinking"`
+	} `json:"delta"`
 }
