@@ -410,6 +410,10 @@ providers:
     model: z-ai/glm-5.3
     fast_model: deepseek/deepseek-v4-flash
 
+  cheaperinference:
+    model: gpt-5.4-mini
+    fast_model: gpt-5.4-nano
+
   claude-bin:
     model: opus
     env:

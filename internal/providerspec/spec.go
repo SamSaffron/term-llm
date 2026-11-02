@@ -12,28 +12,29 @@ import (
 type Type string
 
 const (
-	TypeAnthropic    Type = "anthropic"
-	TypeOpenAI       Type = "openai"
-	TypeChatGPT      Type = "chatgpt"
-	TypeGrok         Type = "grok"
-	TypeCopilot      Type = "copilot"
-	TypeGemini       Type = "gemini"
-	TypeOpenRouter   Type = "openrouter"
-	TypeZen          Type = "zen"
-	TypeOpenCodeGo   Type = "opencode-go"
-	TypeClaudeBin    Type = "claude-bin"
-	TypeGrokBin      Type = "grok-bin"
-	TypeCursorBin    Type = "cursor-bin"
-	TypeAgyBin       Type = "agy-bin"
-	TypeOpenAICompat Type = "openai_compatible"
-	TypeVLLM         Type = "vllm"
-	TypeXAI          Type = "xai"
-	TypeVenice       Type = "venice"
-	TypeNearAI       Type = "nearai"
-	TypeSambaNova    Type = "sambanova"
-	TypeObscurify    Type = "obscurify"
-	TypeBedrock      Type = "bedrock"
-	TypeOllama       Type = "ollama"
+	TypeAnthropic        Type = "anthropic"
+	TypeOpenAI           Type = "openai"
+	TypeChatGPT          Type = "chatgpt"
+	TypeGrok             Type = "grok"
+	TypeCopilot          Type = "copilot"
+	TypeGemini           Type = "gemini"
+	TypeOpenRouter       Type = "openrouter"
+	TypeZen              Type = "zen"
+	TypeOpenCodeGo       Type = "opencode-go"
+	TypeClaudeBin        Type = "claude-bin"
+	TypeGrokBin          Type = "grok-bin"
+	TypeCursorBin        Type = "cursor-bin"
+	TypeAgyBin           Type = "agy-bin"
+	TypeOpenAICompat     Type = "openai_compatible"
+	TypeVLLM             Type = "vllm"
+	TypeXAI              Type = "xai"
+	TypeVenice           Type = "venice"
+	TypeNearAI           Type = "nearai"
+	TypeSambaNova        Type = "sambanova"
+	TypeObscurify        Type = "obscurify"
+	TypeCheaperInference Type = "cheaperinference"
+	TypeBedrock          Type = "bedrock"
+	TypeOllama           Type = "ollama"
 )
 
 // FieldSpec describes a field valid under providers.<name>.
@@ -324,6 +325,12 @@ var specs = []Spec{
 		Defaults:    []DefaultField{{"model", "z-ai/glm-5.3"}, {"fast_model", "deepseek/deepseek-v4-flash"}},
 		Description: "Obscurify.ai (privacy-focused, no-email accounts — OpenAI-compatible)",
 		Credential:  CredentialAPIKey, APIKeyEnv: "OBSCURIFY_API_KEY",
+	},
+	{
+		Name: "cheaperinference", Type: TypeCheaperInference, ModelListing: ModelListingAPIKey, Wizard: WizardSpec{Order: 18, Label: "Cheaper Inference - CHEAPERINFERENCE_API_KEY", Hint: "set CHEAPERINFERENCE_API_KEY"}, ConfigDefault: true, ShowInConfig: true, ResetTemplate: true,
+		Defaults:    []DefaultField{{"model", "gpt-5.4-mini"}, {"fast_model", "gpt-5.4-nano"}},
+		Description: "Cheaper Inference (multi-provider gateway — OpenAI-compatible)",
+		Credential:  CredentialAPIKey, APIKeyEnv: "CHEAPERINFERENCE_API_KEY",
 	},
 	{
 		Name: "zen", Type: TypeZen, ModelListing: ModelListingZen, Wizard: WizardSpec{Order: 15, Label: "Zen - ZEN_API_KEY", Hint: "set ZEN_API_KEY"}, ConfigDefault: true, ShowInConfig: true, ResetTemplate: true,

@@ -61,6 +61,13 @@ func TestModelListSupportedTypesIncludesObscurify(t *testing.T) {
 	}
 }
 
+func TestModelListSupportedTypesIncludesCheaperInference(t *testing.T) {
+	t.Parallel()
+	if !supportsModelListing(providerspec.TypeCheaperInference) {
+		t.Fatal("Cheaper Inference should be wired for dynamic model listing")
+	}
+}
+
 func TestModelListSupportedTypesIncludesSambaNova(t *testing.T) {
 	t.Parallel()
 	if !supportsModelListing(config.ProviderTypeSambaNova) {
@@ -237,6 +244,7 @@ func TestBuiltinProviderRegistryDescribesListingProviders(t *testing.T) {
 		{"sambanova", config.CredentialAPIKey, "SAMBANOVA_API_KEY"},
 		{"nearai", config.CredentialAPIKey, "NEARAI_API_KEY"},
 		{"obscurify", config.CredentialAPIKey, "OBSCURIFY_API_KEY"},
+		{"cheaperinference", config.CredentialAPIKey, "CHEAPERINFERENCE_API_KEY"},
 	} {
 		spec, ok := config.BuiltinProvider(tc.name)
 		if !ok {

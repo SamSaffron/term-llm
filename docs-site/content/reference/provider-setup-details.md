@@ -31,6 +31,7 @@ Defaults and setup hints below come from the provider registry; credentials, pro
 | `nearai` | set `NEARAI_API_KEY` | `zai-org/GLM-5.1-FP8` | `Qwen/Qwen3.6-35B-A3B-FP8` |
 | `sambanova` | set `SAMBANOVA_API_KEY` | `gpt-oss-120b` | `Meta-Llama-3.3-70B-Instruct` |
 | `obscurify` | set `OBSCURIFY_API_KEY` | `z-ai/glm-5.3` | `deepseek/deepseek-v4-flash` |
+| `cheaperinference` | set `CHEAPERINFERENCE_API_KEY` | `gpt-5.4-mini` | `gpt-5.4-nano` |
 | `zen` | set `ZEN_API_KEY` | `deepseek-v4-flash` | `deepseek-v4-flash` |
 | `opencode-go` | set `OPENCODE_API_KEY` | `glm-5.2` | `deepseek-v4-flash` |
 | `copilot` | run term-llm auth login copilot | `gpt-4.1` | `gpt-4.1` |
@@ -95,6 +96,9 @@ export SAMBANOVA_API_KEY=your-key
 
 # For Obscurify.ai
 export OBSCURIFY_API_KEY=your-key
+
+# For Cheaper Inference
+export CHEAPERINFERENCE_API_KEY=your-key
 
 # For OpenRouter
 export OPENROUTER_API_KEY=your-key
@@ -302,6 +306,28 @@ term-llm models --provider obscurify
 
 `term-llm models --provider obscurify` reads the public `/v1/models` listing, which includes context windows and per-token prices.
 
+### Cheaper Inference
+
+[Cheaper Inference](https://cheaperinference.com) is an OpenAI-compatible LLM gateway. One API key gives access to models from several labs. Create a key at https://cheaperinference.com, then set `CHEAPERINFERENCE_API_KEY` or put `api_key` under `providers.cheaperinference`.
+
+```yaml
+# In ~/.config/term-llm/config.yaml
+default_provider: cheaperinference
+
+providers:
+  cheaperinference:
+    model: gpt-5.4-mini
+    fast_model: gpt-5.4-nano
+```
+
+```bash
+term-llm ask --provider cheaperinference "explain this stack trace"
+term-llm ask --provider cheaperinference:claude-sonnet-5 "summarize this repository"
+term-llm models --provider cheaperinference
+```
+
+`term-llm models --provider cheaperinference` reads the `/v1/models` listing with your API key.
+
 ### Option 8: Use OpenRouter
 
 For the default free router, follow [Option 1](#option-1-try-it-free-with-openrouter). To use another model, list the catalog with `term-llm models --provider openrouter` and select its ID with `--provider openrouter:MODEL_ID`. Other models may incur charges.
@@ -326,6 +352,7 @@ term-llm models --provider openrouter # List OpenRouter models
 term-llm models --provider nearai     # List NEAR AI Cloud models
 term-llm models --provider sambanova  # List SambaNova models
 term-llm models --provider obscurify  # List Obscurify.ai models
+term-llm models --provider cheaperinference # List Cheaper Inference models
 term-llm models --provider ollama     # List local Ollama models
 term-llm models --provider lmstudio   # List local LM Studio models
 term-llm models --json                # Output as JSON
