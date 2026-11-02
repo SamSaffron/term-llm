@@ -84,6 +84,7 @@ type hubReverseConnection struct {
 	closeOnce   sync.Once
 	writeGate   chan struct{}
 	active      chan struct{}
+	waiting     chan struct{}
 	cancels     chan hubReverseRequest
 	closed      chan struct{}
 	detach      func()

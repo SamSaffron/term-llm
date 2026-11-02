@@ -7,20 +7,23 @@ import (
 	"io"
 	"sync"
 
+	appserver "github.com/samsaffron/term-llm/internal/app/serve/server"
 	"github.com/samsaffron/term-llm/internal/app/serve/wire"
 )
 
-// A connection admits a finite number of operations, including streams whose
-// terminal frame has arrived but whose body is still undrained. Admission is
-// nonblocking: callers cannot build an unbounded queue behind a stopped peer.
-const hubReverseMaxActive = 16
+const (
+	hubReverseMaxActive     = appserver.ReverseMaxActive
+	hubReverseMaxWaiting    = appserver.ReverseMaxWaiting
+	hubReverseAdmissionWait = appserver.ReverseAdmissionWait
+)
 
-var errHubReverseBusy = errors.New("reverse connection has too many active requests")
+var errHubReverseBusy = appserver.ErrReverseAdmissionFull
 
 func (c *hubReverseConnection) initIO() {
 	c.ioOnce.Do(func() {
 		c.writeGate = make(chan struct{}, 1)
 		c.active = make(chan struct{}, hubReverseMaxActive)
+		c.waiting = make(chan struct{}, hubReverseMaxWaiting)
 		c.cancels = make(chan hubReverseRequest, hubReverseMaxActive)
 		c.closed = make(chan struct{})
 	})
@@ -54,20 +57,7 @@ func (c *hubReverseConnection) closeWithError(err error) {
 
 func (c *hubReverseConnection) admit(ctx context.Context) error {
 	c.initIO()
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-	select {
-	case <-c.closed:
-		return errors.New("reverse connection is closed")
-	default:
-	}
-	select {
-	case c.active <- struct{}{}:
-		return nil
-	default:
-		return errHubReverseBusy
-	}
+	return appserver.AdmitReverseRequest(ctx, c.active, c.waiting, c.closed)
 }
 
 // One fixed worker owns cancellation traffic. If its bounded queue fills, drop
