@@ -1,2 +1,2 @@
-// Package clibin implements the CLI-binary providers claude-bin, cursor-bin, grok-bin and agy-bin.
+// Package clibin implements the CLI-binary providers claude-bin, cursor-bin, grok-bin, agy-bin and vibe-bin.
 package clibin

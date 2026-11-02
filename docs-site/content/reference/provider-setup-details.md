@@ -38,6 +38,7 @@ Defaults and setup hints below come from the provider registry; credentials, pro
 | `grok-bin` | install the Grok Build CLI and log in | `grok-4.6` | `grok-composer-2.5-fast` |
 | `cursor-bin` | run cursor-agent login or set CURSOR_API_KEY | `auto-smart` | `composer-2.5` |
 | `agy-bin` | install agy and complete its login | `gemini-3.6-flash-high` | `gemini-3.6-flash-low` |
+| `vibe-bin` | install Mistral Vibe and sign in with vibe | `mistral-large-4-0-3` | `zai-glm-5-3-flash` |
 | `ollama` | set OLLAMA_HOST or add providers.ollama to config.yaml | `qwen2.5-coder:7b` | `qwen2.5-coder:7b` |
 | `vllm` | add providers.vllm (base_url) to config.yaml | — | `Qwen/Qwen3.5-122B-A10B` |
 | `bedrock` | aws | — | `claude-haiku-4-5` |
@@ -599,6 +600,23 @@ term-llm ask --provider cursor-bin "Explain this code"
 ```
 
 Authenticate with the companion CLI first. See the [provider inventory](/reference/providers-and-models/#credentials) for credential sources and the [CLI wire debugging guide](/guides/debugging/#audit-cli-provider-wire-traffic) for diagnosing subprocess behavior. A locally installed CLI still sends inference to its service; it is not local model hosting.
+
+### Mistral Vibe CLI
+
+`vibe-bin` runs the Mistral Vibe CLI's ACP server (`vibe-acp`) so requests draw on the Vibe subscription the CLI is signed in with rather than a Mistral API key. Install Mistral Vibe and sign in once on the machine that runs term-llm:
+
+```bash
+uv tool install mistral-vibe
+vibe                     # complete the sign-in, then exit
+term-llm ask --provider vibe-bin "Explain this code"
+term-llm serve web --provider vibe-bin
+```
+
+term-llm never reads the Vibe credential; `vibe-acp` loads it itself. An inherited `MISTRAL_API_KEY` is removed from the subprocess environment so it cannot take precedence over the Vibe sign-in; set it under `providers.<name>.env` only if you deliberately want API-key billing.
+
+Model names are the Vibe aliases offered to your account, such as `vibe-bin:mistral-large-4-0-3` (the default), `vibe-bin:mistral-medium-3.5`, `vibe-bin:glm-5-3`, or `vibe-bin:zai-glm-5-3-flash`. An alias Vibe does not offer fails with the list it does offer. The model is chosen per process through `VIBE_ACTIVE_MODEL`, so it does not change the default model of your interactive `vibe` CLI. Vibe's per-model thinking level is used as configured in Vibe.
+
+Vibe runs its own agent loop, but term-llm stays the owner of every executable tool: term-llm tools are exposed through a private, authenticated MCP server, Vibe's own tools (shell, file, process, subagent, connector) are switched off for the session, and any approval request for a non-term-llm tool is denied. Vibe always lists its built-in tools to the model, so smaller models occasionally try one of them first; the default Mistral Large follows the term-llm tool policy reliably. Conversations appear in Vibe's own session history and resume with `session/load`.
 
 ### Option 12: Use GitHub Copilot
 

@@ -104,6 +104,12 @@ var binProviderConstructors = map[config.ProviderType]func(*config.ProviderConfi
 		}
 		return clibin.NewCursorBinProvider(cfg.Model, cfg.Env), nil
 	},
+	config.ProviderTypeVibeBin: func(cfg *config.ProviderConfig) (Provider, error) {
+		if err := clibin.ValidateVibeBinModel(cfg.Model); err != nil {
+			return nil, err
+		}
+		return clibin.NewVibeBinProvider(cfg.Model, cfg.Env), nil
+	},
 	config.ProviderTypeAgyBin: func(cfg *config.ProviderConfig) (Provider, error) {
 		if err := clibin.ValidateAgyBinModel(cfg.Model); err != nil {
 			return nil, err

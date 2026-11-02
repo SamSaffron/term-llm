@@ -52,6 +52,7 @@ var wizardBinaryProbes = map[string]func() bool{
 	"grok-bin":   isGrokBinaryAvailable,
 	"cursor-bin": isCursorBinaryAvailable,
 	"agy-bin":    isAgyBinaryAvailable,
+	"vibe-bin":   isVibeBinaryAvailable,
 }
 
 // isAnthropicAvailable checks if an Anthropic API key is available
@@ -77,6 +78,11 @@ func isCursorBinaryAvailable() bool {
 
 func isAgyBinaryAvailable() bool {
 	_, err := exec.LookPath("agy")
+	return err == nil
+}
+
+func isVibeBinaryAvailable() bool {
+	_, err := exec.LookPath("vibe-acp")
 	return err == nil
 }
 

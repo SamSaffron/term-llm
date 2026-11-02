@@ -25,6 +25,7 @@ const (
 	TypeGrokBin      Type = "grok-bin"
 	TypeCursorBin    Type = "cursor-bin"
 	TypeAgyBin       Type = "agy-bin"
+	TypeVibeBin      Type = "vibe-bin"
 	TypeOpenAICompat Type = "openai_compatible"
 	TypeVLLM         Type = "vllm"
 	TypeXAI          Type = "xai"
@@ -127,11 +128,12 @@ const (
 	AvailabilityGrokBin   Availability = "grok-bin"
 	AvailabilityCursorBin Availability = "cursor-bin"
 	AvailabilityAgyBin    Availability = "agy-bin"
+	AvailabilityVibeBin   Availability = "vibe-bin"
 )
 
 // Availabilities lists every defined local credential probe kind.
 func Availabilities() []Availability {
-	return []Availability{AvailabilityChatGPT, AvailabilityGrok, AvailabilityClaude, AvailabilityCopilot, AvailabilityGrokBin, AvailabilityCursorBin, AvailabilityAgyBin}
+	return []Availability{AvailabilityChatGPT, AvailabilityGrok, AvailabilityClaude, AvailabilityCopilot, AvailabilityGrokBin, AvailabilityCursorBin, AvailabilityAgyBin, AvailabilityVibeBin}
 }
 
 // WizardSpec controls setup wizard order and presentation; zero Order omits the provider.
@@ -366,6 +368,12 @@ var specs = []Spec{
 		Defaults:    []DefaultField{{"model", "gemini-3.6-flash-high"}, {"fast_model", "gemini-3.6-flash-low"}},
 		Description: "Antigravity subscription through the local agy CLI",
 		Credential:  CredentialOAuth, Setup: "install agy and complete its login",
+	},
+	{
+		Name: "vibe-bin", FixedToolBridge: true, CredentialLabel: "Mistral Vibe CLI sign-in (no key needed)", Aliases: []string{"vibe cli", "mistral vibe"}, Type: TypeVibeBin, ModelListing: ModelListingCurated, Availability: AvailabilityVibeBin, Wizard: WizardSpec{Order: 18, Label: "Mistral Vibe CLI - Vibe subscription", Hint: "install Mistral Vibe and sign in with 'vibe'"},
+		Defaults:    []DefaultField{{"model", "mistral-large-4-0-3"}, {"fast_model", "zai-glm-5-3-flash"}},
+		Description: "Mistral Vibe subscription through the local vibe-acp CLI",
+		Credential:  CredentialOAuth, Setup: "install Mistral Vibe and sign in with vibe",
 	},
 	{
 		Name: "ollama", Type: TypeOllama, ModelListing: ModelListingOllama,

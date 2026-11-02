@@ -159,8 +159,11 @@ type PromptRequest struct {
 }
 
 type PromptResponse struct {
-	StopReason string          `json:"stopReason"`
-	Meta       json.RawMessage `json:"_meta,omitempty"`
+	StopReason string `json:"stopReason"`
+	// Usage is the agent's token usage report; its scope (turn or session)
+	// is agent-defined.
+	Usage json.RawMessage `json:"usage,omitempty"`
+	Meta  json.RawMessage `json:"_meta,omitempty"`
 }
 
 type CancelSessionRequest struct {

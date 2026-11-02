@@ -112,7 +112,7 @@ One line per root-module package, generated from package doc comments by `make d
 - `internal/llm/mockprovider` — provides a scripted provider for engine tests with recorded requests.
 - `internal/llm/providers/anthropic` — implements the Anthropic Messages API provider and model catalog.
 - `internal/llm/providers/bedrock` — implements the AWS Bedrock transport for Anthropic Messages.
-- `internal/llm/providers/clibin` — implements the CLI-binary providers claude-bin, cursor-bin, grok-bin and agy-bin.
+- `internal/llm/providers/clibin` — implements the CLI-binary providers claude-bin, cursor-bin, grok-bin, agy-bin and vibe-bin.
 - `internal/llm/providers/gemini` — implements the Google Gemini generateContent provider and its wire types.
 - `internal/llm/providers/ollama` — implements the local Ollama chat provider and model cache.
 - `internal/llm/providers/opencompat` — implements OpenAI-compatible chat transports and their model caches.
