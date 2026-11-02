@@ -35,6 +35,16 @@ The chat smoke uses HTTP transport only.
 
 `scripts/check_frontend_network_policy.sh` fails closed unless `git grep` can scan production sources (tracked and untracked) and enforces transport ownership for `fetch`, browser fetch aliases, XHR, EventSource, WebSocket, and beacon calls. Raw transports are allowed only under `src/api`. The fixed chat baseline and the last generated results live in `payload-baseline.json` and `payload-final.json`; `payload-report.md` explains inclusion rules and deltas. Those results are a historical record; the measurement script that produced them has been removed.
 
+## Dependency security overrides
+
+`package.json` overrides `minimatch` to 11.0.4 to address
+[GHSA-g3hv-75wg-m249](https://github.com/advisories/GHSA-g3hv-75wg-m249).
+ESLint, `@eslint/config-array`, and `@typescript-eslint/typescript-estree` still
+request vulnerable 10.x versions, including in their current releases. Remove the
+override once those upstream dependencies accept a patched version. The override
+only affects development tooling; run frontend lint and typechecking when updating
+it to verify compatibility across the major-version boundary.
+
 ## Build contract
 
 - The existing chat build runs first with `emptyOutDir: true`; `vite.hub.config.ts` then writes into the same directory with `emptyOutDir: false`.
