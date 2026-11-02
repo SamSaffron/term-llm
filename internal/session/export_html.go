@@ -112,13 +112,13 @@ type pendingHTMLTool struct {
 	messageIdx int
 }
 
-// VisibleExportMessages returns messages intended for human-readable exports.
-// Retained post-compaction context is already represented earlier in scrollback.
+// VisibleExportMessages returns human-readable transcript rows, never developer
+// instructions. Retained post-compaction context is already in earlier scrollback.
 func VisibleExportMessages(messages []Message) []Message {
 	visible := make([]Message, 0, len(messages))
 	for i := range messages {
 		msg := messages[i]
-		if !msg.CompactionTail && !msg.IsGoalSteering() {
+		if msg.Role != core.RoleDeveloper && !msg.CompactionTail && !msg.IsGoalSteering() {
 			visible = append(visible, msg)
 		}
 	}
