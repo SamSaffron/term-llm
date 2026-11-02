@@ -356,6 +356,7 @@ Each node's **Open** action navigates to `/node/<id>/`, a proxy onto that node's
 - The node UI's baked-in base path (`<base>` tag and `window.TERM_LLM_UI_PREFIX`) is rebased onto `/node/<id>` so the SPA's API calls, service worker, and subresources all route back through the hub.
 - The hub injects `window.TERM_LLM_HUB` into the node's page, so the node's web UI shows a **Back to Hub** link in the sidebar (below Widgets).
 - Direct-node SSE and other long-lived streams pass through untouched; only connection and response-header times are bounded. Reverse-node requests are carried over the node's outbound websocket with bounded per-request queues; if one proxied client stops consuming a stream, the Hub cancels that request rather than blocking the whole reverse node tunnel.
+- Each reverse tunnel runs up to 16 requests at once (an unfinished response body still counts). Up to 64 more wait for a free slot for at most 2 seconds, so a page load's burst of assets completes in waves. SSE event streams move to a separate pool of up to 32 once the node starts them, so open tabs do not hold the slots that page loads need. When a tunnel is full, the proxy returns `503` with `Retry-After: 1` rather than `502`.
 
 A node can also be made hub-aware when opened directly (not through the proxy):
 

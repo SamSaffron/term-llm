@@ -17,14 +17,13 @@ const (
 	hubReverseAdmissionWait = appserver.ReverseAdmissionWait
 )
 
-var errHubReverseBusy = appserver.ErrReverseAdmissionFull
-
 func (c *hubReverseConnection) initIO() {
 	c.ioOnce.Do(func() {
 		c.writeGate = make(chan struct{}, 1)
 		c.active = make(chan struct{}, hubReverseMaxActive)
 		c.waiting = make(chan struct{}, hubReverseMaxWaiting)
-		c.cancels = make(chan hubReverseRequest, hubReverseMaxActive)
+		c.streams = make(chan struct{}, appserver.ReverseMaxStreams)
+		c.cancels = appserver.NewReverseCancels(hubReverseMaxActive + appserver.ReverseMaxStreams)
 		c.closed = make(chan struct{})
 	})
 }
@@ -60,28 +59,32 @@ func (c *hubReverseConnection) admit(ctx context.Context) error {
 	return appserver.AdmitReverseRequest(ctx, c.active, c.waiting, c.closed)
 }
 
-// One fixed worker owns cancellation traffic. If its bounded queue fills, drop
-// this tunnel rather than leak remote operations or spawn unlimited waiters.
-func (c *hubReverseConnection) queueCancel(id string) {
+// One fixed worker owns cancellation traffic. A queued cancel keeps its
+// operation's slot until written (see appserver.ReverseCancels). If the bounded
+// queue still fills, drop this tunnel rather than leak remote operations or
+// spawn unlimited waiters.
+func (c *hubReverseConnection) queueCancel(id string, release func()) {
+	cancel := appserver.ReverseCancel{ID: id, Release: release}
 	if c.conn == nil {
+		cancel.Done()
 		return
 	}
 	c.initIO()
-	select {
-	case <-c.closed:
-		return
-	case c.cancels <- hubReverseRequest{Type: hubReverseFrameCancel, ID: id}:
-	default:
+	if !c.cancels.Push(cancel) {
 		c.closeWithError(errors.New("reverse cancellation queue exhausted"))
+		cancel.Done()
 	}
 }
 func (c *hubReverseConnection) cancelLoop() {
+	defer c.cancels.Close()
 	for {
 		select {
 		case <-c.closed:
 			return
-		case frame := <-c.cancels:
-			if c.writeFrame(context.Background(), frame) != nil {
+		case cancel := <-c.cancels.Queue():
+			err := c.writeFrame(context.Background(), hubReverseRequest{Type: hubReverseFrameCancel, ID: cancel.ID})
+			cancel.Done()
+			if err != nil {
 				return
 			}
 		}

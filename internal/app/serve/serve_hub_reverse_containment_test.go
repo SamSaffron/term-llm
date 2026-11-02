@@ -375,7 +375,7 @@ func TestHubReverseContainmentAdmissionBound(t *testing.T) {
 	if pending != hubReverseMaxActive {
 		t.Fatalf("waiting calls allocated pending operations: %d", pending)
 	}
-	if err := containmentAwait(t, containmentDo(s, ctx, node, "/overflow", nil)); !errors.Is(err, errHubReverseBusy) {
+	if err := containmentAwait(t, containmentDo(s, ctx, node, "/overflow", nil)); !errors.Is(err, errHubReverseQueueFull) {
 		t.Fatalf("full queue admission=%v", err)
 	}
 	cancel()

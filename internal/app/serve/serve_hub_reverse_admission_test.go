@@ -6,6 +6,14 @@ import (
 	"testing"
 	"testing/synctest"
 	"time"
+
+	appserver "github.com/samsaffron/term-llm/internal/app/serve/server"
+)
+
+var (
+	errHubReverseBusy             = appserver.ErrReverseBusy
+	errHubReverseQueueFull        = appserver.ErrReverseAdmissionFull
+	errHubReverseAdmissionTimeout = appserver.ErrReverseAdmissionTimeout
 )
 
 func TestHubReverseAdmissionWaitsForCapacity(t *testing.T) {
@@ -114,7 +122,7 @@ func TestHubReverseAdmissionWaitingBounds(t *testing.T) {
 				if len(c.waiting) != hubReverseMaxWaiting || len(c.active) != hubReverseMaxActive {
 					t.Fatalf("active=%d waiting=%d", len(c.active), len(c.waiting))
 				}
-				if err := c.admit(t.Context()); !errors.Is(err, errHubReverseBusy) {
+				if err := c.admit(t.Context()); !errors.Is(err, errHubReverseQueueFull) || !errors.Is(err, errHubReverseBusy) {
 					t.Fatalf("full queue admission=%v", err)
 				}
 				start := time.Now()
@@ -131,11 +139,12 @@ func TestHubReverseAdmissionWaitingBounds(t *testing.T) {
 					err := <-done
 					switch ending {
 					case "cancel":
-						if !errors.Is(err, context.Canceled) {
+						if !errors.Is(err, context.Canceled) || errors.Is(err, errHubReverseBusy) {
 							t.Fatalf("waiting cancellation=%v", err)
 						}
 					case "timeout":
-						if !errors.Is(err, context.DeadlineExceeded) {
+						// Busy, and not mistakable for the caller's own deadline.
+						if !errors.Is(err, errHubReverseAdmissionTimeout) || !errors.Is(err, errHubReverseBusy) || errors.Is(err, context.DeadlineExceeded) {
 							t.Fatalf("waiting expiry=%v", err)
 						}
 					case "close":
@@ -178,7 +187,7 @@ func TestHubReverseAdmissionCallerDeadline(t *testing.T) {
 		ctx, cancel := context.WithTimeout(t.Context(), hubReverseAdmissionWait/4)
 		defer cancel()
 		start := time.Now()
-		if err := c.admit(ctx); !errors.Is(err, context.DeadlineExceeded) {
+		if err := c.admit(ctx); !errors.Is(err, context.DeadlineExceeded) || errors.Is(err, errHubReverseBusy) {
 			t.Fatalf("caller deadline=%v", err)
 		}
 		if time.Since(start) != hubReverseAdmissionWait/4 || len(c.waiting) != 0 {

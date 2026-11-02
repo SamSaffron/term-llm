@@ -136,6 +136,8 @@ type admissionRequestBody struct{ read atomic.Bool }
 func (b *admissionRequestBody) Read([]byte) (int, error) { b.read.Store(true); return 0, io.EOF }
 func (b *admissionRequestBody) Close() error             { return nil }
 
+// Long downloads keep their request slots (event streams move to their own
+// pool; see TestHubReverseEventStreamsUseOwnPool).
 func TestHubReverseAdmissionLongStreams(t *testing.T) {
 	for _, ending := range []string{"release", "cancel", "close"} {
 		t.Run(ending, func(t *testing.T) {
@@ -152,7 +154,7 @@ func TestHubReverseAdmissionLongStreams(t *testing.T) {
 					resp := hubReverseResponse{ID: frame.ID, Status: http.StatusOK}
 					if frame.Path == "/stream" {
 						resp.Type = hubReverseFrameResponseStart
-						resp.Header = http.Header{"Content-Type": {"text/event-stream"}}
+						resp.Header = http.Header{"Content-Type": {"application/octet-stream"}}
 					}
 					if peer.WriteJSON(resp) != nil {
 						return
@@ -190,7 +192,7 @@ func TestHubReverseAdmissionLongStreams(t *testing.T) {
 				t.Fatal("waiting request read its body or received a wire ID")
 			}
 			// Admission pressure is per node: another reverse tunnel and Hub
-			// control traffic must still work while all slots are held by SSE.
+			// control traffic must still work while long streams hold all slots.
 			healthyPeer, _, err := websocket.DefaultDialer.Dial("ws"+strings.TrimPrefix(ts.URL, "http")+"/api/connect?node_id=healthy", http.Header{"Authorization": {"Bearer good"}, hubNodeIDHeader: {"healthy"}})
 			if err != nil {
 				t.Fatal(err)
@@ -251,5 +253,47 @@ func TestHubReverseAdmissionLongStreams(t *testing.T) {
 				t.Fatalf("retained %d pending operations", pending)
 			}
 		})
+	}
+}
+
+// A full tunnel is busy, not down: the proxy answers 503 with Retry-After so
+// clients back off and retry, while other failures stay 502.
+func TestHubReverseProxyReportsBusy(t *testing.T) {
+	s, ts, node, peer, c := containmentHub(t)
+	go func() {
+		for {
+			var frame hubReverseRequest
+			if peer.ReadJSON(&frame) != nil {
+				return
+			}
+		}
+	}()
+	ctx, cancel := context.WithCancel(t.Context())
+	var calls []<-chan error
+	defer func() {
+		cancel()
+		for _, call := range calls {
+			_ = containmentAwait(t, call)
+		}
+	}()
+	for range hubReverseMaxActive + hubReverseMaxWaiting {
+		calls = append(calls, containmentDo(s, ctx, node, "/silent", nil))
+	}
+	waitForHubAdmission(t, c, hubReverseMaxActive, hubReverseMaxWaiting)
+	resp, err := ts.Client().Get(ts.URL + "/node/" + node.ID + "/assets/app.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusServiceUnavailable || resp.Header.Get("Retry-After") != "1" {
+		t.Fatalf("full tunnel: status=%d Retry-After=%q body=%q", resp.StatusCode, resp.Header.Get("Retry-After"), body)
+	}
+	for _, err := range []error{context.Canceled, errors.New("reverse connection is closed")} {
+		rec := httptest.NewRecorder()
+		hubProxyErrorHandler(rec, httptest.NewRequest(http.MethodGet, "/node/x/", nil), err)
+		if rec.Code != http.StatusBadGateway || rec.Header().Get("Retry-After") != "" {
+			t.Fatalf("%v: status=%d Retry-After=%q", err, rec.Code, rec.Header().Get("Retry-After"))
+		}
 	}
 }

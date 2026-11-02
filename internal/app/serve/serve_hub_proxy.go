@@ -532,15 +532,9 @@ func hubRebaseLocationPath(path string, t *hubProxyTarget) string {
 }
 
 func hubProxyErrorHandler(w http.ResponseWriter, r *http.Request, err error) {
-	var maxBytesErr *http.MaxBytesError
-	if errors.As(err, &maxBytesErr) {
-		http.Error(w, err.Error(), http.StatusRequestEntityTooLarge)
-		return
-	}
 	id := "node"
 	if t := hubProxyTargetFrom(r.Context()); t != nil {
 		id = t.nodeID
 	}
-	w.WriteHeader(http.StatusBadGateway)
-	fmt.Fprintf(w, "hub: node %q backend unreachable: %v\n", id, err)
+	apphub.WriteProxyError(w, id, err)
 }

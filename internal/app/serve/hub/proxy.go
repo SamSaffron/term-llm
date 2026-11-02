@@ -1,10 +1,14 @@
 package hub
 
 import (
+	"errors"
+	"fmt"
 	"net"
 	"net/http"
 	"strings"
 	"time"
+
+	appserver "github.com/samsaffron/term-llm/internal/app/serve/server"
 )
 
 // StripHopByHopHeaders removes hop-specific response headers.
@@ -57,6 +61,24 @@ func JoinBasePath(base, rest string) string {
 		rest = "/" + rest
 	}
 	return base + rest
+}
+
+// WriteProxyError answers a Hub proxy request that got no node response. A
+// full reverse tunnel is busy, not down: 503 with Retry-After lets clients
+// back off and retry, and keeps "busy" distinct from "unreachable".
+func WriteProxyError(w http.ResponseWriter, nodeID string, err error) {
+	var maxBytesErr *http.MaxBytesError
+	switch {
+	case errors.As(err, &maxBytesErr):
+		http.Error(w, err.Error(), http.StatusRequestEntityTooLarge)
+	case errors.Is(err, appserver.ErrReverseBusy):
+		w.Header().Set("Retry-After", "1")
+		w.WriteHeader(http.StatusServiceUnavailable)
+		fmt.Fprintf(w, "hub: node %q is busy, retry shortly: %v\n", nodeID, err)
+	default:
+		w.WriteHeader(http.StatusBadGateway)
+		fmt.Fprintf(w, "hub: node %q backend unreachable: %v\n", nodeID, err)
+	}
 }
 
 // ForwardedProto reports the public protocol of the incoming Hub request.
