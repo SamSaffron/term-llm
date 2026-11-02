@@ -25,4 +25,7 @@ var (
 	_ engine.ToolExecutorSetter  = (*clibin.GrokBinProvider)(nil)
 	_ engine.ProviderCleaner     = (*clibin.GrokBinProvider)(nil)
 	_ engine.ProviderTurnCleaner = (*clibin.GrokBinProvider)(nil)
+	_ engine.ToolExecutorSetter  = (*clibin.VibeBinProvider)(nil)
+	_ engine.ProviderCleaner     = (*clibin.VibeBinProvider)(nil)
+	_ engine.ProviderTurnCleaner = (*clibin.VibeBinProvider)(nil)
 )

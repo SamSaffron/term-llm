@@ -437,6 +437,7 @@ var selfManagedHelperInputLimits = map[string]int{
 	string(config.ProviderTypeGrokBin):   160_000,
 	string(config.ProviderTypeCursorBin): 120_000, // Routed models vary; assume the smallest common window.
 	string(config.ProviderTypeAgyBin):    160_000,
+	string(config.ProviderTypeVibeBin):   120_000, // Catalog models vary; Vibe compacts its own sessions.
 }
 
 // defaultSelfManagedHelperInputLimit bounds a helper request for a
@@ -470,7 +471,7 @@ func HelperInputLimitForProviderModel(providerName, model string) int {
 func providerManagesOwnContext(providerType string) bool {
 	switch config.ProviderType(providerType) {
 	case config.ProviderTypeClaudeBin, config.ProviderTypeGrokBin,
-		config.ProviderTypeCursorBin, config.ProviderTypeAgyBin:
+		config.ProviderTypeCursorBin, config.ProviderTypeAgyBin, config.ProviderTypeVibeBin:
 		return true
 	}
 	return false

@@ -52,6 +52,7 @@ var providerBinaries = map[config.ProviderType]string{
 	config.ProviderTypeGrokBin:   "grok",
 	config.ProviderTypeCursorBin: "cursor-agent",
 	config.ProviderTypeAgyBin:    "agy",
+	config.ProviderTypeVibeBin:   "vibe-acp",
 }
 
 // Run implements Check.

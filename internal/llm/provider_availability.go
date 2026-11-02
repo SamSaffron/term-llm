@@ -49,6 +49,12 @@ var availabilityProbes = map[providerspec.Availability]func() bool{
 	},
 	providerspec.AvailabilityCursorBin: clibin.CursorBinHasCredentials,
 	providerspec.AvailabilityAgyBin:    clibin.AgyBinHasCredentials,
+	// Vibe keeps its sign-in in its own home or the OS keyring; term-llm does
+	// not inspect it, so an installed vibe-acp is the signal.
+	providerspec.AvailabilityVibeBin: func() bool {
+		_, err := exec.LookPath("vibe-acp")
+		return err == nil
+	},
 }
 
 // ProviderSelectable reports whether name may be offered for selection (for

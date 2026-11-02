@@ -94,7 +94,7 @@ The provider name selects an integration, not just a model vendor:
 - **Hosted APIs:** Anthropic, OpenAI, Gemini, xAI, OpenRouter, Venice, NEAR AI Cloud, SambaNova, Obscurify.ai, and OpenCode Zen.
 - **AWS:** Bedrock uses AWS credentials and Bedrock model/inference-profile identifiers.
 - **Subscriptions:** ChatGPT, Grok, and Copilot use term-llm-managed OAuth; OpenCode Go uses a subscription API key.
-- **Companion CLIs:** `claude-bin`, `cursor-bin`, `agy-bin`, and `grok-bin` run a separately installed and authenticated CLI.
+- **Companion CLIs:** `claude-bin`, `cursor-bin`, `agy-bin`, `grok-bin`, and `vibe-bin` run a separately installed and authenticated CLI.
 - **Local and self-hosted:** `ollama` uses Ollama's native API. LM Studio and generic endpoints use `openai_compatible`; `vllm` adds model-specific thinking controls to that protocol.
 
 These are **text/agent providers**. [Image](/guides/image-generation/), [audio](/guides/audio-generation/), [music](/guides/music-generation/), [video](/guides/video-generation/), [transcription](/guides/transcription/), and [embedding](/guides/text-embeddings/) commands have their own provider sets and configuration. Support in one command does not imply support in another.
@@ -124,6 +124,7 @@ Config paths below are relative to `$XDG_CONFIG_HOME/term-llm/`, normally `~/.co
 | `grok-bin` | `grok-bin` | oauth; install the Grok Build CLI and log in | grok-bin (upstream listing) |
 | `cursor-bin` | `cursor-bin` | oauth; `CURSOR_API_KEY`; run cursor-agent login or set CURSOR_API_KEY | cursor-bin (upstream listing) |
 | `agy-bin` | `agy-bin` | oauth; install agy and complete its login | agy-bin (upstream listing) |
+| `vibe-bin` | `vibe-bin` | oauth; install Mistral Vibe and sign in with vibe | curated (local catalog) |
 | `ollama` | `ollama` | none; `OLLAMA_HOST`; set OLLAMA_HOST or add providers.ollama to config.yaml | ollama (upstream listing) |
 | `vllm` | `vllm` | none; add providers.vllm (base_url) to config.yaml | compatible (upstream listing) |
 | `bedrock` | `bedrock` | aws | curated (local catalog) |
@@ -154,6 +155,7 @@ Config paths below are relative to `$XDG_CONFIG_HOME/term-llm/`, normally `~/.co
 | `cursor-bin` | Installed `cursor-agent` CLI and its login, or `CURSOR_API_KEY` | Model availability comes from the companion CLI/account. |
 | `agy-bin` | Installed `agy` CLI (1.3.3 or newer) and its login | Uses Antigravity CLI credentials. |
 | `grok-bin` | Installed `grok` CLI; `GROK_AUTH_PATH` or `~/.grok/auth.json` | Grok Build CLI integration, separate from `grok` OAuth. |
+| `vibe-bin` | Installed Mistral Vibe CLI (`vibe-acp`) and its sign-in | Uses the Vibe subscription; term-llm does not read the Vibe credential and drops an inherited `MISTRAL_API_KEY`. |
 | `lmstudio` | Configured `openai_compatible` endpoint and loaded model | A custom provider name, not a separate built-in adapter. |
 | Other custom names | Explicit `type` and endpoint; `api_key` or `<PROVIDER_NAME>_API_KEY` when required | Unknown provider names default to `openai_compatible`; configure them before use. |
 
@@ -939,7 +941,7 @@ The implemented adapters expose these native search routes:
 | `grok-bin` | Companion CLI search/fetch | Not the same as the `grok` subscription OAuth adapter. |
 | `bedrock` | Advertises the shared Anthropic native-tool path | Do not assume AWS accepts every Anthropic hosted tool/beta. Use external search if the endpoint rejects it. |
 
-`grok` subscription OAuth, `claude-bin`, `cursor-bin`, `agy-bin`, `copilot`, `zen`, `opencode-go`, `openrouter`, and local adapters use term-llm's external search tools rather than claiming those native capabilities. Tool support by the selected model is still required.
+`grok` subscription OAuth, `claude-bin`, `cursor-bin`, `agy-bin`, `vibe-bin`, `copilot`, `zen`, `opencode-go`, `openrouter`, and local adapters use term-llm's external search tools rather than claiming those native capabilities. Tool support by the selected model is still required.
 
 You can override behavior with:
 
@@ -970,7 +972,7 @@ See [Search](/guides/search/) for the full routing model.
 - **broad model access:** `openrouter`
 - **local inference:** native `ollama`, LM Studio, or another configured local endpoint
 - **subscription-backed access:** `chatgpt`, `grok`, `copilot`, or `opencode-go`, according to your account
-- **reuse a companion CLI:** `claude-bin`, `cursor-bin`, `agy-bin`, or `grok-bin`
+- **reuse a companion CLI:** `claude-bin`, `cursor-bin`, `agy-bin`, `grok-bin`, or `vibe-bin`
 
 ## Related pages
 

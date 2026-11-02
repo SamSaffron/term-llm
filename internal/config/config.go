@@ -31,6 +31,7 @@ const (
 	ProviderTypeGrokBin      = providerspec.TypeGrokBin
 	ProviderTypeCursorBin    = providerspec.TypeCursorBin
 	ProviderTypeAgyBin       = providerspec.TypeAgyBin
+	ProviderTypeVibeBin      = providerspec.TypeVibeBin
 	ProviderTypeOpenAICompat = providerspec.TypeOpenAICompat
 	ProviderTypeVLLM         = providerspec.TypeVLLM
 	ProviderTypeXAI          = providerspec.TypeXAI

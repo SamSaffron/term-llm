@@ -195,6 +195,8 @@ func TestAllListedModelsHaveContextLimits(t *testing.T) {
 		// agy-bin models and limits are subscription/catalog dependent.
 		"gemini-3.6-flash-high": true, "gemini-3.6-flash-medium": true, "gemini-3.6-flash-low": true,
 		"gemini-3.5-flash-high": true, "gemini-3.1-pro-high": true,
+		// vibe-bin aliases are account-dependent and Vibe manages context itself.
+		"mistral-large-4-0-3": true, "mistral-medium-3.5": true, "glm-5-3": true, "zai-glm-5-3-flash": true,
 		// OpenRouter routes among free models; limits come from the live catalog.
 		"openrouter/free": true,
 		// Copilot models with no known limits
