@@ -26,7 +26,9 @@ const (
 	vibeACPStopTimeout         = 3 * time.Second
 	vibeACPCloseTimeout        = time.Second
 	vibeToolBarrierGraceEnv    = "TERM_LLM_VIBE_TOOL_BARRIER_GRACE_MS"
-	vibeNotSignedInDetail      = "Run `vibe` on this machine and sign in with your Mistral account, then try again."
+	vibeNotSignedInDetail      = "Run `vibe` on this machine and sign in with your Mistral account. " +
+		"vibe-bin reuses OS-keyring sign-ins but does not import Vibe's .env file. " +
+		"If Vibe saved your sign-in there, configure that key explicitly under providers.<name>.env.MISTRAL_API_KEY; billing and quota follow that credential."
 )
 
 var errVibeResumeUnavailable = errors.New("Vibe session could not be restored")
@@ -576,6 +578,10 @@ func (p *VibeBinProvider) startVibeACPProcess(ctx context.Context, debug bool, m
 			Cause:   err,
 		}
 	}
+	home, err := vibeRuntimeHome(cwd)
+	if err != nil {
+		return nil, err
+	}
 	if debug {
 		runtimeoutput.Printf("[vibe-bin] starting %s (model=%q, resume=%q)\n", vibeACPBinary, model, resumeID)
 	}
@@ -586,7 +592,7 @@ func (p *VibeBinProvider) startVibeACPProcess(ctx context.Context, debug bool, m
 		return nil, fmt.Errorf("prepare vibe-acp command: %w", err)
 	}
 	cmd.WaitDelay = time.Second
-	auditedEnv, wireAudit, err := startCLIWireAudit("vibe-bin", p.buildVibeCommandEnv(model))
+	auditedEnv, wireAudit, err := startCLIWireAudit("vibe-bin", p.buildVibeCommandEnv(model, home))
 	if err != nil {
 		cancel()
 		return nil, err

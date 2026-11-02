@@ -39,6 +39,7 @@ const (
 var vibeForcedEnv = map[string]string{
 	"VIBE_ENABLED_TOOLS":               `["` + vibeEnabledToolsGlob + `"]`,
 	"VIBE_ENABLE_MCP":                  "true",
+	"VIBE_MCP_SERVERS":                 "[]",
 	"VIBE_ENABLE_SUBAGENTS":            "false",
 	"VIBE_ENABLE_BACKGROUND_PROCESSES": "false",
 	"VIBE_ENABLE_CONNECTORS":           "false",
@@ -55,8 +56,9 @@ var vibeForcedEnv = map[string]string{
 // removed so it cannot take precedence over the Vibe sign-in.
 //
 // term-llm remains the sole owner of executable tools, exposed through an
-// isolated in-process HTTP MCP server. Vibe's sessions live in its own home
-// (~/.vibe) and are resumed with session/load.
+// isolated in-process HTTP MCP server. Vibe's configuration and sessions live
+// in a dedicated persistent VIBE_HOME, not the interactive CLI's ~/.vibe. Its
+// subscription sign-in remains in the OS keyring; no credentials are copied.
 //
 // It is not safe for concurrent conversation streams; create one provider per conversation.
 type VibeBinProvider struct {
@@ -325,12 +327,14 @@ func vibePromptBlocks(messages []core.Message, toolPolicy, systemPrompt string) 
 
 // buildVibeCommandEnv returns the vibe-acp environment. Model selection uses
 // VIBE_ACTIVE_MODEL rather than ACP session/set_config_option, which Vibe
-// persists as the user's default model.
-func (p *VibeBinProvider) buildVibeCommandEnv(model string) []string {
-	forced := make(map[string]string, len(vibeForcedEnv)+1)
+// persists as the user's default model. home is the dedicated runtime home:
+// user hooks, plugins, tools, config.toml and .env must not be inherited.
+func (p *VibeBinProvider) buildVibeCommandEnv(model, home string) []string {
+	forced := make(map[string]string, len(vibeForcedEnv)+2)
 	for key, value := range vibeForcedEnv {
 		forced[key] = value
 	}
+	forced["VIBE_HOME"] = home
 	if model != "" {
 		forced["VIBE_ACTIVE_MODEL"] = model
 	}
@@ -382,6 +386,28 @@ func vibeNeutralCWD() (string, error) {
 		return "", fmt.Errorf("create vibe-bin working directory: %w", err)
 	}
 	return dir, nil
+}
+
+// vibeRuntimeHome isolates executable Vibe configuration, including user and
+// plugin hooks, which are independent of ACP tool approval. OIDC credentials
+// are held in the OS keyring, outside VIBE_HOME. Keep this directory across
+// provider cleanup so session/load works after restarting term-llm.
+func vibeRuntimeHome(cwd string) (string, error) {
+	home := filepath.Join(filepath.Dir(cwd), "home")
+	if err := os.Mkdir(home, 0o700); err != nil && !os.IsExist(err) {
+		return "", fmt.Errorf("create vibe-bin runtime home: %w", err)
+	}
+	info, err := os.Lstat(home)
+	if err != nil {
+		return "", fmt.Errorf("inspect vibe-bin runtime home: %w", err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
+		return "", fmt.Errorf("vibe-bin runtime home must be a directory, not a symlink: %s", home)
+	}
+	if err := os.Chmod(home, 0o700); err != nil {
+		return "", fmt.Errorf("secure vibe-bin runtime home: %w", err)
+	}
+	return home, nil
 }
 
 func (p *VibeBinProvider) ensureMCPServer(ctx context.Context, tools []core.ToolSpec, debug bool) error {

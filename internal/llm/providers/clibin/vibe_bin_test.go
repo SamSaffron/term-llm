@@ -18,8 +18,10 @@ func TestVibeCommandEnvForcesRestrictionsAndDropsAPIKey(t *testing.T) {
 	t.Setenv("VIBE_ENABLED_TOOLS", `["bash"]`)
 	t.Setenv("VIBE_ENABLE_SUBAGENTS", "true")
 	t.Setenv("VIBE_HOME", "/custom/vibe-home")
+	t.Setenv("VIBE_MCP_SERVERS", `[{"name":"external","command":"unsafe"}]`)
+	home := t.TempDir()
 
-	env := envMap(NewVibeBinProvider("glm-5-3", map[string]string{"EXTRA": "1"}).buildVibeCommandEnv("glm-5-3"))
+	env := envMap(NewVibeBinProvider("glm-5-3", map[string]string{"EXTRA": "1", "VIBE_HOME": "/provider/vibe-home", "VIBE_MCP_SERVERS": "unsafe"}).buildVibeCommandEnv("glm-5-3", home))
 	if _, ok := env["MISTRAL_API_KEY"]; ok {
 		t.Fatal("inherited MISTRAL_API_KEY must not reach vibe-acp")
 	}
@@ -27,7 +29,8 @@ func TestVibeCommandEnvForcesRestrictionsAndDropsAPIKey(t *testing.T) {
 		"VIBE_ENABLED_TOOLS":    `["termllm_*"]`,
 		"VIBE_ENABLE_SUBAGENTS": "false",
 		"VIBE_ACTIVE_MODEL":     "glm-5-3",
-		"VIBE_HOME":             "/custom/vibe-home",
+		"VIBE_HOME":             home,
+		"VIBE_MCP_SERVERS":      "[]",
 		"EXTRA":                 "1",
 	}
 	for key, value := range want {
@@ -36,14 +39,14 @@ func TestVibeCommandEnvForcesRestrictionsAndDropsAPIKey(t *testing.T) {
 		}
 	}
 
-	if _, ok := envMap(NewVibeBinProvider("", nil).buildVibeCommandEnv(""))["VIBE_ACTIVE_MODEL"]; ok {
+	if _, ok := envMap(NewVibeBinProvider("", nil).buildVibeCommandEnv("", t.TempDir()))["VIBE_ACTIVE_MODEL"]; ok {
 		t.Fatal("empty model must keep Vibe's own default model")
 	}
 }
 
 func TestVibeCommandEnvKeepsExplicitProviderAPIKey(t *testing.T) {
 	t.Setenv("MISTRAL_API_KEY", "inherited-key")
-	env := envMap(NewVibeBinProvider("", map[string]string{"MISTRAL_API_KEY": "explicit"}).buildVibeCommandEnv(""))
+	env := envMap(NewVibeBinProvider("", map[string]string{"MISTRAL_API_KEY": "explicit"}).buildVibeCommandEnv("", t.TempDir()))
 	if env["MISTRAL_API_KEY"] != "explicit" {
 		t.Fatalf("MISTRAL_API_KEY = %q, want explicit provider env", env["MISTRAL_API_KEY"])
 	}
