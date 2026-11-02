@@ -357,7 +357,7 @@ func TestHubReverseContainmentAdmissionBound(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	var calls []<-chan error
-	for i := 0; i < 16; i++ {
+	for i := 0; i < hubReverseMaxActive; i++ {
 		calls = append(calls, containmentDo(s, ctx, node, "/silent", nil))
 		select {
 		case <-requests:
@@ -365,8 +365,18 @@ func TestHubReverseContainmentAdmissionBound(t *testing.T) {
 			t.Fatal("admitted request not sent")
 		}
 	}
-	if err := containmentAwait(t, containmentDo(s, ctx, node, "/overflow", nil)); err == nil {
-		t.Fatal("connection admitted more than its bounded outstanding work")
+	for range hubReverseMaxWaiting {
+		calls = append(calls, containmentDo(s, ctx, node, "/waiting", nil))
+	}
+	waitForHubAdmission(t, c, hubReverseMaxActive, hubReverseMaxWaiting)
+	c.pendingMu.Lock()
+	pending := len(c.pending)
+	c.pendingMu.Unlock()
+	if pending != hubReverseMaxActive {
+		t.Fatalf("waiting calls allocated pending operations: %d", pending)
+	}
+	if err := containmentAwait(t, containmentDo(s, ctx, node, "/overflow", nil)); !errors.Is(err, errHubReverseQueueFull) {
+		t.Fatalf("full queue admission=%v", err)
 	}
 	cancel()
 	for _, call := range calls {
@@ -380,4 +390,5 @@ func TestHubReverseContainmentAdmissionBound(t *testing.T) {
 	if count != 0 {
 		t.Fatalf("cancellation retained %d pending requests", count)
 	}
+	waitForHubAdmission(t, c, 0, 0)
 }

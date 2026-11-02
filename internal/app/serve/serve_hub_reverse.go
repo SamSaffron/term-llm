@@ -60,16 +60,16 @@ type hubReverseRequest = appserver.ReverseRequest
 type hubReverseResponse = appserver.ReverseResponse
 
 type hubReversePending struct {
-	ch            chan hubReverseResponse
-	terminal      chan hubReverseResponse
-	queuedBytes   atomic.Int64
-	done          chan struct{}
-	doneOnce      sync.Once
-	mu            sync.RWMutex
-	err           error
-	pipe          *io.PipeWriter
-	finishOnce    sync.Once
-	releaseActive func()
+	ch          chan hubReverseResponse
+	terminal    chan hubReverseResponse
+	queuedBytes atomic.Int64
+	bodyLimit   atomic.Int64
+	done        chan struct{}
+	doneOnce    sync.Once
+	mu          sync.RWMutex
+	err         error
+	pipe        *io.PipeWriter
+	slot        appserver.ReverseSlot
 }
 
 type hubReverseConnection struct {
@@ -84,7 +84,9 @@ type hubReverseConnection struct {
 	closeOnce   sync.Once
 	writeGate   chan struct{}
 	active      chan struct{}
-	cancels     chan hubReverseRequest
+	waiting     chan struct{}
+	streams     chan struct{}
+	cancels     *appserver.ReverseCancels
 	closed      chan struct{}
 	detach      func()
 	requestSeq  atomic.Uint64
@@ -93,20 +95,16 @@ type hubReverseConnection struct {
 }
 
 func newHubReversePending() *hubReversePending {
-	return &hubReversePending{
+	p := &hubReversePending{
 		ch:       make(chan hubReverseResponse, hubReversePendingBuffer),
 		terminal: make(chan hubReverseResponse, 1),
 		done:     make(chan struct{}),
 	}
+	p.bodyLimit.Store(hubReversePendingBodyBytes)
+	return p
 }
 
-func (p *hubReversePending) finish() {
-	p.finishOnce.Do(func() {
-		if p.releaseActive != nil {
-			p.releaseActive()
-		}
-	})
-}
+func (p *hubReversePending) finish() { p.slot.Release() }
 
 func (p *hubReversePending) doneClosed() bool {
 	if p == nil {
@@ -166,10 +164,11 @@ func (p *hubReversePending) enqueue(resp hubReverseResponse) (queued, full bool)
 		return false, false
 	}
 	bodyBytes := int64(len(resp.Body))
-	if bodyBytes > hubReversePendingBodyBytes {
+	limit := p.bodyLimit.Load()
+	if bodyBytes > limit {
 		return false, true
 	}
-	if bodyBytes > 0 && p.queuedBytes.Add(bodyBytes) > hubReversePendingBodyBytes {
+	if bodyBytes > 0 && p.queuedBytes.Add(bodyBytes) > limit {
 		p.queuedBytes.Add(-bodyBytes)
 		return false, true
 	}
@@ -199,7 +198,7 @@ func (p *hubReversePending) release(resp hubReverseResponse) {
 // one-slot terminal lane, so node errors and clean completion are not replaced
 // by a synthetic slow-consumer failure.
 func (p *hubReversePending) deferTerminal(resp hubReverseResponse) bool {
-	if p == nil || len(resp.Body) > hubReversePendingBodyBytes {
+	if p == nil || int64(len(resp.Body)) > p.bodyLimit.Load() {
 		return false
 	}
 	bodyBytes := int64(len(resp.Body))
@@ -369,10 +368,14 @@ func (c *hubReverseConnection) removePending(id string, pending *hubReversePendi
 }
 
 func (c *hubReverseConnection) abortPending(id string, pending *hubReversePending, err error, sendCancel bool) {
-	removed := c.removePending(id, pending)
+	sendCancel = c.removePending(id, pending) && sendCancel
+	var release func()
+	if sendCancel { // take the slot before abort wakes the copier's finish
+		release = pending.slot.Take()
+	}
 	pending.abort(err)
-	if sendCancel && removed {
-		c.queueCancel(id)
+	if sendCancel {
+		c.queueCancel(id, release)
 	}
 }
 
@@ -388,7 +391,7 @@ func (m *hubReverseManager) do(ctx context.Context, node hub.Node, req *http.Req
 		return nil, err
 	}
 	pending := newHubReversePending()
-	pending.releaseActive = func() { <-c.active }
+	pending.slot.Hold(func() { <-c.active })
 	success := false
 	defer func() {
 		if !success {
@@ -441,6 +444,10 @@ func (m *hubReverseManager) do(ctx context.Context, node hub.Node, req *http.Req
 		if err := ctx.Err(); err != nil {
 			c.abortPending(id, pending, err, true)
 			return nil, err
+		}
+		// Event streams leave the request pool (see appserver.ReverseMaxStreams).
+		if resp.StartsEventStream() && pending.slot.MoveTo(c.streams) {
+			pending.bodyLimit.Store(appserver.ReverseStreamBodyBytes)
 		}
 		response, err := c.buildHTTPResponseFromReverseFrame(ctx, req, id, pending, resp)
 		success = err == nil
@@ -549,8 +556,9 @@ func (c *hubReverseConnection) cancelPending(id string, err error) {
 	delete(c.pending, id)
 	c.pendingMu.Unlock()
 	if pending != nil {
+		release := pending.slot.Take()
 		pending.abort(err)
-		c.queueCancel(id)
+		c.queueCancel(id, release)
 	}
 }
 
