@@ -14,6 +14,30 @@ function stylesheet(path: string): string {
 const css = stylesheet(resolve(import.meta.dirname, '../src/styles/app.css'));
 if (/@import\b/.test(css)) throw new Error('Unsupported CSS import in browser style fixture');
 
+test('conversation text uses a readable 16px base on desktop and mobile', async ({ page }) => {
+  await page.setContent(`<meta name="viewport" content="width=device-width, initial-scale=1">
+    <article class="message user"><div class="message-body">Explain typography.</div></article>
+    <article class="message assistant"><div class="message-body"><div class="markdown-body">
+      <p>Typography makes written communication clear and readable.</p>
+      <ul><li>Use a consistent type size.</li></ul>
+      <p>Keep <code>inline code</code> proportional.</p>
+      <pre><code>const size = 16;</code></pre>
+    </div></div></article>`);
+  await page.addStyleTag({ content: css });
+  for (const width of [320, 390, 768, 1440]) {
+    await page.setViewportSize({ width, height: 900 });
+    for (const selector of ['.message-body', '.markdown-body p', '.markdown-body li']) {
+      for (const element of await page.locator(selector).all()) {
+        await expect(element).toHaveCSS('font-size', '16px');
+        await expect(element).toHaveCSS('line-height', '25.6px');
+      }
+    }
+    await expect(page.locator('.markdown-body p code')).toHaveCSS('font-size', '14px');
+    await expect(page.locator('.markdown-body pre code')).toHaveCSS('font-size', '14px');
+    expect(await page.evaluate(() => document.documentElement.scrollWidth - innerWidth)).toBe(0);
+  }
+});
+
 test('diff layout retains grid rows, line markers and comment placement', async ({ page }) => {
   await page.setContent(`<div class="diff-file-body">
     <div class="diff-row add"><span class="diff-ln">1</span><span class="diff-ln">2</span><span class="diff-code">added</span><button class="diff-comment-affordance">+</button></div>
