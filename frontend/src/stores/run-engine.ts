@@ -2192,6 +2192,9 @@ export class RunEngine {
         ),
         phase: undefined,
         retry: undefined,
+        // A stopped run is no longer switching models; the server's cancelled
+        // frame, which would clear this, never arrives on the aborted stream.
+        modelSwap: undefined,
         run: { ...projection.run, status: 'cancelled' },
       },
     };

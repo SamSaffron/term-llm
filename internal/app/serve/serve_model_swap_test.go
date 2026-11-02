@@ -195,40 +195,6 @@ func TestModelSwapStartMessageIncludesEffortWhenModelAlsoChanges(t *testing.T) {
 	}
 }
 
-func TestInsertModelSwapMarkerFallsBackToLatestUser(t *testing.T) {
-	history := []core.Message{
-		core.UserText("original trigger"),
-		core.AssistantText("old reply"),
-		core.UserText("normalized trigger"),
-		core.AssistantText("current reply"),
-	}
-	updated := insertModelSwapMarkerAfterTrigger(
-		history,
-		core.ModelSwapEventMessage(core.ModelSwapMarker{Status: "succeeded"}),
-	)
-
-	if len(updated) != 5 || updated[2].Role != core.RoleUser || updated[3].Role != core.RoleEvent || updated[4].Role != core.RoleAssistant {
-		t.Fatalf("marker matched an older repeated prompt instead of the latest user: %#v", updated)
-	}
-}
-
-func TestInsertModelSwapMarkerImageOnlyTriggerUsesLatestUser(t *testing.T) {
-	imageOnly := core.Message{Role: core.RoleUser, Parts: []core.Part{{Type: core.PartImage, ImagePath: "image.png"}}}
-	history := []core.Message{
-		core.UserText("handover summary"),
-		imageOnly,
-		core.AssistantText("reply"),
-	}
-	updated := insertModelSwapMarkerAfterTrigger(
-		history,
-		core.ModelSwapEventMessage(core.ModelSwapMarker{Status: "succeeded"}),
-	)
-
-	if len(updated) != 4 || updated[1].Role != core.RoleUser || updated[2].Role != core.RoleEvent || updated[3].Role != core.RoleAssistant {
-		t.Fatalf("image-only trigger anchored marker to handover context: %#v", updated)
-	}
-}
-
 func TestPersistModelSwapMarkerSurvivesCancelledRequestContext(t *testing.T) {
 	store, err := session.NewStore(session.Config{Enabled: true, Path: filepath.Join(t.TempDir(), "sessions.db")})
 	if err != nil {

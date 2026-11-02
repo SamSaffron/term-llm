@@ -66,6 +66,34 @@ function presenceFixture() {
   };
 }
 
+/** Deterministic microtask drain; bounded so a retry loop can only fail, not hang. */
+async function settle(rounds = 50): Promise<void> {
+  for (let index = 0; index < rounds; index++) await Promise.resolve();
+}
+
+function nativeFixture(options: {
+  prefix: string;
+  capabilities: () => Promise<{ version: 2; window_id: string; document_id?: string }>;
+}) {
+  const capabilities = vi.fn(options.capabilities);
+  const notificationPresence = vi.fn(async (_payload: unknown) => {});
+  const bridge = {
+    version: 1,
+    notificationCapabilities: capabilities,
+    notificationPresence,
+    notificationRead: vi.fn(async () => {}),
+  } as unknown as TermLLMNativePush;
+  const endpoints = { pushPresence: vi.fn(async (_body: unknown) => ({ ok: true, version: 2 })) };
+  const owner = new NotificationOwner(
+    options.prefix,
+    endpoints as never,
+    () => 'native-sub',
+    bridge,
+  );
+  owners.push(owner);
+  return { owner, endpoints, capabilities, notificationPresence };
+}
+
 describe('notification document ownership and attendance', () => {
   it('uses a reload-stable window, fresh document and increasing persisted window sequence', async () => {
     const first = fixture();
@@ -263,5 +291,141 @@ describe('notification document ownership and attendance', () => {
     } as TermLLMNativePush);
     owners.push(old);
     expect(await old.origin()).toBeNull();
+  });
+
+  it('does not re-arm a rejected hidden native bind from the last published lease', async () => {
+    vi.useFakeTimers();
+    let visibility: DocumentVisibilityState = 'visible';
+    vi.spyOn(document, 'visibilityState', 'get').mockImplementation(() => visibility);
+    let calls = 0;
+    const { owner, endpoints, capabilities } = nativeFixture({
+      prefix: '/native/Hidden',
+      capabilities: async () => {
+        calls++;
+        // A rejected live nonce, e.g. a retained Chat detached from its window
+        // scene. Calls 5+ recover so an unbounded retry chain would terminate.
+        if (calls >= 2 && calls <= 4) throw new Error('stale notification document');
+        return { version: 2 as const, window_id: 'scene' };
+      },
+    });
+    const presence = presenceFixture();
+    presence.signal(Date.now());
+    owner.start(presence.source);
+    await owner.publish();
+    expect(capabilities).toHaveBeenCalledTimes(1);
+    expect(endpoints.pushPresence).toHaveBeenLastCalledWith(
+      expect.objectContaining({ active: true }),
+    );
+
+    // Hiding fails the native bind before any inactive lease is published.
+    visibility = 'hidden';
+    document.dispatchEvent(new Event('visibilitychange'));
+    presence.signal(Date.now());
+    await settle();
+    expect(capabilities).toHaveBeenCalledTimes(2);
+    expect(endpoints.pushPresence).toHaveBeenCalledOnce();
+
+    // Only an ordinary trigger retries: returning to view renews immediately.
+    visibility = 'visible';
+    document.dispatchEvent(new Event('visibilitychange'));
+    await settle();
+    expect(capabilities).toHaveBeenCalledTimes(3);
+    await vi.advanceTimersByTimeAsync(15_001);
+    expect(capabilities).toHaveBeenCalledTimes(4);
+    await vi.advanceTimersByTimeAsync(15_001);
+    expect(capabilities).toHaveBeenCalledTimes(5);
+    expect(endpoints.pushPresence).toHaveBeenCalledTimes(2);
+    expect(endpoints.pushPresence).toHaveBeenLastCalledWith(
+      expect.objectContaining({ active: true }),
+    );
+  });
+
+  it('bounds a failing visible native publication and retries only on the heartbeat', async () => {
+    vi.useFakeTimers();
+    vi.spyOn(document, 'visibilityState', 'get').mockReturnValue('visible');
+    let calls = 0;
+    const { owner, endpoints, capabilities } = nativeFixture({
+      prefix: '/native/Visible',
+      capabilities: async () => {
+        calls++;
+        if (calls <= 3) throw new Error('stale notification document');
+        return { version: 2 as const, window_id: 'scene' };
+      },
+    });
+    const presence = presenceFixture();
+    presence.signal(Date.now());
+    owner.start(presence.source);
+    await settle();
+    expect(capabilities).toHaveBeenCalledTimes(1);
+    expect(endpoints.pushPresence).not.toHaveBeenCalled();
+
+    await vi.advanceTimersByTimeAsync(15_001);
+    expect(capabilities).toHaveBeenCalledTimes(2);
+    await vi.advanceTimersByTimeAsync(15_001);
+    expect(capabilities).toHaveBeenCalledTimes(3);
+    await vi.advanceTimersByTimeAsync(15_001);
+    expect(capabilities).toHaveBeenCalledTimes(4);
+    expect(endpoints.pushPresence).toHaveBeenCalledOnce();
+    expect(endpoints.pushPresence).toHaveBeenLastCalledWith(
+      expect.objectContaining({ active: true }),
+    );
+  });
+
+  it('stays bounded when every native bind is rejected', async () => {
+    vi.useFakeTimers();
+    vi.spyOn(document, 'visibilityState', 'get').mockReturnValue('visible');
+    let calls = 0;
+    const { owner, endpoints, capabilities } = nativeFixture({
+      prefix: '/native/Persistent',
+      capabilities: async () => {
+        calls++;
+        // Finite rejections keep an unbounded chain terminating instead of hanging.
+        if (calls <= 20) throw new Error('stale notification document');
+        return { version: 2 as const, window_id: 'scene' };
+      },
+    });
+    const presence = presenceFixture();
+    presence.signal(Date.now());
+    owner.start(presence.source);
+    await settle();
+    expect(capabilities).toHaveBeenCalledTimes(1);
+    await settle();
+    expect(capabilities).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(capabilities).toHaveBeenCalledTimes(1);
+    expect(endpoints.pushPresence).not.toHaveBeenCalled();
+  });
+
+  it('publishes the inactive follow-up when attendance drops during a pending native update', async () => {
+    vi.spyOn(document, 'visibilityState', 'get').mockReturnValue('visible');
+    const { owner, endpoints, notificationPresence } = nativeFixture({
+      prefix: '/native/Midflight',
+      capabilities: async () => ({ version: 2 as const, window_id: 'scene' }),
+    });
+    const presence = presenceFixture();
+    presence.signal(Date.now());
+    owner.start(presence.source);
+    await owner.publish();
+    expect(endpoints.pushPresence).toHaveBeenLastCalledWith(
+      expect.objectContaining({ active: true }),
+    );
+
+    let release!: () => void;
+    notificationPresence.mockImplementationOnce(
+      () =>
+        new Promise<void>((resolve) => {
+          release = () => resolve();
+        }),
+    );
+    const pending = owner.publish();
+    await settle();
+    presence.signal(Date.now(), false);
+    release();
+    await pending;
+    await owner.publish();
+    expect(endpoints.pushPresence).toHaveBeenCalledTimes(3);
+    expect(endpoints.pushPresence).toHaveBeenLastCalledWith(
+      expect.objectContaining({ active: false }),
+    );
   });
 });

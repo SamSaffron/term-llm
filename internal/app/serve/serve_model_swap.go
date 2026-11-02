@@ -9,6 +9,7 @@ import (
 	"time"
 
 	appruntime "github.com/samsaffron/term-llm/internal/app/runtime"
+	"github.com/samsaffron/term-llm/internal/app/serve/modelswap"
 	"github.com/samsaffron/term-llm/internal/llm"
 	"github.com/samsaffron/term-llm/internal/llm/core"
 	"github.com/samsaffron/term-llm/internal/llm/engine"
@@ -145,7 +146,7 @@ func buildResponseModelSwapPlan(req responsesCreateRequest, persisted, requested
 }
 
 func (p responseModelSwapPlan) previousLabel() string {
-	return providerModelLabel(p.previousProvider, p.previousModel)
+	return modelswap.Label(p.previousProvider, p.previousModel)
 }
 
 func (p responseModelSwapPlan) targetLabel(candidate *serveRuntime) string {
@@ -153,45 +154,11 @@ func (p responseModelSwapPlan) targetLabel(candidate *serveRuntime) string {
 	if model == "" && candidate != nil {
 		model = strings.TrimSpace(candidate.defaultModel)
 	}
-	return providerModelLabel(p.requestedProvider, model)
-}
-
-func modelSwapEffortLabel(effort string) string {
-	effort = normalizeReasoningEffort(effort)
-	if effort == "" {
-		return "auto"
-	}
-	return effort
+	return modelswap.Label(p.requestedProvider, model)
 }
 
 func (p responseModelSwapPlan) startMessage(candidate *serveRuntime) string {
-	previous := p.previousLabel()
-	target := p.targetLabel(candidate)
-	sameRuntime := previous == target
-	effortChanged := !strings.EqualFold(normalizeReasoningEffort(p.previousEffort), normalizeReasoningEffort(p.requestedEffort))
-	if sameRuntime && effortChanged {
-		return fmt.Sprintf("Switching reasoning effort on %s: %s → %s; trying existing context…", previous, modelSwapEffortLabel(p.previousEffort), modelSwapEffortLabel(p.requestedEffort))
-	}
-	if effortChanged {
-		previous = fmt.Sprintf("%s / %s", previous, modelSwapEffortLabel(p.previousEffort))
-		target = fmt.Sprintf("%s / %s", target, modelSwapEffortLabel(p.requestedEffort))
-	}
-	return fmt.Sprintf("Switching model: %s → %s; trying existing context…", previous, target)
-}
-
-func providerModelLabel(provider, model string) string {
-	provider = strings.TrimSpace(provider)
-	model = strings.TrimSpace(model)
-	switch {
-	case provider != "" && model != "":
-		return provider + ":" + model
-	case provider != "":
-		return provider
-	case model != "":
-		return model
-	default:
-		return "model"
-	}
+	return modelswap.StartMessage(p.previousLabel(), p.targetLabel(candidate), normalizeReasoningEffort(p.previousEffort), normalizeReasoningEffort(p.requestedEffort))
 }
 
 func copyLLMMessageSlice(messages []core.Message) []core.Message {
@@ -240,14 +207,14 @@ func (s *serveServer) beginResponseModelSwap(ctx context.Context, sessionID stri
 	// Hydrate recreated runtimes before snapshotting so handover and naive
 	// continuation start from the persisted pre-turn conversation.
 	previous.ensurePersistedSession(ctx, sessionID, inputMessages)
-	restoreHistory := previous.snapshotHistory()
-	if restoreHistory == nil {
+	restoreHistory, durable, idle := previous.snapshotSeedHistory()
+	if !idle {
 		return nil, errServeSessionBusy
 	}
 	if len(restoreHistory) == 0 {
 		restoreHistory = s.loadPersistedLLMHistory(ctx, sessionID)
+		durable = len(restoreHistory) > 0 // an empty result may be a failed load
 	}
-	restoreHistory = copyLLMMessageSlice(restoreHistory)
 	previousHistory := core.FilterConversationMessages(copyLLMMessageSlice(restoreHistory))
 
 	agentName := strings.TrimSpace(previous.agentName)
@@ -277,15 +244,15 @@ func (s *serveServer) beginResponseModelSwap(ctx context.Context, sessionID stri
 	}
 	if retainedPrevious != nil && retainedPrevious != previous {
 		retainedPrevious.ensurePersistedSession(ctx, sessionID, inputMessages)
-		if hist := retainedPrevious.snapshotHistory(); hist != nil {
-			restoreHistory = copyLLMMessageSlice(hist)
+		if hist, histDurable, histIdle := retainedPrevious.snapshotSeedHistory(); histIdle {
+			restoreHistory, durable = hist, histDurable
 			previousHistory = core.FilterConversationMessages(copyLLMMessageSlice(hist))
 		}
 	}
 	// Keep transcript-only events in the candidate's durable history. The
 	// engine filters them at the provider boundary; filtering here would erase
 	// earlier model-swap markers when the candidate persists its snapshot.
-	seedRuntimeHistory(candidate, restoreHistory)
+	seedRuntimeHistory(candidate, restoreHistory, durable)
 	return &responseModelSwapExecution{
 		plan:            plan,
 		candidate:       candidate,
@@ -297,14 +264,27 @@ func (s *serveServer) beginResponseModelSwap(ctx context.Context, sessionID stri
 	}, nil
 }
 
-func seedRuntimeHistory(rt *serveRuntime, history []core.Message) {
+// snapshotSeedHistory copies an idle runtime's history and reports whether the
+// copy is the stored transcript.
+func (rt *serveRuntime) snapshotSeedHistory() (history []core.Message, durable, idle bool) {
+	if rt == nil || !rt.mu.TryLock() {
+		return nil, false, false
+	}
+	defer rt.mu.Unlock()
+	return copyLLMMessageSlice(rt.history), rt.historyPersisted, true
+}
+
+// seedRuntimeHistory starts rt on history with a fresh provider conversation.
+// A durable seed lets rt's first turn append instead of rewriting the stored
+// transcript from provider messages, which drops stored-only row fields.
+func seedRuntimeHistory(rt *serveRuntime, history []core.Message, durable bool) {
 	if rt == nil {
 		return
 	}
 	rt.mu.Lock()
 	defer rt.mu.Unlock()
 	rt.history = copyLLMMessageSlice(history)
-	rt.historyPersisted = false
+	rt.historyPersisted = durable
 	rt.cumulativeUsage = core.Usage{}
 	rt.lastInjectedPlatform = ""
 	if rt.engine != nil {
@@ -332,36 +312,8 @@ func (exec *responseModelSwapExecution) markRolledBack() {
 	}
 }
 
-func modelSwapVisibleEvent(ev core.Event) bool {
-	switch ev.Type {
-	case core.EventTextDelta:
-		return ev.Text != ""
-	case core.EventToolCall, core.EventToolExecStart, core.EventToolExecEnd, core.EventSteering, core.EventImageGenerated:
-		return true
-	default:
-		return false
-	}
-}
-
 func isModelSwapFallbackEligible(err error) bool {
-	if err == nil {
-		return false
-	}
-	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) || errors.Is(err, errServeSessionBusy) {
-		return false
-	}
-	msg := strings.ToLower(err.Error())
-	for _, deny := range []string{"401", "403", "429", "unauthorized", "forbidden", "rate limit", "ratelimit", "quota", "insufficient", "model not found", "unknown model"} {
-		if strings.Contains(msg, deny) {
-			return false
-		}
-	}
-	for _, allow := range []string{"400", "invalid_request", "invalid request", "messages", "reasoning", "thinking", "encrypted", "tool_use", "tool_result", "function_call", "role", "signature"} {
-		if strings.Contains(msg, allow) {
-			return true
-		}
-	}
-	return strings.Contains(msg, "invalid")
+	return !errors.Is(err, errServeSessionBusy) && modelswap.FallbackEligible(err)
 }
 
 func modelSwapProgressPayload(stage, message string, plan responseModelSwapPlan, candidate *serveRuntime) map[string]any {
@@ -398,8 +350,8 @@ func (s *serveServer) runModelSwapHandover(ctx context.Context, exec *responseMo
 		previousModel = strings.TrimSpace(exec.previous.defaultModel)
 	}
 	targetModel := effectiveTargetModel(exec.plan, exec.candidate)
-	sourceLabel := providerModelLabel(exec.plan.previousProvider, previousModel)
-	targetLabel := providerModelLabel(exec.plan.requestedProvider, targetModel)
+	sourceLabel := modelswap.Label(exec.plan.previousProvider, previousModel)
+	targetLabel := modelswap.Label(exec.plan.requestedProvider, targetModel)
 
 	provider := core.Provider(nil)
 	var helper *serveRuntime
@@ -430,16 +382,6 @@ func runtimeSystemPrompt(rt *serveRuntime) string {
 	return rt.systemPrompt
 }
 
-func modelSwapCombinedError(naiveErr, retryErr error) error {
-	if naiveErr == nil {
-		return retryErr
-	}
-	if retryErr == nil {
-		return naiveErr
-	}
-	return fmt.Errorf("model swap naive continuation failed: %v; handover retry failed: %w", naiveErr, retryErr)
-}
-
 func modelSwapMarkerMessage(plan responseModelSwapPlan, candidate *serveRuntime, status, strategy string) core.Message {
 	marker := core.ModelSwapMarker{
 		FromProvider: plan.previousProvider,
@@ -452,26 +394,6 @@ func modelSwapMarkerMessage(plan responseModelSwapPlan, candidate *serveRuntime,
 		Status:       status,
 	}
 	return core.ModelSwapEventMessage(marker)
-}
-
-func insertModelSwapMarkerAfterTrigger(history []core.Message, marker core.Message) []core.Message {
-	// Live progress is rendered after the submitted user message and before the
-	// reply. The triggering input is the latest user message in both the naive
-	// and handover histories, so anchoring there avoids matching an older turn
-	// when prompt text was repeated or normalized during persistence.
-	insertAt := len(history)
-	for i := len(history) - 1; i >= 0; i-- {
-		if history[i].Role == core.RoleUser {
-			insertAt = i + 1
-			break
-		}
-	}
-
-	updated := make([]core.Message, 0, len(history)+1)
-	updated = append(updated, history[:insertAt]...)
-	updated = append(updated, marker)
-	updated = append(updated, history[insertAt:]...)
-	return updated
 }
 
 func setRuntimeHistoryPreserveEngine(rt *serveRuntime, history []core.Message) {
@@ -492,20 +414,21 @@ func (s *serveServer) persistModelSwapMarker(ctx context.Context, sessionID stri
 	if candidate != nil {
 		candidate.mu.Lock()
 		defer candidate.mu.Unlock()
-
-		updatedHistory := insertModelSwapMarkerAfterTrigger(candidate.history, msg)
-		candidate.history = updatedHistory
-		candidate.historyPersisted = false
 		if candidate.store == nil {
 			candidate.store = s.store
 		}
-
+		if candidate.store != nil && s.writeModelSwapMarkerLocked(ctx, sessionID, candidate, msg) {
+			return
+		}
+		// Without the stored active context, persist the in-memory history. The
+		// store reads the compaction boundary in the write transaction and keeps
+		// any archive.
+		updatedHistory := modelswap.InsertMarker(candidate.history, msg)
+		candidate.history = updatedHistory
+		candidate.historyPersisted = false
 		if candidate.store != nil {
 			persistCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
 			defer cancel()
-
-			// The store reads the compaction boundary in the write transaction and
-			// keeps any archive, so no pre-read of compaction state is needed.
 			candidate.historyPersisted = candidate.persistSnapshot(persistCtx, sessionID, updatedHistory)
 		}
 		return
@@ -548,6 +471,66 @@ func (s *serveServer) restoreModelSwapRollback(ctx context.Context, sessionID st
 		}
 	}
 	setRuntimeHistoryPreserveEngine(exec.previous, append(restoredHistory, msg))
+}
+
+// settleStoppedModelSwap resolves a swap whose target turn was cancelled or
+// timed out. A stop ends the turn, not the switch: a target that began
+// answering has accepted the carried-over context and keeps the session.
+func (s *serveServer) settleStoppedModelSwap(ctx context.Context, sessionID string, exec *responseModelSwapExecution, candidate *serveRuntime, responded bool, strategy string) {
+	// A run that lost its lease no longer owns the session's runtime identity.
+	if run := responseRunFromContext(ctx); responded && run != nil && run.validateLifecycle != nil && run.validateLifecycle() != nil {
+		responded = false
+	}
+	if !responded {
+		exec.markRolledBack()
+		// The candidate may have committed input; reload it when resuming.
+		if exec.previous != nil && exec.previous.store != nil {
+			setRuntimeHistoryPreserveEngine(exec.previous, nil)
+		}
+		return
+	}
+	exec.markCommitted()
+	if s.store == nil || sessionID == "" {
+		return
+	}
+	dbCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+	defer cancel()
+	s.syncPersistedSessionRuntime(dbCtx, sessionID, candidate, effectiveTargetModel(exec.plan, candidate), exec.plan.requestedEffort, exec.plan.requestedReasoningMode, true, "", false)
+	candidate.mu.Lock()
+	defer candidate.mu.Unlock()
+	if candidate.store == nil {
+		candidate.store = s.store
+	}
+	// Put the marker where a completed swap does, before the target's output.
+	// No in-memory fallback: persistSnapshot would mark the session active again.
+	s.writeModelSwapMarkerLocked(ctx, sessionID, candidate, tagResponseRunMessage(ctx, modelSwapMarkerMessage(exec.plan, candidate, "succeeded", strategy), -1))
+}
+
+// writeModelSwapMarkerLocked records msg after the trigger in the stored
+// active context and in candidate's history. It rewrites stored rows, never
+// provider messages, so every row keeps the fields a round trip would drop.
+// It runs under candidate.mu and reports whether the marker was stored.
+func (s *serveServer) writeModelSwapMarkerLocked(ctx context.Context, sessionID string, candidate *serveRuntime, msg core.Message) bool {
+	dbCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+	defer cancel()
+	rows, err := modelswap.MarkerRows(dbCtx, candidate.store, sessionID, *session.NewMessage(sessionID, msg, -1))
+	if err == nil {
+		_, err = runResponseRunPersistence(ctx, []core.Message{msg}, func(fence session.ResponseRunFence) (int64, error) {
+			return transcriptstore.WriteTranscriptWithRev(session.WithResponseRunFence(dbCtx, fence), candidate.store, sessionID, rows, false)
+		})
+	}
+	if err != nil {
+		log.Printf("[serve] persist model swap marker for %s: %v", sessionID, err)
+		return false
+	}
+	responseRunFromContext(ctx).invalidateDurableBoundary() // rewritten rows have new IDs
+	candidate.refreshSessionMetaAfterSnapshot(dbCtx, sessionID, nil)
+	if candidate.historyPersisted {
+		candidate.history = modelswap.InsertMarker(candidate.history, msg)
+	} else {
+		candidate.history = nil // reload the stored transcript, marker included
+	}
+	return true
 }
 
 func addRuntimeUsage(rt *serveRuntime, usage core.Usage) {
@@ -656,16 +639,35 @@ func (s *serveServer) executeResponseRunModelSwap(runCtx context.Context, runtim
 		}
 		failRun("invalid_request_error", err)
 	}
+	// finishStopped ends a turn stopped by timeout or cancellation; the switch
+	// itself survives only if the target had begun answering.
+	finishStopped := func(err error, responded bool, strategy string) bool {
+		timedOut := responseRunTimedOut(runCtx)
+		if !timedOut && !modelswap.Stopped(err) {
+			return false
+		}
+		s.settleStoppedModelSwap(runCtx, sessionID, exec, runtime, responded, strategy)
+		if timedOut {
+			failRun("timeout_error", errors.New(responseRunTimeoutMessage(s.responseTimeout())))
+			return true
+		}
+		cancelled, _ := run.finishCancelled(map[string]any{
+			"response": map[string]any{"id": continuationID(), "object": "response", "created": created, "model": model, "status": "cancelled"},
+		})
+		if cancelled && options.uiSession {
+			runtime.clearLastUIRunError()
+		}
+		return true
+	}
 
 	appendProgress("naive_start", exec.plan.startMessage(runtime))
-	visible := false
+	visible, responded := false, false
 	streamState := &responseRunStreamState{}
 	result, err := runtime.RunWithEventsAndStart(runCtx, true, false, inputMessages, llmReq, func() {
 		mgr.setActiveRun(sessionID, respID)
 	}, func(ev core.Event) error {
-		if modelSwapVisibleEvent(ev) {
-			visible = true
-		}
+		visible = visible || modelswap.VisibleOutput(ev)
+		responded = responded || modelswap.Responded(ev)
 		return s.appendResponseRunEvent(runtime, run, streamState, ev)
 	})
 	if err == nil {
@@ -704,34 +706,7 @@ func (s *serveServer) executeResponseRunModelSwap(runCtx context.Context, runtim
 		return
 	}
 
-	if responseRunTimedOut(runCtx) {
-		exec.markRolledBack()
-		// The candidate may have committed input or partial output. Reload it
-		// from storage when the retained runtime resumes instead of trusting
-		// its pre-swap snapshot.
-		if exec.previous != nil && exec.previous.store != nil {
-			setRuntimeHistoryPreserveEngine(exec.previous, nil)
-		}
-		failRun("timeout_error", errors.New(responseRunTimeoutMessage(s.responseTimeout())))
-		return
-	}
-	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-		exec.markRolledBack()
-		if exec.previous != nil && exec.previous.store != nil {
-			setRuntimeHistoryPreserveEngine(exec.previous, nil)
-		}
-		cancelled, _ := run.finishCancelled(map[string]any{
-			"response": map[string]any{
-				"id":      continuationID(),
-				"object":  "response",
-				"created": created,
-				"model":   model,
-				"status":  "cancelled",
-			},
-		})
-		if cancelled && options.uiSession {
-			runtime.clearLastUIRunError()
-		}
+	if finishStopped(err, responded, "naive") {
 		return
 	}
 
@@ -749,29 +724,37 @@ func (s *serveServer) executeResponseRunModelSwap(runCtx context.Context, runtim
 
 	appendProgress("handover_start", fmt.Sprintf("Naive continuation failed; preparing handover from %s…", exec.plan.previousLabel()))
 	handover, handoverErr := s.runModelSwapHandover(runCtx, exec)
+	if handoverErr != nil && finishStopped(handoverErr, false, "handover") {
+		return
+	}
 	if handoverErr != nil {
 		exec.markRolledBack()
 		s.restoreModelSwapRollback(runCtx, sessionID, exec, runtime, "failed", "handover")
 		appendProgress("failed", fmt.Sprintf("Model swap failed; restored %s.", exec.plan.previousLabel()))
-		failRunForError(modelSwapCombinedError(err, handoverErr))
+		failRunForError(modelswap.CombinedError(err, handoverErr))
 		return
 	}
 
 	s.recordModelSwapHandoverUsage(runCtx, sessionID, exec, handover.Usage)
 	appendProgress("handover_done", fmt.Sprintf("Handover ready; retrying on %s…", exec.plan.targetLabel(runtime)))
-	seedRuntimeHistory(runtime, nil)
+	seedRuntimeHistory(runtime, nil, false)
 	fallbackInput := append(copyLLMMessageSlice(handover.NewMessages), inputMessages...)
 	streamState = &responseRunStreamState{thought: streamState.thought.Continue()}
+	retryResponded := false
 	result, retryErr := runtime.RunWithEventsAndStart(runCtx, true, true, fallbackInput, llmReq, func() {
 		mgr.setActiveRun(sessionID, respID)
 	}, func(ev core.Event) error {
+		retryResponded = retryResponded || modelswap.Responded(ev)
 		return s.appendResponseRunEvent(runtime, run, streamState, ev)
 	})
+	if retryErr != nil && finishStopped(retryErr, retryResponded, "handover") {
+		return
+	}
 	if retryErr != nil {
 		exec.markRolledBack()
 		s.restoreModelSwapRollback(runCtx, sessionID, exec, runtime, "failed", "handover")
 		appendProgress("failed", fmt.Sprintf("Model swap failed; restored %s.", exec.plan.previousLabel()))
-		failRunForError(modelSwapCombinedError(err, retryErr))
+		failRunForError(modelswap.CombinedError(err, retryErr))
 		return
 	}
 	addRuntimeUsage(runtime, handover.Usage)
@@ -814,11 +797,10 @@ func (s *serveServer) runResponseWithModelSwapFallback(ctx context.Context, runt
 		result, err := runtime.Run(ctx, stateful, replaceHistory, inputMessages, llmReq)
 		return result, "", err
 	}
-	visible := false
+	visible, responded := false, false
 	result, err := runtime.RunWithEvents(ctx, true, false, inputMessages, llmReq, func(ev core.Event) error {
-		if modelSwapVisibleEvent(ev) {
-			visible = true
-		}
+		visible = visible || modelswap.VisibleOutput(ev)
+		responded = responded || modelswap.Responded(ev)
 		return nil
 	})
 	if err == nil {
@@ -826,6 +808,10 @@ func (s *serveServer) runResponseWithModelSwapFallback(ctx context.Context, runt
 		s.syncPersistedSessionRuntime(ctx, sessionID, runtime, effectiveTargetModel(exec.plan, runtime), exec.plan.requestedEffort, exec.plan.requestedReasoningMode, true, "", false)
 		s.persistModelSwapMarker(ctx, sessionID, exec.plan, runtime, "succeeded", "naive")
 		return result, "naive", nil
+	}
+	if responded && modelswap.Stopped(err) {
+		s.settleStoppedModelSwap(ctx, sessionID, exec, runtime, true, "naive")
+		return serveRunResult{}, "", err
 	}
 	if visible || !exec.plan.fallbackHandover || !isModelSwapFallbackEligible(err) {
 		exec.markRolledBack()
@@ -837,16 +823,24 @@ func (s *serveServer) runResponseWithModelSwapFallback(ctx context.Context, runt
 	if handoverErr != nil {
 		exec.markRolledBack()
 		s.restoreModelSwapRollback(ctx, sessionID, exec, runtime, "failed", "handover")
-		return serveRunResult{}, "", modelSwapCombinedError(err, handoverErr)
+		return serveRunResult{}, "", modelswap.CombinedError(err, handoverErr)
 	}
 	s.recordModelSwapHandoverUsage(ctx, sessionID, exec, handover.Usage)
-	seedRuntimeHistory(runtime, nil)
+	seedRuntimeHistory(runtime, nil, false)
 	fallbackInput := append(copyLLMMessageSlice(handover.NewMessages), inputMessages...)
-	result, retryErr := runtime.Run(ctx, true, true, fallbackInput, llmReq)
+	retryResponded := false
+	result, retryErr := runtime.RunWithEvents(ctx, true, true, fallbackInput, llmReq, func(ev core.Event) error {
+		retryResponded = retryResponded || modelswap.Responded(ev)
+		return nil
+	})
+	if retryErr != nil && retryResponded && modelswap.Stopped(retryErr) {
+		s.settleStoppedModelSwap(ctx, sessionID, exec, runtime, true, "handover")
+		return serveRunResult{}, "", modelswap.CombinedError(err, retryErr)
+	}
 	if retryErr != nil {
 		exec.markRolledBack()
 		s.restoreModelSwapRollback(ctx, sessionID, exec, runtime, "failed", "handover")
-		return serveRunResult{}, "", modelSwapCombinedError(err, retryErr)
+		return serveRunResult{}, "", modelswap.CombinedError(err, retryErr)
 	}
 	addRuntimeUsage(runtime, handover.Usage)
 	result.Usage.Add(handover.Usage)

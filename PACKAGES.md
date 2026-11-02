@@ -41,6 +41,7 @@ One line per root-module package, generated from package doc comments by `make d
 - `internal/app/serve/hubnode` — registers a reverse Web node with its Hub and diagnoses node-to-Hub connectivity failures.
 - `internal/app/serve/jobs` — holds the serve job scheduler's persistence schema, migrations and cron math.
 - `internal/app/serve/liveprogress` — renders delegated-run events as templated voice progress notes.
+- `internal/app/serve/modelswap` — holds the provider-independent rules for how a mid-conversation model switch attempt ends.
 - `internal/app/serve/protocol` — encodes and parses the OSC 7770 markers that frame serve shell commands and output.
 - `internal/app/serve/server` — owns serve HTTP/platform behavior extracted from the command layer.
 - `internal/app/serve/shell` — manages per-session PTY shell generations for `term-llm serve`.

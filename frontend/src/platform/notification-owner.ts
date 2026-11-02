@@ -18,7 +18,6 @@ export class NotificationOwner {
   private presence: PresenceSource | null = null;
   private timer: ReturnType<typeof setInterval> | undefined;
   private unsubscribe: (() => void) | undefined;
-  private active = false;
   private publishedActive: boolean | undefined;
   private stopped = false;
   private publication: Promise<boolean> | null = null;
@@ -158,13 +157,17 @@ export class NotificationOwner {
   /** Each update is serialized; old HTTP results cannot win over a local inactive update. */
   publish(): Promise<boolean> {
     if (this.publication) return this.publication;
+    // Attendance at the start of this attempt. A follow-up is only needed when
+    // attendance changes during the attempt; comparing with the last published
+    // value would re-arm every failed bind at microtask speed (native IPC spin).
+    let attemptedActive = this.attended();
     const next = Promise.resolve().then(async () => {
       if (!this.subscription()) return false;
       if (!(await this.bind())) return false;
-      this.active = this.attended();
-      this.publishedActive = this.active;
+      attemptedActive = this.attended();
+      this.publishedActive = attemptedActive;
       const now = Date.now();
-      const expires = this.active
+      const expires = attemptedActive
         ? Math.min(now + 30_000, this.presence!.lastPresenceAt() + ATTENTION_POLICY.presenceLeadMs)
         : now + 30_000;
       {
@@ -181,7 +184,7 @@ export class NotificationOwner {
         window_id: this.windowId,
         document_id: this.documentId,
         sequence: this.sequence,
-        active: this.active,
+        active: attemptedActive,
         expires_at: new Date(expires).toISOString(),
       };
       try {
@@ -201,7 +204,7 @@ export class NotificationOwner {
     });
     this.publication = next.finally(() => {
       this.publication = null;
-      if (this.presence && this.subscription() && this.attended() !== this.active)
+      if (this.presence && this.subscription() && this.attended() !== attemptedActive)
         void this.publish();
     });
     return this.publication;

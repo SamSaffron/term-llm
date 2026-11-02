@@ -1465,6 +1465,48 @@ describe('AppStore compatibility behavior', () => {
     await stopping;
   });
 
+  it('does not leave a model switch in progress after Stop', async () => {
+    const store = new AppStore(config);
+    store.sessions.value = [{ ...session(), activeResponseId: 'r1' }];
+    store.activeSessionId.value = 's1';
+    store.draftActive.value = false;
+    store.runs.value = {
+      s1: {
+        ...initialProjection({
+          responseId: 'r1',
+          sessionId: 's1',
+          epoch: 1,
+          status: 'streaming',
+          lastSequence: 1,
+          startedRev: 0,
+          reconnects: 0,
+        }),
+        modelSwap: {
+          stage: 'naive_start',
+          content:
+            'Switching model: chatgpt:gpt-6-luna → claude-bin:haiku; trying existing context…',
+          fromProvider: 'chatgpt',
+          fromModel: 'gpt-6-luna',
+          fromEffort: '',
+          toProvider: 'claude-bin',
+          toModel: 'haiku',
+          toEffort: '',
+          swapStatus: 'started',
+          swapStrategy: '',
+        },
+      },
+    };
+    store.endpoints.cancelResponse = vi.fn(async () => ({ id: 'r1', status: 'cancelled' }));
+
+    // Stopped before the target answered: no durable marker replaces the
+    // transient "switching" row, so it must end with the run.
+    await store.cancel();
+
+    expect(store.runs.value.s1.run.status).toBe('cancelled');
+    expect(store.runs.value.s1.modelSwap).toBeUndefined();
+    store.dispose();
+  });
+
   it('keeps the current project when opening another chat unless No project is explicit', () => {
     const store = new AppStore(config);
     const projectSession = { ...session(), projectId: 'project-1', projectName: 'Project' };
