@@ -342,6 +342,13 @@ var apiKeyModelListers = map[config.ProviderType]func(config.ProviderConfig) (Mo
 		apiKey := modelListAPIKey(providerCfg.ResolvedAPIKey, "OBSCURIFY_API_KEY")
 		return opencompat.NewObscurifyProvider(apiKey, providerCfg.Model), nil
 	},
+	providerspec.TypeCheaperInference: func(providerCfg config.ProviderConfig) (ModelLister, error) {
+		apiKey, err := requiredModelListAPIKey(providerCfg.ResolvedAPIKey, "CHEAPERINFERENCE_API_KEY", "Cheaper Inference")
+		if err != nil {
+			return nil, err
+		}
+		return opencompat.NewCheaperInferenceProvider(apiKey, providerCfg.Model), nil
+	},
 }
 
 func newAPIKeyModelLister(providerType config.ProviderType, providerCfg config.ProviderConfig) (ModelLister, error) {

@@ -115,6 +115,7 @@ func TestCreateProviderFromConfigKeyProviderEnvFallback(t *testing.T) {
 		{"nearai", config.ProviderTypeNearAI, "NEARAI_API_KEY", &opencompat.NearAIProvider{}},
 		{"sambanova", config.ProviderTypeSambaNova, "SAMBANOVA_API_KEY", &opencompat.SambaNovaProvider{}},
 		{"obscurify", providerspec.TypeObscurify, "OBSCURIFY_API_KEY", &opencompat.ObscurifyProvider{}},
+		{"cheaperinference", providerspec.TypeCheaperInference, "CHEAPERINFERENCE_API_KEY", &opencompat.CheaperInferenceProvider{}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
