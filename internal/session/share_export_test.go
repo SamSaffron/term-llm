@@ -72,6 +72,7 @@ func TestSelectShareMessagesConversationEndsAtAnchorAndFiltersInternalRows(t *te
 	}
 	messages = append(messages, shareTestMessage(4, 0, core.RoleAssistant, "retained duplicate", ""))
 	messages[3].CompactionTail = true
+	messages = append(messages, shareTestMessage(5, 0, core.RoleDeveloper, "private platform instructions", ""))
 	selected, err := SelectShareMessages(messages, 2, ShareScopeConversation)
 	if err != nil {
 		t.Fatal(err)
