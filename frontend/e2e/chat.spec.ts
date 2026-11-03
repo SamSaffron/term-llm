@@ -587,8 +587,10 @@ test('keeps running controls while a response transport reconnects', async ({ pa
   const requests = await open(page, '', { holdStream: true });
   await page.getByRole('textbox', { name: 'Message' }).fill('Long request');
   await page.getByRole('button', { name: 'Send message' }).click();
-  await expect(page.locator('#stopBtn')).toBeVisible();
-  await expect(page.getByRole('button', { name: 'Response is running' })).toBeEnabled();
+  // With an empty composer, Stop takes the send slot and keeps the running ring.
+  const stop = page.getByRole('button', { name: 'Stop', exact: true });
+  await expect(stop).toBeEnabled();
+  await expect(stop).toHaveClass(/\bloading\b/);
   await expect(page.getByPlaceholder('Steer conversation…')).toBeVisible();
   await expect(page.getByRole('status', { name: 'Response status is unknown' })).toBeHidden();
   expect(
