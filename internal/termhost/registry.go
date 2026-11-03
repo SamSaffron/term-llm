@@ -76,10 +76,11 @@ type Status struct {
 
 // StatusReport is returned by lifecycle status and uses deterministic ordering.
 type StatusReport struct {
-	Enabled  bool     `json:"enabled"`
-	Reason   string   `json:"reason"`
-	Adapters []Status `json:"adapters"`
-	OSC      Status   `json:"osc"`
+	Enabled       bool     `json:"enabled"`
+	Reason        string   `json:"reason"`
+	Adapters      []Status `json:"adapters"`
+	OSC           Status   `json:"osc"`
+	ProgramStatus Status   `json:"program_status"`
 }
 
 type discoveredAdapter struct {
@@ -115,6 +116,7 @@ func discoverAll(cfg config.LifecycleConfig, legacyProgress bool, rt runtimeCont
 		selected[strings.ToLower(strings.TrimSpace(raw))] = true
 	}
 	auto := selected["auto"]
+	report.ProgramStatus = inspectProgramStatus(globalEnabled, auto || selected["herdr"], rt)
 	var found []discoveredAdapter
 	for _, factory := range adapterFactories {
 		allowed := auto || selected[factory.name]

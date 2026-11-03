@@ -15,6 +15,10 @@ func TestLifecycleStatusJSONExplainsDetectionWithoutPublishing(t *testing.T) {
 	t.Setenv("HERDR_ENV", "1")
 	t.Setenv("HERDR_PANE_ID", "pane-1")
 	t.Setenv("HERDR_BIN_PATH", "/path/that/need/not/run")
+	t.Setenv("HC_TERMINAL_ID", "t1")
+	t.Setenv("TMUX", "")
+	t.Setenv("TERM_LLM_HERDR", "")
+	t.Setenv("TERM_LLM_LIFECYCLE", "")
 	previous := lifecycleStatusJSON
 	lifecycleStatusJSON = true
 	t.Cleanup(func() { lifecycleStatusJSON = previous })
@@ -39,6 +43,9 @@ func TestLifecycleStatusJSONExplainsDetectionWithoutPublishing(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("Herdr status not enabled: %#v", report.Adapters)
+	}
+	if !report.ProgramStatus.Enabled || report.ProgramStatus.Name != "herdr-core" {
+		t.Fatalf("Herdr Core status not enabled: %#v", report.ProgramStatus)
 	}
 }
 

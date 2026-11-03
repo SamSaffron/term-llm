@@ -16,12 +16,14 @@ into three layers:
 
 1. a generic manager owns ordering, fanout, deduplication, coalescing, timeouts,
    and bounded shutdown;
-2. thin first-party adapters encode stable Herdr and cmux CLI commands; and
+2. thin first-party integrations encode Herdr TUI/cmux CLI commands and Herdr
+   Core terminal status; and
 3. an opt-in JSON command sink lets tmux, Zellij, Agent Deck, Claude Squad,
    dmux, or a future host integrate without host-specific term-llm code.
 
-No custom process and no OSC sequence runs by default. With the default `auto`
-adapter policy, only environment-detected first-party adapters run.
+No custom process runs by default. With the default `auto` adapter policy,
+only environment-detected first-party integrations run, including OSC 7501 in
+Herdr Core terminals. OSC 9;4 progress remains opt-in.
 
 ## State semantics
 
@@ -135,7 +137,30 @@ cannot run cleanup, so hosts must still expire stale state and ignore a state or
 release whose sequence is not newer than the last sequence accepted for that
 producer/claim.
 
-## Herdr: native lifecycle claim
+## Herdr native app: OSC 7501
+
+The native Herdr app runs terminals in **herdr-core**, separately from the
+original Herdr TUI. term-llm detects `HC_TERMINAL_ID` and automatically reports
+the visible chat's idle, working, or blocked state through OSC 7501. Session
+titles and activity messages are included as bounded, base64-encoded text.
+Status is cleared on graceful exit or reload; an idle chat is not reported as
+completed or failed.
+
+This integration is selected by `lifecycle.adapters: [auto]` (the default) or
+`[herdr]`. It respects `lifecycle.enabled: false`, `TERM_LLM_LIFECYCLE=0`, and
+`TERM_LLM_HERDR=0`. It is independent of `lifecycle.osc`, which controls the
+older OSC 9;4 progress indicator and remains off by default. No `herdr` CLI,
+pane ID, or extra configuration is needed for the native app.
+
+Run term-llm directly in a native Herdr pane. Reporting is disabled inside nested
+tmux because Herdr Core does not support that path. Run
+`term-llm lifecycle status` to see the `herdr-core [terminal]` detection result.
+This publishes status only; it does not provide native session restoration.
+
+See the [Herdr Core source](https://github.com/herdrdev/herdr-core) and
+[OSC 7501 specification](https://www.superlogical.com/rex/docs/build/program-status).
+
+## Herdr TUI: native lifecycle claim
 
 Herdr is the first-party native lifecycle adapter. Use Herdr 0.6.9 or newer for
 the `pane report-agent` / `pane release-agent` contract.
@@ -369,7 +394,8 @@ clear because a concurrent quit can win before Bubble Tea writes the earlier
 
 | Host | Posture |
 | --- | --- |
-| **Herdr** | First-party native lifecycle claim; custom-source native restore remains unavailable. |
+| **Herdr native app** | OSC 7501 status, titles, and activity messages; no session restore authority. |
+| **Herdr TUI** | First-party native lifecycle claim; custom-source native restore remains unavailable. |
 | **cmux** | First-party sidebar status only; no journal/hibernation authority. |
 | **Superset** | Documentation/configuration posture only; no invented adapter. |
 | **tmux / Zellij** | Generic command-sink status bridges; samples above. |

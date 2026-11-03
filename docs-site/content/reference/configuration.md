@@ -815,6 +815,11 @@ lifecycle:
 
 The global `TERM_LLM_LIFECYCLE=0` opt-out and per-adapter `TERM_LLM_HERDR=0` / `TERM_LLM_CMUX=0` opt-outs override config and skip disabled discovery. `chat.terminal_progress: true` is retained as a deprecated explicit alias for `lifecycle.osc: auto` in its historical smart-title/Ghostty-detection scope; new configurations should use `lifecycle.osc`. Set `TERM_LLM_LIFECYCLE_DEBUG=1` for rate-limited adapter/error-class diagnostics that omit argv, environment, raw errors, cwd, and session data.
 
+In the native Herdr app, `auto` or `herdr` also enables OSC 7501 status reporting
+when `HC_TERMINAL_ID` is present, independently of `lifecycle.osc`. The same
+global and Herdr opt-outs apply. Run directly in a Herdr pane; nested tmux is
+not supported. The original Herdr TUI continues to use its CLI integration.
+
 Use `term-llm lifecycle status [--json]` for read-only discovery details. See [Terminal-host lifecycle](/guides/terminal-host-lifecycle/) for state semantics, the JSON schema, security/privacy guidance, shutdown/reload behavior, and complete tmux/Zellij bridges.
 
 ## Reasoning and thinking display
