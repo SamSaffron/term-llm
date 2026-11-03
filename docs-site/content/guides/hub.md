@@ -402,7 +402,7 @@ These diagnostics are advisory and token-safe; `/api/nodes` still never returns 
 
 ### Reordering nodes
 
-For the chat sidebar, `GET /api/nodes?view=sidebar` returns the saved node order, names, node-root links, and cached attention counts without probing node backends. Health is reported as `unknown`; registered agents remain available in the list even when their backend is offline. The ordinary `GET /api/nodes` dashboard view still performs live health and session checks.
+For the chat sidebar, `GET /api/nodes?view=sidebar` returns the saved node order, names, node-root links, and cached attention counts without probing node backends. Health comes from background probes for direct nodes and live connection state for reverse nodes; direct-node health is unknown when no fresh observation exists. The API includes offline nodes, but the chat sidebar displays only reachable agents. The ordinary `GET /api/nodes` dashboard view still performs live health and session checks.
 
 `PATCH /api/nodes/order` saves the [dashboard order](#dashboard-order). The body lists node IDs:
 
