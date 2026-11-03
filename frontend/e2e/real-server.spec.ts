@@ -189,7 +189,9 @@ test('sends a real uncommitted diff comment through the browser and Go protocol'
   });
   await waitForSessionIdle(page, sessionID);
 
-  await expect(page.locator('#stopBtn')).toBeHidden({ timeout: 15_000 });
+  await expect(page.getByRole('button', { name: 'Stop', exact: true })).toBeHidden({
+    timeout: 15_000,
+  });
 
   const durable = await page.evaluate(async () => {
     const selected = decodeURIComponent(location.pathname.match(/\/chat\/([^/]+)/)?.[1] || '');
@@ -438,11 +440,13 @@ test('a newly sent plain HTTPS response keeps its owned stream', async ({
   await page.getByRole('button', { name: 'Send message' }).click();
   await responseGate.waitStarted();
 
-  await expect(page.locator('#stopBtn')).toBeVisible({ timeout: 5_000 });
+  await expect(page.getByRole('button', { name: 'Stop', exact: true })).toBeVisible({
+    timeout: 5_000,
+  });
   const unknown = page.getByRole('status', { name: 'Response status is unknown' });
   await expect(unknown).toBeHidden();
   await reconcileRunningResponse(page);
-  await expect(page.locator('#stopBtn')).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Stop', exact: true })).toBeVisible();
   await expect(unknown).toBeHidden();
   await responseGate.release();
   await expect(page.getByRole('heading', { name: 'Debug Provider Output' }).last()).toBeVisible({
@@ -460,17 +464,21 @@ test('reloading a running HTTPS session never presents it as idle', async ({
   await page.getByRole('textbox', { name: 'Message' }).fill(responseGate.prompt);
   await page.getByRole('button', { name: 'Send message' }).click();
   await responseGate.waitStarted();
-  await expect(page.locator('#stopBtn')).toBeVisible({ timeout: 5_000 });
+  await expect(page.getByRole('button', { name: 'Stop', exact: true })).toBeVisible({
+    timeout: 5_000,
+  });
 
   await page.reload();
 
   const unknown = page.getByRole('status', { name: 'Response status is unknown' });
-  await expect(page.locator('#stopBtn')).toBeVisible({ timeout: 5_000 });
-  await expect(page.getByRole('button', { name: 'Response is running' })).toBeEnabled();
+  await expect(page.getByRole('button', { name: 'Stop', exact: true })).toBeVisible({
+    timeout: 5_000,
+  });
+  await expect(page.getByRole('button', { name: 'Stop', exact: true })).toHaveClass(/\bloading\b/);
   await expect(page.getByPlaceholder('Steer conversation…')).toBeVisible();
   await expect(unknown).toBeHidden();
   await reconcileRunningResponse(page);
-  await expect(page.locator('#stopBtn')).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Stop', exact: true })).toBeVisible();
   await expect(unknown).toBeHidden();
   await responseGate.release();
   await expect(page.getByRole('heading', { name: 'Debug Provider Output' }).last()).toBeVisible({
@@ -500,7 +508,7 @@ test('a disconnected mobile response stream cannot keep claiming work is running
   await page.getByRole('textbox', { name: 'Message' }).fill(responseGate.prompt);
   await page.getByRole('button', { name: 'Send message' }).click();
   await responseGate.waitStarted();
-  await expect(page.locator('#stopBtn')).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Stop', exact: true })).toBeVisible();
   // Chat routes prefer a human-facing numeric slug; resolve it to the durable
   // session ID used by status and response APIs.
   const sessionID = await page.evaluate(async () => {
@@ -533,7 +541,9 @@ test('a disconnected mobile response stream cannot keep claiming work is running
     window.stop();
   });
 
-  await expect(page.locator('#stopBtn')).toBeHidden({ timeout: 5_000 });
+  await expect(page.getByRole('button', { name: 'Stop', exact: true })).toBeHidden({
+    timeout: 5_000,
+  });
   await expect(page.getByRole('status', { name: 'Response status is unknown' })).toBeHidden();
 
   // Finish on the server while the browser is still disconnected.
