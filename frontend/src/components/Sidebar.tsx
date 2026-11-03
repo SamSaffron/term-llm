@@ -1344,11 +1344,13 @@ export function Sidebar() {
                         {store.projects.value.length > 0 && (
                           <ProjectsGroup projects={store.projects.value} />
                         )}
-                        {regular.length > 0 && <NoProjectGroup sessions={regular} />}
+                        {(regular.length > 0 || store.noProjectCursor.value) && (
+                          <NoProjectGroup sessions={regular} />
+                        )}
                       </>
                     )
                   ) : (
-                    regular.length > 0 && (
+                    (regular.length > 0 || store.noProjectCursor.value) && (
                       <div class="flat-session-date-groups">
                         <SessionDateGroups sessions={regular} />
                         {store.noProjectCursor.value && (
