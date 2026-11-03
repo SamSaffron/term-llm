@@ -730,6 +730,23 @@
   display: none;
 }
 
+/* Stop sits inside the running ring, so the slot still shows progress. */
+.send-btn.stop {
+  position: relative;
+}
+
+.send-btn.loading.stop .arrow {
+  display: block;
+  fill: currentcolor;
+}
+
+.send-btn.stop .spinner {
+  position: absolute;
+  inset: 5px;
+  width: auto;
+  height: auto;
+}
+
 @keyframes spin {
   to {
     transform: rotate(360deg);

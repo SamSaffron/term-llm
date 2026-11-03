@@ -25,6 +25,9 @@ import { useMenuKeyboard } from './Menu';
 import { requestTranscriptScrollToTail } from './transcript-scroll';
 import { LocalUnconfirmedSends, UnconfirmedSendNotice } from './UnconfirmedSends';
 
+// Typical OS double-click interval.
+const STOP_CLICK_GUARD_MS = 500;
+
 function resizePrompt(element: HTMLTextAreaElement | null): void {
   if (!element) return;
   element.style.height = 'auto';
@@ -766,6 +769,20 @@ function ConversationComposer() {
   );
   const steering = !liveTextMode && canSteer && hasDraft;
   const loading = !liveButton && !liveTextMode && runActive && !hasDraft;
+  // With nothing to send, a stoppable run turns the send slot into Stop. The
+  // ring keeps spinning around it, so the slot still shows that work is running.
+  const stopInSend = loading && canStop;
+  // A double-click on Send must not land on the Stop that replaces it, so Stop
+  // ignores clicks for one double-click interval after a Send click.
+  const sendClickedAt = useRef(Number.NEGATIVE_INFINITY);
+  const clickSend = () => {
+    if (stopInSend) {
+      if (performance.now() - sendClickedAt.current >= STOP_CLICK_GUARD_MS) void store.cancel();
+      return;
+    }
+    sendClickedAt.current = performance.now();
+    sendOrCommand();
+  };
   const compacting = store.runEngine.compacting.value;
   const sendLabel =
     compacting && !canSteer && !(liveButton && liveActive)
@@ -784,15 +801,17 @@ function ConversationComposer() {
               ? 'Project unavailable'
               : sendPending
                 ? 'Sending message'
-                : loading
-                  ? 'Response is running'
-                  : sendBlocked
-                    ? unconfirmedSend
-                      ? 'Send unconfirmed'
-                      : 'Checking whether sent'
-                    : steering
-                      ? 'Steer'
-                      : 'Send message';
+                : stopInSend
+                  ? 'Stop'
+                  : loading
+                    ? 'Response is running'
+                    : sendBlocked
+                      ? unconfirmedSend
+                        ? 'Send unconfirmed'
+                        : 'Checking whether sent'
+                      : steering
+                        ? 'Steer'
+                        : 'Send message';
   const inspectDraggedFiles = (files: FileList | null): string => {
     let count = store.attachments.peek().length;
     for (const candidate of Array.from(files || [])) {
@@ -1316,7 +1335,7 @@ function ConversationComposer() {
             }}
           />
           <div class="composer-actions">
-            {canStop && (
+            {canStop && !stopInSend && (
               <button
                 class="stop-btn visible"
                 id="stopBtn"
@@ -1345,31 +1364,35 @@ function ConversationComposer() {
               </button>
             )}
             <button
-              class={`send-btn ${liveButton ? 'live' : ''} ${liveButton && ['listening', 'speaking'].includes(store.liveStore.phase.value) ? 'live-pulse' : ''} ${loading || (liveButton && store.liveStore.phase.value === 'working') ? 'loading' : ''} ${steering ? 'steer' : ''}`}
+              class={`send-btn ${liveButton ? 'live' : ''} ${liveButton && ['listening', 'speaking'].includes(store.liveStore.phase.value) ? 'live-pulse' : ''} ${loading || (liveButton && store.liveStore.phase.value === 'working') ? 'loading' : ''} ${steering ? 'steer' : ''} ${stopInSend ? 'stop' : ''}`}
               id="sendBtn"
               type="button"
               title={sendLabel}
               aria-label={sendLabel}
               aria-pressed={liveButton ? liveActive : undefined}
               disabled={
-                (voiceBusy && thinkingCommandReady) ||
-                connecting ||
-                (!thinkingCommandReady &&
-                  ((compacting && !canSteer && !(liveButton && liveActive)) ||
-                    connecting ||
-                    (liveButton
-                      ? !liveActive && (voiceBusy || bindingBlocked)
-                      : liveTextMode
-                        ? false
-                        : (sendBlocked && !loading) ||
-                          voiceBusy ||
-                          bindingBlocked ||
-                          attachmentBlocked ||
-                          (!hasDraft && !loading))))
+                !stopInSend &&
+                ((voiceBusy && thinkingCommandReady) ||
+                  connecting ||
+                  (!thinkingCommandReady &&
+                    ((compacting && !canSteer && !(liveButton && liveActive)) ||
+                      connecting ||
+                      (liveButton
+                        ? !liveActive && (voiceBusy || bindingBlocked)
+                        : liveTextMode
+                          ? false
+                          : (sendBlocked && !loading) ||
+                            voiceBusy ||
+                            bindingBlocked ||
+                            attachmentBlocked ||
+                            (!hasDraft && !loading)))))
               }
-              onClick={liveButton ? toggleLiveCall : sendOrCommand}
+              onClick={liveButton ? toggleLiveCall : clickSend}
             >
-              <Icon class="arrow" name={liveButton ? 'live' : steering ? 'steer' : 'send'} />
+              <Icon
+                class="arrow"
+                name={liveButton ? 'live' : stopInSend ? 'stop' : steering ? 'steer' : 'send'}
+              />
               <span class="spinner" aria-hidden="true" />
             </button>
           </div>

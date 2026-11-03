@@ -3189,7 +3189,11 @@ describe('Preact-owned chat surfaces', () => {
       expect(
         screen.queryByRole('status', { name: 'Response status is unknown' }),
       ).not.toBeInTheDocument();
-      expect(screen.getByRole('button', { name: 'Response is running' })).toBeEnabled();
+      expect(screen.getByRole('button', { name: 'Stop' })).toHaveClass(
+        'send-btn',
+        'loading',
+        'stop',
+      );
     } finally {
       store.dispose();
     }
@@ -3220,7 +3224,11 @@ describe('Preact-owned chat surfaces', () => {
       );
 
       expect(screen.getByRole('button', { name: 'Stop' })).toBeInTheDocument();
-      expect(screen.getByRole('button', { name: 'Response is running' })).toBeEnabled();
+      expect(screen.getByRole('button', { name: 'Stop' })).toHaveClass(
+        'send-btn',
+        'loading',
+        'stop',
+      );
       expect(screen.getByPlaceholderText('Steer conversation…')).toBeInTheDocument();
       expect(
         screen.getByRole('status', { name: 'Assistant is responding: Working' }),
@@ -5275,7 +5283,7 @@ describe('Preact-owned chat surfaces', () => {
       </StoreContext.Provider>,
     );
 
-    const send = screen.getByRole('button', { name: 'Response is running' });
+    const send = screen.getByRole('button', { name: 'Stop' });
     expect(send).toHaveClass('loading');
     expect(send).not.toHaveClass('live');
     expect(screen.queryByRole('button', { name: 'Start live voice' })).not.toBeInTheDocument();
@@ -5301,10 +5309,10 @@ describe('Preact-owned chat surfaces', () => {
       </StoreContext.Provider>,
     );
 
-    const send = screen.getByRole('button', { name: 'Response is running' });
+    const send = screen.getByRole('button', { name: 'Stop' });
     const sendIcon = send.querySelector('.arrow')?.innerHTML;
     expect(send).toBeEnabled();
-    expect(send).toHaveClass('loading');
+    expect(send).toHaveClass('loading', 'stop');
     expect(send.querySelector('.spinner')).toBeInTheDocument();
     expect(send).not.toHaveClass('steer');
 
@@ -5317,6 +5325,82 @@ describe('Preact-owned chat surfaces', () => {
     expect(steer).toHaveAttribute('title', 'Steer');
     expect(steer.querySelector('.arrow')?.innerHTML).not.toBe(sendIcon);
     expect(steer.querySelector('.arrow use')?.getAttribute('href')).toMatch(/#steer$/);
+  });
+
+  it('puts Stop in the send slot while a reply runs with an empty composer', async () => {
+    const store = createStore();
+    const cancel = vi.spyOn(store, 'cancel').mockResolvedValue();
+    store.runs.value = {
+      s1: initialProjection({
+        responseId: 'r1',
+        sessionId: 's1',
+        epoch: 1,
+        status: 'streaming',
+        lastSequence: 1,
+        startedRev: 0,
+        reconnects: 0,
+      }),
+    };
+    store.runEngine.markResponseTransportActive('s1', 'r1');
+    render(
+      <StoreContext.Provider value={store}>
+        <Composer />
+      </StoreContext.Provider>,
+    );
+
+    const stop = screen.getByRole('button', { name: 'Stop' });
+    expect(stop).toHaveAttribute('id', 'sendBtn');
+    expect(stop.querySelector('.arrow use')?.getAttribute('href')).toMatch(/#stop$/);
+    expect(document.querySelector('#stopBtn')).not.toBeInTheDocument();
+    await userEvent.click(stop);
+    expect(cancel).toHaveBeenCalledOnce();
+
+    // A draft turns the slot into Steer, so Stop moves back to its own button.
+    await userEvent.type(screen.getByRole('textbox', { name: 'Message' }), 'change course');
+    expect(screen.getByRole('button', { name: 'Steer' })).toHaveAttribute('id', 'sendBtn');
+    expect(screen.getByRole('button', { name: 'Stop' })).toHaveAttribute('id', 'stopBtn');
+  });
+
+  it('ignores a Stop click that lands within a double-click of Send', async () => {
+    const store = createStore();
+    const cancel = vi.spyOn(store, 'cancel').mockResolvedValue();
+    // Steering clears the draft, which turns the slot into Stop under the cursor.
+    vi.spyOn(store, 'steer').mockImplementation(async () => {
+      store.prompt.value = '';
+    });
+    let now = 1_000;
+    vi.spyOn(performance, 'now').mockImplementation(() => now);
+    store.runs.value = {
+      s1: initialProjection({
+        responseId: 'r1',
+        sessionId: 's1',
+        epoch: 1,
+        status: 'streaming',
+        lastSequence: 1,
+        startedRev: 0,
+        reconnects: 0,
+      }),
+    };
+    store.runEngine.markResponseTransportActive('s1', 'r1');
+    try {
+      render(
+        <StoreContext.Provider value={store}>
+          <Composer />
+        </StoreContext.Provider>,
+      );
+      await userEvent.type(screen.getByRole('textbox', { name: 'Message' }), 'change course');
+      await userEvent.click(screen.getByRole('button', { name: 'Steer' }));
+
+      now += 200;
+      await userEvent.click(screen.getByRole('button', { name: 'Stop' }));
+      expect(cancel).not.toHaveBeenCalled();
+
+      now += 400;
+      await userEvent.click(screen.getByRole('button', { name: 'Stop' }));
+      expect(cancel).toHaveBeenCalledOnce();
+    } finally {
+      vi.restoreAllMocks();
+    }
   });
 
   it('drives send from public composer UI and opens attachment picker behavior', async () => {
