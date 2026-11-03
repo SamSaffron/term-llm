@@ -1,5 +1,6 @@
 import type { ModelOption } from '../domain/runtime';
 import type {
+  Author,
   DiffComment,
   DiffFile,
   FilesystemObservation,
@@ -79,6 +80,7 @@ export interface DiffState {
 }
 
 export interface PendingSteering {
+  author?: Author;
   id: string;
   sessionId: string;
   content: string;

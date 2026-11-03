@@ -50,7 +50,7 @@ export type ServeSkillRunEvent = { "sequence": number; "type": string; "data"?: 
 
 export type SessionInterruptRequest = { "message": string; "content": unknown; "steering_id": string; "client_message_id"?: string; "delivery"?: string; "expected_response_id"?: string; "expected_run_epoch"?: number; };
 
-export type SessionMessageEntry = { "id": number; "sequence": number; "role": string; "parts": (SessionMessagePartEntry)[] | null; "created_at": number; "compaction_tail"?: boolean; "client_message_id"?: string; "response_id"?: string; "assistant_segment_ordinal"?: number; "segment_start_sequence"?: number; "segment_end_sequence"?: number; };
+export type SessionMessageEntry = { "author"?: SessionAuthor; "id": number; "sequence": number; "role": string; "parts": (SessionMessagePartEntry)[] | null; "created_at": number; "compaction_tail"?: boolean; "client_message_id"?: string; "response_id"?: string; "assistant_segment_ordinal"?: number; "segment_start_sequence"?: number; "segment_end_sequence"?: number; };
 
 export type SessionMessagePartEntry = { "reasoning_kind"?: string; "reasoning_title"?: string; "created_at"?: number; "type": string; "text"?: string; "skill_activation"?: CoreSkillActivationProvenance; "path_note"?: CorePathNoteProvenance; "job_notification"?: CoreJobNotificationProvenance; "diff_comment"?: CoreDiffComment; "model_swap"?: CoreModelSwapMarker; "tool_name"?: string; "tool_info"?: string; "tool_arguments"?: string; "tool_call_id"?: string; "tool_status"?: string; "ask_user_summary"?: string; "image_url"?: string; "images"?: (string)[]; "media"?: (WebMediaEntry)[]; "tool_error"?: boolean; "guardian_reviews"?: (CoreGuardianReview)[]; "spawn_agent"?: ToolsSpawnAgentResult; "spawn_agent_tool_calls"?: number; "agent_session_ids"?: (string)[]; "mime_type"?: string; "file_url"?: string; "size_bytes"?: number; "kind"?: string; "width"?: number; "height"?: number; };
 
@@ -64,6 +64,8 @@ export type SessionShareResponse = { "provider": ShareProviderID; "id": string; 
 
 export type SharingCapabilitiesResponse = { "enabled": boolean; "provider": ShareProvider; "operations": (ShareOperation)[] | null; "visibilities": (ShareVisibility)[] | null; "default_visibility": ShareVisibility; "help"?: string; "notes"?: (string)[]; "limits"?: Record<string, unknown>; "asset_media_types"?: (string)[]; };
 
+export type WebAuthor = { "id": string; "name": string; "email"?: string; };
+
 export type WebFileChangeSummary = { "file_count": number; "adds": number; "dels": number; "git": boolean; };
 
 export type WebMediaEntry = { "reference"?: string; "url": string; "type": string; "name"?: string; "caption"?: string; };
@@ -72,9 +74,11 @@ export type WebPlanSummary = { "version": number; "step_count": number; "complet
 
 export type WebSelectedSessionEntry = WebSessionEntry & { "metrics"?: WebSessionMetrics; "file_change_summary": WebFileChangeSummary; "plan_summary": WebPlanSummary | null; "context_usage": ServeContextUsage | null; };
 
-export type WebSessionEntry = { "id": string; "number"?: number; "name"?: string; "short_title": string; "long_title": string; "mode"?: SessionSessionMode; "origin"?: SessionSessionOrigin; "provider"?: string; "model"?: string; "agent"?: string; "project_id"?: string; "project_name"?: string; "cwd"?: string; "worktree_dir"?: string; "archived": boolean; "pinned": boolean; "pin_order"?: number; "created_at": number; "last_message_at": number; "message_count": number; "attention_store_instance_id"?: string; "attention_seq"?: number; "attention_response_id"?: string; "attention_final_rev"?: number; "seen_through_seq"?: number; "seen_rev": number; "seen_source"?: string; "attention_unseen"?: boolean; "attention_outcome"?: SessionResponseRunState; "attention_terminal_at"?: number; "parent_session_id"?: string; "delegated"?: boolean; };
+export type WebSessionEntry = AuthorshipSessionFields & { "id": string; "number"?: number; "name"?: string; "short_title": string; "long_title": string; "mode"?: SessionSessionMode; "origin"?: SessionSessionOrigin; "provider"?: string; "model"?: string; "agent"?: string; "project_id"?: string; "project_name"?: string; "cwd"?: string; "worktree_dir"?: string; "archived": boolean; "pinned": boolean; "pin_order"?: number; "created_at": number; "last_message_at": number; "message_count": number; "attention_store_instance_id"?: string; "attention_seq"?: number; "attention_response_id"?: string; "attention_final_rev"?: number; "seen_through_seq"?: number; "seen_rev": number; "seen_source"?: string; "attention_unseen"?: boolean; "attention_outcome"?: SessionResponseRunState; "attention_terminal_at"?: number; "parent_session_id"?: string; "delegated"?: boolean; };
 
 export type WebSessionMetrics = { "input_tokens": number; "output_tokens": number; "cached_input_tokens": number; "cache_write_tokens": number; "tool_calls": number; "llm_turns": number; };
+
+export type AuthorshipSessionFields = { "created_by"?: SessionAuthor; "participants"?: (SessionAuthor)[]; "participant_count"?: number; };
 
 export type HubStatus = { "reachable": boolean; "state": string; "latency_ms": number; "version"?: string; "agent"?: string; "capabilities"?: (string)[]; "details"?: Record<string, string>; "error"?: string; };
 
@@ -92,6 +96,8 @@ export type CorePathNoteProvenance = { "source_session_id": string; "anchor_mess
 
 export type CoreSkillActivationProvenance = { "name": string; "source": string; "source_path": string; "origin": string; "execution": string; "raw_arguments"?: string; "agent"?: string; "model"?: string; "allowed_tools"?: (string)[]; "allowed_tools_present"?: boolean; "run_id"?: string; "child_session_id"?: string; "status"?: string; "started_at"?: string; "completed_at"?: string; "activated_at": string; };
 
+export type SessionAuthor = AuthordbAuthor;
+
 export type SessionResponseRunState = NotificationdbResponseRunState;
 
 export type SessionSessionMode = string;
@@ -101,6 +107,8 @@ export type SessionSessionOrigin = string;
 export type SessionSessionStatus = string;
 
 export type SessionShareScope = string;
+
+export type AuthordbAuthor = { "id": string; "name": string; "email"?: string; };
 
 export type NotificationdbResponseRunState = string;
 

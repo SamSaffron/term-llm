@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/subtle"
 	"errors"
+	"github.com/samsaffron/term-llm/internal/pairing"
 	"net/http"
 	"strings"
 )
@@ -13,8 +14,9 @@ type devicePrincipalKey struct{}
 // DevicePrincipal identifies a grant that was verified by the linked-devices
 // transport. It deliberately carries no owner authority.
 type DevicePrincipal struct {
-	DeviceID string
-	Scope    string
+	ApprovedBy *pairing.Person
+	DeviceID   string
+	Scope      string
 	// Lifetime is the trusted peer connection's context, not an HTTP request's.
 	// It is cancelled on revocation, disconnect, replacement and host shutdown.
 	Lifetime context.Context

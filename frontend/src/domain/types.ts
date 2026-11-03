@@ -1,3 +1,9 @@
+export interface Author {
+  id: string;
+  name: string;
+  email?: string;
+}
+
 export type MessageRole =
   | 'user'
   | 'assistant'
@@ -130,6 +136,7 @@ export interface Usage {
 }
 
 export interface Message {
+  author?: Author;
   reasoningKind?: string;
   reasoningTitle?: string;
   reasoningIndex?: number;
@@ -273,6 +280,9 @@ export interface Widget {
 export type ApprovalMode = 'prompt' | 'auto' | 'yolo';
 
 export interface Session {
+  createdBy?: Author;
+  participants?: Author[];
+  participantCount?: number;
   id: string;
   number?: number;
   name: string;

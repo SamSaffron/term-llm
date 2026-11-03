@@ -3,6 +3,7 @@ package serve
 import (
 	"errors"
 	"fmt"
+	"github.com/samsaffron/term-llm/internal/app/serve/authorship"
 	"maps"
 	"strings"
 	"time"
@@ -305,6 +306,7 @@ func (s *serveServer) appendResponseSteering(runtime *serveRuntime, run *respons
 	if atts := s.steeringAttachmentsForEvent(ev.Message); len(atts) > 0 {
 		payload["attachments"] = atts
 	}
+	authorship.AddSteeringAuthor(s.store, payload, &ev.Message)
 	return run.appendEvent("response.steering", payload)
 }
 

@@ -24,6 +24,7 @@ var (
 	chatSystemMessage string
 	// Agent flag
 	chatAgent string
+	chatUser  string
 	// Skills flag
 	chatSkills string
 	// Session resume flag
@@ -78,6 +79,7 @@ Keyboard shortcuts:
 
 Slash commands:
   /help        - Show help
+  /user        - Show or change the author of new turns (/user NAME or /user off)
   /stats       - Show usage, cost, and context breakdown
   /clear       - Clear conversation
   /quit        - Exit chat
@@ -138,6 +140,8 @@ func init() {
 
 	// Text mode flag (no markdown rendering)
 	chatCmd.Flags().BoolVar(&chatTextMode, "text", false, "Disable markdown rendering (plain text output)")
+
+	chatCmd.Flags().StringVar(&chatUser, "user", "", "Attribute new user turns to this name (display-only; not sent to the model)")
 
 	// Session resume flag - NoOptDefVal allows --resume without a value
 	chatCmd.Flags().StringVarP(&chatResume, "resume", "r", "", "Resume session (empty for most recent, or session ID)")

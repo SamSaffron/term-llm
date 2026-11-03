@@ -2,6 +2,7 @@ package serve
 
 import (
 	"context"
+	"github.com/samsaffron/term-llm/internal/app/serve/authorship"
 	"net/http"
 	"strings"
 
@@ -192,6 +193,7 @@ func (s *serveServer) loadSessionStatePendingSteering(state *webSessionStateData
 				if entry.AttachmentSummary != "" {
 					item["attachment_summary"] = entry.AttachmentSummary
 				}
+				authorship.AddSteeringAuthor(s.store, item, &entry.Message)
 				state.pendingItems = append(state.pendingItems, item)
 				state.pendingIDs[entry.ID] = struct{}{}
 			}
@@ -258,6 +260,7 @@ func (s *serveServer) addSessionStateRuntimeSteering(state *webSessionStateData,
 				if summary := strings.TrimSpace(core.MessageAttachmentSummary(entry.Message)); summary != "" {
 					item["attachment_summary"] = summary
 				}
+				authorship.AddSteeringAuthor(s.store, item, &entry.Message)
 				state.pendingItems = append(state.pendingItems, item)
 				state.pendingIDs[entry.ID] = struct{}{}
 			}

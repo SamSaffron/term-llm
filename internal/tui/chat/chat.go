@@ -19,6 +19,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 	"github.com/samsaffron/term-llm/internal/agents"
+	"github.com/samsaffron/term-llm/internal/authoridentity"
 	"github.com/samsaffron/term-llm/internal/clipboard"
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/gitcommit"
@@ -146,6 +147,7 @@ type RuntimeSystemContext struct {
 }
 
 type Model struct {
+	user               *authoridentity.Selection
 	reloadContinuation *core.Continuation
 	reloadEnabled      bool
 	autoSendPending    bool

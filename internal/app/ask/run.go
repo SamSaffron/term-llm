@@ -16,6 +16,7 @@ import (
 	"github.com/samsaffron/term-llm/internal/app/runtime/mcpstart"
 	"github.com/samsaffron/term-llm/internal/app/runtime/progressive"
 	appserve "github.com/samsaffron/term-llm/internal/app/serve"
+	"github.com/samsaffron/term-llm/internal/authoridentity"
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/llm/core"
 	"github.com/samsaffron/term-llm/internal/mcp"
@@ -26,6 +27,10 @@ import (
 )
 
 func Run(ctx context.Context, args []string, opts Options, deps Dependencies) error {
+	user, err := authoridentity.ParseFlag(opts.User, opts.Changed.User)
+	if err != nil {
+		return err
+	}
 	// Extract @agent from args if present
 	atAgent, filteredArgs := appruntime.ExtractAgentFromArgs(args)
 	if atAgent != "" && opts.Agent == "" {
@@ -219,6 +224,10 @@ func Run(ctx context.Context, args []string, opts Options, deps Dependencies) er
 	}
 	preparedInput, err := PrepareInput(question, opts.Files, stdinReader, hasStdin, askInputCfg, defaultQuestion)
 	if err != nil {
+		return err
+	}
+	if err := authoridentity.Stamp(ctx, store, &preparedInput.Message, user); err != nil {
+		CleanupPreparedInput(preparedInput)
 		return err
 	}
 	question = preparedInput.Question

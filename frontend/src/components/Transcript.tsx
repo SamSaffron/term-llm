@@ -1,3 +1,4 @@
+import { AuthorByline } from './AuthorByline';
 import { thinkingTranscript } from '../domain/thinking-transcript';
 import { ThoughtRow } from './ThoughtRow';
 import { relativeTime } from '../domain/time';
@@ -1171,6 +1172,7 @@ const MessageRow = memo(function MessageRow({
   streaming,
   responseText,
   copyTarget,
+  bylineAuthor,
   resolveMedia,
   clock,
 }: {
@@ -1178,6 +1180,7 @@ const MessageRow = memo(function MessageRow({
   streaming: boolean;
   responseText: string;
   copyTarget: boolean;
+  bylineAuthor?: Message['author'] | null;
   resolveMedia: MarkdownMediaResolver;
   clock: ReadonlySignal<number>;
 }) {
@@ -1329,6 +1332,7 @@ const MessageRow = memo(function MessageRow({
       data-durable-id={message.durableRowId}
       dir="auto"
     >
+      {message.role === 'user' && <AuthorByline author={bylineAuthor} />}
       <div class="message-body">
         {message.attachments?.length ? <Attachments message={message} /> : null}
         {message.diffComments?.map((comment, index) => (
@@ -1519,10 +1523,11 @@ export function Transcript() {
   }
   const resolverForMessage = resolverCache.current.resolve;
   const index = resolverCache.current.index;
-  const { contexts: rowContexts, media: mediaByReference } = useMemo(
-    () => index(messages),
-    [index, messages],
-  );
+  const {
+    contexts: rowContexts,
+    media: mediaByReference,
+    bylines,
+  } = useMemo(() => index(messages), [index, messages]);
   const runs = useMemo(
     () => windowTranscript(messages, turnLimit, nearTail),
     [messages, turnLimit, nearTail],
@@ -1828,6 +1833,11 @@ export function Transcript() {
                     streaming={messageStreaming}
                     responseText={context?.responseText || message.content}
                     copyTarget={context?.copyTarget === true}
+                    bylineAuthor={
+                      localGap && run.messages?.[0] === message
+                        ? message.author
+                        : bylines.get(message)
+                    }
                     resolveMedia={resolverForMessage(message.id, mediaByReference)}
                     clock={clock}
                   />

@@ -180,6 +180,7 @@ func (s *serveServer) handleResponses(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	s.authors.StampInputs(r, s.store, inputMessages)
 	admission, stop := s.prepareResponsesSessionAdmission(w, r, ctx, req)
 	if stop {
 		return

@@ -1,3 +1,4 @@
+import { authorFrom } from '../domain/authors';
 import { admitResponse, assertResponseBudget } from '../api/response-admission';
 import { normalizeSteering, rushActive, type RushOperation } from '../domain/steering';
 import { extensionRuntime } from './extension-runtime';
@@ -193,6 +194,7 @@ export class RunEngine {
         .map((intent) => ({
           id: intent.id,
           role: 'user' as const,
+          author: this.sessionStore.authors.viewer.value,
           content: intent.content,
           created: intent.created,
           clientMessageId: intent.clientMessageId,
@@ -508,6 +510,7 @@ export class RunEngine {
         id: String(entry.id || entry.client_message_id || '').trim(),
         sessionId,
         content: String(entry.text || entry.attachment_summary || '').trim(),
+        author: authorFrom(entry.author),
         state: 'pending' as const,
       }))
       .filter((entry) => entry.id && !committed.has(entry.id));
@@ -560,6 +563,7 @@ export class RunEngine {
     const optimistic: Message = {
       id: `pending_${clientMessageId}`,
       role: 'user',
+      author: this.sessionStore.authors.viewer.value,
       content,
       created: Date.now(),
       clientMessageId,
@@ -576,6 +580,7 @@ export class RunEngine {
         id: this.composer.runtimeDraftId(),
         name: '',
         title: content.slice(0, 72) || 'New chat',
+        createdBy: this.sessionStore.authors.viewer.value,
         mode: 'chat',
         origin: 'web',
         archived: false,
@@ -1464,15 +1469,25 @@ export class RunEngine {
             const content = String(event.text ?? event.content ?? event.message ?? '').trim();
             this.setSteering([
               ...this.steering.peek(),
-              { id: clientID, sessionId, content, state: 'pending' },
+              {
+                id: clientID,
+                sessionId,
+                content,
+                state: 'pending',
+                author: authorFrom(event.author),
+              },
             ]);
           } else if (existing.state === 'sending') {
             this.setSteering(
-              this.steering
-                .peek()
-                .map((entry) =>
-                  entry.id === clientID ? { ...entry, state: 'pending' as const } : entry,
-                ),
+              this.steering.peek().map((entry) =>
+                entry.id === clientID
+                  ? {
+                      ...entry,
+                      state: 'pending' as const,
+                      ...(authorFrom(event.author) ? { author: authorFrom(event.author) } : {}),
+                    }
+                  : entry,
+              ),
             );
           }
           // Admission invalidates an earlier empty-queue capability snapshot,

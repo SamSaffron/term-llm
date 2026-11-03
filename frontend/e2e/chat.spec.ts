@@ -1,5 +1,8 @@
 import { test, expect, type Page, type Route } from '@playwright/test';
 
+const viewer = { id: 'alice', name: 'Alice Example', email: 'alice@example.com' };
+const otherAuthor = { id: 'bob', name: 'Bob Example' };
+
 const session = (id: string, title: string, number: number) => ({
   id,
   number,
@@ -17,6 +20,7 @@ const session = (id: string, title: string, number: number) => ({
 async function mockAPI(
   page: Page,
   options: {
+    authors?: boolean;
     holdStream?: boolean;
     media?: boolean;
     model?: string;
@@ -35,6 +39,7 @@ async function mockAPI(
       route.fulfill({ status, contentType: 'application/json', body: JSON.stringify(value) });
     if (path.endsWith('/v1/capabilities'))
       return json({
+        ...(options.authors ? { viewer } : {}),
         projects: { enabled: true },
         shell: { enabled: options.shell === true, version: 1, transport: 'http_sse' },
         widgets: [{ id: 'status', name: 'Status', url: '../widgets/status/' }],
@@ -58,7 +63,18 @@ async function mockAPI(
         data: [{ id: model, owned_by: 'openai', reasoning_efforts: ['low', 'medium', 'high'] }],
       });
     if (path.endsWith('/v1/sidebar')) {
-      const sessions = [session('s1', 'First chat', 1), session('s2', 'Second chat', 2)];
+      let sessions = [session('s1', 'First chat', 1), session('s2', 'Second chat', 2)];
+      if (options.authors) {
+        sessions.forEach((s, i) =>
+          Object.assign(s, {
+            created_by: i ? otherAuthor : viewer,
+            participants: [viewer, otherAuthor],
+            participant_count: 2,
+          }),
+        );
+        if (url.searchParams.get('created_by') === 'me')
+          sessions = sessions.filter((s) => s.id === 's1');
+      }
       if (options.attention)
         Object.assign(sessions[0], {
           attention_store_instance_id: 'store-a',
@@ -95,6 +111,7 @@ async function mockAPI(
                 id: 1,
                 sequence: 0,
                 role: 'user',
+                ...(options.authors ? { author: viewer } : {}),
                 parts: [
                   { type: 'text', text: id === 's2' ? 'Second question' : 'First question' },
                   ...(options.media
@@ -221,6 +238,7 @@ async function open(
   page: Page,
   suffix = '',
   options: {
+    authors?: boolean;
     holdStream?: boolean;
     media?: boolean;
     model?: string;
@@ -1523,4 +1541,36 @@ test('polls accepted compaction after reload and keeps the draft editable but un
   expect(
     requests.filter((request) => request.method === 'POST' && request.url.endsWith('/responses')),
   ).toHaveLength(0);
+});
+
+test('multi-user attribution bylines, facepiles and persisted author filter', async ({
+  page,
+}, testInfo) => {
+  test.skip(testInfo.project.name === 'iphone', 'Covered on desktop and mobile');
+  const requests: string[] = [];
+  page.on('request', (request) => {
+    if (request.url().includes('/v1/sidebar')) requests.push(request.url());
+  });
+  await open(page, '?session=1', { authors: true });
+  await expect(page.locator('.author-byline')).toHaveText('YouAE');
+  if (testInfo.project.name === 'mobile')
+    await page.getByRole('button', { name: 'Open sidebar', exact: true }).click();
+  await expect(page.locator('.author-identity')).toContainText('Alice Example');
+  await expect(page.locator('.author-identity')).toContainText('via proxy');
+  await expect(
+    page.getByRole('button', {
+      name: /First chat.*Participants: Alice Example \(you\), Bob Example/,
+    }),
+  ).toBeVisible();
+  if (testInfo.project.name === 'mobile') await expect(page.locator('#sidebar')).toBeFocused();
+  await page.getByRole('radio', { name: 'Everyone', exact: true }).press('ArrowRight');
+  await expect(page.getByRole('radio', { name: 'Started by me', exact: true })).toBeChecked();
+  await expect
+    .poll(() => requests.some((url) => new URL(url).searchParams.get('created_by') === 'me'))
+    .toBe(true);
+  await expect(page.getByRole('button', { name: /Second chat.*Participants:/ })).toHaveCount(0);
+  await page.reload();
+  if (testInfo.project.name === 'mobile')
+    await page.getByRole('button', { name: 'Open sidebar', exact: true }).click();
+  await expect(page.getByRole('radio', { name: 'Started by me', exact: true })).toBeChecked();
 });

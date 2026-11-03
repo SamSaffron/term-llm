@@ -47,6 +47,7 @@ export async function steer(
     sessionId: session.id,
     content: displayContent || attachments.map((attachment) => attachment.name).join(', '),
     state: 'sending',
+    author: actions.sessionStore.authors.viewer.value,
   };
   actions.setSteering([...actions.steering.value, entry]);
   try {

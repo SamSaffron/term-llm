@@ -55,8 +55,8 @@ func (s *SQLiteStore) Search(ctx context.Context, opts SearchOptions) ([]SearchR
 		}
 	}
 
-	filterClause := ""
-	args := []any{ftsQuery}
+	filterClause, filterArgs := s.filterCreatedBy("", nil, opts.CreatedBy)
+	args := append([]any{ftsQuery}, filterArgs...)
 	categoryClause, categoryArgs := s.sessionCategoryFilter(opts.Categories)
 	filterClause += categoryClause
 	args = append(args, categoryArgs...)
@@ -95,7 +95,7 @@ func (s *SQLiteStore) Search(ctx context.Context, opts SearchOptions) ([]SearchR
 			ORDER BY `+orderBy+`
 			LIMIT ?
 		)
-		SELECT m.session_id, s.number, m.id, s.name, s.summary, `+generatedShortCol+` AS generated_short_title,
+		SELECT `+s.createdByColumn("s")+`, m.session_id, s.number, m.id, s.name, s.summary, `+generatedShortCol+` AS generated_short_title,
 		       `+generatedLongCol+` AS generated_long_title, `+titleSourceCol+` AS title_source,
 		       snippet(messages_fts, 0, '**', '**', '...', 32) AS snippet, s.provider, COALESCE(s.provider_key, '') AS provider_key,
 		       s.model, COALESCE(s.mode, ''), `+originCol+` AS origin, s.archived, `+s.pinnedSelectCols("s")+`, COALESCE(s.status, ''),
@@ -117,7 +117,7 @@ func (s *SQLiteStore) Search(ctx context.Context, opts SearchOptions) ([]SearchR
 		var r SearchResult
 		var number, pinOrder sql.NullInt64
 		var lastMessageAt sql.NullTime
-		err := rows.Scan(&r.SessionID, &number, &r.MessageID, &r.SessionName, &r.Summary,
+		err := rows.Scan(&r.CreatedBy, &r.SessionID, &number, &r.MessageID, &r.SessionName, &r.Summary,
 			&r.GeneratedShortTitle, &r.GeneratedLongTitle, &r.TitleSource, &r.Snippet, &r.Provider, &r.ProviderKey,
 			&r.Model, &r.Mode, &r.Origin, &r.Archived, &r.Pinned, &pinOrder, &r.Status, &r.MessageCount, &r.ProjectID, &r.ProjectName,
 			&r.SessionCreatedAt, &r.UpdatedAt, &lastMessageAt, &r.CreatedAt)

@@ -672,14 +672,7 @@ func (m *Model) sendMessage(content string) (tea.Model, tea.Cmd) {
 	m.appendTurnPreamble()
 
 	// Create user message and store it
-	userMsg := &session.Message{
-		SessionID:   m.sess.ID,
-		Role:        core.RoleUser,
-		Parts:       parts,
-		TextContent: displayText,
-		CreatedAt:   time.Now(),
-		Sequence:    -1, // Auto-allocate sequence
-	}
+	userMsg := m.newUserTurn(parts, displayText)
 	m.messages = append(m.messages, *userMsg)
 	m.invalidateHistoryCache()
 	m.persistUserTurn(userMsg, content)

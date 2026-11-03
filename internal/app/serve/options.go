@@ -7,6 +7,9 @@ import (
 )
 
 type Options struct {
+	IdentityHeader         string
+	IdentityNameHeader     string
+	IdentityEmailHeader    string
 	Host                   string
 	Port                   int
 	Token                  string

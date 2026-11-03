@@ -1,0 +1,161 @@
+.author-avatar {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  font-size: 9px;
+  font-weight: 700;
+  line-height: 1;
+  color: #fff;
+  background: var(--author-bg);
+}
+
+/* Eight muted OKLCH hues (C 0.055, L about 0.55); green and teal read stronger,
+   so they use C 0.042. A person keeps one colour in both themes; white initials
+   stay above 4.5:1 and every disc stands out from either page background.
+   Keep the count in sync with AUTHOR_COLOR_COUNT. */
+.author-color-0 {
+  --author-bg: #916770; /* rose */
+}
+
+.author-color-1 {
+  --author-bg: #8f6b57; /* orange */
+}
+
+.author-color-2 {
+  --author-bg: #81734f; /* gold */
+}
+
+.author-color-3 {
+  --author-bg: #647a64; /* green */
+}
+
+.author-color-4 {
+  --author-bg: #567b78; /* teal */
+}
+
+.author-color-5 {
+  --author-bg: #597893; /* blue */
+}
+
+.author-color-6 {
+  --author-bg: #746f93; /* violet */
+}
+
+.author-color-7 {
+  --author-bg: #876984; /* plum */
+}
+
+.author-byline {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 0.4rem;
+  color: var(--text-muted);
+  font-size: 0.75rem;
+  line-height: 20px;
+}
+
+.author-unknown {
+  opacity: 0.75;
+}
+
+.author-facepile {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  margin-left: auto;
+  padding-left: 0.5rem;
+  vertical-align: middle;
+}
+
+.author-facepile .author-avatar {
+  width: 18px;
+  height: 18px;
+  font-size: 8px;
+}
+
+.author-overflow {
+  padding-left: 2px;
+  font-size: 0.65rem;
+  color: var(--text-muted);
+}
+
+.pending-author {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  font-size: 0.75rem;
+}
+
+.author-filter {
+  display: flex;
+  gap: 3px;
+  padding: 0 0.5rem 0.6rem;
+}
+
+.author-filter label {
+  flex: 1;
+  position: relative;
+  cursor: pointer;
+  text-align: center;
+}
+
+.author-filter input {
+  position: absolute;
+  opacity: 0;
+  width: 1px;
+  height: 1px;
+}
+
+.author-filter span {
+  display: block;
+  padding: 0.4rem;
+  font-size: 0.75rem;
+  border-radius: 6px;
+  color: var(--text-muted);
+}
+
+.author-filter :checked + span {
+  background: var(--surface-3);
+  color: var(--text);
+}
+
+.author-filter :focus-visible + span {
+  outline: 2px solid var(--accent-blue);
+  outline-offset: 2px;
+}
+
+.author-identity {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  border-top: 1px solid var(--border);
+  padding: 0.8rem;
+  min-width: 0;
+}
+
+.author-identity > div {
+  min-width: 0;
+}
+
+.author-identity strong {
+  font-size: 0.8rem;
+  font-weight: 500;
+}
+
+.author-identity .author-avatar {
+  width: 28px;
+  height: 28px;
+  font-size: 11px;
+}
+
+.author-identity-detail {
+  color: var(--text-muted);
+  font-size: 0.7rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}

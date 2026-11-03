@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/samsaffron/term-llm/internal/app/serve/authorship"
 	"github.com/samsaffron/term-llm/internal/llm/core"
 	"github.com/samsaffron/term-llm/internal/llm/engine"
 	"github.com/samsaffron/term-llm/internal/session"
@@ -18,6 +19,9 @@ func (s *serveServer) claimUIFollowUp(ctx context.Context, rFirstParty bool, rt 
 	ids := responseClientMessageIDs(inputMessages)
 	if !ownsSession || len(ids) == 0 || !rFirstParty || rt == nil {
 		return nil, nil
+	}
+	if err := authorship.RestorePendingAuthors(ctx, rt.store, sessionID, inputMessages); err != nil {
+		return nil, err
 	}
 	rt.mu.Lock()
 	if rt.store != nil && !rt.ensurePersistedSession(ctx, sessionID, inputMessages) {

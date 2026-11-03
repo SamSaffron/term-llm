@@ -175,6 +175,8 @@ const liveRoute =
   async (...args: Args): Promise<Result> =>
     select((await import('./live-endpoints')).liveEndpoints(api))(...args);
 
+const authorQuery = (createdBy: string) => (createdBy === 'me' ? '&created_by=me' : '');
+
 export const endpoints = (api: APIClient) => ({
   extensionsStatus: () =>
     api.get<ExtensionStatus>('/admin/extensions/status', undefined, { retries: 0 }),
@@ -213,21 +215,21 @@ export const endpoints = (api: APIClient) => ({
       },
       { policy: 'safe-read', auth: 'session' },
     ),
-  sidebar: (includeArchived: boolean) =>
+  sidebar: (includeArchived: boolean, createdBy = '') =>
     api.get<Record<string, unknown>>(
-      `/v1/sidebar?per_project=12&include_archived_projects=1&include_archived_sessions=${includeArchived ? '1' : '0'}`,
+      `/v1/sidebar?per_project=12&include_archived_projects=1&include_archived_sessions=${includeArchived ? '1' : '0'}${authorQuery(createdBy)}`,
     ),
-  recentSessions: (cursor: string, includeArchived: boolean) =>
+  recentSessions: (cursor: string, includeArchived: boolean, createdBy = '') =>
     api.get<Record<string, unknown>>(
-      `/v1/sessions?scope=all${cursor ? `&cursor=${encoded(cursor)}` : ''}&limit=30&include_archived=${includeArchived ? '1' : '0'}`,
+      `/v1/sessions?scope=all${cursor ? `&cursor=${encoded(cursor)}` : ''}&limit=30&include_archived=${includeArchived ? '1' : '0'}${authorQuery(createdBy)}`,
     ),
-  projectSessions: (projectId: string, cursor: string, includeArchived: boolean) =>
+  projectSessions: (projectId: string, cursor: string, includeArchived: boolean, createdBy = '') =>
     api.get<Record<string, unknown>>(
-      `/v1/sessions?project_id=${encoded(projectId)}&cursor=${encoded(cursor)}&limit=12&include_archived=${includeArchived ? '1' : '0'}`,
+      `/v1/sessions?project_id=${encoded(projectId)}&cursor=${encoded(cursor)}&limit=12&include_archived=${includeArchived ? '1' : '0'}${authorQuery(createdBy)}`,
     ),
-  noProjectSessions: (cursor: string, includeArchived: boolean) =>
+  noProjectSessions: (cursor: string, includeArchived: boolean, createdBy = '') =>
     api.get<Record<string, unknown>>(
-      `/v1/sessions?no_project=1&cursor=${encoded(cursor)}&limit=30&include_archived=${includeArchived ? '1' : '0'}`,
+      `/v1/sessions?no_project=1&cursor=${encoded(cursor)}&limit=30&include_archived=${includeArchived ? '1' : '0'}${authorQuery(createdBy)}`,
     ),
   sessionStatus: async (
     selected = '',
@@ -261,8 +263,10 @@ export const endpoints = (api: APIClient) => ({
     categories: string[] = ['all'],
     signal?: AbortSignal,
     sort: SessionSearchSort = 'relevance',
+    createdBy = '',
   ) => {
     const params = new URLSearchParams({ q: query, limit: '30' });
+    if (createdBy === 'me') params.set('created_by', 'me');
     if (sort !== 'relevance') params.set('sort', sort);
     if (includeArchived) params.set('include_archived', '1');
     if (!categories.includes('all')) params.set('categories', categories.join(','));

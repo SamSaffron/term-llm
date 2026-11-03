@@ -43,6 +43,11 @@ type Subcommand struct {
 func AllCommands() []Command {
 	return []Command{
 		{
+			Name:        "user",
+			Description: "Show or change the author of new turns",
+			Usage:       "/user [NAME|off]",
+		},
+		{
 			Name:        "help",
 			Aliases:     []string{"h", "?"},
 			Description: "Show help and available commands",
@@ -441,6 +446,7 @@ func isStreamingLocalSlashCommand(input string) bool {
 	// replace the active provider/engine must either be blocked or explicitly
 	// defer their side effects until the current stream has ended.
 	localCommands := map[string]bool{
+		"user":      true,
 		"copy":      true,
 		"side":      true,
 		"thinking":  true,
@@ -556,6 +562,8 @@ func (m *Model) ExecuteCommand(input string) (tea.Model, tea.Cmd) {
 
 	// Execute the command
 	switch cmd.Name {
+	case "user":
+		return m.cmdUser(rawArgs)
 	case "help":
 		return m.cmdHelp()
 	case "side":

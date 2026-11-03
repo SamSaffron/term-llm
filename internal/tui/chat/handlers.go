@@ -1163,19 +1163,7 @@ func (m *Model) applyInterruptActionWithParts(steeringID, content string, parts 
 			m.streamCancelFunc()
 		}
 	case engine.InterruptSteer:
-		leadingImages := 0
-		for leadingImages < len(parts) && parts[leadingImages].Type == core.PartImage {
-			leadingImages++
-		}
-		msg := core.Message{Role: core.RoleUser, Parts: make([]core.Part, 0, len(parts)+1)}
-		msg.Parts = append(msg.Parts, parts[:leadingImages]...)
-		if content != "" {
-			msg.Parts = append(msg.Parts, core.Part{Type: core.PartText, Text: content})
-		}
-		msg.Parts = append(msg.Parts, parts[leadingImages:]...)
-		if len(msg.Parts) == 0 {
-			msg = core.UserText(content)
-		}
+		msg := m.newSteeringUserTurn(content, parts)
 		steering := engine.QueuedSteering{ID: steeringID, Message: msg, DisplayText: summary, Origin: engine.SteeringOriginForMessage(msg)}
 		queueStatus := engine.SteeringQueueRunFinished
 		if m.mainRunManager != nil && m.mainRunManager.HasActive(m.SessionID()) {

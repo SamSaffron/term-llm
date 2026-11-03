@@ -477,9 +477,11 @@ func (s *SQLiteStore) Sidebar(ctx context.Context, opts SidebarOptions) ([]Sideb
 	if opts.IncludeArchivedSessions {
 		archiveClause = ""
 	}
+	archiveClause, authorArgs := s.filterCreatedBy(archiveClause, nil, opts.CreatedBy)
+	authorArgs = append(authorArgs, opts.PerProject+1)
 	rows, err := s.queryDB().QueryContext(ctx, `
 		WITH ranked AS (
-			SELECT s.id, s.number, s.name, s.summary, s.generated_short_title,
+			SELECT `+s.createdByColumn("s")+` AS created_by, s.id, s.number, s.name, s.summary, s.generated_short_title,
 			       s.generated_long_title, s.title_source, s.provider,
 			       COALESCE(s.provider_key, '') AS provider_key, s.model, s.mode,
 			       COALESCE(NULLIF(TRIM(s.origin), ''), 'tui') AS origin, s.archived,
@@ -501,12 +503,12 @@ func (s *SQLiteStore) Sidebar(ctx context.Context, opts SidebarOptions) ([]Sideb
 			FROM sessions s LEFT JOIN projects p ON p.id = s.project_id
 			WHERE s.parent_id IS NULL `+archiveClause+`
 		)
-		SELECT id, number, name, summary, generated_short_title, generated_long_title,
+		SELECT created_by, id, number, name, summary, generated_short_title, generated_long_title,
 		       title_source, provider, provider_key, model, mode, origin, archived, pinned, pin_order,
 		       message_count, transcript_rev, status, worktree_dir, project_id, project_name,
 		       created_at, updated_at, last_message_at, last_user_message_at, group_count, rn, activity_rn
 		FROM ranked WHERE rn <= ? OR activity_rn = 1
-		ORDER BY project_id, rn`, opts.PerProject+1)
+		ORDER BY project_id, rn`, authorArgs...)
 	if err != nil {
 		return nil, fmt.Errorf("query sidebar: %w", err)
 	}
@@ -518,7 +520,7 @@ func (s *SQLiteStore) Sidebar(ctx context.Context, opts SidebarOptions) ([]Sideb
 		var shortTitle, longTitle, titleSource sql.NullString
 		var lastMessage, lastUserMessage sql.NullTime
 		var groupCount, rank, activityRank int
-		if err := rows.Scan(&sum.ID, &number, &sum.Name, &sum.Summary, &shortTitle, &longTitle,
+		if err := rows.Scan(&sum.CreatedBy, &sum.ID, &number, &sum.Name, &sum.Summary, &shortTitle, &longTitle,
 			&titleSource, &sum.Provider, &sum.ProviderKey, &sum.Model, &mode, &origin,
 			&sum.Archived, &sum.Pinned, &pinOrder, &sum.MessageCount, &sum.TranscriptRev, &status,
 			&sum.WorktreeDir, &projectID, &sum.ProjectName, &sum.CreatedAt, &sum.UpdatedAt,

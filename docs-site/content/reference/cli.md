@@ -135,6 +135,7 @@ Ask a question and stream the answer
 | `--text, -t` | bool | Output plain text instead of rendered markdown |
 | `--timeout` | duration | Set a hard deadline for the run (used by progressive execution for finalization budget) |
 | `--tools` | string | Enable local tools (comma-separated, or 'all'): read_file,write_file,edit_file,shell,grep,glob,view_image,show_media,image_generate,ask_user,spawn_agent (includes wait_agent,continue_agent,cancel_agent,list_agents),queue_agent,wait_for_jobs |
+| `--user` | string | Attribute new user turns to this name (display-only; not sent to the model) |
 | `--write-dir` | stringArray | Directories for write_file/edit_file tools (repeatable) |
 | `--yolo` | bool | Auto-approve all tool operations (for CI/container use, bypasses all prompts) |
 
@@ -247,6 +248,7 @@ Start an interactive chat session
 | `--system-message, -m` | string | System message/instructions for the LLM (overrides config) |
 | `--text` | bool | Disable markdown rendering (plain text output) |
 | `--tools` | string | Enable local tools (comma-separated, or 'all'): read_file,write_file,edit_file,shell,grep,glob,view_image,show_media,image_generate,ask_user,spawn_agent (includes wait_agent,continue_agent,cancel_agent,list_agents),queue_agent,wait_for_jobs |
+| `--user` | string | Attribute new user turns to this name (display-only; not sent to the model) |
 | `--write-dir` | stringArray | Directories for write_file/edit_file tools (repeatable) |
 | `--yolo` | bool | Auto-approve all tool operations (for CI/container use, bypasses all prompts) |
 
@@ -1217,6 +1219,9 @@ Run the agent as a server (web, api, jobs, Telegram, or any combination)
 | `--hub-register` | bool | Register this reverse node with the Hub before connecting |
 | `--hub-registration-token` | string | Hub registration token for --hub-register (defaults to $TERM_LLM_HUB_REGISTRATION_TOKEN) |
 | `--hub-url` | string | URL of the term-llm Hub this node belongs to (renders a Back to Hub link in the web UI) |
+| `--identity-email-header` | string | Trusted proxy header containing the email address |
+| `--identity-header` | string | Trusted proxy header containing a stable user ID (display attribution only) |
+| `--identity-name-header` | string | Trusted proxy header containing the display name |
 | `--jobs-workers` | int | Number of concurrent job workers for --platform jobs |
 | `--max-turns` | int | Max agentic turns for tool execution |
 | `--mcp` | string | Enable MCP server(s), comma-separated (e.g., playwright,filesystem) |

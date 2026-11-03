@@ -19,6 +19,7 @@ import (
 // Roots must name declarations directly, not cmd compatibility aliases: an alias
 // can emit a duplicate, self-referential wire name after its declaration moves.
 var Registry = []string{
+	"internal/app/serve.webAuthor",
 	"internal/app/serve.childRunProjection", "internal/app/serve.webSessionEntry", "internal/app/serve.webSelectedSessionEntry", "internal/app/serve.createWebSessionRequest", "internal/app/serve.serveEvent", "internal/app/serve.serveSkillRunEvent", "internal/app/serve/jobs.RunEvent", "internal/app/serve.hubNodeView", "internal/app/serve.webSessionMetrics",
 	"internal/app/serve.serveMentionSearchRequest", "internal/app/serve.serveMentionSearchResponse",
 	"internal/app/serve.sessionShareRequest", "internal/app/serve.sessionShareResponse", "internal/app/serve.sharingCapabilitiesResponse",

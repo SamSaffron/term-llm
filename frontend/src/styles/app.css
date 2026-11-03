@@ -13,6 +13,7 @@
 @import './layout/header.css';
 @import './features/toggle-switch.css';
 @import './features/transcript.css';
+@import './features/authors.css';
 @import './features/composer.css';
 @import './features/modals.css';
 @import './features/commit.css';

@@ -806,10 +806,11 @@ func (s *SQLiteStore) List(ctx context.Context, opts ListOptions) ([]SessionSumm
 		SELECT s.id, s.number, s.name, s.summary, ` + generatedShortCol + `, ` + generatedLongCol + `, ` + titleSourceCol + `,
 		       s.provider, COALESCE(s.provider_key, ''), s.model, s.mode, ` + originCol + `, COALESCE(s.agent, ''), s.archived, ` + s.pinnedSelectCols("s") + `, s.created_at, s.updated_at, ` + lastMessageAtCol + `, ` + lastUserMessageAtCol + `,
 		       ` + messageCountCol + ` as message_count, ` + transcriptRevCol + ` as transcript_rev,
-		       s.user_turns, s.llm_turns, s.tool_calls, s.input_tokens, s.cached_input_tokens, ` + cacheWriteCol + `, s.output_tokens, s.status, s.tags, COALESCE(s.cwd, ''), ` + worktreeDirCol + `, ` + projectIDCol + `, ` + projectNameCol + `, ` + goalCol + `, ` + shareCol + `
+		       s.user_turns, s.llm_turns, s.tool_calls, s.input_tokens, s.cached_input_tokens, ` + cacheWriteCol + `, s.output_tokens, s.status, s.tags, COALESCE(s.cwd, ''), ` + worktreeDirCol + `, ` + projectIDCol + `, ` + projectNameCol + `, ` + goalCol + `, ` + shareCol + `, ` + s.createdByColumn("s") + `
 		` + fromClause + projectJoin + `
 		WHERE 1=1`
 	args := []any{}
+	query, args = s.filterCreatedBy(query, args, opts.CreatedBy)
 
 	if len(opts.IDs) > 0 {
 		seen := make(map[string]struct{}, len(opts.IDs))
@@ -924,7 +925,7 @@ func (s *SQLiteStore) List(ctx context.Context, opts ListOptions) ([]SessionSumm
 		err := rows.Scan(&sum.ID, &number, &sum.Name, &sum.Summary, &generatedShortTitle, &generatedLongTitle, &titleSource, &sum.Provider, &sum.ProviderKey, &sum.Model, &mode,
 			&origin, &sum.Agent, &sum.Archived, &sum.Pinned, &pinOrder, &sum.CreatedAt, &sum.UpdatedAt, &lastMessageAt, &lastUserMessageAt, &sum.MessageCount, &sum.TranscriptRev,
 			&sum.UserTurns, &sum.LLMTurns, &sum.ToolCalls, &sum.InputTokens, &sum.CachedInputTokens, &sum.CacheWriteTokens, &sum.OutputTokens,
-			&status, &tags, &cwd, &worktreeDir, &projectID, &projectName, &goalRaw, &shareRaw)
+			&status, &tags, &cwd, &worktreeDir, &projectID, &projectName, &goalRaw, &shareRaw, &sum.CreatedBy)
 		if err != nil {
 			return nil, fmt.Errorf("scan session summary: %w", err)
 		}

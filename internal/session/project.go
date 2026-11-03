@@ -114,6 +114,7 @@ type SidebarGroup struct {
 }
 
 type SidebarOptions struct {
+	CreatedBy               string
 	PerProject              int
 	IncludeArchivedProjects bool
 	IncludeArchivedSessions bool

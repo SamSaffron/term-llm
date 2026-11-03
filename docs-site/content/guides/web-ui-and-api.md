@@ -596,6 +596,131 @@ independent of the browser session: signing out of one leaves the other signed
 in. To end both from the browser, choose **Revoke other sessions**, then **Sign out**
 to end the current browser session.
 
+## Several people on one server
+
+Multi-user attribution is opt-in and **display only**: user-message bylines,
+participants, and a “Started by me” sidebar filter. Everyone still has the same
+access to every session. The model never receives names, email addresses, or
+identity metadata. This is not authentication or permissions.
+
+### Quick start: Tailscale Serve
+
+Bind term-llm to loopback and let Tailscale Serve supply the identity:
+
+```sh
+term-llm serve web --no-auth \
+  --identity-header Tailscale-User-Login --identity-name-header Tailscale-User-Name
+tailscale serve --https=443 http://127.0.0.1:8080
+```
+
+Open the Serve HTTPS URL at `/ui/`. Serve removes client-supplied
+`Tailscale-User-*` headers and supplies its own for signed-in tailnet users.
+Tagged devices and Funnel traffic arrive anonymous. **Never expose a `--no-auth`
+server through Funnel.**
+
+`--identity-header NAME` enables attribution and reads a stable, case-sensitive
+user ID. `--identity-name-header NAME` supplies an optional display name (the ID
+is the fallback), and `--identity-email-header NAME` supplies an optional email.
+These are flags only, not config keys. A request without a valid ID remains
+anonymous and is never rejected for missing identity. The startup log names the
+headers, for example:
+
+```text
+identity: reading Remote-User (name: Remote-Name, email: Remote-Email)
+```
+
+### Authelia and Caddy
+
+Keep the origin reachable only through your proxy. Strip client identity headers
+*before* `forward_auth`, because absent auth-response headers must not leave a
+client-supplied value in place:
+
+```caddyfile
+chat.example.com {
+  request_header -Remote-User
+  request_header -Remote-Name
+  request_header -Remote-Email
+  forward_auth authelia:9091 {
+    uri /api/authz/forward-auth
+    copy_headers Remote-User Remote-Name Remote-Email
+  }
+  reverse_proxy 127.0.0.1:8080
+}
+```
+
+Start term-llm with your usual authentication and:
+
+```sh
+term-llm serve web --identity-header Remote-User \
+  --identity-name-header Remote-Name --identity-email-header Remote-Email
+```
+
+### oauth2-proxy and nginx
+
+When oauth2-proxy is the reverse proxy, `--pass-user-headers` sends
+`X-Forwarded-User`, `X-Forwarded-Preferred-Username`, and `X-Forwarded-Email`.
+Use these as the ID, name, and email headers respectively.
+
+With nginx `auth_request`, enable oauth2-proxy's `--set-xauthrequest` and explicitly
+overwrite client values in the proxied location (alongside your normal
+`/oauth2/auth` internal location):
+
+```nginx
+location / {
+    auth_request /oauth2/auth;
+    auth_request_set $auth_user $upstream_http_x_auth_request_user;
+    auth_request_set $auth_email $upstream_http_x_auth_request_email;
+    proxy_set_header X-Auth-Request-User $auth_user;
+    proxy_set_header X-Auth-Request-Email $auth_email;
+    proxy_pass http://127.0.0.1:8080;
+}
+```
+
+Use `--identity-header X-Auth-Request-User --identity-email-header X-Auth-Request-Email`.
+
+### Cloudflare Access
+
+You can use `Cf-Access-Authenticated-User-Email` as both ID and email header.
+This is safe only when the origin is reachable solely through Cloudflare, for
+example with Tunnel. Cloudflare recommends validating `Cf-Access-Jwt-Assertion`;
+term-llm does **not** validate that JWT.
+
+### Check the boundary, not just the byline
+
+Your name should appear at the bottom of the sidebar. For a local header check
+(add bearer authentication if enabled):
+
+```sh
+curl -s -H 'Remote-User: alice' http://127.0.0.1:8080/ui/v1/capabilities
+```
+
+The result includes `viewer`. Then test **through your proxy** with a forged
+identity header: it must be overwritten with your authenticated identity or
+removed. Verify this for your exact proxy deployment before sharing the server.
+The configurations above are deployment templates, not a substitute for that test.
+
+**Trust warning:** anyone who can reach the server without the proxy can claim
+any name, including through the Hub. The proxy must be the only network path to
+the origin, must authenticate users, and must overwrite client copies of the
+configured headers. Attribution does not make a shared server private.
+
+Linked devices post as the person who approved their pairing. Devices paired
+before attribution was enabled, or approved anonymously, remain anonymous until
+paired again. Device-supplied identity headers are ignored. An old binary that
+rewrites the grants file drops approver snapshots, requiring pairing again.
+
+Old history, anonymous requests, other APIs, jobs, and voice remain
+unattributed. CLI/TUI turns are unattributed unless selected with `--user` or
+`/user`. Stored bylines remain visible even if the identity flags are later removed. Anonymous viewers can see those bylines but have no identity card or
+personal filter.
+
+CLI turns can also be attributed with `term-llm ask --user NAME` or
+`term-llm chat --user NAME`. In terminal chat, `/user NAME` changes the author of
+subsequent turns, `/user` shows the selection, and `/user off` clears it. Use
+**the same value as the proxy's ID header** to line up web and CLI identities.
+The CLI value is both ID and fallback display name; it never overwrites a richer
+name already stored by the proxy. See [CLI attribution](/guides/usage/#attributing-cli-turns).
+
 ## Run persistently on macOS or Linux
 
 ```bash

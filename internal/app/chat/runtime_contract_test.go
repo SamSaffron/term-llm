@@ -9,6 +9,7 @@ import (
 	"github.com/samsaffron/term-llm/internal/app/runtime/approval"
 	"github.com/samsaffron/term-llm/internal/app/runtime/bootstrap"
 	appserve "github.com/samsaffron/term-llm/internal/app/serve"
+	"github.com/samsaffron/term-llm/internal/authoridentity"
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/session"
 	"github.com/samsaffron/term-llm/internal/tools"
@@ -50,6 +51,10 @@ chat:
 	}
 	t.Cleanup(appserve.SwapProcessSessionInputs(appserve.NewSessionInputCoordinator()))
 	r := testInvocation()
+	r.user = &authoridentity.Selection{}
+	if err := r.user.Set("initial user"); err != nil {
+		t.Fatal(err)
+	}
 	r.opts.Provider = "debug:slow" // Resume must use the actual persisted model instead.
 	r.opts.Tools, r.opts.Changed.Tools = tools.ReadFileToolName, true
 	r.deps.SessionStore.DBPath = dbPath
@@ -67,6 +72,12 @@ chat:
 		t.Fatal(err)
 	}
 	t.Cleanup(rt.cleanupResources)
+	if err := rt.model.SetUser("subsequent user"); err != nil {
+		t.Fatal(err)
+	}
+	if r.user.Name() != "subsequent user" {
+		t.Fatal("chat runtime did not bind invocation user selection")
+	}
 	if rt.sess.ID != sess.ID || rt.sess.Model != "fast" || rt.sess.ProviderKey != "debug" || rt.model.SessionID() != sess.ID {
 		t.Fatalf("actual resume=%+v", rt.sess)
 	}

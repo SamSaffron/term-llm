@@ -15,6 +15,7 @@ import (
 
 // Options captures chat flag values without retaining Cobra state.
 type Options struct {
+	User           string
 	Debug          bool
 	Search         bool
 	NoSearch       bool
@@ -42,7 +43,7 @@ type Options struct {
 }
 
 // FlagState includes the historical system lookup, not system-message.
-type FlagState struct{ Resume, Tools, System, MaxTurns, Search bool }
+type FlagState struct{ User, Resume, Tools, System, MaxTurns, Search bool }
 
 // Dependencies captures terminal/reload authority and deferred startup operations.
 // ResolveApproval is called after config, session and settings resolution, with

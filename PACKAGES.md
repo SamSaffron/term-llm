@@ -37,6 +37,7 @@ One line per root-module package, generated from package doc comments by `make d
 - `internal/app/runtime/oncomplete` — runs configured completion hooks.
 - `internal/app/runtime/progressive` — runs the progress-tool loop with work and finalization budgets for ask and serve.
 - `internal/app/serve` — hosts `term-llm serve`: HTTP and Hub routes, the shared runner, children and live runtime.
+- `internal/app/serve/authorship` — handles display-only proxy identity and author directory caching.
 - `internal/app/serve/hub` — holds the Hub server implementation behind explicit options.
 - `internal/app/serve/hubnode` — registers a reverse Web node with its Hub and diagnoses node-to-Hub connectivity failures.
 - `internal/app/serve/jobs` — holds the serve job scheduler's persistence schema, migrations and cron math.
@@ -44,6 +45,7 @@ One line per root-module package, generated from package doc comments by `make d
 - `internal/app/serve/modelswap` — holds the provider-independent rules for how a mid-conversation model switch attempt ends.
 - `internal/app/serve/protocol` — encodes and parses the OSC 7770 markers that frame serve shell commands and output.
 - `internal/app/serve/server` — owns serve HTTP/platform behavior extracted from the command layer.
+- `internal/app/serve/sessionsearch` — handles session-search HTTP validation, querying and projection.
 - `internal/app/serve/shell` — manages per-session PTY shell generations for `term-llm serve`.
 - `internal/app/serve/wire` — owns the shared HTTP JSON, SSE, compression, and steering projection helpers.
 - `internal/app/service` — implements `term-llm service` install and management of the per-user web and hub services.
@@ -55,6 +57,7 @@ One line per root-module package, generated from package doc comments by `make d
 - `internal/app/version` — implements `term-llm version` over linker-injected build metadata.
 - `internal/appdata` — resolves term-llm's XDG data directory.
 - `internal/audio` — implements the text-to-speech providers behind `term-llm audio`.
+- `internal/authoridentity` — validates display-only sender identities and records CLI authors without replacing directory metadata.
 - `internal/awsauth` — implements the AWS authentication and event framing needed by the Bedrock transport, without linking an AWS SDK.
 - `internal/benchmark` — measures provider throughput, latency and cache behavior for `term-llm benchmark`.
 - `internal/buildinfo` — exposes application identity to packages below the CLI.
@@ -163,8 +166,10 @@ One line per root-module package, generated from package doc comments by `make d
 - `internal/serve/http` — provides serve base-path normalization and streaming HTTP writes.
 - `internal/serveui` — embeds and serves the built web UI assets, manifests and index shell.
 - `internal/session` — owns durable sessions, messages, steering persistence and SQLite storage.
+- `internal/session/authordb` — owns the additive display-attribution schema and batched directory queries.
 - `internal/session/notificationdb` — implements durable logical-turn ownership and fenced notification delivery on the session SQLite transaction.
 - `internal/session/transcript` — adapts session writes to optional revision capabilities and identifies response-owned output.
+- `internal/session/transcriptprefix` — compares persisted transcript prefixes for replacement and compaction.
 - `internal/sessiontitle` — generates and validates short and long LLM session titles.
 - `internal/share` — defines provider-neutral transcript sharing.
 - `internal/sidequestion` — builds and runs private side questions over a conversation snapshot.

@@ -6,14 +6,19 @@ import (
 	"strings"
 	"time"
 
+	"github.com/samsaffron/term-llm/internal/app/serve/authorship"
 	"github.com/samsaffron/term-llm/internal/llm/core"
 	"github.com/samsaffron/term-llm/internal/llm/engine"
 	"github.com/samsaffron/term-llm/internal/session"
 )
 
 func (rt *serveRuntime) configurePendingSteeringPersistence(state *runtimeInterruptState, sessionID string) {
+	if state == nil {
+		return
+	}
+	state.steeringAuthor = func(id string) *session.Author { return authorship.StoredAuthor(rt.store, id) }
 	pendingStore, ok := session.AsPendingSteeringStore(rt.store)
-	if state == nil || !ok || strings.TrimSpace(sessionID) == "" {
+	if !ok || strings.TrimSpace(sessionID) == "" {
 		return
 	}
 	state.persistPendingSteering = func(persistCtx context.Context, entry engine.QueuedSteering) error {

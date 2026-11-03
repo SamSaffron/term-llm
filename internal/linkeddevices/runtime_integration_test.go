@@ -71,7 +71,7 @@ func TestRuntimePairsConnectsAndRevokesRealDevice(t *testing.T) {
 		http.NotFound(w, r)
 	})
 	dataDir := t.TempDir()
-	runtime, err := linkeddevices.New(linkeddevices.Options{DataDir: dataDir, Target: "agent", StoreInstanceID: "store-one", BasePath: "/", Authenticated: true, AgentName: "agent", HostLabel: "Test agent", BrokerURL: broker.URL, Handler: inner, Endpoint: endpoint})
+	runtime, err := linkeddevices.New(linkeddevices.Options{ApproverIdentity: func(context.Context) *pairing.Person { return &pairing.Person{ID: "alice", Name: "Alice Example"} }, DataDir: dataDir, Target: "agent", StoreInstanceID: "store-one", BasePath: "/", Authenticated: true, AgentName: "agent", HostLabel: "Test agent", BrokerURL: broker.URL, Handler: inner, Endpoint: endpoint})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -155,6 +155,9 @@ func TestRuntimePairsConnectsAndRevokesRealDevice(t *testing.T) {
 	}
 
 	firstPrincipal := <-peerPrincipal
+	if firstPrincipal.ApprovedBy == nil || firstPrincipal.ApprovedBy.ID != "alice" {
+		t.Fatalf("pairing approver missing from peer: %+v", firstPrincipal)
+	}
 	if firstPrincipal.Lifetime == nil {
 		t.Fatal("peer request did not carry a trusted connection lifetime")
 	}
@@ -234,6 +237,9 @@ func TestRuntimePairsConnectsAndRevokesRealDevice(t *testing.T) {
 	}
 	<-streamStarted
 	principal := <-peerPrincipal
+	if principal.ApprovedBy == nil || principal.ApprovedBy.Name != "Alice Example" {
+		t.Fatalf("approver did not survive reconnect: %+v", principal)
+	}
 	if principal.DeviceID != pairing.DeviceID || principal.Lifetime == nil || principal.Lifetime.Err() != nil {
 		t.Fatalf("peer principal has no active trusted lifetime: %+v", principal)
 	}

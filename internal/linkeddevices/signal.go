@@ -127,7 +127,11 @@ func (r *Runtime) Approve(ctx context.Context, id, code string) error {
 	if err := host.Approve(ctx, pending.pairing, fixedApprover(true)); err != nil {
 		return err
 	}
-	answer, grant, err := host.CompletePairing(pending.pairing)
+	var person *pairing.Person
+	if r.opts.ApproverIdentity != nil {
+		person = r.opts.ApproverIdentity(ctx)
+	}
+	answer, grant, err := host.CompletePairing(pending.pairing, person)
 	if err != nil {
 		return err
 	}
@@ -347,6 +351,11 @@ func (r *Runtime) acceptTransport(ctx context.Context, generation, connection ui
 		r.mu.Unlock()
 		return
 	}
+	grant, err := r.grants.Authorize(id, verified.DeviceKey)
+	if err != nil {
+		r.mu.Unlock()
+		return
+	}
 	hostID, leaseCapability := r.hostID, r.leaseCapability
 	r.mu.Unlock()
 	ice, err := r.broker.ICE(ctx, hostID, peerbroker.PeerHost, "", leaseCapability)
@@ -406,7 +415,7 @@ func (r *Runtime) acceptTransport(ctx context.Context, generation, connection ui
 				return
 			}
 			defer r.peerRequests.Done()
-			r.opts.Handler.ServeHTTP(w, WithDevicePrincipal(request, DevicePrincipal{DeviceID: id, Scope: ScopeWebV1, Lifetime: sessionCtx}))
+			r.opts.Handler.ServeHTTP(w, WithDevicePrincipal(request, DevicePrincipal{DeviceID: id, Scope: ScopeWebV1, Lifetime: sessionCtx, ApprovedBy: grant.ApprovedBy}))
 		}),
 		SessionGate: func(context.Context) error { _, err := r.grants.Authorize(id, verified.DeviceKey); return err },
 		Authorize: func(request *http.Request) error {
@@ -555,13 +564,16 @@ func (r *Runtime) stopLocked() error {
 
 func (r *Runtime) CancelInvitation(ctx context.Context) error {
 	r.mu.Lock()
-	if r.invitation == nil {
+	if r.invitation == nil && len(r.pending) == 0 {
 		r.mu.Unlock()
 		return nil
 	}
-	id := r.invitation.id
-	r.host.CancelPairing(r.invitation.link.InvitationID)
-	r.invitation = nil
+	id := ""
+	if r.invitation != nil {
+		id = r.invitation.id
+		r.host.CancelPairing(r.invitation.link.InvitationID)
+		r.invitation = nil
+	}
 	for _, pending := range r.pending {
 		if pending.delivery == nil {
 			continue
@@ -575,7 +587,7 @@ func (r *Runtime) CancelInvitation(ctx context.Context) error {
 	r.invitationSeq++
 	broker, hostID, capability := r.broker, r.hostID, r.leaseCapability
 	r.mu.Unlock()
-	if broker == nil || hostID == "" || capability == "" {
+	if id == "" || broker == nil || hostID == "" || capability == "" {
 		return nil
 	}
 	return broker.RevokeInvitation(ctx, hostID, capability, id)

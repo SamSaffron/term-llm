@@ -6,6 +6,7 @@ import (
 	"io"
 	"strings"
 
+	"github.com/samsaffron/term-llm/internal/authoridentity"
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/llm/core"
 	"github.com/samsaffron/term-llm/internal/tools"
@@ -13,6 +14,7 @@ import (
 )
 
 type chatInvocation struct {
+	user             *authoridentity.Selection
 	opts             Options
 	deps             Dependencies
 	handoverApproval *tools.ApprovalMode

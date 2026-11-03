@@ -281,7 +281,7 @@ func (h *Host) Reject(p *PendingPairing, reason string) *PairReject {
 
 // CompletePairing persists a revocation-only web-v1 grant and returns the raw
 // reconnect capability exactly once in the authenticated answer.
-func (h *Host) CompletePairing(p *PendingPairing) (*PairAnswer, Grant, error) {
+func (h *Host) CompletePairing(p *PendingPairing, approvedBy ...*Person) (*PairAnswer, Grant, error) {
 	now := h.opts.Now()
 	h.mu.Lock()
 	s, err := h.invitationFor(p, now)
@@ -308,6 +308,9 @@ func (h *Host) CompletePairing(p *PendingPairing) (*PairAnswer, Grant, error) {
 	}
 	reconnectHash := sha256.Sum256(reconnect)
 	g := Grant{DeviceID: B64(deviceID).String(), DeviceKey: B64(bytes.Clone(p.DeviceKey)), DeviceName: p.DeviceName, Scope: ScopeWebV1, BasePath: h.opts.BasePath, ReconnectCapabilityHash: reconnectHash[:], PairedAt: now.UTC()}
+	if len(approvedBy) > 0 {
+		g.ApprovedBy = approvedBy[0]
+	}
 	if err := h.grants.Add(g); err != nil {
 		clear(reconnect)
 		return nil, Grant{}, fmt.Errorf("persist grant: %w", err)

@@ -8,10 +8,10 @@ import (
 
 func (s *SQLiteStore) insertMessageAndBumpSession(ctx context.Context, execer sqliteQueryExecer, sessionID string, msg *Message, partsJSON string, sequence int) (int64, int64, error) {
 	result, err := execer.ExecContext(ctx, `
-		INSERT INTO messages (session_id, role, parts, text_content, duration_ms, turn_index, created_at, sequence, compaction_tail, client_message_id, response_id, assistant_segment_ordinal, segment_start_sequence, segment_end_sequence)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		INSERT INTO messages (session_id, role, parts, text_content, duration_ms, turn_index, created_at, sequence, compaction_tail, author_id, client_message_id, response_id, assistant_segment_ordinal, segment_start_sequence, segment_end_sequence)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		sessionID, string(msg.Role), partsJSON, msg.TextContent, msg.DurationMs, msg.TurnIndex, msg.CreatedAt, sequence, msg.CompactionTail,
-		msg.ClientMessageID, msg.ResponseID, msg.AssistantSegmentOrdinal, msg.SegmentStartSequence, msg.SegmentEndSequence)
+		userAuthorID(msg.Role, msg.AuthorID), msg.ClientMessageID, msg.ResponseID, msg.AssistantSegmentOrdinal, msg.SegmentStartSequence, msg.SegmentEndSequence)
 	if err != nil {
 		return 0, 0, fmt.Errorf("insert message: %w", err)
 	}

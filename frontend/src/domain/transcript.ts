@@ -1,3 +1,4 @@
+import { authorFrom } from './authors';
 import { responseSubagentProgress } from './response';
 import { parseSeenRev } from './attention-seen';
 import type {
@@ -108,6 +109,7 @@ export interface ServerPart {
   [key: string]: unknown;
 }
 export interface ServerMessage {
+  author?: unknown;
   id?: string | number;
   ID?: string | number;
   sequence?: number;
@@ -186,6 +188,7 @@ function messageSourceHead(message: Message): Message['durableSourceHead'] {
   return sourceHead({ id: id ?? message.durableRowId, sequence: message.serverSeq });
 }
 function withSource(entry: Message, message: ServerMessage): Message {
+  if (entry.role === 'user') entry.author = authorFrom(message.author);
   entry.durableSourceHead = laterSourceHead(entry.durableSourceHead, sourceHead(message), true);
   const responseID = message.response_id ?? message.responseId;
   const clientMessageID = message.client_message_id ?? message.clientMessageId;
@@ -863,6 +866,7 @@ export function sanitizeSession(
   const messages = Array.isArray(source.messages)
     ? convertServerMessages(source.messages as ServerMessage[], options)
     : [];
+  const createdBy = authorFrom(source.created_by);
   const archived = source.archived_at ? true : Boolean(source.archived);
   const fileSummary = record(source.file_change_summary || source.fileChangeSummary);
   const rawTranscriptRev = source.transcript_rev ?? source.rev;
@@ -878,6 +882,20 @@ export function sanitizeSession(
     Object.hasOwn(source, 'guardian_available') ||
     Object.hasOwn(source, 'guardian_auto_suspended');
   return {
+    ...(createdBy ? { createdBy } : {}),
+    ...(Array.isArray(source.participants)
+      ? {
+          participants: source.participants
+            .map(authorFrom)
+            .filter((a): a is NonNullable<typeof a> => Boolean(a)),
+        }
+      : {}),
+    ...(Object.hasOwn(source, 'participant_count')
+      ? {
+          participantCount: Number(source.participant_count) || 0,
+          ...(Number(source.participant_count) === 0 ? { participants: [] } : {}),
+        }
+      : {}),
     id: text(source.id) || randomID('sess'),
     number: Number(source.number || source.session_number) || undefined,
     name: text(source.name),

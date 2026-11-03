@@ -7,11 +7,20 @@ import (
 	"time"
 
 	"github.com/samsaffron/term-llm/internal/app/runtime"
+	"github.com/samsaffron/term-llm/internal/authoridentity"
 	"github.com/samsaffron/term-llm/internal/termhost"
 	"github.com/samsaffron/term-llm/internal/tui/chat"
 )
 
 func (r *chatInvocation) run(ctx context.Context, args []string) error {
+	user, err := authoridentity.ParseFlag(r.opts.User, r.opts.Changed.User)
+	if err != nil {
+		return err
+	}
+	r.user = &authoridentity.Selection{}
+	if err := r.user.Set(user); err != nil {
+		return err
+	}
 	interactive := r.ownsTerminalHost()
 	if len(r.opts.AutoSend) == 0 && !interactive {
 		return fmt.Errorf("chat requires an interactive terminal; use --auto-send for non-interactive execution")

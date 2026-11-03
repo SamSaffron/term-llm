@@ -262,17 +262,20 @@ func (s *SQLiteStore) CreateBranch(ctx context.Context, sourceSessionID string, 
 			copyMessages := `
 				INSERT INTO messages (
 					session_id, role, parts, text_content, duration_ms, turn_index,
-					created_at, sequence, compaction_tail, client_message_id, response_id,
+					created_at, sequence, compaction_tail, author_id, client_message_id, response_id,
 					assistant_segment_ordinal, segment_start_sequence, segment_end_sequence
 				)
 				SELECT ?, role, parts, text_content, duration_ms, turn_index,
-				       created_at, sequence, ` + compactionTailExpr + `, '', '', -1, 0, 0
+				       created_at, sequence, ` + compactionTailExpr + `, author_id, '', '', -1, 0, 0
 				FROM messages
 				WHERE session_id = ? AND sequence <= ?` + prefixFilter + `
 				ORDER BY sequence, id`
 			if _, err := conn.ExecContext(ctx, copyMessages, childID, sourceSessionID, anchorSequence); err != nil {
 				return fmt.Errorf("copy branch messages: %w", err)
 			}
+		}
+		if _, err := conn.ExecContext(ctx, `UPDATE sessions SET created_by = ? WHERE id = ?`, opts.CreatedBy, childID); err != nil {
+			return fmt.Errorf("set branch starter: %w", err)
 		}
 		pathNoteInserted := false
 		if opts.PathNote != nil && strings.TrimSpace(opts.PathNote.Text) != "" {
@@ -291,9 +294,9 @@ func (s *SQLiteStore) CreateBranch(ctx context.Context, sourceSessionID string, 
 			if _, err := conn.ExecContext(ctx, `
 				INSERT INTO messages (
 					session_id, role, parts, text_content, duration_ms, turn_index,
-					created_at, sequence, compaction_tail, client_message_id, response_id,
+					created_at, sequence, compaction_tail, author_id, client_message_id, response_id,
 					assistant_segment_ordinal, segment_start_sequence, segment_end_sequence
-				) VALUES (?, ?, ?, ?, 0, 0, ?, ?, FALSE, '', '', -1, 0, 0)`,
+				) VALUES (?, ?, ?, ?, 0, 0, ?, ?, FALSE, '', '', '', -1, 0, 0)`,
 				childID, string(note.Role), string(partsJSON), note.TextContent, note.CreatedAt, noteSequence); err != nil {
 				return fmt.Errorf("insert branch path note: %w", err)
 			}

@@ -1,3 +1,4 @@
+import { AuthorStore, resetAuthorPages } from './author-store';
 import { batch, computed, signal, type Signal } from '@preact/signals';
 import type { SessionSearchSort } from '../api/endpoints';
 import { APIError } from '../api/client';
@@ -113,6 +114,7 @@ export interface SessionStoreHost {
 
 /** Owns session/project catalog state, sidebar loading, search, and catalog mutations. */
 export class SessionStore {
+  readonly authors: AuthorStore;
   readonly activity: SessionActivityStore;
   readonly sessions = signal<Session[]>([]);
   /** The selected delegated transcript is intentionally outside the sidebar catalog. */
@@ -120,7 +122,10 @@ export class SessionStore {
   private readonly sidebarSessionCache = new Map<string, Session>();
   private sidebarSessionList: Session[] = [];
   readonly sidebarSessions = computed(() => {
-    const sessions = this.sessions.value;
+    const sessions = this.sessions.value.filter(
+      (session) =>
+        this.authors?.createdBy !== 'me' || session.createdBy?.id === this.authors.viewer.value?.id,
+    );
     const present = new Set(sessions.map((session) => session.id));
     for (const id of this.sidebarSessionCache.keys()) {
       if (!present.has(id)) this.sidebarSessionCache.delete(id);
@@ -210,6 +215,15 @@ export class SessionStore {
     private readonly host: SessionStoreHost,
   ) {
     this.activity = new SessionActivityStore(services);
+    this.authors = new AuthorStore(services, async () => {
+      this.recentTailLoaded = false;
+      resetAuthorPages(this);
+      if (this.sidebarSearch.peek()) {
+        this.searchResults.value = [];
+        void this.search(this.sidebarSearch.peek());
+      }
+      await this.refreshSidebar();
+    });
     this.sidebarCollapsed = signal(
       services.storage.getItem(services.keys.sidebarCollapsed) === '1',
     );
@@ -705,16 +719,18 @@ export class SessionStore {
     if (authoritative && this.sidebarRefreshPromise)
       await this.sidebarRefreshPromise.catch(() => undefined);
     const showArchived = this.showArchived.peek();
+    const authorScope = this.authors.createdBy;
     const request = (async () => {
       const data = this.projectsEnabled.value
-        ? await this.services.endpoints.sidebar(showArchived)
+        ? await this.services.endpoints.sidebar(showArchived, this.authors.createdBy)
         : await this.services.endpoints.sessions(
-            `limit=30&include_archived=${showArchived ? '1' : '0'}`,
+            `limit=30&include_archived=${showArchived ? '1' : '0'}${this.authors.query}`,
           );
       if (
         this.services.isDisposed ||
         generation !== this.sidebarGeneration ||
         showArchived !== this.showArchived.peek() ||
+        authorScope !== this.authors.createdBy ||
         generation < this.lastAppliedSidebarGeneration
       )
         return;
@@ -764,6 +780,7 @@ export class SessionStore {
         this.services.config.sidebarCategories,
         abort.signal,
         sort,
+        this.authors.createdBy,
       );
       if (!abort.signal.aborted)
         this.searchResults.value = listFrom(data, 'sessions', 'items').map((entry) =>
@@ -994,7 +1011,13 @@ export class SessionStore {
   async loadMoreRecent(): Promise<void> {
     const cursor = this.recentCursor.peek();
     if (!cursor) return;
-    const data = await this.services.endpoints.recentSessions(cursor, this.showArchived.value);
+    const authorScope = this.authors.createdBy;
+    const data = await this.services.endpoints.recentSessions(
+      cursor,
+      this.showArchived.value,
+      this.authors.createdBy,
+    );
+    if (authorScope !== this.authors.createdBy) return;
     const incoming = listFrom(data, 'sessions', 'items').map((entry) => this.sessionFrom(entry));
     const existing = new Map(this.sessions.peek().map((entry) => [entry.id, entry]));
     incoming.forEach((entry) =>
@@ -1011,11 +1034,14 @@ export class SessionStore {
   async loadMoreProject(projectId: string): Promise<void> {
     const project = this.projects.value.find((entry) => entry.id === projectId);
     if (!project?.next_cursor) return;
+    const authorScope = this.authors.createdBy;
     const data = await this.services.endpoints.projectSessions(
       projectId,
       project.next_cursor,
       this.showArchived.value,
+      this.authors.createdBy,
     );
+    if (authorScope !== this.authors.createdBy) return;
     const incoming = listFrom(data, 'sessions', 'items').map((entry) =>
       this.sessionFrom({ ...entry, project_id: project.id, project_name: project.name }),
     );
@@ -1045,7 +1071,13 @@ export class SessionStore {
   async loadMoreNoProject(): Promise<void> {
     const cursor = this.noProjectCursor.peek();
     if (!cursor) return;
-    const data = await this.services.endpoints.noProjectSessions(cursor, this.showArchived.value);
+    const authorScope = this.authors.createdBy;
+    const data = await this.services.endpoints.noProjectSessions(
+      cursor,
+      this.showArchived.value,
+      this.authors.createdBy,
+    );
+    if (authorScope !== this.authors.createdBy) return;
     const incoming = listFrom(data, 'sessions', 'items').map((entry) => this.sessionFrom(entry));
     const existing = new Map(this.sessions.peek().map((entry) => [entry.id, entry]));
     incoming.forEach((entry) =>

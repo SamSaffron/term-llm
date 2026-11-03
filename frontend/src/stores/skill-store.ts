@@ -2,12 +2,13 @@ import { signal, type ReadonlySignal, type Signal } from '@preact/signals';
 import { APIError, decodeSSE } from '../api/client';
 import { errorMessage } from '../domain/text';
 import { initialProjection } from '../domain/response';
-import type { ActiveRun, Message, Session } from '../domain/types';
+import type { Author, ActiveRun, Message, Session } from '../domain/types';
 import type { Modal } from './store-types';
 import type { AppStoreServices } from './app-store-services';
 import { listFrom, recordValue, uuid } from './store-utils';
 
 export interface SkillStoreHost {
+  viewer?: ReadonlySignal<Author | undefined>;
   activeSession: ReadonlySignal<Session | null>;
   activeSessionId: ReadonlySignal<string>;
   streaming: ReadonlySignal<boolean>;
@@ -207,6 +208,7 @@ export class SkillStore {
     const optimistic: Message = {
       id: `pending_${id}`,
       role: 'user',
+      author: this.host.viewer?.value,
       content: invocation,
       clientMessageId: id,
       created: Date.now(),

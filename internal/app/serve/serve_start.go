@@ -19,6 +19,7 @@ import (
 	"github.com/samsaffron/term-llm/internal/app/runtime"
 	bootstrap "github.com/samsaffron/term-llm/internal/app/runtime/bootstrap"
 	guardian "github.com/samsaffron/term-llm/internal/app/runtime/guardian"
+	"github.com/samsaffron/term-llm/internal/app/serve/authorship"
 	"github.com/samsaffron/term-llm/internal/app/serve/hubnode"
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/linkeddevices"
@@ -317,6 +318,7 @@ func runServeWith(parentCtx context.Context, deps serveDeps, opts *Options, args
 			browserAuth: browserAuth,
 			listener:    deps.Listener,
 			cfg: serveServerConfig{
+				identityHeader: opts.IdentityHeader, identityNameHeader: opts.IdentityNameHeader, identityEmailHeader: opts.IdentityEmailHeader,
 				host:                    opts.Host,
 				port:                    opts.Port,
 				requireAuth:             requireAuth,
@@ -369,7 +371,8 @@ func runServeWith(parentCtx context.Context, deps serveDeps, opts *Options, args
 				return getErr == nil && sess != nil
 			}),
 		}
-		if s.linkedDevices, err = linkeddevices.NewServeHost(hasWeb, ctx, store, agentName, opts.BasePath, requireAuth || browserAuth != nil, s.cfg.nodeLabel(), resolvedApproval.Mode.String(), cfg); err != nil {
+		s.authors.Initialize(ctx, store)
+		if s.linkedDevices, err = linkeddevices.NewServeHost(hasWeb, ctx, store, agentName, opts.BasePath, requireAuth || browserAuth != nil, s.cfg.nodeLabel(), resolvedApproval.Mode.String(), cfg, authorship.PairingApprover); err != nil {
 			return err
 		}
 		if hasWeb {
@@ -444,6 +447,7 @@ func runServeWith(parentCtx context.Context, deps serveDeps, opts *Options, args
 		}
 
 		fmt.Fprintf(deps.Stderr, "term-llm serve listening on http://%s\n", net.JoinHostPort(opts.Host, strconv.Itoa(opts.Port)))
+		s.logIdentity(deps.Stderr)
 		if browserAuth == nil {
 			fmt.Fprintf(deps.Stderr, "auth: %s\n", authSummary(requireAuth))
 		}

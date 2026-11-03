@@ -2425,7 +2425,7 @@ describe('AppStore compatibility behavior', () => {
       next_cursor: 'deep-cursor',
     }));
     await store.loadMoreRecent();
-    expect(store.endpoints.recentSessions).toHaveBeenCalledWith('recent-cursor', false);
+    expect(store.endpoints.recentSessions).toHaveBeenCalledWith('recent-cursor', false, '');
     expect(store.recentSessions.value.map((session) => session.id)).toEqual(['s1', 's2', 's3']);
     expect(store.recentCursor.value).toBe('deep-cursor');
 
@@ -2447,7 +2447,7 @@ describe('AppStore compatibility behavior', () => {
 
     store.endpoints.recentSessions = vi.fn(async () => ({ sessions: [] }));
     await store.loadMoreRecent();
-    expect(store.endpoints.recentSessions).toHaveBeenCalledWith('deep-cursor', false);
+    expect(store.endpoints.recentSessions).toHaveBeenCalledWith('deep-cursor', false, '');
     expect(store.recentCursor.value).toBe('');
   });
 
@@ -2470,7 +2470,7 @@ describe('AppStore compatibility behavior', () => {
       sessions: [{ id: 's2', title: 'Older', created_at: 1, last_message_at: 1 }],
     }));
     await store.loadMoreNoProject();
-    expect(store.endpoints.noProjectSessions).toHaveBeenCalledWith('cursor-1', false);
+    expect(store.endpoints.noProjectSessions).toHaveBeenCalledWith('cursor-1', false, '');
     expect(store.sessions.value.map((session) => session.id)).toEqual(['s1', 's2']);
     expect(store.noProjectCursor.value).toBe('');
     // Without a cursor no further pages are requested.
@@ -2516,7 +2516,7 @@ describe('AppStore compatibility behavior', () => {
       sessions: [{ id: 's2', title: 'Older', created_at: 1, last_message_at: 1 }],
     }));
     await store.loadMoreNoProject();
-    expect(store.endpoints.noProjectSessions).toHaveBeenCalledWith('flat-cursor', false);
+    expect(store.endpoints.noProjectSessions).toHaveBeenCalledWith('flat-cursor', false, '');
     expect(store.sessions.value.map((session) => session.id)).toEqual(['s1', 's2']);
     expect(store.noProjectCursor.value).toBe('');
   });

@@ -478,6 +478,7 @@ func AppendHistory(history []Entry, entry Entry) []Entry {
 // turn whose provider came from the boundary fork seam may pass false. Every
 // other restriction below is unconditional.
 func runRequest(ctx context.Context, provider core.Provider, req core.Request, ephemeral bool, emit func(core.Event)) (Result, error) {
+	req.Messages = core.WithoutMessageAuthors(req.Messages)
 	req.Ephemeral = ephemeral
 	if ephemeral {
 		req.SessionID = ""

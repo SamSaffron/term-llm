@@ -35,6 +35,7 @@ func (m *Model) presentationTick(d time.Duration, fn func(time.Time) tea.Msg) te
 // ReloadState preserves presentation and an optional settled engine boundary.
 // Messages are included only for --no-session runtimes.
 type ReloadState struct {
+	User         string `json:",omitempty"`
 	Continuation *core.Continuation
 	SessionID    string
 	Provider     string
@@ -96,7 +97,7 @@ func (m *Model) inspectReload(msg ReloadInspectMsg) {
 	case m.ReloadBusy():
 		result.Err = errors.New("TUI still owns unfinished work")
 	default:
-		result.State = ReloadState{Continuation: m.reloadContinuation, SessionID: m.SessionID(), Provider: m.providerKey, Model: m.modelName, Draft: m.expandedPastePlaceholders(m.textarea.Value()), ShellMode: m.directShellComposerActive(), Files: append([]FileAttachment(nil), m.files...), Images: append([]ImageAttachment(nil), m.images...), SideVisible: m.sideQuestion.Visible, SideDraft: m.sideQuestion.Composer.Value(), SideHistory: append([]sidequestion.Entry(nil), m.sideQuestion.History...), SideQuestion: m.sideQuestion.Question, SideResponse: m.sideQuestion.Response.String()}
+		result.State = ReloadState{User: m.user.Name(), Continuation: m.reloadContinuation, SessionID: m.SessionID(), Provider: m.providerKey, Model: m.modelName, Draft: m.expandedPastePlaceholders(m.textarea.Value()), ShellMode: m.directShellComposerActive(), Files: append([]FileAttachment(nil), m.files...), Images: append([]ImageAttachment(nil), m.images...), SideVisible: m.sideQuestion.Visible, SideDraft: m.sideQuestion.Composer.Value(), SideHistory: append([]sidequestion.Entry(nil), m.sideQuestion.History...), SideQuestion: m.sideQuestion.Question, SideResponse: m.sideQuestion.Response.String()}
 		if m.store == nil {
 			result.State.Meta = m.sess
 			result.State.Messages = append([]session.Message(nil), m.messages...)
@@ -112,6 +113,7 @@ func (m *Model) inspectReload(msg ReloadInspectMsg) {
 }
 
 func (m *Model) RestoreReloadState(state ReloadState) {
+	_ = m.SetUser(state.User)
 	m.reloadContinuation = state.Continuation
 	if state.Meta != nil && m.store == nil {
 		m.sess = state.Meta

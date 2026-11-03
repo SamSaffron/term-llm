@@ -393,7 +393,7 @@ func (p *AgyBinProvider) messagesForRequest(req core.Request) ([]core.Message, e
 }
 
 func agyTranscriptHash(messages []core.Message) (string, error) {
-	data, err := json.Marshal(messages)
+	data, err := json.Marshal(core.WithoutMessageAuthors(messages))
 	if err != nil {
 		return "", fmt.Errorf("hash agy-bin transcript: %w", err)
 	}

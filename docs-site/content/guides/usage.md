@@ -25,6 +25,38 @@ Use `term-llm chat` for a persistent session.
 term-llm chat
 ```
 
+### Attributing CLI turns
+
+Use `--user NAME` with `ask` or `chat` to record who authored **new** user
+turns. It works with `--agent` and `--resume`; continuing a session never changes
+its earlier authors, so one conversation can contain turns from many people.
+
+```bash
+term-llm ask --user "nick kroll" --agent reviewer "Review the tests"
+term-llm ask --resume SESSION_ID --user sam "Check the edge cases too"
+term-llm chat --resume SESSION_ID --user "nick kroll"
+```
+
+Inside terminal chat, `/user sam` switches subsequent turns to `sam`, `/user`
+shows the current user, and `/user off` returns to unattributed turns. Names
+with spaces need no quotes in the slash command: `/user nick kroll`. Switching
+is safe during a response; already-queued steering keeps its original author.
+The current choice survives in-process session switches, handovers and `/reload`.
+A fresh invocation without `--user` is unattributed, even when resuming someone
+else's conversation.
+
+The trimmed value is both the stable, case-sensitive author ID and the fallback
+display name. It must be valid UTF-8, contain no control characters, and fit in
+256 bytes and 128 Unicode characters. Invalid values, including an explicitly
+empty `--user`, fail rather than silently becoming anonymous.
+
+This is **display-only attribution**, not authentication or permissions. It does
+not change terminal transcript rendering, and identity metadata is never sent to
+the model. Internal/generated continuation messages are not human turns and stay
+unattributed. CLI directory entries only fill missing IDs, preserving richer names
+and email addresses already supplied by a trusted proxy. Use the proxy's ID value
+exactly to line up CLI and [web identities](/guides/web-ui-and-api/#several-people-on-one-server).
+
 ### Usage and costs
 
 ```bash
@@ -136,6 +168,7 @@ Set `TERM_LLM_AT_MENTIONS=0` to disable `@` autocomplete and submit-time textual
 | Command | Description |
 |---------|-------------|
 | `/help` | Show help |
+| `/user [NAME\|off]` | Terminal chat only: show or change the author of subsequent turns; `off` makes them unattributed |
 | `/clear` | Clear conversation |
 | `/model` | Show current model |
 | `/search` | Toggle web search |

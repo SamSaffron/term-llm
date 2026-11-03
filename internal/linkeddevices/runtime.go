@@ -37,6 +37,7 @@ const (
 )
 
 type Options struct {
+	ApproverIdentity    func(context.Context) *pairing.Person
 	DataDir             string
 	Target              string
 	StoreInstanceID     string
@@ -57,6 +58,7 @@ type Options struct {
 
 // ServerOptions contains administrator-owned linked-device configuration.
 type ServerOptions struct {
+	ApproverIdentity    func(context.Context) *pairing.Person
 	BrokerURL           string
 	AdmissionCredential string
 	ICEPolicy           *peerbroker.HostICEConfig
@@ -150,7 +152,8 @@ type Runtime struct {
 // broker and ICE settings.
 func NewServer(target, storeID, basePath string, authenticated bool, hostLabel, approval string, serverOpts ServerOptions) (*Runtime, error) {
 	opts := Options{
-		Target: target, StoreInstanceID: storeID, BasePath: basePath, Authenticated: authenticated,
+		ApproverIdentity: serverOpts.ApproverIdentity,
+		Target:           target, StoreInstanceID: storeID, BasePath: basePath, Authenticated: authenticated,
 		AgentName: target, HostLabel: serverHostLabel(hostLabel, target), ApprovalDescription: approval,
 		BrokerURL: serverOpts.BrokerURL, AdmissionCredential: serverOpts.AdmissionCredential, ICEPolicy: serverOpts.ICEPolicy,
 	}

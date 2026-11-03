@@ -13,6 +13,9 @@ import (
 )
 
 type serveServerConfig struct {
+	identityHeader          string
+	identityNameHeader      string
+	identityEmailHeader     string
 	host                    string
 	port                    int
 	requireAuth             bool

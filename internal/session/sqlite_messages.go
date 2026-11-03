@@ -97,10 +97,10 @@ func (s *SQLiteStore) appendMessagesWithRush(ctx context.Context, sessionID stri
 		for i, msg := range messages {
 			sequence := firstSequence + i
 			result, err := conn.ExecContext(ctx, `
-				INSERT INTO messages (session_id, role, parts, text_content, duration_ms, turn_index, created_at, sequence, compaction_tail, client_message_id, response_id, assistant_segment_ordinal, segment_start_sequence, segment_end_sequence)
-				VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+				INSERT INTO messages (session_id, role, parts, text_content, duration_ms, turn_index, created_at, sequence, compaction_tail, author_id, client_message_id, response_id, assistant_segment_ordinal, segment_start_sequence, segment_end_sequence)
+				VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 				sessionID, string(msg.Role), parts[i], msg.TextContent, msg.DurationMs, msg.TurnIndex, msg.CreatedAt, sequence, msg.CompactionTail,
-				msg.ClientMessageID, msg.ResponseID, msg.AssistantSegmentOrdinal, msg.SegmentStartSequence, msg.SegmentEndSequence)
+				userAuthorID(msg.Role, msg.AuthorID), msg.ClientMessageID, msg.ResponseID, msg.AssistantSegmentOrdinal, msg.SegmentStartSequence, msg.SegmentEndSequence)
 			if err != nil {
 				return fmt.Errorf("insert message %d: %w", i, err)
 			}
@@ -680,8 +680,8 @@ func insertReplacementMessagesTx(ctx context.Context, tx *sql.Tx, sessionID stri
 		return nil
 	}
 	insertStmt, err := tx.PrepareContext(ctx, `
-		INSERT INTO messages (session_id, role, parts, text_content, duration_ms, turn_index, created_at, sequence, compaction_tail, client_message_id, response_id, assistant_segment_ordinal, segment_start_sequence, segment_end_sequence)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+		INSERT INTO messages (session_id, role, parts, text_content, duration_ms, turn_index, created_at, sequence, compaction_tail, author_id, client_message_id, response_id, assistant_segment_ordinal, segment_start_sequence, segment_end_sequence)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
 	if err != nil {
 		return fmt.Errorf("prepare message insert: %w", err)
 	}
@@ -694,7 +694,7 @@ func insertReplacementMessagesTx(ctx context.Context, tx *sql.Tx, sessionID stri
 		}
 		if _, err := insertStmt.ExecContext(ctx,
 			sessionID, string(msg.Role), partsJSON[i], msg.TextContent, msg.DurationMs, msg.TurnIndex, createdAt, base+i, keepTailMarker && msg.CompactionTail,
-			msg.ClientMessageID, msg.ResponseID, msg.AssistantSegmentOrdinal, msg.SegmentStartSequence, msg.SegmentEndSequence); err != nil {
+			userAuthorID(msg.Role, msg.AuthorID), msg.ClientMessageID, msg.ResponseID, msg.AssistantSegmentOrdinal, msg.SegmentStartSequence, msg.SegmentEndSequence); err != nil {
 			return fmt.Errorf("insert message %d: %w", i, err)
 		}
 	}
@@ -732,71 +732,6 @@ func (s *SQLiteStore) activeContextStartSeq(ctx context.Context, tx *sql.Tx, ses
 		return -1, nil
 	}
 	return startSeq, nil
-}
-
-func compactedReplacementCommonPrefix(ctx context.Context, tx *sql.Tx, sessionID string, startSeq int, desired []Message, desiredPartsJSON []string) (prefix int, fullActiveDelete bool, err error) {
-	rows, err := tx.QueryContext(ctx, `
-		SELECT sequence, role, parts, text_content, duration_ms, turn_index,
-		       COALESCE(client_message_id, ''), COALESCE(response_id, ''), COALESCE(assistant_segment_ordinal, -1),
-		       COALESCE(segment_start_sequence, 0), COALESCE(segment_end_sequence, 0)
-		FROM messages
-		WHERE session_id = ? AND sequence >= ?
-		ORDER BY sequence ASC, id ASC`, sessionID, startSeq)
-	if err != nil {
-		return 0, false, fmt.Errorf("query compacted messages: %w", err)
-	}
-	defer rows.Close()
-
-	for rows.Next() {
-		var sequence int
-		var role, partsJSON string
-		var textContent sql.NullString
-		var durationMs sql.NullInt64
-		var turnIndex sql.NullInt64
-		var clientMessageID, responseID string
-		var assistantSegmentOrdinal int
-		var segmentStartSequence, segmentEndSequence int64
-		if err := rows.Scan(&sequence, &role, &partsJSON, &textContent, &durationMs, &turnIndex,
-			&clientMessageID, &responseID, &assistantSegmentOrdinal, &segmentStartSequence, &segmentEndSequence); err != nil {
-			return 0, false, fmt.Errorf("scan compacted message: %w", err)
-		}
-		if sequence < startSeq {
-			return 0, true, nil
-		}
-
-		expectedSeq := startSeq + prefix
-		if prefix >= len(desired) {
-			if sequence < expectedSeq {
-				return 0, true, nil
-			}
-			break
-		}
-		if sequence != expectedSeq {
-			if sequence < expectedSeq {
-				return 0, true, nil
-			}
-			break
-		}
-
-		want := desired[prefix]
-		if role != string(want.Role) ||
-			partsJSON != desiredPartsJSON[prefix] ||
-			nullStringValue(textContent) != want.TextContent ||
-			nullInt64Value(durationMs) != want.DurationMs ||
-			int(nullInt64Value(turnIndex)) != want.TurnIndex ||
-			clientMessageID != want.ClientMessageID ||
-			responseID != want.ResponseID ||
-			assistantSegmentOrdinal != want.AssistantSegmentOrdinal ||
-			segmentStartSequence != want.SegmentStartSequence ||
-			segmentEndSequence != want.SegmentEndSequence {
-			break
-		}
-		prefix++
-	}
-	if err := rows.Err(); err != nil {
-		return 0, false, err
-	}
-	return prefix, false, nil
 }
 
 func (s *SQLiteStore) updateReplaceMessagesSessionMetadata(ctx context.Context, tx *sql.Tx, sessionID string, now time.Time, clearCompactionBoundary bool) error {
@@ -856,89 +791,6 @@ func prepareReplacementMessageParts(messages []Message, stripImageBase64 bool) (
 	return partsJSON, nil
 }
 
-func replacementCommonPrefix(ctx context.Context, tx *sql.Tx, sessionID string, desired []Message, desiredPartsJSON []string) (prefix int, fullDelete bool, err error) {
-	rows, err := tx.QueryContext(ctx, `
-		SELECT sequence, role, parts, text_content, duration_ms, turn_index, COALESCE(compaction_tail, FALSE),
-		       COALESCE(client_message_id, ''), COALESCE(response_id, ''), COALESCE(assistant_segment_ordinal, -1),
-		       COALESCE(segment_start_sequence, 0), COALESCE(segment_end_sequence, 0)
-		FROM messages
-		WHERE session_id = ?
-		ORDER BY sequence ASC, id ASC`, sessionID)
-	if err != nil {
-		return 0, false, fmt.Errorf("query existing messages: %w", err)
-	}
-	defer rows.Close()
-
-	for rows.Next() {
-		var sequence int
-		var role, partsJSON string
-		var textContent sql.NullString
-		var durationMs sql.NullInt64
-		var turnIndex sql.NullInt64
-		var compactionTail bool
-		var clientMessageID, responseID string
-		var assistantSegmentOrdinal int
-		var segmentStartSequence, segmentEndSequence int64
-		if err := rows.Scan(&sequence, &role, &partsJSON, &textContent, &durationMs, &turnIndex, &compactionTail,
-			&clientMessageID, &responseID, &assistantSegmentOrdinal, &segmentStartSequence, &segmentEndSequence); err != nil {
-			return 0, false, fmt.Errorf("scan existing message: %w", err)
-		}
-		if sequence < 0 {
-			return 0, true, nil
-		}
-
-		if prefix >= len(desired) {
-			if sequence < prefix {
-				return 0, true, nil
-			}
-			break
-		}
-		if sequence != prefix {
-			// A duplicate/out-of-order sequence below the already accepted prefix
-			// cannot be removed by deleting sequence >= prefix, so fall back to a full
-			// rewrite. Gaps above the prefix are safely truncated from the gap onward.
-			if sequence < prefix {
-				return 0, true, nil
-			}
-			break
-		}
-
-		want := desired[prefix]
-		if role != string(want.Role) ||
-			partsJSON != desiredPartsJSON[prefix] ||
-			nullStringValue(textContent) != want.TextContent ||
-			nullInt64Value(durationMs) != want.DurationMs ||
-			int(nullInt64Value(turnIndex)) != want.TurnIndex ||
-			compactionTail ||
-			clientMessageID != want.ClientMessageID ||
-			responseID != want.ResponseID ||
-			assistantSegmentOrdinal != want.AssistantSegmentOrdinal ||
-			segmentStartSequence != want.SegmentStartSequence ||
-			segmentEndSequence != want.SegmentEndSequence {
-			break
-		}
-		prefix++
-	}
-	if err := rows.Err(); err != nil {
-		return 0, false, err
-	}
-	return prefix, false, nil
-}
-
-func nullStringValue(v sql.NullString) string {
-	if !v.Valid {
-		return ""
-	}
-	return v.String
-}
-
-func nullInt64Value(v sql.NullInt64) int64 {
-	if !v.Valid {
-		return 0
-	}
-	return v.Int64
-}
-
 // CompactMessages appends compacted messages to the session, preserving old
 // history, and updates compaction_seq so that resume loads only post-compaction
 // messages. Old messages remain in the database for scrollback/history.
@@ -961,8 +813,8 @@ func (s *SQLiteStore) CompactMessages(ctx context.Context, sessionID string, mes
 		startSeq := maxSeq + 1
 
 		insertStmt, err := tx.PrepareContext(ctx, `
-			INSERT INTO messages (session_id, role, parts, text_content, duration_ms, turn_index, created_at, sequence, compaction_tail, client_message_id, response_id, assistant_segment_ordinal, segment_start_sequence, segment_end_sequence)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+			INSERT INTO messages (session_id, role, parts, text_content, duration_ms, turn_index, created_at, sequence, compaction_tail, author_id, client_message_id, response_id, assistant_segment_ordinal, segment_start_sequence, segment_end_sequence)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
 		if err != nil {
 			return fmt.Errorf("prepare message insert: %w", err)
 		}
@@ -983,7 +835,7 @@ func (s *SQLiteStore) CompactMessages(ctx context.Context, sessionID string, mes
 
 			_, err = insertStmt.ExecContext(ctx,
 				sessionID, string(msg.Role), partsJSON, msg.TextContent, msg.DurationMs, msg.TurnIndex, msg.CreatedAt, msg.Sequence, msg.CompactionTail,
-				msg.ClientMessageID, msg.ResponseID, msg.AssistantSegmentOrdinal, msg.SegmentStartSequence, msg.SegmentEndSequence)
+				userAuthorID(msg.Role, msg.AuthorID), msg.ClientMessageID, msg.ResponseID, msg.AssistantSegmentOrdinal, msg.SegmentStartSequence, msg.SegmentEndSequence)
 			if err != nil {
 				return fmt.Errorf("insert message %d: %w", i, err)
 			}
@@ -1028,7 +880,7 @@ func (s *SQLiteStore) messageSelectCols() string {
 	if s.hasMessageStreamIdentity {
 		streamIdentityCols = "COALESCE(response_id, '') AS response_id, COALESCE(assistant_segment_ordinal, -1) AS assistant_segment_ordinal, COALESCE(segment_start_sequence, 0) AS segment_start_sequence, COALESCE(segment_end_sequence, 0) AS segment_end_sequence"
 	}
-	return `id, session_id, role, parts, text_content, duration_ms, turn_index, created_at, sequence, ` + compactionTailCol + `, ` + clientMessageIDCol + `, ` + streamIdentityCols
+	return `id, session_id, role, parts, text_content, duration_ms, turn_index, created_at, sequence, ` + compactionTailCol + `, ` + s.authorIDColumn() + `, ` + clientMessageIDCol + `, ` + streamIdentityCols
 }
 
 // TranscriptVersioned reports whether this database has durable transcript
@@ -1441,10 +1293,10 @@ func (s *SQLiteStore) RedoLastUserTurn(ctx context.Context, sessionID string, ex
 			return TranscriptMutationResult{}, fmt.Errorf("serialize redo message %d: %w", i, err)
 		}
 		if _, err := conn.ExecContext(ctx, `
-			INSERT INTO messages (id, session_id, role, parts, text_content, duration_ms, turn_index, created_at, sequence, compaction_tail, client_message_id, response_id, assistant_segment_ordinal, segment_start_sequence, segment_end_sequence)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			INSERT INTO messages (id, session_id, role, parts, text_content, duration_ms, turn_index, created_at, sequence, compaction_tail, author_id, client_message_id, response_id, assistant_segment_ordinal, segment_start_sequence, segment_end_sequence)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 			msg.ID, sessionID, string(msg.Role), partsJSON, msg.TextContent, msg.DurationMs, msg.TurnIndex, msg.CreatedAt, msg.Sequence,
-			msg.CompactionTail, msg.ClientMessageID, msg.ResponseID, msg.AssistantSegmentOrdinal, msg.SegmentStartSequence, msg.SegmentEndSequence); err != nil {
+			msg.CompactionTail, userAuthorID(msg.Role, msg.AuthorID), msg.ClientMessageID, msg.ResponseID, msg.AssistantSegmentOrdinal, msg.SegmentStartSequence, msg.SegmentEndSequence); err != nil {
 			return TranscriptMutationResult{}, fmt.Errorf("restore redo message %d: %w", i, err)
 		}
 	}
@@ -1868,7 +1720,7 @@ func scanMessageRows(rows *sql.Rows) ([]Message, error) {
 		var durationMs sql.NullInt64
 		err := rows.Scan(&msg.ID, &msg.SessionID, &msg.Role, &partsJSON,
 			&msg.TextContent, &durationMs, &msg.TurnIndex, &msg.CreatedAt, &msg.Sequence, &msg.CompactionTail,
-			&msg.ClientMessageID, &msg.ResponseID, &msg.AssistantSegmentOrdinal, &msg.SegmentStartSequence, &msg.SegmentEndSequence)
+			&msg.AuthorID, &msg.ClientMessageID, &msg.ResponseID, &msg.AssistantSegmentOrdinal, &msg.SegmentStartSequence, &msg.SegmentEndSequence)
 		if err != nil {
 			return nil, fmt.Errorf("scan message: %w", err)
 		}
@@ -1916,7 +1768,7 @@ func (s *SQLiteStore) GetMessageByID(ctx context.Context, msgID int64) (*Message
 	var durationMs sql.NullInt64
 	err := row.Scan(&msg.ID, &msg.SessionID, &msg.Role, &partsJSON,
 		&msg.TextContent, &durationMs, &msg.TurnIndex, &msg.CreatedAt, &msg.Sequence, &msg.CompactionTail,
-		&msg.ClientMessageID, &msg.ResponseID, &msg.AssistantSegmentOrdinal, &msg.SegmentStartSequence, &msg.SegmentEndSequence)
+		&msg.AuthorID, &msg.ClientMessageID, &msg.ResponseID, &msg.AssistantSegmentOrdinal, &msg.SegmentStartSequence, &msg.SegmentEndSequence)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound
 	}
@@ -1969,7 +1821,7 @@ func (s *SQLiteStore) GetMessageByClientMessageID(ctx context.Context, sessionID
 	var durationMs sql.NullInt64
 	err := row.Scan(&msg.ID, &msg.SessionID, &msg.Role, &partsJSON,
 		&msg.TextContent, &durationMs, &msg.TurnIndex, &msg.CreatedAt, &msg.Sequence, &msg.CompactionTail,
-		&msg.ClientMessageID, &msg.ResponseID, &msg.AssistantSegmentOrdinal, &msg.SegmentStartSequence, &msg.SegmentEndSequence)
+		&msg.AuthorID, &msg.ClientMessageID, &msg.ResponseID, &msg.AssistantSegmentOrdinal, &msg.SegmentStartSequence, &msg.SegmentEndSequence)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound
 	}

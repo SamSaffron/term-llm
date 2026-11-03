@@ -98,7 +98,7 @@ func TestNotificationMigrationV68RollsBackMarkerRetirementAndDDLThenRetries(t *t
 	original := migrations
 	defer func() { migrations = original }()
 	migrations = append([]migration(nil), original...)
-	last := len(migrations) - 1
+	last := 67
 	if migrations[last].version != 68 {
 		t.Fatalf("last version=%d", migrations[last].version)
 	}
@@ -130,7 +130,7 @@ func TestNotificationMigrationV68RollsBackMarkerRetirementAndDDLThenRetries(t *t
 	if err := initSchema(db); err != nil {
 		t.Fatalf("retry=%v", err)
 	}
-	if err := db.QueryRow(`SELECT version FROM schema_version`).Scan(&version); err != nil || version != 68 {
+	if err := db.QueryRow(`SELECT version FROM schema_version`).Scan(&version); err != nil || version != schemaVersion {
 		t.Fatalf("retry marker=%d error=%v", version, err)
 	}
 }

@@ -19,6 +19,7 @@ const ScopeWebV1 = "web-v1"
 // Grant is durable until explicitly revoked or its state is reset. The raw
 // reconnect capability is never persisted, only its SHA-256 hash.
 type Grant struct {
+	ApprovedBy              *Person    `json:"approved_by,omitempty"`
 	DeviceID                string     `json:"device_id"`
 	DeviceKey               B64        `json:"device_key"`
 	DeviceName              string     `json:"device_name"`

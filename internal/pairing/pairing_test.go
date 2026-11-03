@@ -69,13 +69,16 @@ func TestPairingV2AndTransport(t *testing.T) {
 	if err := host.Approve(context.Background(), pending, ApproverFunc(func(context.Context, PairingPrompt) (bool, error) { return true, nil })); err != nil {
 		t.Fatal(err)
 	}
-	answer, grant, err := host.CompletePairing(pending)
+	answer, grant, err := host.CompletePairing(pending, &Person{ID: "alice", Name: "Alice", Email: "alice@example.com"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	paired, err := attempt.VerifyAnswer(jsonRoundTrip(t, answer).(*PairAnswer))
 	if err != nil {
 		t.Fatal(err)
+	}
+	if grant.ApprovedBy == nil || grant.ApprovedBy.ID != "alice" || !bytes.Contains(stateForGrant(t, grant), []byte(`"approved_by"`)) {
+		t.Fatalf("approver missing: %+v", grant)
 	}
 	if grant.Scope != ScopeWebV1 || grant.BasePath != "/chat" || !grant.PairedAt.Equal(clock.nowTime.UTC()) || grant.RevokedAt != nil {
 		t.Fatalf("bad grant: %+v", grant)
@@ -217,4 +220,17 @@ func jsonRoundTrip(t *testing.T, value any) any {
 		t.Fatal(err)
 	}
 	return out
+}
+
+func stateForGrant(t *testing.T, g Grant) []byte {
+	t.Helper()
+	b, err := json.Marshal(g)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var decoded Grant
+	if err := json.Unmarshal(b, &decoded); err != nil || decoded.ApprovedBy == nil || *decoded.ApprovedBy != *g.ApprovedBy {
+		t.Fatalf("grant roundtrip: %+v %v", decoded, err)
+	}
+	return b
 }

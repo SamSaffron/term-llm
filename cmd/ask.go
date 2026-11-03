@@ -40,6 +40,7 @@ var (
 	askSystemMessage string
 	// Agent flag
 	askAgent string
+	askUser  string
 	// Approval modes
 	askApproval string
 	askYolo     bool
@@ -63,6 +64,7 @@ Examples:
   term-llm ask "What is the latest version of Node.js?" -s
   term-llm ask "Explain the difference between TCP and UDP" -d
   term-llm ask "List 5 programming languages" --text
+  term-llm ask --user "nick kroll" "Review the tests"
   term-llm ask "Explain git rebase" --json | jq -c .
   term-llm ask -f code.go "Explain this code"
   term-llm ask -f code.go:10-50 "Explain this function"
@@ -126,6 +128,8 @@ func init() {
 	askCmd.Flags().BoolVar(&askFast, "fast", false, "Use the configured fast provider/model instead of the default")
 	askCmd.Flags().StringVar(&askInlineMaxBytes, "inline-max-bytes", "", "Embed stdin/-f text up to this size inline instead of staging it for tools (e.g. 512K, 2M; overrides ask.stdin_inline_max_bytes)")
 
+	askCmd.Flags().StringVar(&askUser, "user", "", "Attribute new user turns to this name (display-only; not sent to the model)")
+
 	// Session resume flag - NoOptDefVal allows --resume without a value
 	askCmd.Flags().StringVarP(&askResume, "resume", "r", "", "Continue a session (empty for most recent, or session ID)")
 	askCmd.Flags().Lookup("resume").NoOptDefVal = " " // space means "flag was passed without value"
@@ -142,6 +146,7 @@ func runAsk(cmd *cobra.Command, args []string) error {
 
 func captureAskInvocation(cmd *cobra.Command) (ask.Options, ask.Dependencies) {
 	opts := ask.Options{
+		User:            askUser,
 		Debug:           askDebug,
 		Search:          askSearch,
 		NoSearch:        askNoSearch,
@@ -175,6 +180,7 @@ func captureAskInvocation(cmd *cobra.Command) (ask.Options, ask.Dependencies) {
 		Resume:          askResume,
 		DebugRaw:        debugRaw, ShowStats: showStats,
 		Changed: ask.FlagState{
+			User:   cmd.Flags().Changed("user"),
 			Resume: cmd.Flags().Changed("resume"), Tools: cmd.Flags().Changed("tools"),
 			System: cmd.Flags().Changed("system"), MaxTurns: cmd.Flags().Changed("max-turns"),
 			Search: cmd.Flags().Changed("search"), MCP: cmd.Flags().Changed("mcp"),

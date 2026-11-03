@@ -49,6 +49,7 @@ func (s *serveServer) startServeMainSkill(w http.ResponseWriter, r *http.Request
 	instructions := skills.RenderActivationInstructions(activation)
 	userMessage := core.UserText(display)
 	userMessage.ClientMessageID = clientMessageID
+	s.authors.Stamp(r.Context(), s.store, &userMessage)
 	inputMessages := []core.Message{
 		{Role: core.RoleDeveloper, Parts: []core.Part{{Type: core.PartSkillActivation, SkillActivation: provenance}, {Type: core.PartText, Text: instructions}}},
 		userMessage,

@@ -41,6 +41,7 @@ describe('session search ordering', () => {
       testConfig.sidebarCategories,
       expect.any(AbortSignal),
       'relevance',
+      '',
     );
     expect(store.searchResults.value?.map((session) => session.id)).toEqual([
       'server-first',

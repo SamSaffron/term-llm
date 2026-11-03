@@ -96,3 +96,15 @@ not understand logical ownership or fenced claims. Stop older writers before
 upgrading; downgrade by restoring a backup, not reversing this migration.
 Window/document replay tombstones persist to reject stale incarnations. Turn
 and steering/rush ownership records follow session deletion via foreign keys.
+
+## Display-only web attribution (schema 69)
+
+Migration 69 adds `messages.author_id`, `sessions.created_by`, an `authors`
+directory and a partial participants index, without backfilling history.
+The first-user insert trigger sets the starter transactionally; an anonymous
+first user leaves it unknown. Branch creation explicitly sets its own requester
+after copying the original authors. Names are presentation metadata only, never
+provider context. The previous v68 binary rejects the new marker for writes;
+read-only queries ignore the new fields. Stop older writers before upgrading;
+restore a backup to downgrade. Old binaries rewriting pairing grants drop their
+approver snapshots, so those devices need pairing again.

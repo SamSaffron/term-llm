@@ -1,5 +1,6 @@
+import { bylineFor } from './authors';
 import { indexTranscriptTurns, type TranscriptRowContext } from './transcript';
-import type { MediaArtifact, Message } from './types';
+import type { Author, MediaArtifact, Message } from './types';
 import type { MarkdownMediaTarget } from './markdown';
 
 /** Session-local derived indexes. Message and media inputs must be immutable.
@@ -97,6 +98,8 @@ export function createTranscriptIndexes(
         media = next;
       mediaInputs = inputs;
     }
-    return { contexts, media };
+    const bylines = new Map<Message, Author | null | undefined>();
+    messages.forEach((message, i) => bylines.set(message, bylineFor(message, messages[i - 1])));
+    return { contexts, media, bylines };
   };
 }

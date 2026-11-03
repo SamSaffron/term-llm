@@ -345,6 +345,7 @@ type Message struct {
 	CacheAnchor             bool   // provider should apply cache_control to this message (Anthropic-specific)
 	ApprovalRole            string `json:",omitempty"` // Optional role override for guardian/policy-review transcripts only.
 	ApprovalText            string `json:",omitempty"` // Optional canonical Guardian evidence text; providers ignore it.
+	AuthorID                string `json:",omitempty"` // Stable human sender (including a device approver); persistence/UI only, ignored by providers.
 	ClientMessageID         string `json:",omitempty"` // Stable identity for first-party user intent; providers ignore it.
 	DisplayText             string `json:",omitempty"` // Optional persistence/UI text when provider-only context is present.
 	ResponseID              string `json:",omitempty"` // Stable response owner for persisted/UI projection identity; providers ignore it.

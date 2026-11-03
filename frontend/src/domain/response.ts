@@ -1,3 +1,4 @@
+import { authorFrom } from './authors';
 import { parsePendingToolCalls } from './client-tools';
 import { normalizeSteering } from './steering';
 import type {
@@ -751,6 +752,7 @@ export function reduceResponse(
             id: `${responseId}:intent:${clientMessageId}`,
             role: 'user',
             content: text(event.text || event.content || event.message),
+            author: authorFrom(event.author),
             attachments: responseAttachments(event.attachments),
             clientMessageId,
             created: Date.now(),

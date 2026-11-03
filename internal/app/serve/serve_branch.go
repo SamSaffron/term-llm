@@ -428,6 +428,7 @@ func (s *serveServer) handleCreateSessionBranch(w http.ResponseWriter, r *http.R
 	// transaction still resolves and validates that anchor; lower-level callers
 	// retain ExpectedRev/ExpectedState compare-and-swap behavior.
 	result, err := branchStore.CreateBranch(r.Context(), sourceSessionID, session.CreateBranchOptions{
+		CreatedBy:       identityID(r.Context()),
 		AnchorMessageID: req.AnchorMessageID,
 		IdempotencyKey:  req.IdempotencyKey,
 	})

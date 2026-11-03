@@ -3,6 +3,7 @@ package linkeddevices
 import (
 	"context"
 	"fmt"
+	"github.com/samsaffron/term-llm/internal/pairing"
 	"net/http"
 
 	"github.com/samsaffron/term-llm/internal/config"
@@ -17,7 +18,7 @@ type ServeHost struct {
 
 // NewServeHost resolves the session-store identity and constructs the standard
 // linked-device runtime for a serve process.
-func NewServeHost(enabled bool, ctx context.Context, store session.Store, agentName, basePath string, authenticated bool, title, approvalMode string, cfg *config.Config) (*ServeHost, error) {
+func NewServeHost(enabled bool, ctx context.Context, store session.Store, agentName, basePath string, authenticated bool, title, approvalMode string, cfg *config.Config, approver ...func(context.Context) *pairing.Person) (*ServeHost, error) {
 	if !enabled {
 		return nil, nil
 	}
@@ -28,7 +29,11 @@ func NewServeHost(enabled bool, ctx context.Context, store session.Store, agentN
 	if storeErr != nil {
 		storeID = ""
 	}
-	runtime, err := NewServer(agentName, storeID, basePath, authenticated, title, fmt.Sprintf("can see every conversation this server shows; messages drive tools under approval mode %s", approvalMode), ServerOptionsFromConfig(cfg))
+	opts := ServerOptionsFromConfig(cfg)
+	if len(approver) > 0 {
+		opts.ApproverIdentity = approver[0]
+	}
+	runtime, err := NewServer(agentName, storeID, basePath, authenticated, title, fmt.Sprintf("can see every conversation this server shows; messages drive tools under approval mode %s", approvalMode), opts)
 	if err != nil {
 		return nil, fmt.Errorf("initialize linked devices: %w", err)
 	}

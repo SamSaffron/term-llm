@@ -1,3 +1,6 @@
+import { Facepile } from './AuthorSidebar';
+import { AuthorFilter, IdentityCard } from './AuthorViewer';
+import { participantNames } from '../domain/authors';
 import { computed } from '@preact/signals';
 import type { ComponentChildren } from 'preact';
 import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'preact/hooks';
@@ -362,7 +365,7 @@ function SessionRow({
           shortcutEligible && !session.archived && !archiving ? '' : undefined
         }
         type="button"
-        aria-label={`${session.title || session.name || 'New chat'}${attentionLabel ? ` — ${attentionLabel}` : ''}`}
+        aria-label={`${session.title || session.name || 'New chat'}${attentionLabel ? ` — ${attentionLabel}` : ''}${participantNames(session, store.viewer.value) ? ` — Participants: ${participantNames(session, store.viewer.value)}` : ''}`}
         aria-current={active ? 'page' : undefined}
         aria-keyshortcuts={reorderable ? 'Alt+ArrowUp Alt+ArrowDown' : undefined}
         title={session.longTitle || session.title}
@@ -382,6 +385,7 @@ function SessionRow({
         <span class="session-meta" title={new Date(activityAt).toLocaleString()}>
           {messageCount} {messageCount === 1 ? 'message' : 'messages'} ·{' '}
           {sessionRelativeTime(activityAt)}
+          <Facepile session={session} viewer={store.viewer.value} />
           {showProject && (
             <>
               {' · '}
@@ -1292,6 +1296,7 @@ export function Sidebar() {
               )}
               {store.hubAgents.value.length > 0 && <HubAgents />}
             </div>
+            <AuthorFilter />
             <div
               class="session-groups"
               id="sessionGroups"
@@ -1320,7 +1325,11 @@ export function Sidebar() {
                     <SessionRow key={session.id} session={session} />
                   ))}
                   {!results.length && !store.searchLoading.value && (
-                    <div class="sidebar-empty">No chats found.</div>
+                    <div class="sidebar-empty">
+                      {store.viewer.value && store.sessionStore.authors.filter.value === 'me'
+                        ? 'No chats started by you.'
+                        : 'No chats found.'}
+                    </div>
                   )}
                 </section>
               ) : (
@@ -1366,6 +1375,7 @@ export function Sidebar() {
               <SidebarViewSwitch disabled={Boolean(results)} />
             </div>
           )}
+          <IdentityCard />
         </div>
       </div>
       <div

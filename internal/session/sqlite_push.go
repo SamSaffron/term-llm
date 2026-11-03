@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/samsaffron/term-llm/internal/sqliteutil"
 	"strings"
 	"time"
 )
@@ -196,6 +197,7 @@ func (s *SQLiteStore) setCurrentColumns() {
 	s.hasMessageCompactionTail = true
 	s.hasMessageStreamIdentity = true
 	s.hasMessageClientID = true
+	s.hasAuthors = true
 	s.hasSessionBranches = true
 	s.hasProjectID = true
 	s.hasProjectsTable = true
@@ -304,6 +306,7 @@ func (s *SQLiteStore) probeSessionColumns() {
 }
 
 func (s *SQLiteStore) probeMessageColumns() {
+	s.hasAuthors, _ = sqliteutil.ColumnExists(s.db, "messages", "author_id")
 	rows, err := s.db.Query("PRAGMA table_info(messages)")
 	if err != nil {
 		return
@@ -413,7 +416,7 @@ func (s *SQLiteStore) sessionSelectCols() string {
 	} else {
 		base += ", NULL AS model_policy"
 	}
-	return base
+	return base + ", " + s.createdByColumn("")
 }
 
 // scanSessionRow scans a session row into a Session struct. The flags
@@ -461,7 +464,7 @@ func scanSessionRow(row *sql.Row, hasGeneratedTitles, hasCacheWriteTokens, hasCo
 		scanArgs = append(scanArgs, &sess.CompactionCount)
 	}
 
-	scanArgs = append(scanArgs, &modelPolicyRaw)
+	scanArgs = append(scanArgs, &modelPolicyRaw, &sess.CreatedBy)
 	err := row.Scan(scanArgs...)
 	if err == sql.ErrNoRows {
 		return nil, nil

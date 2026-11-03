@@ -28,6 +28,7 @@ import (
 	appnotify "github.com/samsaffron/term-llm/internal/app/notify"
 	providers "github.com/samsaffron/term-llm/internal/app/providers"
 	appruntime "github.com/samsaffron/term-llm/internal/app/runtime"
+	"github.com/samsaffron/term-llm/internal/app/serve/authorship"
 	"github.com/samsaffron/term-llm/internal/app/serve/wire"
 	"github.com/samsaffron/term-llm/internal/app/uploads"
 	buildinfo "github.com/samsaffron/term-llm/internal/buildinfo"
@@ -954,6 +955,7 @@ const (
 )
 
 type sessionMessageEntry struct {
+	Author                  *session.Author           `json:"author,omitempty"`
 	ID                      int64                     `json:"id"`
 	Sequence                int                       `json:"sequence"`
 	Role                    string                    `json:"role"`
@@ -1203,6 +1205,8 @@ type webFileChangeSummary struct {
 }
 
 type webSessionEntry struct {
+	authorship.SessionFields
+	createdByID              string
 	ID                       string                   `json:"id"`
 	Number                   int64                    `json:"number,omitempty"`
 	Name                     string                   `json:"name,omitempty"`
@@ -1272,6 +1276,7 @@ func persistedContextUsage(sess *session.Session, provider string) *serveContext
 
 func (s *serveServer) webSessionEntryFromSummary(sess session.SessionSummary) webSessionEntry {
 	return webSessionEntry{
+		createdByID:   sess.CreatedBy,
 		Name:          sess.Name,
 		ID:            sess.ID,
 		Number:        sess.Number,
@@ -1305,6 +1310,7 @@ func (s *serveServer) webSessionEntryFromSession(sess *session.Session) webSessi
 		provider = appruntime.ResolveSessionProviderKey(s.cfgRef, sess)
 	}
 	return webSessionEntry{
+		createdByID:     sess.CreatedBy,
 		Name:            sess.Name,
 		ID:              sess.ID,
 		Number:          sess.Number,
@@ -1349,6 +1355,7 @@ func applyWebSessionAttention(entry *webSessionEntry, attention session.Attentio
 }
 
 func (s *serveServer) enrichWebSessionAttention(ctx context.Context, entries []webSessionEntry) {
+	s.enrichSessionAuthors(ctx, entries)
 	batch, ok := session.AsAttentionBatchStore(s.store)
 	if !ok || len(entries) == 0 {
 		return
@@ -1407,6 +1414,9 @@ func (s *serveServer) selectedWebSession(ctx context.Context, selector string, s
 		}
 	}
 
+	selectedRows := []webSessionEntry{selected}
+	s.enrichSessionAuthors(ctx, selectedRows)
+	selected = selectedRows[0]
 	result := &webSelectedSessionEntry{webSessionEntry: selected}
 	if selectedMeta == nil {
 		selectedMeta, _ = s.store.Get(ctx, selected.ID)
@@ -1451,6 +1461,10 @@ func (s *serveServer) selectedWebSession(ctx context.Context, selector string, s
 }
 
 func (s *serveServer) handleSessions(w http.ResponseWriter, r *http.Request) {
+	createdBy, valid := requestCreatedBy(w, r)
+	if !valid {
+		return
+	}
 	if s.store == nil {
 		writeOpenAIError(w, http.StatusServiceUnavailable, "session_unavailable", "Session persistence is unavailable. Enable sessions and check the server startup logs for database errors.")
 		return
@@ -1532,6 +1546,7 @@ func (s *serveServer) handleSessions(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		sessions, err = s.store.List(r.Context(), session.ListOptions{
+			CreatedBy:        createdBy,
 			Limit:            limit,
 			Archived:         includeArchived,
 			Categories:       categories,
@@ -1681,6 +1696,7 @@ func (index *sessionMessageProjectionIndex) recordSessionMessagePart(part core.P
 }
 
 func (s *serveServer) sessionMessageEntries(msgs []session.Message) []sessionMessageEntry {
+	authors := s.authors.MessageAuthors(s.store, msgs)
 	index := buildSessionMessageProjectionIndex(msgs)
 	cfg := s.cfgRef.ResolveReasoning("serve")
 	index.reasoningConfig = &cfg
@@ -1689,6 +1705,9 @@ func (s *serveServer) sessionMessageEntries(msgs []session.Message) []sessionMes
 		entry, ok := s.sessionMessageEntryForMessage(&msgs[i], index)
 		if !ok {
 			continue
+		}
+		if msgs[i].Role == core.RoleUser {
+			entry.Author = authors[msgs[i].AuthorID]
 		}
 		result = append(result, entry)
 	}
@@ -2116,6 +2135,7 @@ func (s *serveServer) handleSessionInterrupt(w http.ResponseWriter, r *http.Requ
 	} else {
 		msg = core.UserText(displayText)
 	}
+	s.authors.Stamp(r.Context(), s.store, &msg)
 	if displayText == "" && strings.TrimSpace(core.MessageText(msg)) == "" && core.MessageAttachmentSummary(msg) == "" {
 		writeOpenAIError(w, http.StatusBadRequest, "invalid_request_error", "message or content is required")
 		return
@@ -2743,6 +2763,7 @@ func (s *serveServer) handleSessionMetadataPatch(w http.ResponseWriter, r *http.
 }
 
 func (s *serveServer) auth(next http.HandlerFunc) http.HandlerFunc {
+	next = s.withIdentity(next)
 	if s.browserAuth != nil {
 		return linkeddevices.AdmitDevice(next, func(w http.ResponseWriter, r *http.Request) {
 			if p, ok := hubPrincipal(r); !ok || p.SessionID == "" {

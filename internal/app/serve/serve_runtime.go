@@ -17,6 +17,7 @@ import (
 
 	"github.com/samsaffron/term-llm/internal/agents"
 	"github.com/samsaffron/term-llm/internal/app/runtime"
+	"github.com/samsaffron/term-llm/internal/app/serve/authorship"
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/llm"
 	"github.com/samsaffron/term-llm/internal/llm/core"
@@ -159,6 +160,7 @@ func (rt *serveRuntime) takePendingCompactionIdentity() (sequence, count int, ok
 }
 
 type runtimeInterruptState struct {
+	steeringAuthor         func(string) *session.Author
 	responseRun            *responseRun
 	cancel                 context.CancelFunc
 	requestCancel          func()
@@ -1014,9 +1016,7 @@ func (state *runtimeInterruptState) publishSteeringAdmission(entry engine.Queued
 	if text == "" {
 		text = core.MessageAttachmentSummary(entry.Message)
 	}
-	if err := state.responseRun.appendEvent("response.steering.queued", map[string]any{
-		"client_message_id": entry.ID, "text": text,
-	}); err != nil {
+	if err := state.responseRun.appendEvent("response.steering.queued", authorship.SteeringReceipt(state.steeringAuthor, entry, text)); err != nil {
 		// Never encourage callers to retry guidance that has already been admitted.
 		log.Printf("[serve] publish pending steering %s: %v", entry.ID, err)
 	}

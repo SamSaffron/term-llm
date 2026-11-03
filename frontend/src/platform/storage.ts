@@ -24,6 +24,7 @@ export const STORAGE_BASE_KEYS = {
   pendingIntents: 'term_llm_pending_intent',
   diffCommentQueue: 'term_llm_diff_comment_queue',
   projectExpansion: 'term_llm_project_expansion',
+  authorFilter: 'term_llm_author_filter',
   sidebarView: 'term_llm_sidebar_view',
   lastProject: 'term_llm_last_project',
   webMCPSessions: 'term_llm_webmcp_sessions',

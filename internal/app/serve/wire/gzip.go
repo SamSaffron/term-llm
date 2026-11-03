@@ -67,7 +67,9 @@ func WriteJSONConditional(w http.ResponseWriter, r *http.Request, status int, pa
 		return
 	}
 	h := w.Header()
-	h.Set("Cache-Control", "no-cache")
+	if h.Get("Cache-Control") == "" {
+		h.Set("Cache-Control", "no-cache")
+	}
 	etag := JSONPayloadETag(body)
 	h.Set("ETag", etag)
 	if ETagMatches(r.Header.Get("If-None-Match"), etag) {

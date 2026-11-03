@@ -1068,6 +1068,7 @@ type TranscriptUndoRedoStore interface {
 // CreateBranchOptions identifies a durable source prefix and optional optimistic
 // concurrency/idempotency guards. AnchorMessageID zero means an empty prefix.
 type CreateBranchOptions struct {
+	CreatedBy       string
 	AnchorMessageID int64
 	ExpectedState   *TranscriptMutationState
 	ExpectedRev     *int64

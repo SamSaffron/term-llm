@@ -206,7 +206,10 @@ func TestProductionBundleSizeBudgets(t *testing.T) {
 		// preference/detail state, replay/recovery reducers, command completions,
 		// and accessible inline rows: measured 532.9/156.1 kB raw/gzip (level 6).
 		// Keep the same ~1% measured headroom; no payload baseline is changed.
-		"dist/app.js":           {raw: 538_500, gzip: 157_700},
+		// Display-only multi-user attribution adds conversion, bylines and viewer
+		// controls: measured 538.1/157.85 kB raw/gzip (Go level 6). Keep the raw
+		// cap; add only 300 bytes to the gzip allowance, not a new ~1% cushion.
+		"dist/app.js":           {raw: 538_500, gzip: 158_000},
 		"dist/chunks/Panels.js": {raw: 32_000, gzip: 11_000},
 		// Panel splitting adds a shared-import edge to Lightbox: measured 8.03/3.21 kB.
 		// Pausing transcript media while a video is open brings it to 8.16/3.27 kB.

@@ -10,6 +10,7 @@ import (
 
 	appmemory "github.com/samsaffron/term-llm/internal/app/memory"
 	"github.com/samsaffron/term-llm/internal/app/runtime"
+	"github.com/samsaffron/term-llm/internal/app/serve/authorship"
 	"github.com/samsaffron/term-llm/internal/app/uploads"
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/filetrack"
@@ -29,6 +30,7 @@ import (
 )
 
 type serveServer struct {
+	authors                  authorship.Directory
 	admissionInstanceOnce    sync.Once
 	admissionInstanceID      string
 	uploadHandler            uploads.ReferenceHandler

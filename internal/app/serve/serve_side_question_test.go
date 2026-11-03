@@ -88,6 +88,7 @@ func TestServeSideQuestionIsEphemeralAndToolless(t *testing.T) {
 		providerKey: "mock", defaultModel: "test-model",
 		history: []core.Message{core.UserText("main question"), core.AssistantText("main answer")},
 	}
+	rt.history[0].AuthorID = "AUTHOR_CANARY_SIDE_QUESTION"
 	rt.refreshSideQuestionSnapshot(sidequestion.Anchor{Messages: rt.history})
 	rt.sideProviderFactory = func(_, _ string) (core.Provider, error) { return provider, nil }
 
@@ -108,6 +109,11 @@ func TestServeSideQuestionIsEphemeralAndToolless(t *testing.T) {
 		t.Fatalf("provider requests = %d", len(provider.Requests))
 	}
 	req := provider.Requests[0]
+	for _, m := range req.Messages {
+		if m.AuthorID != "" {
+			t.Fatal("side question leaked author metadata")
+		}
+	}
 	if !req.Ephemeral || req.Search || len(req.Tools) != 0 || req.MaxTurns != 1 {
 		t.Fatalf("unsafe side request: %#v", req)
 	}

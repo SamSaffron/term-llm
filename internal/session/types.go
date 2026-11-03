@@ -58,10 +58,11 @@ const (
 
 // Session represents a chat session stored in the database.
 type Session struct {
-	ID      string `json:"id"`
-	Number  int64  `json:"number,omitempty"` // Sequential session number (1, 2, 3...)
-	Name    string `json:"name,omitempty"`
-	Summary string `json:"summary,omitempty"` // First user message or auto-generated
+	CreatedBy string `json:"created_by_id,omitempty"`
+	ID        string `json:"id"`
+	Number    int64  `json:"number,omitempty"` // Sequential session number (1, 2, 3...)
+	Name      string `json:"name,omitempty"`
+	Summary   string `json:"summary,omitempty"` // First user message or auto-generated
 
 	GeneratedShortTitle string             `json:"generated_short_title,omitempty"`
 	GeneratedLongTitle  string             `json:"generated_long_title,omitempty"`
@@ -123,6 +124,7 @@ type Session struct {
 // The Parts field stores the full llm.Message.Parts as JSON to preserve tool
 // calls, uploaded images/files, and provider replay state exactly.
 type Message struct {
+	AuthorID                string      `json:"author_id,omitempty"`
 	ID                      int64       `json:"id"`
 	SessionID               string      `json:"session_id"`
 	Role                    core.Role   `json:"role"`
@@ -142,6 +144,7 @@ type Message struct {
 
 // SessionSummary is a lightweight view of a session for listing.
 type SessionSummary struct {
+	CreatedBy                string             `json:"created_by_id,omitempty"`
 	ID                       string             `json:"id"`
 	Number                   int64              `json:"number,omitempty"` // Sequential session number
 	Name                     string             `json:"name,omitempty"`
@@ -192,6 +195,7 @@ type SessionSummary struct {
 
 // ListOptions configures session listing.
 type ListOptions struct {
+	CreatedBy        string
 	IDs              []string              // Restrict to these stable session IDs (deduplicated by the store)
 	Name             string                // Filter by name
 	Provider         string                // Filter by provider
@@ -225,6 +229,7 @@ const (
 
 // SearchOptions configures session full-text search.
 type SearchOptions struct {
+	CreatedBy        string
 	Sort             SearchSort // Empty means relevance; date sorts use last message time (creation fallback)
 	Query            string     // Text query to search for
 	Categories       []string   // Sidebar/web categories (all, chat, web, ask, plan, exec)
@@ -236,6 +241,7 @@ type SearchOptions struct {
 
 // SearchResult represents a search match.
 type SearchResult struct {
+	CreatedBy           string             `json:"created_by_id,omitempty"`
 	SessionID           string             `json:"session_id"`
 	SessionNumber       int64              `json:"session_number"` // Sequential session number
 	MessageID           int64              `json:"message_id"`
@@ -266,12 +272,12 @@ type SearchResult struct {
 // NewMessage creates a new Message from an llm.Message with the given session ID and sequence.
 func NewMessage(sessionID string, msg core.Message, sequence int) *Message {
 	m := &Message{
-		SessionID:               sessionID,
-		Role:                    msg.Role,
-		Parts:                   msg.Parts,
-		CreatedAt:               time.Now(),
-		Sequence:                sequence,
-		ClientMessageID:         msg.ClientMessageID,
+		SessionID:       sessionID,
+		Role:            msg.Role,
+		Parts:           msg.Parts,
+		CreatedAt:       time.Now(),
+		Sequence:        sequence,
+		ClientMessageID: msg.ClientMessageID, AuthorID: userAuthorID(msg.Role, msg.AuthorID),
 		ResponseID:              msg.ResponseID,
 		AssistantSegmentOrdinal: msg.AssistantSegmentOrdinal,
 		SegmentStartSequence:    msg.SegmentStartSequence,
@@ -373,10 +379,10 @@ func (m *Message) ToLLMMessage() core.Message {
 		return core.Message{}
 	}
 	msg := core.Message{
-		Role:                    m.Role,
-		Parts:                   providerMessageParts(m.Parts),
-		DisplayText:             m.DisplayText(),
-		ClientMessageID:         m.ClientMessageID,
+		Role:            m.Role,
+		Parts:           providerMessageParts(m.Parts),
+		DisplayText:     m.DisplayText(),
+		ClientMessageID: m.ClientMessageID, AuthorID: userAuthorID(m.Role, m.AuthorID),
 		ResponseID:              m.ResponseID,
 		AssistantSegmentOrdinal: m.AssistantSegmentOrdinal,
 		SegmentStartSequence:    m.SegmentStartSequence,

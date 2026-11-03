@@ -435,6 +435,7 @@ func (r *chatInvocation) buildChatSessionRuntime(ctx context.Context, launch cha
 	// the background so opening it never waits on them.
 	llm.DefaultProviderCredentials.Warm(cfg)
 	model := chat.NewWithFastProviderAndApproval(cfg, provider, fastProvider, engine, providerKey, modelName, mcpManager, settings.MaxTurns, forceExternalSearch, r.opts.NoWebFetch, settings.Search, enabledLocalTools, settings.Tools, settings.MCP, false, initialText, store, sess, useAltScreen, r.opts.AutoSend, autoSendMode, r.opts.TextMode, agentName, chatPlatformMessage, resolvedYolo, desiredApprovalMode, toolMgr)
+	model.SetUserSelection(r.user)
 	model.SetModelPolicy(effectivePolicy)
 	var liveModelMu sync.RWMutex
 	liveModel := runpkg.ParentModel{Provider: providerKey, Model: modelName}

@@ -865,3 +865,35 @@ func TestOwnerAPIRejectsDeviceAndCrossSiteMutation(t *testing.T) {
 		t.Fatalf("Cache-Control = %q", got)
 	}
 }
+
+// A device closes its invitation after receiving the answer. That presence frame
+// can beat the delivery receipt, so owner cancellation must also settle retained
+// approvals whose invitation has already disappeared.
+func TestCancelInvitationSettlesDeliveryAfterPeerDisconnect(t *testing.T) {
+	runtime, grants, approved := startDroppedPairAnswerDelivery(t)
+	runtime.mu.Lock()
+	var id string
+	for pendingID := range runtime.pending {
+		id = pendingID
+	}
+	runtime.mu.Unlock()
+	if id == "" {
+		t.Fatal("expected a retained delivery")
+	}
+	runtime.cancelDisconnectedInvitation(id)
+	if err := runtime.CancelInvitation(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-approved:
+		if err == nil {
+			t.Fatal("canceled delivery succeeded")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("delivery did not settle after disconnected invitation was canceled")
+	}
+	remaining, err := grants.List()
+	if err != nil || len(remaining) != 0 {
+		t.Fatalf("canceled approver grant remained: %+v %v", remaining, err)
+	}
+}

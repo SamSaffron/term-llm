@@ -14,6 +14,7 @@ import (
 
 // Options is the invocation-scoped snapshot of ask flags.
 type Options struct {
+	User                string
 	Debug               bool
 	Search              bool
 	NoSearch            bool
@@ -50,7 +51,7 @@ type Options struct {
 }
 
 // FlagState preserves explicit false/empty flags, including the historical system lookup.
-type FlagState struct{ Resume, Tools, System, MaxTurns, Search, MCP bool }
+type FlagState struct{ User, Resume, Tools, System, MaxTurns, Search, MCP bool }
 
 // Dependencies are captured CLI inputs and deferred startup operations. Approval
 // is resolved after progressive validation and config loading, not during capture.

@@ -1,3 +1,4 @@
+import { PendingAuthor } from './AuthorByline';
 import { useStore } from '../app/context';
 import { rushActive } from '../domain/steering';
 
@@ -45,6 +46,7 @@ export function SteeringQueuePreview({ selectedSteering }: { selectedSteering: s
               <span class="pending-steering-icon" aria-hidden="true">
                 …
               </span>
+              <PendingAuthor author={entry.author} />
               <span class="pending-steering-text">{entry.content}</span>
               <span class="pending-steering-label">
                 ({entry.state === 'sending' ? 'sending…' : entry.state})

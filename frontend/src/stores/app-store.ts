@@ -1,3 +1,4 @@
+import { authorFrom } from '../domain/authors';
 import { ThinkingStore } from './thinking-store';
 import type { RushOperation } from '../domain/steering';
 import {
@@ -573,6 +574,7 @@ export class AppStore {
     this.branchBusy = this.branchStore.busy;
     this.branchError = this.branchStore.error;
     this.skillStore = new SkillStore(this.services, {
+      viewer: this.viewer,
       activeSession: this.activeSession,
       activeSessionId: this.activeSessionId,
       streaming: this.streaming,
@@ -787,9 +789,9 @@ export class AppStore {
       const [providers, sidebar] = await Promise.all([
         this.endpoints.providers(),
         this.projectsEnabled.value
-          ? this.endpoints.sidebar(this.showArchived.value)
+          ? this.endpoints.sidebar(this.showArchived.value, this.sessionStore.authors.createdBy)
           : this.endpoints.sessions(
-              `limit=30&include_archived=${this.showArchived.value ? '1' : '0'}`,
+              `limit=30&include_archived=${this.showArchived.value ? '1' : '0'}${this.sessionStore.authors.query}`,
             ),
       ]);
       this.applyProviders(providers);
@@ -1349,7 +1351,12 @@ export class AppStore {
     this.runEngine.recoverActiveSupervisors();
   }
 
+  get viewer() {
+    return this.sessionStore.authors.viewer;
+  }
+
   private applyCapabilities(data: Record<string, unknown>): void {
+    this.viewer.value = authorFrom(data.viewer);
     this.thinking.applyCapabilities(data.reasoning);
     const linkedDevices = recordValue(data.linked_devices);
     const linkedDevicesActive =
@@ -2278,7 +2285,12 @@ export class AppStore {
         const response = await this.endpoints.createBlankSession(body);
         const durable = this.sessionFrom(response.session);
         if (!durable.id) throw new Error('Server did not return a session id.');
-        const provisional: Session = { ...durable, id: draftID, messages: [] };
+        const provisional: Session = {
+          ...durable,
+          createdBy: durable.createdBy ?? this.viewer.value,
+          id: draftID,
+          messages: [],
+        };
         this.sessionStore.prepend(provisional);
         this.sessionStore.activate(provisional);
         this.selectedDraftWorktree.value = '';

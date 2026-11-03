@@ -41,6 +41,7 @@ type SQLiteStore struct {
 	hasMessagesTable         bool // true if the messages table exists
 	hasMessageCompactionTail bool // true if messages table has compaction_tail column
 	hasMessageStreamIdentity bool // true if messages table has response-scoped segment identity columns
+	hasAuthors               bool
 	hasMessageClientID       bool // true if messages table has client_message_id
 	hasSessionBranches       bool // true if session_branches table exists
 	hasProjectID             bool // true if sessions table has project_id
@@ -58,6 +59,7 @@ var _ StoreChangeStore = (*SQLiteStore)(nil)
 // Schema for the sessions database.
 const schema = `
 CREATE TABLE IF NOT EXISTS sessions (
+ created_by TEXT NOT NULL DEFAULT '',
     id TEXT PRIMARY KEY,
     number INTEGER,
     name TEXT,
@@ -112,6 +114,7 @@ CREATE TABLE IF NOT EXISTS sessions (
 );
 
 CREATE TABLE IF NOT EXISTS messages (
+ author_id TEXT NOT NULL DEFAULT '',
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
     role TEXT NOT NULL CHECK (role IN ('user', 'assistant', 'system', 'tool', 'developer', 'event')),

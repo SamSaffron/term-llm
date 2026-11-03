@@ -368,6 +368,7 @@ func (s *serveServer) resolveDurableBranch(ctx context.Context, previousResponse
 		return durablePreviousResponseResolution{}, http.StatusConflict, "conversation branching is unavailable"
 	}
 	result, err := branchStore.CreateBranch(operationCtx, sourceSessionID, session.CreateBranchOptions{
+		CreatedBy:       identityID(ctx),
 		AnchorMessageID: msgID,
 		ExpectedState:   expectedState,
 		ExpectedRev:     expectedRev,

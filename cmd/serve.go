@@ -73,6 +73,9 @@ func init() {
 }
 
 func bindServeFlags(cmd *cobra.Command, opts *ServeOptions) {
+	cmd.Flags().StringVar(&opts.IdentityHeader, "identity-header", "", "Trusted proxy header containing a stable user ID (display attribution only)")
+	cmd.Flags().StringVar(&opts.IdentityNameHeader, "identity-name-header", "", "Trusted proxy header containing the display name")
+	cmd.Flags().StringVar(&opts.IdentityEmailHeader, "identity-email-header", "", "Trusted proxy header containing the email address")
 	cmd.Flags().StringVar(&opts.Host, "host", "127.0.0.1", "Bind host")
 	cmd.Flags().IntVar(&opts.Port, "port", 8080, "Bind port")
 	cmd.Flags().StringVar(&opts.Token, "token", "", "Bearer token for API auth (defaults to $TERM_LLM_SERVE_TOKEN, else auto-generated)")
