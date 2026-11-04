@@ -1,7 +1,7 @@
 import { Facepile } from './AuthorSidebar';
 import { AuthorFilter, IdentityCard } from './AuthorViewer';
 import { participantNames } from '../domain/authors';
-import { computed } from '@preact/signals';
+import { computed, useComputed } from '@preact/signals';
 import type { ComponentChildren } from 'preact';
 import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'preact/hooks';
 import { useStore } from '../app/context';
@@ -1231,13 +1231,13 @@ export function Sidebar() {
     store.newChat();
     store.sidebarOpen.value = false;
   };
-  // New chat opens the draft of the project it would start in.
-  const newChatProject = store.activeSession.value
-    ? store.activeSession.value.projectId || ''
-    : store.activeProjectId.value;
-  const newChatHasDraft = store.composer.unsentNewChats.value.some(
-    (draft) => (draft.projectId || '') === newChatProject,
-  );
+  // New chat opens the draft of the project it would start in. Computed so a
+  // conversation switch re-renders the sidebar only when the dot changes.
+  const newChatHasDraft = useComputed(() => {
+    const active = store.activeSession.value;
+    const project = active ? active.projectId || '' : store.activeProjectId.value;
+    return store.composer.unsentNewChats.value.some((draft) => (draft.projectId || '') === project);
+  }).value;
   const newChatLabel = newChatHasDraft ? 'New chat, unsent draft' : 'New chat';
   return (
     <div ref={overlayRoot} class="sidebar-overlay-root">

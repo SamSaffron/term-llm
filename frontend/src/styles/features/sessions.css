@@ -573,10 +573,14 @@
   white-space: nowrap;
 }
 
-.session-draft-icon {
-  flex: 0 0 0.85rem;
+.session-draft-icon,
+.session-draft-discard svg {
+  flex: none;
   width: 0.85rem;
   height: 0.85rem;
+}
+
+.session-draft-icon {
   color: var(--link);
 }
 
@@ -584,9 +588,4 @@
   display: grid;
   place-items: center;
   padding: 0;
-}
-
-.session-draft-discard svg {
-  width: 0.85rem;
-  height: 0.85rem;
 }

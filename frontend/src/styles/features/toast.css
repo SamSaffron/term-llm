@@ -78,15 +78,6 @@
   cursor: pointer;
 }
 
-.toast-action:hover {
-  background: var(--bg-accent);
-}
-
-.toast-action:focus-visible {
-  outline: 2px solid var(--toast-accent);
-  outline-offset: 1px;
-}
-
 .toast-close {
   display: grid;
   place-items: center;
@@ -106,12 +97,14 @@
   height: 0.85rem;
 }
 
-.toast-close:hover {
+.toast-close:hover,
+.toast-action:hover {
   color: var(--text);
   background: var(--bg-accent);
 }
 
-.toast-close:focus-visible {
+.toast-close:focus-visible,
+.toast-action:focus-visible {
   color: var(--text);
   outline: 2px solid var(--toast-accent);
   outline-offset: 1px;
