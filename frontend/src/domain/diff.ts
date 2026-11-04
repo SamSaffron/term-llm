@@ -1,23 +1,10 @@
 import type { DiffFile, DiffLine } from './types';
 
+export { DIFF_SCOPES, normalizeDiffScope } from './diff-scope';
+export type { DiffScope } from './diff-scope';
+
 export function isMarkdownPath(path: string): boolean {
   return /\.(?:md|markdown)$/i.test(String(path || ''));
-}
-
-export const DIFF_SCOPES = [
-  'last_turn',
-  'last_3_turns',
-  'uncommitted',
-  'unstaged',
-  'staged',
-] as const;
-export type DiffScope = (typeof DIFF_SCOPES)[number];
-export function normalizeDiffScope(value: unknown): DiffScope {
-  const scope = String(value || '')
-    .trim()
-    .toLowerCase()
-    .replaceAll('-', '_');
-  return DIFF_SCOPES.includes(scope as DiffScope) ? (scope as DiffScope) : 'last_turn';
 }
 
 export function parseUnifiedPatch(patch: string): DiffLine[] {

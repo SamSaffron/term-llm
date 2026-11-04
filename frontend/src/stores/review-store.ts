@@ -1,19 +1,12 @@
-import { signal, type ReadonlySignal } from '@preact/signals';
-import type { Session, DiffComment, DiffFile, FilesystemObservation } from '../domain/types';
+import { signal } from '@preact/signals';
+import { normalizeDiffScope } from '../domain/diff-scope';
+import type { DiffComment, DiffFile } from '../domain/types';
 import { errorMessage } from '../domain/text';
 import {
   reviewAnchorFingerprint,
-  reviewCommentPayload,
   validateReviewBatch,
   validateReviewComment,
 } from '../domain/review-policy';
-import {
-  linesFromHunks,
-  normalizeDiffScope,
-  parseUnifiedDiffFiles,
-  parseUnifiedPatch,
-  sortDiffFiles,
-} from '../domain/diff';
 import {
   clearSessionDiffComments,
   persistDiffComment,
@@ -21,21 +14,23 @@ import {
   removeDiffComment,
 } from '../platform/storage';
 import type { AppStoreServices } from './app-store-services';
-import type { DiffState, SendOptions } from './store-types';
+import type { DiffState } from './store-types';
 import { listFrom, recordValue, uuid } from './store-utils';
+import type {
+  ReviewOperationContext,
+  ReviewOperationState,
+  ReviewOperationsApi,
+  ReviewStoreHost,
+} from './review-types';
 
-export interface ReviewStoreHost {
-  activeSession: ReadonlySignal<Session | null>;
-  activeSessionId: ReadonlySignal<string>;
-  streaming: ReadonlySignal<boolean>;
-  closePlan: () => void;
-  restartStatusPoll: () => void;
-  send: (options?: SendOptions) => Promise<void>;
-  steer: (content: string, options?: SendOptions) => Promise<void>;
-  publishSessionChange: (type: 'review-comment-changed', sessionId: string) => void;
-}
+export type { ReviewStoreHost } from './review-types';
 
-/** Owns file-change loading, expansion, and the durable review comment queue. */
+/**
+ * Owns the eager diff signal and durable review comment queue. Diff fetching,
+ * unified-diff parsing, expansion, revalidation, and send payload preparation
+ * live behind the dynamic review-operations import so ordinary session startup
+ * does not load them. Queueing, editing, and re-anchoring stay synchronous.
+ */
 export class ReviewStore {
   readonly diff = signal<DiffState>({
     open: false,
@@ -58,8 +53,11 @@ export class ReviewStore {
     followCurrentFile: true,
   });
 
-  private loadEpoch = 0;
-  private readonly expandEpoch = new Map<string, number>();
+  private readonly operationState: ReviewOperationState = {
+    loadEpoch: 0,
+    expandEpoch: new Map(),
+  };
+  private operationsPromise: Promise<ReviewOperationsApi> | null = null;
 
   constructor(
     private readonly services: AppStoreServices,
@@ -83,7 +81,7 @@ export class ReviewStore {
     if (!sessionId) return;
     try {
       const data = await this.services.endpoints.diffComments(sessionId);
-      if (this.diff.peek().sessionId !== sessionId) return;
+      if (this.services.isDisposed || this.diff.peek().sessionId !== sessionId) return;
       const incoming = listFrom(data, 'comments', 'items')
         .map((entry): DiffComment | null => {
           const raw = recordValue(entry.diff_comment) || entry;
@@ -130,6 +128,35 @@ export class ReviewStore {
     };
   }
 
+  private operationContext(): ReviewOperationContext {
+    return {
+      services: this.services,
+      host: this.host,
+      diff: this.diff,
+      state: this.operationState,
+      refreshDiffComments: (sessionId) => this.refreshDiffComments(sessionId),
+      loadMarkdownPreview: (file, force) => this.loadMarkdownPreview(file, force),
+    };
+  }
+
+  /**
+   * Loads the deferred implementation once per store. Concurrent callers share
+   * the in-flight import; a rejected chunk fetch clears the cache so a later
+   * attempt can retry instead of poisoning the session.
+   */
+  private operations(): Promise<ReviewOperationsApi> {
+    if (!this.operationsPromise) {
+      const promise = import('./review-operations').then(
+        ({ ReviewOperations }) => new ReviewOperations(this.operationContext()),
+      );
+      this.operationsPromise = promise;
+      void promise.catch(() => {
+        if (this.operationsPromise === promise) this.operationsPromise = null;
+      });
+    }
+    return this.operationsPromise;
+  }
+
   async toggleDiff(): Promise<void> {
     const session = this.host.activeSession.value;
     if (!session) return;
@@ -138,11 +165,12 @@ export class ReviewStore {
     this.host.restartStatusPoll();
     if (this.diff.value.open) await this.loadDiff(true);
   }
+
   async openWorktreeDiff(dir: string, title: string): Promise<void> {
     const owner = this.host.activeSessionId.peek();
     if (!owner || !dir) return;
     this.host.closePlan();
-    const epoch = ++this.loadEpoch;
+    const epoch = ++this.operationState.loadEpoch;
     this.diff.value = {
       ...this.diff.peek(),
       open: true,
@@ -159,30 +187,11 @@ export class ReviewStore {
       readOnly: true,
     };
     try {
-      const data = await this.services.endpoints.worktreeDiff(
-        this.host.activeSession.value?.projectId || '',
-        dir,
-      );
-      if (epoch !== this.loadEpoch || this.diff.peek().worktreeDir !== dir) return;
-      const parsed = sortDiffFiles(parseUnifiedDiffFiles(String(data.diff || data.patch || '')));
-      const files =
-        data.truncated === true
-          ? parsed.map((file, index) => ({
-              ...file,
-              truncated: index === parsed.length - 1 || file.truncated,
-            }))
-          : parsed;
-      this.diff.value = {
-        ...this.diff.peek(),
-        files,
-        loading: false,
-        error:
-          data.truncated === true
-            ? 'This worktree diff was truncated; showing the available changes.'
-            : '',
-      };
+      const operations = await this.operations();
+      if (!this.isOwnedWorktree(owner, dir, epoch)) return;
+      await operations.openWorktreeDiff(owner, dir, title, epoch);
     } catch (error) {
-      if (epoch !== this.loadEpoch || this.diff.peek().worktreeDir !== dir) return;
+      if (!this.isOwnedWorktree(owner, dir, epoch)) return;
       this.diff.value = { ...this.diff.peek(), loading: false, error: errorMessage(error) };
     }
   }
@@ -193,7 +202,7 @@ export class ReviewStore {
     if (!session) return;
     const owner = session.id;
     const scope = normalizeDiffScope(this.diff.value.scope);
-    const epoch = ++this.loadEpoch;
+    const epoch = ++this.operationState.loadEpoch;
     this.diff.value = {
       ...this.diff.value,
       sessionId: owner,
@@ -204,256 +213,15 @@ export class ReviewStore {
       worktreeTitle: undefined,
       readOnly: false,
     };
+    void this.refreshDiffComments(owner);
     try {
-      void this.refreshDiffComments(owner);
-      const data = await this.services.endpoints.fileChanges(owner, scope);
-      const state = this.diff.peek();
-      if (
-        epoch !== this.loadEpoch ||
-        this.host.activeSessionId.peek() !== owner ||
-        state.sessionId !== owner ||
-        normalizeDiffScope(state.scope) !== scope
-      )
-        return;
-      const existing = new Map(state.files.map((file) => [file.path, file]));
-      const turnScope = scope === 'last_turn' || scope === 'last_3_turns';
-      const refreshContexts = new Map<string, number>();
-      const refreshMarkdown = new Set<string>();
-      const files = sortDiffFiles(
-        listFrom(data, 'file_changes', 'files', 'changes')
-          .map((entry): DiffFile => {
-            const path = String(entry.path || '');
-            const previous = existing.get(path);
-            const sequence = Number(entry.seq ?? entry.sequence) || 0;
-            const snapshotSeq = Number(entry.snapshot_seq) || 0;
-            const sameContent = Boolean(
-              turnScope &&
-              previous &&
-              (previous.sequence || 0) === sequence &&
-              (previous.snapshotSeq || 0) === snapshotSeq,
-            );
-            if (previous?.expanded && !sameContent)
-              refreshContexts.set(path, previous.context || 0);
-            const status = String(entry.status || entry.kind || '');
-            const previewSide = status.toLowerCase() === 'delete' ? 'before' : 'after';
-            const preservePreview = Boolean(
-              turnScope && sameContent && previous?.markdownPreview?.scope === scope,
-            );
-            const refreshRenderedPreview = Boolean(
-              previous?.markdownPreview?.view === 'rendered' &&
-              (!preservePreview ||
-                previous.markdownPreview.source === undefined ||
-                Boolean(previous.markdownPreview.error)),
-            );
-            if (refreshRenderedPreview) refreshMarkdown.add(path);
-            const markdownPreview =
-              preservePreview && !refreshRenderedPreview
-                ? previous?.markdownPreview
-                : refreshRenderedPreview
-                  ? {
-                      ...previous?.markdownPreview,
-                      view: 'rendered' as const,
-                      side: previewSide as 'before' | 'after',
-                      sequence,
-                      snapshotSeq,
-                      scope,
-                      loading: true,
-                      error: '',
-                    }
-                  : undefined;
-            const preserveExpandedDiff = Boolean(previous?.expanded && previous.lines);
-            return {
-              path,
-              old_path: String(entry.old_path || ''),
-              status,
-              additions: Number(entry.adds ?? entry.additions) || 0,
-              deletions: Number(entry.dels ?? entry.deletions) || 0,
-              binary: Boolean(entry.binary || entry.is_binary),
-              image: Boolean(entry.image || entry.is_image),
-              beforeURL: String(
-                entry.before_url || entry.old_url || (sameContent ? previous?.beforeURL : '') || '',
-              ),
-              afterURL: String(
-                entry.after_url || entry.new_url || (sameContent ? previous?.afterURL : '') || '',
-              ),
-              lastChangedAt: Number(entry.last_changed_at || entry.updated_at) || 0,
-              sequence,
-              snapshotSeq,
-              truncated: Boolean(entry.truncated),
-              provenance: String(entry.provenance || '') as DiffFile['provenance'],
-              provenances: Array.isArray(entry.provenances) ? entry.provenances.map(String) : [],
-              baselineState: String(entry.baseline_state || '') as DiffFile['baselineState'],
-              contentStatus: String(entry.content_status || ''),
-              contentAvailable: Boolean(entry.content_available),
-              claimCoverage: String(entry.claim_coverage || '') as DiffFile['claimCoverage'],
-              expanded: previous?.expanded,
-              loading: sameContent ? previous?.loading : Boolean(previous?.expanded),
-              error: sameContent ? previous?.error : '',
-              lines: sameContent || preserveExpandedDiff ? previous?.lines : undefined,
-              patch: sameContent || preserveExpandedDiff ? previous?.patch : undefined,
-              context: sameContent || preserveExpandedDiff ? previous?.context : undefined,
-              oldLineCount:
-                sameContent || preserveExpandedDiff ? previous?.oldLineCount : undefined,
-              newLineCount:
-                sameContent || preserveExpandedDiff ? previous?.newLineCount : undefined,
-              lang: sameContent || preserveExpandedDiff ? previous?.lang : undefined,
-              markdownPreview,
-            };
-          })
-          .filter((entry) => entry.path),
-      );
-      const parseObservation = (entry: Record<string, unknown>): FilesystemObservation => ({
-        id: Number(entry.id) || 0,
-        classification: String(entry.classification || ''),
-        root: String(entry.root || ''),
-        createdCount: Number(entry.created_count) || 0,
-        modifiedCount: Number(entry.modified_count) || 0,
-        deletedCount: Number(entry.deleted_count) || 0,
-        sampledPaths: Array.isArray(entry.sampled_paths) ? entry.sampled_paths.map(String) : [],
-        samplesTruncated: Boolean(entry.samples_truncated),
-        coverageStatus: String(entry.coverage_status || 'complete'),
-        eventSeq: Number(entry.event_seq) || 0,
-      });
-      const materializations = listFrom(data, 'materializations').map(parseObservation);
-      const observationContainer = (data.observations || {}) as Record<string, unknown>;
-      const observations = listFrom(observationContainer, 'batches').map(parseObservation);
-      const claimDiagnostics = listFrom(data, 'claim_diagnostics').map((entry) => ({
-        normalizedPattern: String(entry.normalized_pattern || ''),
-        claimKind: String(entry.claim_kind || ''),
-        reason: String(entry.reason || ''),
-        coverageStatus: String(entry.coverage_status || 'complete'),
-        matchingPathCount: Number(entry.matching_path_count) || 0,
-        message: String(entry.message || ''),
-      }));
-      const summary = (data.file_change_summary || {}) as Record<string, unknown>;
-      let newlyStale = 0;
-      const comments = state.comments.map((comment) => {
-        if (comment.sessionId !== owner || comment.state === 'stale') return comment;
-        const commentTurnScope = ['last_turn', 'last_3_turns'].includes(
-          normalizeDiffScope(comment.scope || scope),
-        );
-        const file = files.find((entry) => entry.path === comment.path);
-        let anchorChanged = !file;
-        if (file?.lines && comment.anchorFingerprint) {
-          const index = file.lines.findIndex((line) =>
-            comment.side === 'old' ? line.oldLine === comment.line : line.newLine === comment.line,
-          );
-          // A missing line in a partial hunk is unknown, not stale. Complete
-          // preview source or a later context expansion can validate it.
-          if (index >= 0) {
-            const beforeCount = comment.contextBefore?.length || 0;
-            const afterCount = comment.contextAfter?.length || 0;
-            const currentAnchor: DiffComment = {
-              ...comment,
-              context: file.lines[index].content,
-              contextBefore: file.lines
-                .slice(Math.max(0, index - beforeCount), index)
-                .map((line) => line.content),
-              contextAfter: file.lines
-                .slice(index + 1, index + 1 + afterCount)
-                .map((line) => line.content),
-            };
-            anchorChanged = reviewAnchorFingerprint(currentAnchor) !== comment.anchorFingerprint;
-          }
-        }
-        const stale =
-          anchorChanged ||
-          (commentTurnScope &&
-            Boolean(comment.fileChangeSeq && (file?.sequence || 0) > comment.fileChangeSeq));
-        if (!stale) return comment;
-        newlyStale += 1;
-        const updated: DiffComment = { ...comment, state: 'stale', updatedAt: Date.now() };
-        try {
-          persistDiffComment(this.services.storage, this.services.keys.diffCommentQueue, updated);
-        } catch (error) {
-          this.services.toast(error, 'error');
-        }
-        return updated;
-      });
-      this.diff.value = {
-        ...state,
-        files,
-        comments,
-        materializations,
-        observations,
-        claimDiagnostics,
-        unavailableLineCountFiles: Number(summary.line_counts_unavailable_files) || 0,
-        git: Boolean(data.git),
-        loading: false,
-      };
-      if (newlyStale)
-        this.services.toast(
-          `${newlyStale} queued comment${newlyStale === 1 ? '' : 's'} became stale after the source changed.`,
-          'info',
-        );
-      await Promise.all([
-        ...files
-          .filter((file) => refreshContexts.has(file.path))
-          .map((file) => this.expandDiff(file, refreshContexts.get(file.path) || 0, true)),
-        ...files
-          .filter((file) => refreshMarkdown.has(file.path))
-          .map((file) => this.loadMarkdownPreview(file, true)),
-      ]);
+      const operations = await this.operations();
+      if (!this.isOwnedLoad(owner, scope, epoch)) return;
+      await operations.loadDiff(owner, scope, epoch);
     } catch (error) {
-      if (
-        epoch === this.loadEpoch &&
-        this.host.activeSessionId.peek() === owner &&
-        this.diff.peek().sessionId === owner &&
-        normalizeDiffScope(this.diff.peek().scope) === scope
-      )
-        this.diff.value = {
-          ...this.diff.value,
-          loading: false,
-          error: errorMessage(error),
-        };
+      if (!this.isOwnedLoad(owner, scope, epoch)) return;
+      this.diff.value = { ...this.diff.value, loading: false, error: errorMessage(error) };
     }
-  }
-  private revalidateExpandedDiffComments(
-    path: string,
-    lines: NonNullable<DiffFile['lines']>,
-  ): void {
-    const state = this.diff.peek();
-    let newlyStale = 0;
-    const comments = state.comments.map((comment) => {
-      if (
-        comment.path !== path ||
-        (comment.sessionId && comment.sessionId !== state.sessionId) ||
-        comment.state === 'stale' ||
-        !comment.anchorFingerprint
-      )
-        return comment;
-      const index = lines.findIndex((line) =>
-        comment.side === 'old' ? line.oldLine === comment.line : line.newLine === comment.line,
-      );
-      // Expanded diffs can still contain partial hunks. A missing line is
-      // unknown until complete source or broader context is available.
-      if (index < 0) return comment;
-      const beforeCount = comment.contextBefore?.length || 0;
-      const afterCount = comment.contextAfter?.length || 0;
-      const currentAnchor: DiffComment = {
-        ...comment,
-        context: lines[index].content,
-        contextBefore: lines
-          .slice(Math.max(0, index - beforeCount), index)
-          .map((line) => line.content),
-        contextAfter: lines.slice(index + 1, index + 1 + afterCount).map((line) => line.content),
-      };
-      if (reviewAnchorFingerprint(currentAnchor) === comment.anchorFingerprint) return comment;
-      newlyStale += 1;
-      const updated: DiffComment = { ...comment, state: 'stale', updatedAt: Date.now() };
-      try {
-        persistDiffComment(this.services.storage, this.services.keys.diffCommentQueue, updated);
-      } catch (error) {
-        this.services.toast(error, 'error');
-      }
-      return updated;
-    });
-    if (!newlyStale) return;
-    this.diff.value = { ...this.diff.peek(), comments };
-    this.services.toast(
-      `${newlyStale} queued comment${newlyStale === 1 ? '' : 's'} became stale after the source changed.`,
-      'info',
-    );
   }
 
   async expandDiff(file: DiffFile, context = 0, refresh = false): Promise<void> {
@@ -480,9 +248,6 @@ export class ReviewStore {
         await this.openWorktreeDiff(worktreeDir, this.diff.peek().worktreeTitle || 'Worktree');
       return;
     }
-    const requestKey = `${owner}\u0000${scope}\u0000${file.path}`;
-    const requestEpoch = (this.expandEpoch.get(requestKey) || 0) + 1;
-    this.expandEpoch.set(requestKey, requestEpoch);
     this.diff.value = {
       ...this.diff.value,
       files: this.diff.value.files.map((entry) =>
@@ -490,93 +255,11 @@ export class ReviewStore {
       ),
     };
     try {
-      const data = await this.services.endpoints.fileDiff(
-        owner,
-        file.path,
-        scope,
-        context,
-        file.snapshotSeq || 0,
-      );
-      if (
-        this.expandEpoch.get(requestKey) !== requestEpoch ||
-        this.host.activeSessionId.peek() !== owner ||
-        this.diff.peek().sessionId !== owner ||
-        normalizeDiffScope(this.diff.peek().scope) !== scope
-      )
-        return;
-      const lines = Array.isArray(data.hunks)
-        ? linesFromHunks(data.hunks, {
-            old: Number(data.old_line_count) || 0,
-            new: Number(data.new_line_count) || 0,
-          })
-        : Array.isArray(data.lines)
-          ? (data.lines as DiffFile['lines'])
-          : parseUnifiedPatch(String(data.diff || data.patch || ''));
-      const image = Boolean(data.image || file.image);
-      const status = String(data.kind || file.status || '').toLowerCase();
-      const beforeURL =
-        image && !['add', 'added', 'create', 'created'].includes(status)
-          ? this.services.endpoints.fileContentURL(
-              owner,
-              file.path,
-              scope,
-              'before',
-              file.snapshotSeq || 0,
-            )
-          : String(data.before_url || file.beforeURL || '');
-      const afterURL =
-        image && !['delete', 'deleted', 'remove', 'removed'].includes(status)
-          ? this.services.endpoints.fileContentURL(
-              owner,
-              file.path,
-              scope,
-              'after',
-              file.snapshotSeq || 0,
-            )
-          : String(data.after_url || file.afterURL || '');
-      this.diff.value = {
-        ...this.diff.value,
-        files: this.diff.value.files.map((entry) =>
-          isRequestedVersion(entry)
-            ? {
-                ...entry,
-                status: String(data.kind || entry.status || ''),
-                expanded: true,
-                loading: false,
-                lines,
-                image,
-                truncated: Boolean(data.truncated),
-                contentStatus: String(data.content_status || entry.contentStatus || ''),
-                contentAvailable: Boolean(data.content_available),
-                provenance: String(
-                  data.provenance || entry.provenance || '',
-                ) as DiffFile['provenance'],
-                baselineState: String(
-                  data.baseline_state || entry.baselineState || '',
-                ) as DiffFile['baselineState'],
-                claimCoverage: String(
-                  data.claim_coverage || entry.claimCoverage || '',
-                ) as DiffFile['claimCoverage'],
-                context: Number(data.context) || context || 3,
-                lang: String(data.lang || ''),
-                oldLineCount: Number(data.old_line_count) || 0,
-                newLineCount: Number(data.new_line_count) || 0,
-                patch: String(data.diff || data.patch || entry.patch || ''),
-                beforeURL,
-                afterURL,
-              }
-            : entry,
-        ),
-      };
-      this.revalidateExpandedDiffComments(file.path, lines || []);
+      const operations = await this.operations();
+      if (!this.isExpansionOwnerCurrent(owner, scope)) return;
+      await operations.expandDiff(file, owner, scope, context, refresh);
     } catch (error) {
-      if (
-        this.expandEpoch.get(requestKey) !== requestEpoch ||
-        this.host.activeSessionId.peek() !== owner ||
-        this.diff.peek().sessionId !== owner ||
-        normalizeDiffScope(this.diff.peek().scope) !== scope
-      )
-        return;
+      if (!this.isExpansionOwnerCurrent(owner, scope)) return;
       this.diff.value = {
         ...this.diff.value,
         files: this.diff.value.files.map((entry) =>
@@ -589,10 +272,9 @@ export class ReviewStore {
             : entry,
         ),
       };
-    } finally {
-      if (this.expandEpoch.get(requestKey) === requestEpoch) this.expandEpoch.delete(requestKey);
     }
   }
+
   async setMarkdownView(file: DiffFile, view: 'diff' | 'rendered'): Promise<void> {
     const { setMarkdownView } = await import('./markdown-preview-store');
     await setMarkdownView(this.markdownContext(), file, view);
@@ -616,96 +298,30 @@ export class ReviewStore {
     });
   }
 
-  private async revalidateGitMarkdownComments(comments: DiffComment[]): Promise<boolean> {
-    const { revalidateGitMarkdownComments } = await import('./markdown-preview-store');
-    return revalidateGitMarkdownComments(this.markdownContext(), comments);
+  async sendDiffComment(comment: DiffComment): Promise<void> {
+    const owner = this.host.activeSession.value?.id || '';
+    if (!owner || this.services.isDisposed) return;
+    try {
+      const operations = await this.operations();
+      if (!this.isOperationOwnerCurrent(owner)) return;
+      await operations.sendDiffComment(owner, comment);
+    } catch (error) {
+      if (this.isOperationOwnerCurrent(owner)) this.services.toast(error, 'error');
+    }
   }
 
-  private prepareDiffComments(comments: DiffComment[]): {
-    payloads: Array<Record<string, unknown>>;
-    inputText: string;
-  } | null {
-    const validation = validateReviewBatch(comments);
-    if (validation) {
-      this.services.bumpDiagnostic('queueValidationFailures');
-      this.services.toast(validation.message, 'error');
-      return null;
+  async sendDiffComments(): Promise<void> {
+    const owner = this.host.activeSession.value?.id || '';
+    if (!owner || this.services.isDisposed) return;
+    try {
+      const operations = await this.operations();
+      if (!this.isOperationOwnerCurrent(owner)) return;
+      await operations.sendDiffComments(owner);
+    } catch (error) {
+      if (this.isOperationOwnerCurrent(owner)) this.services.toast(error, 'error');
     }
-    const stale = comments.find((comment) => comment.state === 'stale');
-    if (stale) {
-      this.services.toast(
-        `${stale.path}:${stale.line} is stale. Re-anchor it or explicitly send it individually.`,
-        'error',
-      );
-      return null;
-    }
-    const payloads = comments.map((comment) => reviewCommentPayload(comment));
-    if (
-      payloads.some(
-        (comment) =>
-          ['last_turn', 'last_3_turns'].includes(String(comment.scope)) &&
-          Number(comment.file_change_seq) <= 0,
-      )
-    ) {
-      this.services.toast(
-        'Refresh the diff before sending these comments so their file snapshot can be anchored.',
-        'error',
-      );
-      return null;
-    }
-    return {
-      payloads,
-      inputText:
-        payloads.length === 1
-          ? `[Inline diff instruction]\n${payloads[0].path}:${payloads[0].line} — ${payloads[0].instruction}`
-          : `[Inline diff instructions] (${payloads.length} anchored comments)\n\n${payloads.map((comment) => `${comment.path}:${comment.line} — ${comment.instruction}`).join('\n')}`,
-    };
   }
-  async sendDiffComment(comment: DiffComment): Promise<void> {
-    const session = this.host.activeSession.value;
-    if (!session || (comment.sessionId && comment.sessionId !== session.id)) return;
-    if (!(await this.revalidateGitMarkdownComments([comment]))) return;
-    const value: DiffComment = {
-      ...comment,
-      id: comment.id || uuid(),
-      sessionId: session.id,
-      createdAt: comment.createdAt || Date.now(),
-      optimistic: true,
-    };
-    const prepared = this.prepareDiffComments([value]);
-    if (!prepared) return;
-    this.diff.value = {
-      ...this.diff.peek(),
-      historyComments: [
-        ...this.diff.peek().historyComments.filter((entry) => entry.id !== value.id),
-        value,
-      ],
-    };
-    const options: SendOptions = {
-      contentParts: prepared.payloads.map((diff_comment) => ({
-        type: 'diff_comment',
-        diff_comment,
-      })),
-      inputText: prepared.inputText,
-      displayContent: value.body,
-      preserveComposer: true,
-      diffComments: [value],
-      onTransportStarted: () => {
-        void this.refreshDiffComments(session.id);
-      },
-      onTransportFailed: (error) => {
-        this.diff.value = {
-          ...this.diff.peek(),
-          historyComments: this.diff
-            .peek()
-            .historyComments.filter((entry) => entry.id !== value.id || !entry.optimistic),
-        };
-        this.services.toast(error, 'error');
-      },
-    };
-    if (this.host.streaming.value) await this.host.steer(prepared.inputText, options);
-    else await this.host.send(options);
-  }
+
   queueDiffComment(comment: DiffComment): void {
     const sessionId = this.host.activeSessionId.peek();
     const replaced = this.diff.value.comments.find(
@@ -834,100 +450,46 @@ export class ReviewStore {
     };
     this.host.publishSessionChange('review-comment-changed', sessionId);
   }
-  async sendDiffComments(): Promise<void> {
-    const session = this.host.activeSession.value;
-    let comments = this.diff.value.comments.filter(
-      (comment) => !comment.sessionId || comment.sessionId === session?.id,
-    );
-    if (!session || !comments.length) return;
-    if (!(await this.revalidateGitMarkdownComments(comments))) return;
-    comments = this.diff.value.comments.filter(
-      (comment) => !comment.sessionId || comment.sessionId === session.id,
-    );
-    const staleCount = comments.filter((comment) => comment.state === 'stale').length;
-    if (
-      staleCount &&
-      !window.confirm(
-        `${staleCount} comment${staleCount === 1 ? '' : 's'} no longer match the current source. Send anyway?`,
-      )
-    )
-      return;
-    const prepared = this.prepareDiffComments(
-      staleCount ? comments.map((comment) => ({ ...comment, state: 'fresh' as const })) : comments,
-    );
-    if (!prepared) return;
-    const markComments = (state: DiffComment['state'], error = ''): boolean => {
-      const updates = new Map(
-        comments.map((comment) => [
-          comment.id,
-          { ...comment, state, error: error || undefined, updatedAt: Date.now() },
-        ]),
-      );
-      try {
-        updates.forEach((comment) =>
-          persistDiffComment(this.services.storage, this.services.keys.diffCommentQueue, comment),
-        );
-      } catch (persistError) {
-        this.services.toast(persistError, 'error');
-        return false;
-      }
-      this.diff.value = {
-        ...this.diff.peek(),
-        comments: this.diff.peek().comments.map((comment) => updates.get(comment.id) || comment),
-      };
-      return true;
-    };
-    if (!markComments('sending')) return;
-    const { payloads, inputText } = prepared;
-    const options: SendOptions = {
-      contentParts: payloads.map((diff_comment) => ({ type: 'diff_comment', diff_comment })),
-      inputText,
-      displayContent:
-        comments.length === 1 ? comments[0].body : `${comments.length} inline comments`,
-      preserveComposer: true,
-      diffComments: comments,
-      onTransportStarted: () => {
-        const sent = comments.map((comment) => ({
-          ...comment,
-          sessionId: session.id,
-          createdAt: comment.createdAt || Date.now(),
-          optimistic: true,
-        }));
-        const sentIDs = new Set(sent.map((comment) => comment.id));
-        const current = this.diff.peek();
-        const remaining = current.comments.filter(
-          (comment) => comment.sessionId && comment.sessionId !== session.id,
-        );
-        this.diff.value = {
-          ...current,
-          comments: remaining,
-          historyComments: [
-            ...current.historyComments.filter((comment) => !sentIDs.has(comment.id)),
-            ...sent,
-          ],
-        };
-        comments.forEach((comment) => {
-          if (comment.id && (comment.sessionId || session.id))
-            removeDiffComment(
-              this.services.storage,
-              this.services.keys.diffCommentQueue,
-              comment.sessionId || session.id,
-              comment.id,
-            );
-        });
-        this.host.publishSessionChange('review-comment-changed', session.id);
-        void this.refreshDiffComments(session.id);
-      },
-      onTransportFailed: (error) => {
-        markComments('failed', errorMessage(error));
-        this.services.toast(error, 'error');
-      },
-    };
-    if (this.host.streaming.value) await this.host.steer(inputText, options);
-    else await this.host.send(options);
-  }
+
   resizeDiff(width: number): void {
     this.diff.value = { ...this.diff.value, width };
     this.services.storage.setItem(this.services.keys.diffSidebarWidth, String(Math.round(width)));
+  }
+
+  private isOwnedLoad(owner: string, scope: string, epoch: number): boolean {
+    return (
+      !this.services.isDisposed &&
+      this.operationState.loadEpoch === epoch &&
+      this.host.activeSessionId.peek() === owner &&
+      this.diff.peek().sessionId === owner &&
+      normalizeDiffScope(this.diff.peek().scope) === scope
+    );
+  }
+
+  private isOwnedWorktree(owner: string, dir: string, epoch: number): boolean {
+    return (
+      !this.services.isDisposed &&
+      this.operationState.loadEpoch === epoch &&
+      this.host.activeSessionId.peek() === owner &&
+      this.diff.peek().worktreeDir === dir
+    );
+  }
+
+  private isExpansionOwnerCurrent(owner: string, scope: string): boolean {
+    return (
+      !this.services.isDisposed &&
+      this.host.activeSessionId.peek() === owner &&
+      this.host.activeSession.value?.id === owner &&
+      this.diff.peek().sessionId === owner &&
+      normalizeDiffScope(this.diff.peek().scope) === scope
+    );
+  }
+
+  private isOperationOwnerCurrent(owner: string): boolean {
+    return (
+      !this.services.isDisposed &&
+      this.host.activeSessionId.peek() === owner &&
+      this.host.activeSession.value?.id === owner
+    );
   }
 }

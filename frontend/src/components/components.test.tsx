@@ -1868,7 +1868,9 @@ describe('Preact-owned chat surfaces', () => {
     );
     await userEvent.click(screen.getByRole('option', { name: 'Uncommitted' }));
     expect(store.diff.value.scope).toBe('uncommitted');
-    expect(store.endpoints.fileChanges).toHaveBeenCalledWith('s1', 'uncommitted');
+    await vi.waitFor(() =>
+      expect(store.endpoints.fileChanges).toHaveBeenCalledWith('s1', 'uncommitted'),
+    );
   });
 
   it('renders managed worktree patches in the highlighted Changes panel', async () => {
