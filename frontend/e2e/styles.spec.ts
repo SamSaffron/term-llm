@@ -1,6 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { expect, test } from '@playwright/test';
+import { buildSync } from 'esbuild';
 
 test.use({ video: 'off' });
 
@@ -35,6 +36,80 @@ test('conversation text uses a readable 16px base on desktop and mobile', async 
     await expect(page.locator('.markdown-body p code')).toHaveCSS('font-size', '14px');
     await expect(page.locator('.markdown-body pre code')).toHaveCSS('font-size', '14px');
     expect(await page.evaluate(() => document.documentElement.scrollWidth - innerWidth)).toBe(0);
+  }
+});
+
+test('ordered list markers fit inside assistant messages on desktop and mobile', async ({
+  page,
+}) => {
+  const renderer = buildSync({
+    entryPoints: [resolve(import.meta.dirname, '../src/domain/markdown.ts')],
+    bundle: true,
+    write: false,
+    format: 'iife',
+    globalName: 'markdownFixture',
+    external: ['./rich-highlight', './rich-katex'],
+  }).outputFiles[0].text;
+  const items = Array.from({ length: 20 }, (_, index) => `<li>Element ${index + 1}</li>`).join('');
+  await page.setContent(`<meta name="viewport" content="width=device-width, initial-scale=1">
+    <article class="message assistant"><div class="message-body"><div class="markdown-body"></div></div></article>`);
+  await page.addScriptTag({ content: renderer });
+  await page.evaluate((items) => {
+    // The fixture bundle exposes the production renderer without a running server.
+    const fixture = (
+      window as unknown as { markdownFixture: { renderMarkdown: (source: string) => string } }
+    ).markdownFixture;
+    document.querySelector('.markdown-body')!.innerHTML = fixture.renderMarkdown(`
+<ol><li>Short list</li></ol>
+<ol>${items}</ol>
+<ol start="98"><li>Nested list<ol>${items}</ol></li><li>Element</li><li>Element</li></ol>
+<ol start="198"><li>Element</li><li>Element</li><li>Element</li></ol>
+<ol start="998"><li>Element</li><li>Element</li><li>Element</li></ol>
+<ol start="999999998"><li>Element</li><li>Element</li><li>Element</li></ol>
+<ol reversed start="1000"><li>Element</li><li>Element</li></ol>
+<ol><li value="-10000">Element</li><li value="99999">Element</li><li>Element</li></ol>`);
+  }, items);
+  await page.addStyleTag({ content: css });
+  for (const width of [320, 390, 768, 1440]) {
+    await page.setViewportSize({ width, height: 900 });
+    for (const fontSize of [16, 24]) {
+      await page.locator('.markdown-body').evaluate((element, size) => {
+        element.style.fontSize = `${size}px`;
+      }, fontSize);
+      const shortListPadding = await page
+        .locator('ol')
+        .first()
+        .evaluate((list) => parseFloat(getComputedStyle(list).paddingInlineStart));
+      expect(
+        shortListPadding,
+        'single-digit lists should not reserve a large-number gutter',
+      ).toBeLessThan(2 * fontSize);
+      const clearances = await page.locator('ol').evaluateAll((lists) => {
+        const context = document.createElement('canvas').getContext('2d')!;
+        return lists.map((list) => {
+          const style = getComputedStyle(list);
+          context.font = `${style.fontWeight} ${style.fontSize} ${style.fontFamily}`;
+          const ordered = list as HTMLOListElement;
+          const items = [...list.children].filter((child) => child.tagName === 'LI');
+          let number = ordered.hasAttribute('start')
+            ? ordered.start
+            : ordered.reversed
+              ? items.length
+              : 1;
+          let markerWidth = 0;
+          for (const item of items) {
+            if (item.hasAttribute('value')) number = (item as HTMLLIElement).value;
+            markerWidth = Math.max(markerWidth, context.measureText(`${number}. `).width);
+            number += ordered.reversed ? -1 : 1;
+          }
+          return parseFloat(style.paddingInlineStart) - markerWidth;
+        });
+      });
+      for (const clearance of clearances) {
+        expect(clearance, `${width}px viewport, ${fontSize}px text`).toBeGreaterThanOrEqual(0);
+      }
+      expect(await page.evaluate(() => document.documentElement.scrollWidth - innerWidth)).toBe(0);
+    }
   }
 });
 
