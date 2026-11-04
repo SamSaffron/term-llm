@@ -78,16 +78,29 @@ export class ComposerStore {
       this.runtimeDraftID = `draft_${uuid()}`;
       this.currentDraftRev = 0;
     }
+    // Opening a conversation clears the active-draft pointer, so returning to
+    // a new chat resumes this project's unsent draft instead of orphaning it.
     if (!this.services.storage.getItem(this.services.keys.draftSessionActive)) {
-      const legacyID = `draft:${selectedProject || 'none'}`;
-      if (
-        readDrafts(this.services.storage, this.services.keys.draftMessages).some(
-          (entry) => entry.sessionId === legacyID,
-        )
-      )
-        this.newDraftID = legacyID;
+      const resumable = this.unsentNewChatDraft(selectedProject);
+      if (resumable) this.newDraftID = resumable;
     }
     this.services.storage.setItem(this.services.keys.draftSessionActive, this.newDraftID);
+  }
+
+  /** The newest new-chat draft in `projectId` that still holds an unsent message. */
+  private unsentNewChatDraft(projectId: string): string {
+    const legacyID = `draft:${projectId || 'none'}`;
+    const drafts = readDrafts(this.services.storage, this.services.keys.draftMessages);
+    const unsent = drafts
+      .filter(
+        (draft) =>
+          draft.sessionId.startsWith('draft:') &&
+          (draft.projectId || '') === projectId &&
+          Boolean(draft.content.trim() || draft.attachments?.length),
+      )
+      .sort((a, b) => (b.updated || 0) - (a.updated || 0))[0];
+    if (unsent) return unsent.sessionId;
+    return drafts.some((draft) => draft.sessionId === legacyID) ? legacyID : '';
   }
 
   persist(): void {
