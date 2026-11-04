@@ -366,3 +366,40 @@ func TestDarwinStartFailureDiagnostics(t *testing.T) {
 		})
 	}
 }
+
+func TestDarwinEnabledReadsPrintDisabled(t *testing.T) {
+	// Current macOS (27.0.1 observed) prints enabled/disabled; older releases print true/false.
+	listing := func(entries ...string) string {
+		return "\n\tdisabled services = {\n\t\t\"com.docker.helper\" => enabled\n\t\t" + strings.Join(entries, "\n\t\t") + "\n\t}\n"
+	}
+	for _, tc := range []struct {
+		name, output string
+		want         bool
+		wantErr      bool
+	}{
+		{"current enabled", listing(`"com.term-llm.web" => enabled`), true, false},
+		{"current disabled", listing(`"com.term-llm.web" => disabled`), false, false},
+		{"legacy enabled", listing(`"com.term-llm.web" => false`), true, false},
+		{"legacy disabled", listing(`"com.term-llm.web" => true`), false, false},
+		{"no override", listing(`"com.term-llm.hub" => disabled`, `"com.term-llm.web.other" => disabled`), true, false},
+		{"unrecognized state", listing(`"com.term-llm.web" => maybe`), false, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var calls []string
+			n := Native{OS: "darwin", UID: 501, Run: func(_ context.Context, exe string, args ...string) ([]byte, error) {
+				calls = append(calls, exe+" "+strings.Join(args, " "))
+				return []byte(tc.output), nil
+			}}
+			got, err := n.Enabled(context.Background(), "web")
+			if (err != nil) != tc.wantErr {
+				t.Fatalf("Enabled error = %v, wantErr %v", err, tc.wantErr)
+			}
+			if got != tc.want {
+				t.Fatalf("Enabled = %v, want %v", got, tc.want)
+			}
+			if want := []string{"launchctl print-disabled gui/501"}; !reflect.DeepEqual(calls, want) {
+				t.Fatalf("calls = %v, want %v", calls, want)
+			}
+		})
+	}
+}

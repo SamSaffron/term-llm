@@ -360,7 +360,34 @@ func (n Native) Enabled(ctx context.Context, kind string) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	return !strings.Contains(string(out), `"`+n.Label(kind)+`" => true`), nil
+	disabled, err := launchdDisabled(string(out), n.Label(kind))
+	if err != nil {
+		return false, err
+	}
+	return !disabled, nil
+}
+
+// launchdDisabled reads one label's override from launchctl print-disabled
+// output. Older macOS releases print `"label" => true`; current releases print
+// `"label" => disabled`. A label without an override is enabled. Unknown values
+// are errors so a future format change cannot silently report autostart on.
+func launchdDisabled(output, label string) (bool, error) {
+	key := `"` + label + `" =>`
+	for _, line := range strings.Split(output, "\n") {
+		value, ok := strings.CutPrefix(strings.TrimSpace(line), key)
+		if !ok {
+			continue
+		}
+		switch value = strings.TrimSpace(value); value {
+		case "disabled", "true":
+			return true, nil
+		case "enabled", "false":
+			return false, nil
+		default:
+			return false, fmt.Errorf("unrecognized launchctl print-disabled state %q for %s", value, label)
+		}
+	}
+	return false, nil
 }
 
 func launchdArguments(output string) []string {
