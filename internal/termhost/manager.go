@@ -72,12 +72,13 @@ func lifecycleErrorClass(err error) string {
 // Report never waits for an adapter. Each adapter retains only its latest
 // pending state while its current command is running.
 type Manager struct {
-	mu         sync.Mutex
-	workers    []*adapterWorker
-	osc        *oscController
-	now        func() time.Time
-	metadata   lifecycle.Metadata
-	executable string
+	mu            sync.Mutex
+	workers       []*adapterWorker
+	osc           *oscController
+	programStatus *programStatusController
+	now           func() time.Time
+	metadata      lifecycle.Metadata
+	executable    string
 
 	closed       bool
 	claimed      bool
@@ -104,7 +105,11 @@ func New(cfg config.LifecycleConfig, legacyProgress bool) (*Manager, error) {
 	if report.Enabled && report.OSC.Enabled {
 		osc = newOSCController(report.OSC, rt)
 	}
-	return newManager(adapters, osc, rt, defaultCloseTimeout), nil
+	manager := newManager(adapters, osc, rt, defaultCloseTimeout)
+	if report.ProgramStatus.Enabled {
+		manager.programStatus = &programStatusController{}
+	}
+	return manager, nil
 }
 
 func newManager(adapters []Adapter, osc *oscController, rt runtimeContext, closeTimeout time.Duration) *Manager {
@@ -170,6 +175,9 @@ func (m *Manager) Report(snapshot lifecycle.Snapshot) Control {
 	if m.osc != nil {
 		control = m.osc.control(snapshot)
 	}
+	if m.programStatus != nil {
+		control.Sequence += m.programStatus.control(snapshot)
+	}
 	m.mu.Unlock()
 	return control
 }
@@ -183,10 +191,14 @@ func (m *Manager) RestoreOSC() string {
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if m.osc == nil {
-		return ""
+	sequence := ""
+	if m.osc != nil {
+		sequence = m.osc.restore()
 	}
-	return m.osc.restore()
+	if m.programStatus != nil {
+		sequence += m.programStatus.restore()
+	}
+	return sequence
 }
 
 // Close relinquishes all claimed adapters in parallel. The total wait is one

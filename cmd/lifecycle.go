@@ -52,6 +52,8 @@ func runLifecycleStatus(cmd *cobra.Command, _ []string) error {
 	for _, adapter := range report.Adapters {
 		fmt.Fprintf(out, "%-20s detected=%-5v enabled=%-5v %s\n", adapter.Name+" ["+adapter.Type+"]", adapter.Detected, adapter.Enabled, adapter.Reason)
 	}
+	status := report.ProgramStatus
+	fmt.Fprintf(out, "%-20s detected=%-5v enabled=%-5v %s\n", status.Name+" ["+status.Type+"]", status.Detected, status.Enabled, status.Reason)
 	fmt.Fprintf(out, "%-20s detected=%-5v enabled=%-5v %s\n", report.OSC.Name+" ["+report.OSC.Type+"]", report.OSC.Detected, report.OSC.Enabled, report.OSC.Reason)
 	return nil
 }
