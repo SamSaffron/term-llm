@@ -38,6 +38,13 @@ export interface Toast {
   message: string;
   kind: 'info' | 'success' | 'error';
   leaving?: boolean;
+  /** One inline follow-up, such as Undo. Running it dismisses the toast. */
+  action?: ToastAction;
+}
+
+export interface ToastAction {
+  label: string;
+  run: () => void;
 }
 
 export interface RuntimeOption extends ModelOption {

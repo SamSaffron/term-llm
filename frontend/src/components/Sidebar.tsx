@@ -7,7 +7,7 @@ import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'pr
 import { useStore } from '../app/context';
 import type { Project, Session } from '../domain/types';
 import { displayName } from '../app/config';
-import { readJSON, writeJSON } from '../platform/storage';
+import { readJSON, writeJSON, type DraftMessage } from '../platform/storage';
 import { overlayManager } from '../platform/overlay-manager';
 import { compareSessionsByActivity } from '../stores/store-utils';
 import type { HubAgent } from '../stores/store-types';
@@ -402,6 +402,75 @@ function SessionRow({
         pinned={reorderable ? pinned : undefined}
       />
     </div>
+  );
+}
+
+function draftPreview(draft: DraftMessage): string {
+  const line = draft.content.trim().split('\n')[0]?.trim();
+  if (line) return line;
+  const count = draft.attachments?.length || 0;
+  return `${count} ${count === 1 ? 'attachment' : 'attachments'}`;
+}
+
+/**
+ * Unsent new-chat drafts, one per project, so text typed into New chat stays
+ * reachable after opening another conversation. The open draft is never listed.
+ */
+function NewChatDrafts({ showProject }: { showProject: boolean }) {
+  const store = useStore();
+  const projects = store.projects.value;
+  const drafts = store.composer.unsentNewChats.value.filter(
+    (draft) =>
+      !draft.projectId ||
+      projects.some(
+        (project) =>
+          project.id === draft.projectId && !project.archived && project.available !== false,
+      ),
+  );
+  if (!drafts.length) return null;
+  return (
+    <section class="session-group sidebar-drafts-group" aria-label="Unsent drafts">
+      <h3>Drafts</h3>
+      {drafts.map((draft) => {
+        const preview = draftPreview(draft);
+        const projectName = projects.find((project) => project.id === draft.projectId)?.name;
+        return (
+          <div class="session-row session-row-draft" key={draft.sessionId}>
+            <button
+              class="session-btn"
+              type="button"
+              aria-label={`Unsent draft: ${preview}`}
+              title={draft.content.trim() || preview}
+              onMouseDown={(event) => event.preventDefault()}
+              onClick={() => {
+                store.openNewChatDraft(draft);
+                store.sidebarOpen.value = false;
+              }}
+            >
+              <span class="session-title">
+                <Icon class="session-draft-icon" name="edit" />
+                <span class="session-draft-preview">{preview}</span>
+              </span>
+              <span class="session-meta" title={new Date(draft.updated).toLocaleString()}>
+                Unsent · {sessionRelativeTime(draft.updated)}
+                {showProject && ` · ${projectName || 'Chat'}`}
+              </span>
+            </button>
+            <div class="session-row-menu">
+              <button
+                class="session-menu-trigger session-draft-discard"
+                type="button"
+                aria-label="Discard draft"
+                title="Discard draft"
+                onClick={() => store.discardNewChatDraft(draft.sessionId)}
+              >
+                <Icon name="close" />
+              </button>
+            </div>
+          </div>
+        );
+      })}
+    </section>
   );
 }
 
@@ -1162,6 +1231,14 @@ export function Sidebar() {
     store.newChat();
     store.sidebarOpen.value = false;
   };
+  // New chat opens the draft of the project it would start in.
+  const newChatProject = store.activeSession.value
+    ? store.activeSession.value.projectId || ''
+    : store.activeProjectId.value;
+  const newChatHasDraft = store.composer.unsentNewChats.value.some(
+    (draft) => (draft.projectId || '') === newChatProject,
+  );
+  const newChatLabel = newChatHasDraft ? 'New chat, unsent draft' : 'New chat';
   return (
     <div ref={overlayRoot} class="sidebar-overlay-root">
       <div
@@ -1202,13 +1279,17 @@ export function Sidebar() {
             <Icon name="panel" />
           </button>
           <button
-            class="icon-btn sidebar-rail-btn"
+            class={
+              newChatHasDraft ? 'icon-btn sidebar-rail-btn has-draft' : 'icon-btn sidebar-rail-btn'
+            }
             id="sidebarRailNewChatBtn"
             type="button"
-            aria-label="New chat"
+            aria-label={newChatLabel}
+            title={newChatLabel}
             onClick={newChat}
           >
             <Icon name="add" />
+            {newChatHasDraft && <span class="new-chat-draft-dot" aria-hidden="true" />}
           </button>
           <button
             class="icon-btn sidebar-rail-btn"
@@ -1277,9 +1358,16 @@ export function Sidebar() {
               />
             </div>
             <div class="sidebar-actions">
-              <button class="new-chat-btn" id="newChatBtn" type="button" onClick={newChat}>
+              <button
+                class={newChatHasDraft ? 'new-chat-btn has-draft' : 'new-chat-btn'}
+                id="newChatBtn"
+                type="button"
+                aria-label={newChatHasDraft ? newChatLabel : undefined}
+                onClick={newChat}
+              >
                 <Icon class="sidebar-action-icon" name="edit" />
                 <span>New chat</span>
+                {newChatHasDraft && <span class="new-chat-draft-dot" aria-hidden="true" />}
               </button>
               {store.showWidgets.value && store.widgets.value.length > 0 && (
                 <button
@@ -1334,6 +1422,7 @@ export function Sidebar() {
                 </section>
               ) : (
                 <>
+                  <NewChatDrafts showProject={projectsEnabled} />
                   {pinned.length > 0 && (
                     <PinnedSessions
                       sessions={pinned}

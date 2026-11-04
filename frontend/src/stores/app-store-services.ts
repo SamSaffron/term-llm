@@ -7,7 +7,7 @@ import { hardRefreshAssets, syncTokenCookie } from '../platform/browser';
 import { NotificationController, type NotificationState } from '../platform/notifications';
 import { migrateScopedStorage, type StorageKeys } from '../platform/storage';
 import { IndexedDBBackend, PersistentCache } from '../platform/persistent-cache';
-import type { Toast } from './store-types';
+import type { Toast, ToastAction } from './store-types';
 import { uuid } from './store-utils';
 import { WorkspaceCache } from './workspace-cache';
 
@@ -227,11 +227,12 @@ export class AppStoreServices {
     };
   }
 
-  toast(value: unknown, kind: Toast['kind'] = 'info'): void {
+  toast(value: unknown, kind: Toast['kind'] = 'info', action?: ToastAction): void {
     const message = errorMessage(value);
-    const toast = { id: uuid(), message, kind };
+    const toast: Toast = { id: uuid(), message, kind, ...(action ? { action } : {}) };
     this.toasts.value = [...this.toasts.value, toast];
-    this.schedule(() => this.dismissToast(toast.id), 4_000);
+    // An actionable toast stays a little longer so the action can be reached.
+    this.schedule(() => this.dismissToast(toast.id), action ? 6_000 : 4_000);
   }
 
   dismissToast(id: string): void {

@@ -155,4 +155,66 @@ describe('new chat draft', () => {
     expect(store.draftActive.value).toBe(true);
     expect(store.prompt.value).toBe('');
   });
+
+  it('lists an unsent draft only while it is not open in the composer', async () => {
+    const store = setup();
+    store.newChat();
+    store.prompt.value = 'come back to this';
+    store.composer.persist();
+    expect(store.composer.unsentNewChats.value).toEqual([]);
+
+    await store.selectSession(store.sessions.peek()[0]);
+    expect(store.composer.unsentNewChats.value).toEqual([
+      expect.objectContaining({ content: 'come back to this' }),
+    ]);
+
+    store.newChat();
+    expect(store.composer.unsentNewChats.value).toEqual([]);
+  });
+
+  it('opens a listed draft from another project without losing the open one', async () => {
+    const store = setup([testSession({ id: 's2', title: 'Second', projectId: 'p2' })]);
+    store.projects.value = [
+      { id: 'p1', name: 'One' },
+      { id: 'p2', name: 'Two' },
+    ] as typeof store.projects.value;
+    store.newChat(false, 'p1');
+    store.prompt.value = 'project one text';
+    const first = store.composer.storageId();
+    await store.selectSession(store.sessions.peek()[0]);
+    store.newChat();
+    expect(store.activeProjectId.value).toBe('p2');
+    store.prompt.value = 'project two text';
+    store.composer.persist();
+
+    const listed = store.composer.unsentNewChats.value;
+    expect(listed).toEqual([expect.objectContaining({ sessionId: first, projectId: 'p1' })]);
+    store.openNewChatDraft(listed[0]!);
+
+    expect(store.activeProjectId.value).toBe('p1');
+    expect(store.prompt.value).toBe('project one text');
+    expect(store.composer.unsentNewChats.value).toEqual([
+      expect.objectContaining({ content: 'project two text', projectId: 'p2' }),
+    ]);
+  });
+
+  it('discards a listed draft and restores it on undo', async () => {
+    const store = setup();
+    store.newChat();
+    store.prompt.value = 'maybe not';
+    await store.selectSession(store.sessions.peek()[0]);
+    const [draft] = store.composer.unsentNewChats.value;
+
+    store.discardNewChatDraft(draft!.sessionId);
+    expect(store.composer.unsentNewChats.value).toEqual([]);
+    const toast = store.toasts.value.at(-1);
+    expect(toast).toMatchObject({ message: 'Draft discarded', action: { label: 'Undo' } });
+
+    toast!.action!.run();
+    expect(store.composer.unsentNewChats.value).toEqual([
+      expect.objectContaining({ sessionId: draft!.sessionId, content: 'maybe not' }),
+    ]);
+    store.newChat();
+    expect(store.prompt.value).toBe('maybe not');
+  });
 });

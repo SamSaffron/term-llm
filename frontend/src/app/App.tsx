@@ -277,11 +277,23 @@ export function App({ store }: { store: AppStore }) {
           {store.toasts.value.map((toast) => (
             <div
               key={toast.id}
-              class={`toast toast-${toast.kind} ${toast.leaving ? 'toast-leaving' : ''}`}
+              class={`toast toast-${toast.kind}${toast.action ? ' toast-actionable' : ''} ${toast.leaving ? 'toast-leaving' : ''}`}
               role={toast.kind === 'error' ? 'alert' : 'status'}
             >
               <Icon class="toast-icon" name={toastIcon(toast.kind)} />
               <span class="toast-message">{toast.message}</span>
+              {toast.action && (
+                <button
+                  class="toast-action"
+                  type="button"
+                  onClick={() => {
+                    toast.action?.run();
+                    store.dismissToast(toast.id);
+                  }}
+                >
+                  {toast.action.label}
+                </button>
+              )}
               <button
                 class="toast-close close-button"
                 type="button"

@@ -61,6 +61,32 @@
   overflow-wrap: anywhere;
 }
 
+.toast-actionable {
+  grid-template-columns: auto minmax(0, 1fr) auto auto;
+}
+
+.toast-action {
+  margin: -0.2rem 0;
+  padding: 0.2rem 0.45rem;
+  border: 0;
+  border-radius: 0.35rem;
+  color: var(--toast-accent);
+  background: transparent;
+  font: inherit;
+  font-weight: 600;
+  line-height: 1.4;
+  cursor: pointer;
+}
+
+.toast-action:hover {
+  background: var(--bg-accent);
+}
+
+.toast-action:focus-visible {
+  outline: 2px solid var(--toast-accent);
+  outline-offset: 1px;
+}
+
 .toast-close {
   display: grid;
   place-items: center;

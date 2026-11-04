@@ -8,7 +8,7 @@ import {
   type AttachmentPolicy,
 } from '../domain/attachments';
 import { blobChecksum, blobToDataURL, DraftBlobStore } from '../platform/draft-blobs';
-import { readDrafts, saveDraft } from '../platform/storage';
+import { readDrafts, saveDraft, type DraftMessage } from '../platform/storage';
 import { errorMessage } from '../domain/text';
 import type { AppStoreServices } from './app-store-services';
 import { uuid } from './store-utils';
@@ -40,6 +40,11 @@ export class ComposerStore {
   readonly attachmentPolicy = signal<AttachmentPolicy>(DEFAULT_ATTACHMENT_POLICY);
   readonly attachmentAccept = computed(() => attachmentAccept(this.attachmentPolicy.value));
   readonly selectedDraftWorktree = signal('');
+  /**
+   * Each project's newest new-chat draft that still holds an unsent message,
+   * except the one open in the composer.
+   */
+  readonly unsentNewChats = signal<DraftMessage[]>([]);
 
   private readonly draftBlobs = new DraftBlobStore();
   private readonly attachmentGenerations = new Map<string, number>();
@@ -48,6 +53,7 @@ export class ComposerStore {
   private activeUploads = 0;
   private currentDraftRev = 0;
   private newDraftID: string;
+  private requestedDraftID = '';
   private runtimeDraftID = `draft_${uuid()}`;
 
   constructor(
@@ -72,35 +78,93 @@ export class ComposerStore {
     return this.runtimeDraftID;
   }
 
+  /** Makes the next `beginNewDraft` open this new-chat draft. */
+  requestNewChatDraft(id: string): void {
+    this.requestedDraftID = id;
+  }
+
   beginNewDraft(fromSession: boolean, selectedProject: string): void {
-    if (fromSession) {
+    const requested = this.requestedDraftID;
+    this.requestedDraftID = '';
+    if (fromSession || (requested && requested !== this.newDraftID)) {
       this.newDraftID = `draft:${uuid()}`;
       this.runtimeDraftID = `draft_${uuid()}`;
       this.currentDraftRev = 0;
     }
+    if (requested) this.newDraftID = requested;
     // Opening a conversation clears the active-draft pointer, so returning to
     // a new chat resumes this project's unsent draft instead of orphaning it.
-    if (!this.services.storage.getItem(this.services.keys.draftSessionActive)) {
-      const resumable = this.unsentNewChatDraft(selectedProject);
+    else if (!this.services.storage.getItem(this.services.keys.draftSessionActive)) {
+      const legacyID = `draft:${selectedProject || 'none'}`;
+      const resumable =
+        this.readUnsentNewChats().find((draft) => (draft.projectId || '') === selectedProject)
+          ?.sessionId ||
+        (readDrafts(this.services.storage, this.services.keys.draftMessages).some(
+          (draft) => draft.sessionId === legacyID,
+        )
+          ? legacyID
+          : '');
       if (resumable) this.newDraftID = resumable;
     }
     this.services.storage.setItem(this.services.keys.draftSessionActive, this.newDraftID);
   }
 
-  /** The newest new-chat draft in `projectId` that still holds an unsent message. */
-  private unsentNewChatDraft(projectId: string): string {
-    const legacyID = `draft:${projectId || 'none'}`;
-    const drafts = readDrafts(this.services.storage, this.services.keys.draftMessages);
-    const unsent = drafts
+  /**
+   * Discards an unsent new-chat draft and returns it so the caller can offer
+   * undo. Attachment blobs are kept, matching the conservative blob retention.
+   */
+  discardNewChatDraft(id: string): DraftMessage | null {
+    const draft = this.readUnsentNewChats().find((entry) => entry.sessionId === id);
+    if (!draft) return null;
+    try {
+      saveDraft(this.services.storage, this.services.keys.draftMessages, {
+        sessionId: id,
+        content: '',
+        updated: Date.now(),
+      });
+    } catch (error) {
+      this.services.toast(error, 'error');
+      return null;
+    }
+    this.refreshUnsentNewChats();
+    return draft;
+  }
+
+  restoreNewChatDraft(draft: DraftMessage): void {
+    try {
+      saveDraft(this.services.storage, this.services.keys.draftMessages, {
+        ...draft,
+        rev: undefined,
+      });
+    } catch (error) {
+      this.services.toast(error, 'error');
+    }
+    this.refreshUnsentNewChats();
+  }
+
+  refreshUnsentNewChats(): void {
+    const open = this.host.draftActive.peek() ? this.storageId() : '';
+    const seen = new Set<string>();
+    const next = this.readUnsentNewChats().filter((draft) => {
+      const project = draft.projectId || '';
+      if (seen.has(project)) return false;
+      seen.add(project);
+      return draft.sessionId !== open;
+    });
+    const identity = (drafts: DraftMessage[]) =>
+      JSON.stringify(drafts.map((draft) => [draft.sessionId, draft.content, draft.updated]));
+    if (identity(next) !== identity(this.unsentNewChats.peek())) this.unsentNewChats.value = next;
+  }
+
+  /** Every new-chat draft holding an unsent message, newest first. */
+  private readUnsentNewChats(): DraftMessage[] {
+    return readDrafts(this.services.storage, this.services.keys.draftMessages)
       .filter(
         (draft) =>
           draft.sessionId.startsWith('draft:') &&
-          (draft.projectId || '') === projectId &&
           Boolean(draft.content.trim() || draft.attachments?.length),
       )
-      .sort((a, b) => (b.updated || 0) - (a.updated || 0))[0];
-    if (unsent) return unsent.sessionId;
-    return drafts.some((draft) => draft.sessionId === legacyID) ? legacyID : '';
+      .sort((a, b) => (b.updated || 0) - (a.updated || 0));
   }
 
   persist(): void {
@@ -138,6 +202,7 @@ export class ComposerStore {
   }
 
   reconcileStorage(id: string): void {
+    this.refreshUnsentNewChats();
     const incoming = readDrafts(this.services.storage, this.services.keys.draftMessages).find(
       (entry) => entry.sessionId === id,
     );
@@ -187,6 +252,7 @@ export class ComposerStore {
     for (const attachment of this.attachments.peek())
       if (attachment.id && attachment.blobRef && attachment.status !== 'error')
         void this.restoreAttachmentBlob(id, attachment.id, attachment.blobRef);
+    this.refreshUnsentNewChats();
     if (!draft) return;
     if (draft.provider) this.host.setPreference('provider', draft.provider, false);
     if (draft.model) this.host.setPreference('model', draft.model, false);
@@ -267,6 +333,7 @@ export class ComposerStore {
     } catch {
       this.services.bumpDiagnostic('storageFailures');
     }
+    this.refreshUnsentNewChats();
   }
 
   applyAttachmentPolicy(policy: AttachmentPolicy): void {

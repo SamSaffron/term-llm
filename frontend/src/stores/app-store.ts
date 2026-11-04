@@ -34,6 +34,7 @@ import type {
 } from '../domain/types';
 import {
   readPendingIntents,
+  type DraftMessage,
   type PendingIntentRegistry,
   type StorageKeys,
 } from '../platform/storage';
@@ -1674,6 +1675,22 @@ export class AppStore {
     this.selectionStore.newChat(replace, projectId, persistCurrent);
     this.childSessionStore.selectSession(null);
     this.serverEventCoordinator.updateInterest('');
+  }
+
+  /** Opens an unsent new-chat draft listed in the sidebar. */
+  openNewChatDraft(draft: DraftMessage): void {
+    this.composer.requestNewChatDraft(draft.sessionId);
+    this.newChat(false, draft.projectId || '');
+  }
+
+  /** Discards an unsent new-chat draft, offering a short-lived undo. */
+  discardNewChatDraft(id: string): void {
+    const discarded = this.composer.discardNewChatDraft(id);
+    if (!discarded) return;
+    this.services.toast('Draft discarded', 'info', {
+      label: 'Undo',
+      run: () => this.composer.restoreNewChatDraft(discarded),
+    });
   }
 
   composerOwnerKey(): string {
