@@ -135,7 +135,7 @@ One line per root-module package, generated from package doc comments by `make d
 - `internal/mitmca` — provides the ephemeral certificate authority shared by term-llm's loopback TLS proxies.
 - `internal/modelpolicy` — enforces the ordered intersection of agent model rules.
 - `internal/music` — generates music through the ElevenLabs and Venice providers and saves it.
-- `internal/notification` — defines the shared Web Push wire envelope and event identity helpers.
+- `internal/notification` — defines the shared Web Push wire envelope, completion display text and event identity helpers.
 - `internal/oauth` — implements ChatGPT, Copilot and Grok OAuth login and refresh flows.
 - `internal/openaiapi` — resolves the public OpenAI API endpoint settings shared by every API-key OpenAI client (Responses, model listing, embeddings, images and transcription).
 - `internal/pairing` — implements the frozen v2 identity-pairing and signed transport-handshake contract, strict termllm://pair invitations, persistent Ed25519 identities, and durable revocation-only web-v1 grants.

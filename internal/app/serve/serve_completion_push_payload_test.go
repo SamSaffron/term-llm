@@ -60,9 +60,9 @@ func TestSendCompletionPushFallback(t *testing.T) {
 				if err := json.Unmarshal(body, &compact); err != nil {
 					t.Fatalf("fallback is not valid JSON: %v", err)
 				}
-				wantTitle, wantBody := "Response complete", "Your term-llm response is ready."
+				wantTitle, wantBody := "Response ready", ""
 				if tt.outcome == "failed" {
-					wantTitle, wantBody = "Response failed", "Your term-llm response stopped with an error."
+					wantTitle = "Response failed"
 				}
 				if compact.Title != wantTitle || compact.Body != wantBody {
 					t.Errorf("fallback display text = %q / %q", compact.Title, compact.Body)

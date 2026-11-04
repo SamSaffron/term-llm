@@ -1,4 +1,4 @@
-// Package notification defines the shared Web Push wire envelope and event identity helpers.
+// Package notification defines the shared Web Push wire envelope, completion display text and event identity helpers.
 package notification
 
 import (

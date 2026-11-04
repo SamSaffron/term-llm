@@ -132,41 +132,41 @@ func TestCompletionPushTimeoutDoesNotStarveOutbox(t *testing.T) {
 	}
 }
 
-func TestCompletionPushTitleIdentifiesNode(t *testing.T) {
+func TestCompletionPushNamesNodeAndChat(t *testing.T) {
+	titled := &session.Session{GeneratedShortTitle: "Fix flaky CI"}
 	cases := []struct {
-		name    string
-		cfg     serveServerConfig
-		outcome string
-		want    string
+		name      string
+		cfg       serveServerConfig
+		chat      *session.Session // nil: the session cannot be found
+		outcome   string
+		wantTitle string
+		wantBody  string
 	}{
-		{"no node identity keeps original wording", serveServerConfig{}, "completed", "Response complete"},
-		{"ui title labels the node", serveServerConfig{uiTitle: "workshop"}, "completed", "workshop: Response complete"},
-		{"hub node name when no title", serveServerConfig{hubNodeName: "artist"}, "completed", "artist: Response complete"},
-		{"hub node id as last resort", serveServerConfig{hubNodeID: "node-7"}, "completed", "node-7: Response complete"},
-		{"title wins over hub fields", serveServerConfig{uiTitle: "Studio", hubNodeName: "artist"}, "completed", "Studio: Response complete"},
-		{"blank title falls through", serveServerConfig{uiTitle: "   ", hubNodeName: "artist"}, "completed", "artist: Response complete"},
-		{"failures are labelled too", serveServerConfig{uiTitle: "workshop"}, "failed", "workshop: Response failed"},
-		{"failures without identity are unchanged", serveServerConfig{}, "failed", "Response failed"},
+		{"chat without node identity", serveServerConfig{}, titled, "completed", "Fix flaky CI", "Response ready"},
+		{"ui title labels the node", serveServerConfig{uiTitle: "workshop"}, titled, "completed", "workshop: Fix flaky CI", "Response ready"},
+		{"hub node name when no title", serveServerConfig{hubNodeName: "artist"}, titled, "completed", "artist: Fix flaky CI", "Response ready"},
+		{"hub node id as last resort", serveServerConfig{hubNodeID: "node-7"}, titled, "completed", "node-7: Fix flaky CI", "Response ready"},
+		{"title wins over hub fields", serveServerConfig{uiTitle: "Studio", hubNodeName: "artist"}, titled, "completed", "Studio: Fix flaky CI", "Response ready"},
+		{"blank title falls through", serveServerConfig{uiTitle: "   ", hubNodeName: "artist"}, titled, "completed", "artist: Fix flaky CI", "Response ready"},
+		{"failures name the chat too", serveServerConfig{uiTitle: "workshop"}, titled, "failed", "workshop: Fix flaky CI", "Response failed"},
+		{"explicit name wins", serveServerConfig{}, &session.Session{Name: "Release prep", GeneratedShortTitle: "Fix flaky CI"}, "completed", "Release prep", "Response ready"},
+		// Auto-titling runs after the response, so a first turn has only its prompt.
+		{"untitled chat uses its first prompt", serveServerConfig{uiTitle: "workshop"}, &session.Session{Summary: "why is CI red"}, "completed", "workshop: why is CI red", "Response ready"},
+		{"missing chat keeps the outcome in the title", serveServerConfig{hubNodeName: "artist"}, nil, "completed", "artist: Response ready", ""},
+		{"missing chat without node identity", serveServerConfig{}, nil, "failed", "Response failed", ""},
 	}
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			path := filepath.Join(t.TempDir(), "sessions.db")
-			store, err := session.NewSQLiteStore(session.Config{Enabled: true, Path: path})
-			if err != nil {
-				t.Fatal(err)
-			}
-			defer store.Close()
-
-			sub, err := store.UpsertPushSubscription(context.Background(), &session.PushSubscription{
-				Endpoint: "https://push.example/node", KeyP256DH: "key", KeyAuth: "auth",
-			})
-			if err != nil {
-				t.Fatal(err)
+			store := newSessionDirectoryTestStore(t)
+			if tc.chat != nil {
+				chat := *tc.chat
+				chat.ID = "sess-1"
+				createDirectorySession(t, store, &chat)
 			}
 
 			s := &serveServer{store: store, cfg: tc.cfg}
-			raw, err := s.completionNotificationPayload(session.CompletionNotification{ResponseID: "resp-1", SessionID: "sess-1", SubscriptionID: sub.ID, Source: "/ui", Outcome: session.ResponseRunState(tc.outcome)})
+			raw, err := s.completionNotificationPayload(context.Background(), session.CompletionNotification{ResponseID: "resp-1", SessionID: "sess-1", Source: "/ui", Outcome: session.ResponseRunState(tc.outcome)})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -175,12 +175,12 @@ func TestCompletionPushTitleIdentifiesNode(t *testing.T) {
 			if err := json.Unmarshal(raw, &payload); err != nil {
 				t.Fatal(err)
 			}
-			if payload.Title != tc.want {
-				t.Errorf("title = %q, want %q", payload.Title, tc.want)
+			if payload.Title != tc.wantTitle || payload.Body != tc.wantBody {
+				t.Errorf("display = %q / %q, want %q / %q", payload.Title, payload.Body, tc.wantTitle, tc.wantBody)
 			}
-			// The body is intentionally left alone; only the title gains the label.
-			if payload.Body == "" {
-				t.Error("body should not be empty")
+			// The OS (and Siri, when announcing) already names the app.
+			if strings.Contains(strings.ToLower(payload.Title+payload.Body), "term-llm") {
+				t.Errorf("display repeats the app name: %q / %q", payload.Title, payload.Body)
 			}
 		})
 	}

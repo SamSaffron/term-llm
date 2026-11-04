@@ -35,7 +35,7 @@ func TestCompletionProducerToActualWorkerContract(t *testing.T) {
 	if err != nil || len(items) != 1 {
 		t.Fatalf("durable candidates=%+v err=%v", items, err)
 	}
-	primary, err := s.completionNotificationPayload(items[0])
+	primary, err := s.completionNotificationPayload(context.Background(), items[0])
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -208,7 +208,7 @@ func assertNotificationNativeCandidate(t *testing.T, s *serveServer, store *sess
 	if epoch <= 0 || candidate.RunEpoch != epoch || candidate.ResponseID != run.id || candidate.SessionID != "wake-parent" || candidate.SubscriptionID != origin.SubscriptionID || candidate.WindowID != origin.WindowID || candidate.DocumentID != origin.DocumentID || candidate.Source != origin.Source || candidate.Outcome != session.ResponseRunCompleted {
 		t.Fatalf("managed completion lost admitted owner/epoch: candidate=%+v origin=%+v epoch=%d", candidate, origin, epoch)
 	}
-	body, err := s.completionNotificationPayload(candidate)
+	body, err := s.completionNotificationPayload(context.Background(), candidate)
 	if err != nil {
 		t.Fatal(err)
 	}

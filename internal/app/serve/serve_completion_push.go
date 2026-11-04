@@ -66,14 +66,14 @@ func (c serveServerConfig) nodeLabel() string {
 	return ""
 }
 
-func (s *serveServer) completionNotificationPayload(item session.CompletionNotification) ([]byte, error) {
-	title, body := "Response complete", "Your term-llm response is ready."
-	if item.Outcome == session.ResponseRunFailed {
-		title, body = "Response failed", "Your term-llm response stopped with an error."
+// completionNotificationPayload names the chat when its session can be read; a
+// missing or unreadable session still notifies, just without the name.
+func (s *serveServer) completionNotificationPayload(ctx context.Context, item session.CompletionNotification) ([]byte, error) {
+	chatTitle := ""
+	if sess, err := s.store.Get(ctx, item.SessionID); err == nil && sess != nil {
+		chatTitle = sess.PreferredShortTitle()
 	}
-	if label := s.cfg.nodeLabel(); label != "" {
-		title = label + ": " + title
-	}
+	title, body := notification.CompletionText(s.cfg.nodeLabel(), chatTitle, item.Outcome == session.ResponseRunFailed)
 	return json.Marshal(completionPushPayload{
 		Version: notification.Version, Kind: notification.KindCompletion, EventID: item.EventID,
 		TurnID: item.TurnID, ResponseID: item.ResponseID, WindowID: item.WindowID, Source: item.Source,
@@ -157,7 +157,7 @@ func (s *serveServer) dispatchCompletionPushesWithSender(ctx context.Context, at
 			s.persistNotificationResult(outbox, item, "dead", time.Time{}, "subscription is stale or missing")
 			continue
 		}
-		payload, err := s.completionNotificationPayload(item)
+		payload, err := s.completionNotificationPayload(ctx, item)
 		if err != nil {
 			s.persistNotificationResult(outbox, item, "dead", time.Time{}, "invalid notification metadata")
 			continue

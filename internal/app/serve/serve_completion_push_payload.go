@@ -8,6 +8,7 @@ import (
 	"time"
 
 	webpush "github.com/SherClockHolmes/webpush-go"
+	"github.com/samsaffron/term-llm/internal/notification"
 	"github.com/samsaffron/term-llm/internal/session"
 )
 
@@ -27,12 +28,8 @@ func sendCompletionPush(ctx context.Context, sub *session.PushSubscription, payl
 	if json.Unmarshal(payload, &compact) != nil {
 		return status, retryAfter, err
 	}
-	compact.Title = "Response complete"
-	compact.Body = "Your term-llm response is ready."
-	if compact.Outcome == "failed" {
-		compact.Title = "Response failed"
-		compact.Body = "Your term-llm response stopped with an error."
-	}
+	// The node label or chat title may be what overflowed; keep the outcome.
+	compact.Title, compact.Body = notification.CompletionText("", "", compact.Outcome == string(session.ResponseRunFailed))
 	fallback, marshalErr := json.Marshal(compact)
 	if marshalErr != nil {
 		return status, retryAfter, err
@@ -40,10 +37,6 @@ func sendCompletionPush(ctx context.Context, sub *session.PushSubscription, payl
 	maxRecordSize := opts.RecordSize
 	if maxRecordSize == 0 {
 		maxRecordSize = webpush.MaxRecordSize
-	}
-	if len(fallback)+completionPushEncryptionOverhead > int(maxRecordSize) {
-		compact.Body = ""
-		fallback, _ = json.Marshal(compact)
 	}
 	if len(fallback)+completionPushEncryptionOverhead > int(maxRecordSize) {
 		return status, retryAfter, err
