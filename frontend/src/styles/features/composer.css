@@ -730,21 +730,15 @@
   display: none;
 }
 
-/* Stop sits inside the running ring, so the slot still shows progress. */
-.send-btn.stop {
-  position: relative;
-}
-
+/* Stop is a plain square. The transcript status line shows that work is
+   running, so the slot does not also spin. */
 .send-btn.loading.stop .arrow {
   display: block;
   fill: currentcolor;
 }
 
-.send-btn.stop .spinner {
-  position: absolute;
-  inset: 5px;
-  width: auto;
-  height: auto;
+.send-btn.loading.stop .spinner {
+  display: none;
 }
 
 @keyframes spin {

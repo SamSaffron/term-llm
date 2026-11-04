@@ -81,13 +81,36 @@ describe('running conversation status styles', () => {
     );
     expect(statusCSS).not.toContain('background-clip');
     expect(statusCSS).not.toContain('background-position');
-    expect(statusCSS).not.toContain('infinite');
     expect(statusCSS).not.toMatch(/\.streaming-indicator-text\s*\{[^}]*animation:/);
     // A short entrance is fine; it must still respect reduced motion.
     expect(statusCSS).toContain('streaming-status-enter 180ms ease-out both');
     expect(statusCSS).toMatch(
-      /@media \(prefers-reduced-motion: reduce\)\s*\{\s*\.streaming-indicator\s*\{[^}]*animation: none;/,
+      /@media \(prefers-reduced-motion: reduce\)\s*\{\s*\.streaming-indicator,\s*\.streaming-indicator::before\s*\{[^}]*animation: none;/,
     );
+  });
+
+  it('pulses only the status dot, and only its opacity', () => {
+    const start = preactOverrides.indexOf('.streaming-indicator {');
+    const end = preactOverrides.indexOf('/* Composer */', start);
+    const statusCSS = preactOverrides.slice(start, end);
+    const pulseStart = statusCSS.indexOf('@keyframes streaming-status-pulse {');
+    const pulse = statusCSS.slice(pulseStart, statusCSS.indexOf('@media', pulseStart));
+
+    expect(statusCSS.match(/infinite/g)).toHaveLength(1);
+    expect(statusCSS).toMatch(
+      /\.streaming-indicator::before\s*\{[^}]*animation: streaming-status-pulse 1\.4s ease-in-out infinite;/,
+    );
+    expect(pulseStart).toBeGreaterThanOrEqual(0);
+    expect(pulse).toContain('opacity: 0.35;');
+    expect(pulse).not.toMatch(/(?:transform|box-shadow|background|filter)\s*:/);
+    expect(statusCSS).toMatch(
+      /\.streaming-indicator-stopping::before,\s*\.streaming-indicator-unknown::before\s*\{[^}]*animation: none;/,
+    );
+  });
+
+  it('keeps the composer Stop square still instead of spinning a ring around it', () => {
+    const composerCSS = readFileSync(resolve(stylesRoot, 'features/composer.css'), 'utf8');
+    expect(composerCSS).toMatch(/\.send-btn\.loading\.stop \.spinner\s*\{\s*display: none;/);
   });
 });
 

@@ -769,8 +769,8 @@ function ConversationComposer() {
   );
   const steering = !liveTextMode && canSteer && hasDraft;
   const loading = !liveButton && !liveTextMode && runActive && !hasDraft;
-  // With nothing to send, a stoppable run turns the send slot into Stop. The
-  // ring keeps spinning around it, so the slot still shows that work is running.
+  // With nothing to send, a stoppable run turns the send slot into a plain Stop
+  // square. The transcript status dot is what shows that work is running.
   const stopInSend = loading && canStop;
   // A double-click on Send must not land on the Stop that replaces it, so Stop
   // ignores clicks for one double-click interval after a Send click.
