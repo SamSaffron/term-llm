@@ -184,6 +184,8 @@ When web search is enabled, the chat status line shows `web`; when fast service 
 
 In the web UI, typing `/` opens an alphabetized command menu. `/compact` manually compresses the active conversation context without adding a user message; `/commit` opens the native Git workflow; `/goal`, `/mcp`, and `/model` open their existing controls; `/new` starts a fresh conversation; and `/side` opens a side question.
 
+The web header shows the conversation's approximate context use next to the model chip: a ring and the share of the model's window, for example `22% · 160k`. Phones drop the window size, and the narrowest screens show only the ring. The meter turns amber from 70% and red at the auto-compaction point (or at 90% where term-llm does not compact). Clicking it shows the token counts, where term-llm compacts automatically, **Compact now**, and **Session stats**. The auto-compaction point appears only when term-llm compacts the conversation itself; providers that manage their own context, such as the CLI-backed ones, compact on their own schedule.
+
 Manual and automatic web compaction show the same animated progress indicator and block sending or steering into that conversation while compaction is active. You can keep editing your draft or use another conversation. An accepted manual compaction runs on the server independently of the initiating browser connection; session events and status polling reconcile progress after reconnecting or reloading. A lost acceptance reply is treated as an unknown outcome, not retried as another compaction. Activity snapshots are process-local; the rewritten conversation itself is persisted.
 
 ### Native Git commits

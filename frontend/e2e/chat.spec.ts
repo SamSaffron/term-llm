@@ -38,6 +38,12 @@ async function mockAPI(
           project_id: 'p',
           project_name: 'term-llm',
           worktree_dir: '/worktrees/header-title',
+          context_usage: {
+            used_tokens: 148_800,
+            input_limit: 160_000,
+            auto_compact_at: 144_000,
+            estimated: true,
+          },
           plan_summary: {
             plan: [
               { step: 'Inspect', status: 'completed' },
@@ -693,11 +699,20 @@ test('breadcrumb header preserves desktop height and fixed phone rows with every
   await expect(page.getByRole('region', { name: 'Interactive shell' })).toBeVisible();
   await page.getByRole('button', { name: 'Back to chat' }).click();
   await expect(page.getByRole('button', { name: 'Return to shell' })).toHaveText('Shell');
+  const contextMeter = page.getByRole('button', {
+    name: 'Context window: 93% used, 148.8k of 160k tokens (estimated)',
+  });
   for (const width of testInfo.project.name === 'mobile' ? [412, 320] : [1440, 1100]) {
     await page.setViewportSize({ width, height: 900 });
     const header = page.locator('.main-header');
     await expect(header).toHaveCSS('height', width < 768 ? '89px' : '64px');
     expect(await header.evaluate((el) => el.scrollWidth <= el.clientWidth + 1)).toBe(true);
+    // The window size drops on phones, and the percentage on the narrowest,
+    // where the ring alone keeps every other control on the row.
+    await expect(contextMeter).toBeVisible();
+    await expect(contextMeter).toHaveText(width < 360 ? '' : width < 768 ? '93%' : '93% · 160k', {
+      useInnerText: true,
+    });
     expect(
       await project.locator('span').evaluate((el) => el.scrollWidth <= el.clientWidth + 1),
     ).toBe(true);
@@ -757,6 +772,35 @@ test('breadcrumb header preserves desktop height and fixed phone rows with every
       (el) => el.scrollHeight <= el.clientHeight && el.scrollWidth <= el.clientWidth,
     ),
   ).toBe(true);
+});
+
+test('context meter opens its details as an anchored card or a phone sheet', async ({
+  page,
+}, testInfo) => {
+  test.skip(testInfo.project.name === 'iphone', 'Covered by desktop and mobile');
+  await open(page, '', { headerContext: true });
+  const meter = page.getByRole('button', { name: /^Context window:/ });
+  await meter.click();
+  const card = page.getByRole('dialog', { name: 'Context window' });
+  await expect(card).toBeVisible();
+  await expect(card).toContainText('auto-compact 144k');
+  await expect(card).toContainText('Past the auto-compaction point');
+  const box = (await card.boundingBox())!;
+  const viewport = page.viewportSize()!;
+  expect(box.x).toBeGreaterThanOrEqual(0);
+  expect(box.x + box.width).toBeLessThanOrEqual(viewport.width);
+  expect(box.y + box.height).toBeLessThanOrEqual(viewport.height);
+  if (testInfo.project.name === 'mobile') {
+    await expect(card).toHaveCSS('border-radius', '18px');
+    expect(box.width).toBeGreaterThan(viewport.width - 20);
+    await expect(card.getByRole('button', { name: 'Compact now' })).toHaveCSS('min-height', '44px');
+  } else {
+    const trigger = (await meter.boundingBox())!;
+    expect(box.y).toBeGreaterThanOrEqual(trigger.y + trigger.height);
+  }
+  await page.keyboard.press('Escape');
+  await expect(card).toBeHidden();
+  await expect(meter).toBeFocused();
 });
 
 test('breadcrumb crumbs mark hover and open state without a box and release focus after a pointer close', async ({

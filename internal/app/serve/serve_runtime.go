@@ -1637,6 +1637,9 @@ type serveContextUsage struct {
 	InputLimit        int  `json:"input_limit,omitempty"`
 	CachedInputTokens int  `json:"cached_input_tokens,omitempty"`
 	Estimated         bool `json:"estimated"`
+	// AutoCompactAt is where term-llm itself compacts; omitted when it does not (auto-compaction
+	// off, unknown window, or a provider such as the CLI ones that manages its own context).
+	AutoCompactAt int `json:"auto_compact_at,omitempty"`
 }
 
 func contextUsageSnapshot(engine *engine.Engine, messages []core.Message, cachedInputTokens int) *serveContextUsage {
@@ -1650,12 +1653,16 @@ func contextUsageSnapshot(engine *engine.Engine, messages []core.Message, cached
 	if current.UsedTokens <= 0 && current.Window <= 0 && cachedInputTokens <= 0 {
 		return nil
 	}
-	return &serveContextUsage{
+	usage := &serveContextUsage{
 		UsedTokens:        current.UsedTokens,
 		InputLimit:        current.Window,
 		CachedInputTokens: cachedInputTokens,
 		Estimated:         true,
 	}
+	if soft, _, enabled := engine.CompactionThresholds(); enabled && soft > 0 {
+		usage.AutoCompactAt = soft
+	}
+	return usage
 }
 
 type serveRuntimeSetupContextKey struct{}

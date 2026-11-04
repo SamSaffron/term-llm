@@ -123,6 +123,8 @@ export interface ContextUsage {
   inputLimit?: number;
   cachedInputTokens: number;
   estimated: boolean;
+  /** Occupancy at which term-llm itself compacts; absent when it does not compact this context. */
+  autoCompactAt?: number;
 }
 
 export interface Usage {

@@ -32,7 +32,7 @@ JavaScript may export `activate(ui)`, called once after mounting, in enabled ord
 - mount: this extension's dedicated DOM element, outside Preact ownership.
 - getContext(): sessionId, version, prefix.
 - onSessionChanged(callback): subscription returning an unsubscribe function.
-- getContextUsage(): latest approximate active-session context snapshot or null; includes usedTokens, optional inputLimit, cumulative cachedInputTokens, and estimated.
+- getContextUsage(): latest approximate active-session context snapshot or null; includes usedTokens, optional inputLimit, cumulative cachedInputTokens, estimated, and optional autoCompactAt (where term-llm itself compacts; absent when it does not).
 - onContextUsageChanged(callback): immediate context snapshot subscription returning an unsubscribe function; updates after session loads, changes, and completed responses.
 - insertComposerText(text): appends without sending.
 - icon(name): a new `<svg>` drawing the named app icon, including replacements, for extension-owned controls.

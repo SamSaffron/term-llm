@@ -1104,6 +1104,22 @@ describe('transcript domain', () => {
     ).toEqual({ usedTokens: 0, cachedInputTokens: 4, estimated: false });
   });
 
+  it('keeps the auto-compaction point only when the server names one', () => {
+    expect(
+      sanitizeContextUsage({ used_tokens: 35_200, input_limit: 160_000, auto_compact_at: 144_000 }),
+    ).toEqual({
+      usedTokens: 35_200,
+      inputLimit: 160_000,
+      cachedInputTokens: 0,
+      estimated: true,
+      autoCompactAt: 144_000,
+    });
+    for (const autoCompactAt of [0, -1, null, '', 'soon'])
+      expect(
+        sanitizeContextUsage({ used_tokens: 1, auto_compact_at: autoCompactAt }),
+      ).not.toHaveProperty('autoCompactAt');
+  });
+
   it('prefers server-resolved titles while retaining editable generated metadata', () => {
     const session = sanitizeSession({
       id: 's1',

@@ -84,9 +84,29 @@ func TestStreamResponses_ForwardsProviderReportedContextMidRun(t *testing.T) {
 		if got["used_tokens"] != float64(25670) || got["input_limit"] != float64(1_000_000) {
 			t.Fatalf("%s context_usage = %v, want 25670/1000000 (summed billing usage must not leak in)", name, usage)
 		}
+		// The provider compacts its own context at a point term-llm does not know.
+		if _, ok := got["auto_compact_at"]; ok {
+			t.Fatalf("%s context_usage = %v, want no auto_compact_at for a self-managing provider", name, usage)
+		}
 	}
 	assertContext("mid-run", midRun["context_usage"])
 	assertContext("completed", completed["response"].(map[string]any)["context_usage"])
+}
+
+// The web meter marks where term-llm will compact, so a snapshot names that
+// point only when term-llm compacts the context itself.
+func TestContextUsageSnapshotReportsAutoCompactPointOnlyWhenTermLLMCompacts(t *testing.T) {
+	provider := mockprovider.NewMockProvider("mock")
+	compacting := engine.NewEngine(provider, nil)
+	compacting.SetCompaction(200_000, engine.DefaultCompactionConfig())
+	if got := contextUsageSnapshot(compacting, nil, 0); got == nil || got.InputLimit != 200_000 || got.AutoCompactAt != 180_000 {
+		t.Fatalf("compacting snapshot = %+v, want auto-compact at 180000 of 200000", got)
+	}
+	tracking := engine.NewEngine(provider, nil)
+	tracking.SetContextTracking(200_000)
+	if got := contextUsageSnapshot(tracking, nil, 0); got == nil || got.InputLimit != 200_000 || got.AutoCompactAt != 0 {
+		t.Fatalf("tracking-only snapshot = %+v, want the window without an auto-compact point", got)
+	}
 }
 
 // A session refresh mid-run must not replace the live provider reading with

@@ -139,7 +139,7 @@ The host provides:
 - `mount`: a dedicated element outside Preact ownership for your extension.
 - `getContext()`: the current session ID, frontend asset version and app prefix.
 - `onSessionChanged(callback)`: subscribes immediately and on changes; returns an unsubscribe function.
-- `getContextUsage()`: the active session's latest approximate context snapshot, or `null`. The snapshot contains `usedTokens`, optional `inputLimit`, cumulative `cachedInputTokens`, and `estimated`.
+- `getContextUsage()`: the active session's latest approximate context snapshot, or `null`. The snapshot contains `usedTokens`, optional `inputLimit`, cumulative `cachedInputTokens`, `estimated`, and optional `autoCompactAt`: the occupancy at which term-llm itself compacts, absent when it does not (for example with providers that manage their own context).
 - `onContextUsageChanged(callback)`: delivers that snapshot immediately and after session loads, changes, or completed responses; returns an unsubscribe function.
 - `insertComposerText(text)`: appends draft text without submitting it.
 - `icon(name)`: returns a new `<svg>` element drawing the named icon as the app does, including any extension's replacement, for use in your own controls.

@@ -1,0 +1,96 @@
+/* Header context meter: a ring and "22% · 160k" after the model chip. It stays
+   neutral until the window fills: amber from 70%, red at the auto-compaction
+   point. The tones are shared with the details card, whose layout loads with
+   it (context-card.css). */
+
+.context-meter,
+.context-popover {
+  --context-tone: color-mix(in oklab, var(--text) 82%, transparent);
+  --context-tone-text: var(--text);
+}
+
+.context-meter[data-tone='warm'],
+.context-popover[data-tone='warm'] {
+  --context-tone: var(--accent-amber);
+  --context-tone-text: var(--accent-amber);
+}
+
+.context-meter[data-tone='hot'],
+.context-popover[data-tone='hot'] {
+  --context-tone: var(--danger);
+  --context-tone-text: var(--danger);
+}
+
+.context-meter {
+  gap: 0.42rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.context-meter-value {
+  color: var(--context-tone-text);
+}
+
+/* Spaces around the dot are content, not layout. */
+.context-meter-detail {
+  color: var(--text-muted);
+  font-weight: 500;
+  white-space: pre;
+}
+
+.context-ring {
+  display: block;
+  flex: none;
+  overflow: visible;
+}
+
+.context-ring-track,
+.context-ring-fill {
+  fill: none;
+}
+
+.context-ring-track {
+  stroke: color-mix(in oklab, var(--text) 17%, transparent);
+}
+
+.context-ring-fill {
+  stroke: var(--context-tone);
+  stroke-linecap: round;
+  transition:
+    stroke-dasharray 0.3s ease,
+    stroke 0.2s ease;
+}
+
+/* The window size goes first when the header narrows (phones, or a desktop
+   main column squeezed by side panels); the ring keeps the reading. Widths are
+   in rem so a larger text size collapses the meter sooner. */
+@container main-header (width < 40rem) {
+  .context-meter-detail {
+    display: none;
+  }
+}
+
+/* On the narrowest phones the ring alone carries the reading; the card and the
+   accessible name keep the numbers. Without a window there is no ring, so the
+   token count stays. */
+@container main-header (width < 21.25rem) {
+  .context-meter.has-window {
+    padding-inline: 0;
+    width: var(--header-action-height);
+  }
+
+  .context-meter.has-window .context-meter-text {
+    display: none;
+  }
+}
+
+@media (width <= 430px) {
+  .context-meter {
+    padding-inline: 0.4rem;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .context-ring-fill {
+    transition: none;
+  }
+}

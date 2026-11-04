@@ -218,6 +218,10 @@ func TestProductionBundleSizeBudgets(t *testing.T) {
 		"dist/assets/Lightbox.css":   {raw: 4_000, gzip: 1_400},
 		"dist/chunks/StatsModal.js":  {raw: 8_000, gzip: 3_000},
 		"dist/assets/StatsModal.css": {raw: 5_000, gzip: 1_600},
+		// The header context meter's details card measured 3.18/1.33 kB JS and
+		// 2.53/0.95 kB CSS; it loads on the meter's first hover, focus or open.
+		"dist/chunks/ContextCard.js":  {raw: 3_500, gzip: 1_500},
+		"dist/assets/ContextCard.css": {raw: 2_800, gzip: 1_100},
 		// The MCP servers dialog (flat list, row menu, and the add-server sheet
 		// with catalogue/URL/command sources) measured 14.0/5.0 kB JS and
 		// 11.1/2.7 kB CSS; it loads only when the dialog opens.
@@ -231,6 +235,8 @@ func TestProductionBundleSizeBudgets(t *testing.T) {
 		// and sidebar width limits measure 175.5/34.06 kB. The breadcrumb header
 		// (project/worktree crumbs, project menu, two-row phone grid, MCP row in
 		// the runtime popover) takes it to 177.0/34.39 kB; retain ~1% gzip headroom.
+		// The header context meter's ring chip and tones are eager (its card's
+		// styles load with the card): 178.2/34.68 kB.
 		"dist/app.css": {raw: 180_000, gzip: 34_750},
 		// Measured after the completed standalone port: 67.7/21.5 KiB JS and
 		// 16.7/4.1 KiB CSS. These limits retain modest growth headroom without
