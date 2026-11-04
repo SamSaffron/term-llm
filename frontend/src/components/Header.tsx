@@ -13,6 +13,8 @@ import { planSummary } from '../domain/plan';
 import { observePopoverPosition, positionPopover } from '../platform/browser';
 import { containPopoverScroll } from '../platform/popover-scroll';
 import { Icon } from './Icon';
+import { HeaderBreadcrumb } from './HeaderBreadcrumb';
+import { resolveProjectContext } from '../domain/project-context';
 
 function EffortMeter() {
   return (
@@ -33,6 +35,17 @@ function RuntimePicker() {
   const popover = useRef<HTMLDialogElement>(null);
   const initialFocus = useRef<HTMLButtonElement>(null);
   const locked = store.runActive.value;
+  const session = store.activeSession.value;
+  const mcpOwnerId = session?.id || store.composer.runtimeDraftId();
+  const pageTools = store.webMCP.available.value && store.webMCPEnabled.value ? 1 : 0;
+  const mcpCount =
+    pageTools +
+    (store.mcp.value.ownerId === mcpOwnerId
+      ? store.mcp.value.enabled.length
+      : session?.mcpEnabled?.length || 0);
+  const mcpNames =
+    store.mcp.value.ownerId === mcpOwnerId ? store.mcp.value.enabled : session?.mcpEnabled || [];
+  const mcpHint = [...mcpNames, ...(pageTools ? ['Page tools'] : [])].join(', ') || 'None enabled';
   // The selected runtime is the target of an in-progress model swap. Keep it
   // visible while the durable session still reports the previous runtime; if
   // cancelled, the selected target remains ready for the next reply.
@@ -124,7 +137,7 @@ function RuntimePicker() {
         <div class="runtime-popover-heading">
           <div class="runtime-popover-title">Runtime</div>
           <div class="runtime-popover-hint">
-            Provider, model, effort, and speed for the next reply
+            Provider, model, effort, speed, and MCP servers for the next reply
           </div>
         </div>
         <button
@@ -210,6 +223,25 @@ function RuntimePicker() {
             </button>
           </div>
         )}
+        <div class="runtime-mcp-row runtime-popover-fast-row">
+          <div>
+            <div class="runtime-popover-label">MCP servers</div>
+            <div class="runtime-popover-fast-hint">{mcpHint}</div>
+          </div>
+          <button
+            type="button"
+            class="runtime-mcp-manage"
+            aria-label="Manage MCP servers"
+            onClick={() => {
+              close();
+              store.modal.value = 'mcp';
+              void store.loadMCP();
+            }}
+          >
+            {mcpCount ? `${mcpCount} enabled` : 'Manage'}
+            <Icon name="chevron-right" />
+          </button>
+        </div>
       </div>
     </dialog>
   ) : null;
@@ -235,7 +267,7 @@ export function Header() {
         if (
           active instanceof HTMLButtonElement &&
           header.current?.contains(active) &&
-          active.matches('.header-action, .mobile-menu')
+          active.matches('.header-action, .mobile-menu, .header-crumb, .header-title-badge')
         )
           active.blur();
       });
@@ -260,14 +292,6 @@ export function Header() {
     store.shellStore.sessionId.value === session.id &&
     store.shellStore.status.value !== 'idle',
   );
-  const mcpOwnerId = session?.id || store.composer.runtimeDraftId();
-  const pageTools = store.webMCP.available.value && store.webMCPEnabled.value ? 1 : 0;
-  const mcpCount =
-    pageTools +
-    (store.mcp.value.ownerId === mcpOwnerId
-      ? store.mcp.value.enabled.length
-      : session?.mcpEnabled?.length || 0);
-  const currentWorktreeDir = store.currentWorktreeDir.value;
   const loadedDiff =
     session && store.diff.value.sessionId === session.id && store.diff.value.files.length
       ? store.diff.value.files
@@ -286,10 +310,12 @@ export function Header() {
       store.worktreesEnabled.value),
   );
   const diffTitle = `${diffFileCount} changed ${diffFileCount === 1 ? 'file' : 'files'}${diffAdds || diffDels ? ` (${diffAdds ? `+${diffAdds}` : ''}${diffAdds && diffDels ? ' ' : ''}${diffDels ? `−${diffDels}` : ''})` : ''}`;
-  const project = store.projects.value.find(
-    (entry) => entry.id === (session?.projectId || store.activeProjectId.value),
+  const projectContext = resolveProjectContext(
+    store.projectsEnabled.value,
+    store.projects.value,
+    session,
+    store.activeProjectId.value,
   );
-  const showWorktree = store.worktreesAvailable();
   const currentPlan = store.currentPlan.value;
   const currentPlanSummary = planSummary(currentPlan);
   const planStatus = currentPlanSummary.complete
@@ -311,16 +337,7 @@ export function Header() {
           >
             <Icon name="menu" />
           </button>
-          <div class="header-title-context">
-            <h1 class="header-title" id="activeSessionTitle">
-              {session?.title || 'Chat'}
-            </h1>
-            {(session?.projectName || project?.name) && (
-              <span class="header-project-subtitle" id="activeProjectSubtitle">
-                {session?.projectName || project?.name}
-              </span>
-            )}
-          </div>
+          <HeaderBreadcrumb context={projectContext} />
           {store.networkState.value !== 'online' && (
             <span
               class={`connection-state ${store.networkState.value === 'offline' ? 'bad' : ''}`}
@@ -342,20 +359,6 @@ export function Header() {
           <div class="header-controls-row">
             <div class="header-stats" id="headerStats">
               <RuntimePicker />
-              {mcpCount > 0 && (
-                <button
-                  type="button"
-                  class="mcp-status header-action"
-                  id="mcpStatus"
-                  aria-label="Manage MCP servers"
-                  onClick={() => {
-                    store.modal.value = 'mcp';
-                    void store.loadMCP();
-                  }}
-                >
-                  MCP {mcpCount}
-                </button>
-              )}
             </div>
             <div class="header-context-actions">
               {resumableShell && session && (
@@ -367,33 +370,8 @@ export function Header() {
                   onClick={() => store.shellStore.show(session.id)}
                 >
                   <span class="shell-return-dot" aria-hidden="true" />
-                  <span>Shell</span>
-                </button>
-              )}
-              {showWorktree && (
-                <button
-                  type="button"
-                  class={`chip-trigger worktree-trigger header-action ${session && !store.draftActive.value ? 'locked' : ''}`}
-                  id="chipWorktreeTrigger"
-                  aria-label="Worktree"
-                  onClick={() => {
-                    store.modal.value = 'worktrees';
-                    void store.loadWorktrees();
-                  }}
-                >
-                  <Icon name="branch" />
-                  <span class="chip-label">{currentWorktreeDir.split('/').pop() || 'root'}</span>
-                </button>
-              )}
-              {session && store.branchPathCount.value > 1 && (
-                <button
-                  class="header-action branch-tree-trigger"
-                  id="branchTreeBtn"
-                  type="button"
-                  aria-haspopup="dialog"
-                  onClick={() => void store.loadBranchTree()}
-                >
-                  {store.branchPathCount.value} paths
+                  <Icon class="shell-return-icon" name="terminal" />
+                  <span class="shell-return-label">Shell</span>
                 </button>
               )}
               {currentPlan && (

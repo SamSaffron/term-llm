@@ -266,22 +266,52 @@ describe('header styles', () => {
     );
   });
 
-  it('gives clipped worktree labels enough line height for descenders', () => {
-    expect(appCSS).toMatch(/\.worktree-trigger \.chip-label\s*\{[^}]*line-height: 1\.3;/s);
+  it('gives clipped crumb labels, including the worktree label, enough line height for descenders', () => {
+    expect(appCSS).toMatch(/\.header-crumb\s*\{[^}]*line-height: 1\.3;/s);
   });
 
-  it('keeps the mobile header on one model-priority row', () => {
+  it('lets header heights and both two-line layouts grow with user fonts', () => {
+    const headerRules = [...appCSS.matchAll(/\.main-header\s*\{([^}]*)\}/gs)]
+      .map((match) => match[1])
+      .join('\n');
+    expect(headerRules).toContain('min-height: calc(64px + var(--safe-top))');
+    expect(headerRules).toContain('min-height: calc(89px + var(--safe-top))');
+    expect(headerRules).not.toMatch(/(?:^|[;\n])\s*height:/);
+    expect(appCSS).toContain('minmax(44px, auto)');
+    expect(appCSS).toMatch(/minmax\(\s*28px,\s*auto\s*\)/);
+    expect(appCSS).toContain('grid-template-rows: auto auto');
+    expect(appCSS).toContain('max-content minmax(0, max-content) max-content minmax(0, 1fr)');
+  });
+
+  it('marks crumb hover and open state without a filled box, and hover only where it exists', () => {
+    const hoverOnly = /@media \(hover: hover\) \{[\s\S]*?\n\}/g;
+    const gated = (appCSS.match(hoverOnly) || []).join('\n');
+    expect(gated).toMatch(/\.header-crumb:hover\s*\{[^}]*color: var\(--text\);/);
+    expect(gated).toMatch(/\.header-title-badge:hover\s*\{/);
+    expect(appCSS.replace(hoverOnly, '')).not.toMatch(/\.header-(?:crumb|title-badge):hover/);
+    // A filled box would crowd the controls directly above the phone breadcrumb.
+    const crumbRules = [...appCSS.matchAll(/([^{}]+)\{([^{}]*)\}/g)].filter(([, selectors]) =>
+      selectors.includes('.header-crumb'),
+    );
+    expect(crumbRules.length).toBeGreaterThan(5);
+    for (const [, selectors, body] of crumbRules)
+      expect(body, selectors.trim()).not.toMatch(/background(?:-color)?:(?!\s*transparent)/);
+    expect(appCSS).toMatch(
+      /\.header-crumb\[aria-expanded='true'\] \.header-crumb-chevron\s*\{[^}]*transform: rotate\(180deg\);/,
+    );
+  });
+
+  it('keeps mobile controls above the full-width M2 breadcrumb', () => {
     const start = preactOverrides.indexOf('@media (width <= 767px)');
     const end = preactOverrides.indexOf('@media (hover: none)', start);
     const mobile = preactOverrides.slice(start, end);
-
-    expect(start).toBeGreaterThanOrEqual(0);
-    expect(end).toBeGreaterThan(start);
-    expect(mobile).toMatch(/\.header-title-row\s*\{[^}]*flex-wrap: nowrap;/s);
-    expect(mobile).toMatch(/\.header-left\s*\{[^}]*flex: 1 1 0;[^}]*min-width: 0;/s);
-    expect(mobile).toMatch(/\.header-title-context\s*\{[^}]*overflow: hidden;/s);
-    expect(mobile).toMatch(/\.header-project-subtitle\s*\{[^}]*display: none;/s);
-    expect(mobile).not.toMatch(/\.header-title-row\s*\{[^}]*flex-wrap: wrap;/s);
+    expect(mobile).toMatch(/\.header-title-row\s*\{[^}]*display: grid;/s);
+    expect(mobile).toContain("'title title title'");
+    expect(mobile).toMatch(/\.header-left\s*\{[^}]*display: contents;/s);
+    expect(mobile).toMatch(/\.header-title-context\s*\{[^}]*grid-area: title;[^}]*width: 100%;/s);
+    expect(appCSS).not.toContain('.header-project-subtitle');
+    expect(appCSS).toContain('@container main-header (width < 920px)');
+    expect(appCSS).toContain('container: main-header / inline-size');
   });
 });
 

@@ -2,6 +2,7 @@ import { computed, effect, type ReadonlySignal } from '@preact/signals';
 import { Component, type ComponentChildren, type ComponentType } from 'preact';
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'preact/hooks';
 import { StoreContext } from './context';
+import { resolveProjectContext } from '../domain/project-context';
 import type { AppStore, Toast } from '../stores/app-store';
 import { lazyComponent } from '../components/lazyComponent';
 import { Sidebar } from '../components/Sidebar';
@@ -251,11 +252,17 @@ export function App({ store }: { store: AppStore }) {
       store.dispose();
     };
   }, [store]);
+  const projectContext = resolveProjectContext(
+    store.projectsEnabled.value,
+    store.projects.value,
+    session,
+    store.activeProjectId.value,
+  );
   useEffect(() => {
     const brand = store.config.title.trim();
-    const title = session?.title || '';
+    const title = [session?.title, projectContext?.name].filter(Boolean).join(' · ');
     document.title = brand ? (title ? `${title} · ${brand}` : brand) : title || 'Chat';
-  }, [session?.title, store.config.title]);
+  }, [session?.title, projectContext?.name, store.config.title]);
   return (
     <ErrorBoundary>
       <StoreContext.Provider value={store}>

@@ -228,8 +228,10 @@ func TestProductionBundleSizeBudgets(t *testing.T) {
 		// index / live-tail styling bring the sheet to ~178.1 kB. Same reasoning as
 		// above: a cap that close to the measurement fails the next CSS change on
 		// arithmetic rather than on bloat. Shared splitter focus/drag styling
-		// and sidebar width limits measure 175.5/34.06 kB; retain ~1% gzip headroom.
-		"dist/app.css": {raw: 180_000, gzip: 34_400},
+		// and sidebar width limits measure 175.5/34.06 kB. The breadcrumb header
+		// (project/worktree crumbs, project menu, two-row phone grid, MCP row in
+		// the runtime popover) takes it to 177.0/34.39 kB; retain ~1% gzip headroom.
+		"dist/app.css": {raw: 180_000, gzip: 34_750},
 		// Measured after the completed standalone port: 67.7/21.5 KiB JS and
 		// 16.7/4.1 KiB CSS. These limits retain modest growth headroom without
 		// allowing chat-only rendering dependencies into the Hub graph. The

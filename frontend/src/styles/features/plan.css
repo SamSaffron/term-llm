@@ -15,14 +15,6 @@
   display: none;
 }
 
-.header-context-actions .model-chip[data-chip='worktree'] {
-  max-width: 150px;
-}
-
-.worktree-trigger {
-  min-height: var(--header-action-height);
-}
-
 .plan-toggle {
   position: relative;
   gap: 0.28rem;
@@ -341,16 +333,6 @@
 
   .plan-sheet .plan-surface-body {
     padding-bottom: calc(1rem + var(--safe-bottom));
-  }
-}
-
-@media (width <= 520px) {
-  .header-context-actions .model-chip[data-chip='worktree'] {
-    max-width: none;
-  }
-
-  .worktree-trigger .chip-label {
-    display: none;
   }
 }
 

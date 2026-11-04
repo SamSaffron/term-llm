@@ -26,10 +26,28 @@ async function mockAPI(
     model?: string;
     attention?: boolean;
     shell?: boolean;
+    headerContext?: boolean;
   } = {},
 ) {
   const requests: Array<{ method: string; url: string }> = [];
   const model = options.model || 'gpt-test';
+  const fixtureSession = (id: string, title: string, number: number) => ({
+    ...session(id, title, number),
+    ...(options.headerContext
+      ? {
+          project_id: 'p',
+          project_name: 'term-llm',
+          worktree_dir: '/worktrees/header-title',
+          plan_summary: {
+            plan: [
+              { step: 'Inspect', status: 'completed' },
+              { step: 'Build', status: 'in_progress' },
+              { step: 'Test', status: 'pending' },
+            ],
+          },
+        }
+      : {}),
+  });
   await page.route('**/v1/**', async (route: Route) => {
     const request = route.request();
     const url = new URL(request.url());
@@ -63,7 +81,10 @@ async function mockAPI(
         data: [{ id: model, owned_by: 'openai', reasoning_efforts: ['low', 'medium', 'high'] }],
       });
     if (path.endsWith('/v1/sidebar')) {
-      let sessions = [session('s1', 'First chat', 1), session('s2', 'Second chat', 2)];
+      let sessions = [
+        fixtureSession('s1', 'First chat', 1),
+        fixtureSession('s2', 'Second chat', 2),
+      ];
       if (options.authors) {
         sessions.forEach((s, i) =>
           Object.assign(s, {
@@ -85,12 +106,37 @@ async function mockAPI(
           attention_unseen: true,
           attention_outcome: 'completed',
         });
-      return json({ sessions, recent_sessions: sessions });
+      return json({
+        sessions,
+        recent_sessions: sessions,
+        ...(options.headerContext
+          ? {
+              groups: [
+                {
+                  project: {
+                    id: 'p',
+                    name: 'term-llm',
+                    canonical_dir: '/workspace/term-llm',
+                    git: true,
+                    available: true,
+                  },
+                  sessions,
+                  session_count: 2,
+                },
+              ],
+            }
+          : {}),
+      });
     }
+    if (options.headerContext && /\/tree$/.test(path)) return json({ path_count: 3 });
     if (path.endsWith('/v1/sessions/status')) return json({ sessions: [] });
     if (path.endsWith('/v1/sessions') && url.searchParams.get('selected_only') === '1') {
       const id = url.searchParams.get('selected_session') || 's1';
-      const selected = session(id, id === 's2' ? 'Second chat' : 'First chat', id === 's2' ? 2 : 1);
+      const selected = fixtureSession(
+        id,
+        id === 's2' ? 'Second chat' : 'First chat',
+        id === 's2' ? 2 : 1,
+      );
       if (options.attention && id === 's1')
         Object.assign(selected, {
           attention_store_instance_id: 'store-a',
@@ -164,7 +210,7 @@ async function mockAPI(
       });
     if (/\/v1\/sessions\/s[12]\/state$/.test(path))
       return json({
-        session: session(
+        session: fixtureSession(
           path.includes('/s2/') ? 's2' : 's1',
           path.includes('/s2/') ? 'Second chat' : 'First chat',
           path.includes('/s2/') ? 2 : 1,
@@ -244,6 +290,7 @@ async function open(
     model?: string;
     attention?: boolean;
     shell?: boolean;
+    headerContext?: boolean;
   } = {},
 ) {
   const requests = await mockAPI(page, options);
@@ -420,6 +467,8 @@ test('lazy-loads the capability-gated interactive shell overlay', async ({ page 
   await composer.fill('/shell');
   await composer.press('Enter');
   await expect(page.getByRole('region', { name: 'Interactive shell' })).toBeVisible();
+  // Navigation changed the shell binding; wait for this session's shell before detaching.
+  await expect(page.getByText('Exited (0)')).toBeVisible();
   await page.getByRole('button', { name: 'Back to chat' }).click();
   await expect(page.getByRole('region', { name: 'Interactive shell' })).toBeHidden();
 
@@ -628,6 +677,126 @@ test('opens diff UI, expands a file and queues an inline comment', async ({ page
   await expect(page.getByText('1 inline comment queued.')).toHaveCount(0);
 });
 
+test('breadcrumb header preserves desktop height and fixed phone rows with every control', async ({
+  page,
+}, testInfo) => {
+  test.skip(testInfo.project.name === 'iphone', 'Covered by desktop and mobile');
+  await open(page, '', { headerContext: true, shell: true, model: 'gpt-5.6-sol-high' });
+  const project = page.getByRole('button', { name: 'Project term-llm' });
+  await expect(project).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Worktree header-title' })).toBeVisible();
+  await expect(page.getByRole('button', { name: '3 paths' })).toBeVisible();
+  await expect(page.locator('#planToggleBtn')).toBeVisible();
+  const composer = page.getByRole('textbox', { name: 'Message' });
+  await composer.fill('/shell');
+  await composer.press('Enter');
+  await expect(page.getByRole('region', { name: 'Interactive shell' })).toBeVisible();
+  await page.getByRole('button', { name: 'Back to chat' }).click();
+  await expect(page.getByRole('button', { name: 'Return to shell' })).toHaveText('Shell');
+  for (const width of testInfo.project.name === 'mobile' ? [412, 320] : [1440, 1100]) {
+    await page.setViewportSize({ width, height: 900 });
+    const header = page.locator('.main-header');
+    await expect(header).toHaveCSS('height', width < 768 ? '89px' : '64px');
+    expect(await header.evaluate((el) => el.scrollWidth <= el.clientWidth + 1)).toBe(true);
+    expect(
+      await project.locator('span').evaluate((el) => el.scrollWidth <= el.clientWidth + 1),
+    ).toBe(true);
+    if (width < 768) {
+      const title = await page.locator('.header-title-context').boundingBox();
+      const controls = await page.locator('.header-controls-row').boundingBox();
+      expect(title!.y).toBeGreaterThanOrEqual(controls!.y + controls!.height);
+      expect(title!.width).toBeGreaterThan(width - 30);
+    } else {
+      const title = await page.locator('#activeSessionTitle').boundingBox();
+      const crumb = await project.boundingBox();
+      const worktree = await page.locator('.header-crumb-worktree').boundingBox();
+      if (width === 1100) {
+        expect(title!.y).toBeGreaterThan(crumb!.y);
+        expect(worktree!.x - crumb!.x - crumb!.width).toBeLessThan(12);
+        // The folded title starts flush with the context line.
+        expect(Math.abs(title!.x - crumb!.x)).toBeLessThan(2);
+      } else {
+        expect(Math.abs(title!.y - crumb!.y)).toBeLessThan(8);
+        // Space alone, with no separator glyph, sets the title apart.
+        expect(title!.x - worktree!.x - worktree!.width).toBeGreaterThanOrEqual(10);
+      }
+    }
+  }
+  await project.click();
+  const projectMenu = page.getByRole('dialog', { name: 'Project term-llm' });
+  await expect(projectMenu).toBeVisible();
+  for (const action of await projectMenu.locator('.chip-popover-item').all()) {
+    await expect(action.locator('.chip-popover-item-label')).toBeVisible();
+    const icon = await action.locator('svg').boundingBox();
+    expect(icon!.width).toBeLessThanOrEqual(20);
+    expect(icon!.height).toBeLessThanOrEqual(20);
+  }
+  if (testInfo.project.name === 'mobile') {
+    await expect(projectMenu).toHaveCSS('border-radius', '18px');
+    const sheet = await projectMenu.boundingBox();
+    expect(sheet!.width).toBeGreaterThan(320 - 20);
+    await expect(projectMenu.getByRole('button', { name: 'Close project menu' })).toHaveCSS(
+      'height',
+      '44px',
+    );
+  }
+  await expect(page.getByRole('button', { name: 'New chat in term-llm' })).toBeFocused();
+  await page.keyboard.press('Escape');
+  await expect(project).toBeFocused();
+  await page.setViewportSize({
+    width: testInfo.project.name === 'mobile' ? 390 : 1440,
+    height: 900,
+  });
+  await page.evaluate(() => (document.documentElement.style.fontSize = '24px'));
+  const header = page.locator('.main-header');
+  expect((await header.boundingBox())!.height).toBeGreaterThan(
+    testInfo.project.name === 'mobile' ? 89 : 64,
+  );
+  expect(
+    await header.evaluate(
+      (el) => el.scrollHeight <= el.clientHeight && el.scrollWidth <= el.clientWidth,
+    ),
+  ).toBe(true);
+});
+
+test('breadcrumb crumbs mark hover and open state without a box and release focus after a pointer close', async ({
+  page,
+}, testInfo) => {
+  test.skip(testInfo.project.name === 'iphone', 'Covered by desktop and mobile');
+  const touch = testInfo.project.name === 'mobile';
+  await open(page, '', { headerContext: true });
+  const project = page.getByRole('button', { name: 'Project term-llm' });
+  const chevron = project.locator('.header-crumb-chevron');
+  const transparent = 'rgba(0, 0, 0, 0)';
+  const color = (selector: string) =>
+    page.locator(selector).evaluate((element) => getComputedStyle(element).color);
+  const muted = await color('.header-crumb-project');
+  const strong = await color('#activeSessionTitle');
+  expect(muted).not.toBe(strong);
+  // The menu shows the path; a native tooltip would pop it up on a long press.
+  await expect(project).not.toHaveAttribute('title');
+  await expect(page.getByRole('button', { name: 'Worktree header-title' })).not.toHaveAttribute(
+    'title',
+  );
+  await expect(chevron).toBeVisible();
+  await project.hover();
+  // Touch screens keep :hover after a tap or long press, so only a hovering pointer highlights.
+  await expect(project).toHaveCSS('color', touch ? muted : strong);
+  await expect(project).toHaveCSS('background-color', transparent);
+  await (touch ? project.tap() : project.click());
+  const menu = page.getByRole('dialog', { name: 'Project term-llm' });
+  await expect(menu).toBeVisible();
+  await expect(project).toHaveCSS('color', strong);
+  await expect(project).toHaveCSS('background-color', transparent);
+  await expect(chevron).not.toHaveCSS('transform', 'none');
+  const close = menu.getByRole('button', { name: 'Close project menu' });
+  await (touch ? close.tap() : close.click());
+  await expect(menu).toBeHidden();
+  await expect(project).not.toBeFocused();
+  await expect(project).toHaveCSS('color', muted);
+  await expect(chevron).toHaveCSS('transform', 'none');
+});
+
 test('mobile header keeps the active runtime legible without overflowing when controls compete', async ({
   page,
 }, testInfo) => {
@@ -657,6 +826,11 @@ test('mobile viewport opens a styled sidebar and returns to a usable composer', 
   await open(page, '', { model: 'gpt-5.6-sol-high' });
   await page.evaluate(() => document.documentElement.style.setProperty('--safe-top', '59px'));
   const titleContext = page.locator('.header-title-context');
+  const titleBox = await titleContext.boundingBox();
+  const controlsBox = await page.locator('.header-controls-row').boundingBox();
+  const headerBox = await page.locator('.main-header').boundingBox();
+  expect(titleBox!.y).toBeGreaterThanOrEqual(controlsBox!.y + controlsBox!.height);
+  expect(titleBox!.width).toBeGreaterThan(headerBox!.width - 30);
   expect((await titleContext.boundingBox())?.width || 0).toBeGreaterThan(140);
   const diffToggle = page.getByRole('button', { name: 'Toggle file changes' });
   const mobileMenu = page.getByRole('button', { name: 'Open sidebar' });
@@ -709,6 +883,7 @@ test('mobile floating surfaces dismiss from their outside area and restore inter
   await runtimeTrigger.click();
   const runtime = page.getByRole('dialog', { name: 'Runtime settings' });
   await expect(runtime).toBeVisible();
+  expect(await runtime.evaluate((el) => el.getBoundingClientRect().right <= innerWidth)).toBe(true);
   await expect(runtimeClose).toBeFocused();
   await expect(page.getByRole('combobox', { name: 'Provider' })).not.toBeFocused();
   await expect(runtime).toHaveCSS('border-radius', '18px');

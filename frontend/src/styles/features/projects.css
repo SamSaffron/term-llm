@@ -842,30 +842,9 @@
   color: var(--danger);
 }
 
-.header-title-context {
-  min-width: 0;
-  display: grid;
-  flex: 1 1 auto;
-}
-
-.header-project-subtitle {
-  color: var(--text-muted);
-  font-size: 0.72rem;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  max-width: min(48vw, 26rem);
-}
-
 @keyframes project-skeleton-pulse {
   to {
     opacity: 0.46;
-  }
-}
-
-@media (width >= 701px) {
-  .header-project-subtitle {
-    display: none;
   }
 }
 

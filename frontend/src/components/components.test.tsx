@@ -903,7 +903,182 @@ describe('Preact-owned chat surfaces', () => {
     },
   );
 
-  it('shows the MCP count for a new chat before a session exists', () => {
+  it.each([
+    {
+      projects: true,
+      worktrees: true,
+      draft: false,
+      dir: '/wt/feature',
+      project: true,
+      crumb: 'feature',
+    },
+    { projects: true, worktrees: true, draft: false, dir: '', project: true, crumb: '' },
+    { projects: true, worktrees: true, draft: true, dir: '', project: true, crumb: 'root' },
+    { projects: false, worktrees: true, draft: false, dir: '', project: false, crumb: 'root' },
+    { projects: false, worktrees: false, draft: false, dir: '', project: false, crumb: '' },
+    { projects: true, worktrees: true, draft: false, dir: '', project: false, crumb: '' },
+  ])(
+    'renders breadcrumb visibility for %j',
+    ({ projects, worktrees, draft, dir, project, crumb }) => {
+      const store = createStore();
+      store.projectsEnabled.value = projects;
+      store.worktreesEnabled.value = worktrees;
+      store.projects.value = [{ id: 'p', name: 'Live project', git: true, available: true }];
+      store.sessions.value = [
+        {
+          ...store.sessions.value[0],
+          projectId: project ? 'p' : '',
+          projectName: projects && !project ? '' : 'Historical',
+          worktreeDir: dir,
+        },
+      ];
+      store.draftActive.value = draft;
+      if (draft) store.activeSessionId.value = '';
+      store.activeProjectId.value = project ? 'p' : '';
+      const { container } = render(
+        <StoreContext.Provider value={store}>
+          <Header />
+        </StoreContext.Provider>,
+      );
+      expect(screen.queryByRole('button', { name: 'Project Live project' }) !== null).toBe(project);
+      expect(screen.queryByRole('button', { name: /^Project Historical/ })).not.toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: /^Worktree / })?.textContent || '').toBe(crumb);
+      const titleContext = container.querySelector('.header-title-context');
+      if (project || crumb) expect(titleContext).toHaveClass('has-context');
+      else expect(titleContext).not.toHaveClass('has-context');
+      expect(screen.getByRole('heading', { level: 1 })).toHaveTextContent(draft ? 'Chat' : 'Test');
+      act(() => {
+        store.branchPathCount.value = 3;
+      });
+      if (!draft) {
+        expect(screen.getByRole('button', { name: '3 paths' }).parentElement).toHaveClass(
+          'has-context',
+        );
+      }
+    },
+  );
+
+  it('opens the project menu, restores focus on Escape and runs project actions', async () => {
+    const store = createStore();
+    store.projectsEnabled.value = true;
+    store.sessions.value = [{ ...store.sessions.value[0], projectId: 'p', projectName: 'Old' }];
+    store.projects.value = [
+      { id: 'p', name: 'Live project', path: '/repo', git: true, available: true },
+    ];
+    store.startProjectChat = vi.fn(async () => {});
+    const copy = vi.spyOn(clipboard, 'copyText').mockResolvedValue();
+    const toast = vi.spyOn(store, 'toast');
+    render(
+      <StoreContext.Provider value={store}>
+        <Header />
+      </StoreContext.Provider>,
+    );
+    const trigger = screen.getByRole('button', { name: 'Project Live project' });
+    // The menu shows the path; a native tooltip would pop it up on a phone long press.
+    expect(trigger).not.toHaveAttribute('title');
+    // Without hover on phones, the chevron is what says the name opens a menu.
+    expect(trigger.querySelector('svg[data-icon="chevron-down"]')).not.toBeNull();
+    await userEvent.click(trigger);
+    const dialog = screen.getByRole('dialog', { name: 'Project Live project' });
+    expect(screen.getByRole('button', { name: 'New chat in Live project' })).toHaveFocus();
+    expect(dialog).toHaveTextContent('/repo');
+    fireEvent(dialog, new Event('cancel', { cancelable: true }));
+    expect(trigger).toHaveFocus();
+    expect(trigger).toHaveAttribute('aria-expanded', 'false');
+    await userEvent.click(trigger);
+    await userEvent.click(screen.getByRole('button', { name: 'New chat in Live project' }));
+    expect(store.startProjectChat).toHaveBeenCalledWith('p');
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+    await userEvent.click(trigger);
+    await userEvent.click(screen.getByRole('button', { name: 'Copy path' }));
+    expect(copy).toHaveBeenCalledWith('/repo');
+    expect(toast).toHaveBeenCalledWith('Copied project path', 'success');
+    copy.mockRejectedValueOnce(new Error('Clipboard denied'));
+    await userEvent.click(trigger);
+    await userEvent.click(screen.getByRole('button', { name: 'Copy path' }));
+    expect(toast).toHaveBeenCalledWith(
+      expect.objectContaining({ message: 'Clipboard denied' }),
+      'error',
+    );
+    await userEvent.click(trigger);
+    fireEvent.click(screen.getByRole('dialog'));
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+  });
+
+  it('keeps historical project context visible without offering a new chat in an unresolved project', async () => {
+    const store = createStore();
+    store.projectsEnabled.value = true;
+    store.sessions.value = [
+      { ...store.sessions.value[0], projectId: 'missing', projectName: 'Historical project' },
+    ];
+    store.projects.value = [];
+    render(
+      <StoreContext.Provider value={store}>
+        <Header />
+      </StoreContext.Provider>,
+    );
+    await userEvent.click(screen.getByRole('button', { name: 'Project Historical project' }));
+    expect(screen.getByRole('dialog', { name: 'Project Historical project' })).toBeVisible();
+    expect(
+      screen.queryByRole('button', { name: 'New chat in Historical project' }),
+    ).not.toBeInTheDocument();
+  });
+
+  it.each([{ archived: true }, { available: false }, { git: false }])(
+    'gates project actions for %j',
+    async (flags) => {
+      const store = createStore();
+      store.projectsEnabled.value = true;
+      store.sessions.value = [{ ...store.sessions.value[0], projectId: 'p' }];
+      store.projects.value = [{ id: 'p', name: 'Project', git: true, ...flags }];
+      render(
+        <StoreContext.Provider value={store}>
+          <Header />
+        </StoreContext.Provider>,
+      );
+      await userEvent.click(screen.getByRole('button', { name: 'Project Project' }));
+      expect(screen.queryByRole('button', { name: 'Worktrees…' })).not.toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: 'Copy path' })).not.toBeInTheDocument();
+      expect(Boolean(screen.queryByRole('button', { name: 'New chat in Project' }))).toBe(
+        !('archived' in flags || 'available' in flags),
+      );
+      await userEvent.click(screen.getByRole('button', { name: 'Close project menu' }));
+      expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+    },
+  );
+
+  it('keeps MCP management available when no servers are enabled', async () => {
+    const store = createStore();
+    render(
+      <StoreContext.Provider value={store}>
+        <Header />
+      </StoreContext.Provider>,
+    );
+    await userEvent.click(screen.getByRole('button', { name: /^Runtime settings:/ }));
+    expect(screen.getByRole('dialog')).toHaveTextContent('None enabled');
+    expect(screen.getByRole('button', { name: 'Manage MCP servers' })).toHaveTextContent('Manage');
+  });
+
+  it.each([true, false])('sets the browser title with projectsEnabled=%s', async (enabled) => {
+    const store = createStore({ title: 'Brand' });
+    store.startupDone.value = true;
+    store.bootstrap = vi.fn(async () => undefined);
+    store.projectsEnabled.value = enabled;
+    store.projects.value = [{ id: 'p', name: 'Project' }];
+    store.sessions.value = [{ ...store.sessions.value[0], projectId: 'p', projectName: 'Old' }];
+    render(<App store={store} />);
+    await waitFor(() =>
+      expect(document.title).toBe(enabled ? 'Test · Project · Brand' : 'Test · Brand'),
+    );
+    act(() => {
+      store.projects.value = [{ id: 'p', name: 'Renamed' }];
+    });
+    await waitFor(() =>
+      expect(document.title).toBe(enabled ? 'Test · Renamed · Brand' : 'Test · Brand'),
+    );
+  });
+
+  it('shows the MCP count for a new chat before a session exists', async () => {
     const store = createStore();
     store.sessions.value = [];
     store.activeSessionId.value = '';
@@ -923,7 +1098,16 @@ describe('Preact-owned chat surfaces', () => {
       </StoreContext.Provider>,
     );
 
-    expect(screen.getByRole('button', { name: 'Manage MCP servers' })).toHaveTextContent('MCP 1');
+    expect(document.querySelector('#mcpStatus')).toBeNull();
+    await userEvent.click(screen.getByRole('button', { name: /^Runtime settings:/ }));
+    expect(screen.getByRole('dialog')).toHaveTextContent('github');
+    const manage = screen.getByRole('button', { name: 'Manage MCP servers' });
+    expect(manage).toHaveTextContent('1 enabled');
+    store.loadMCP = vi.fn(async () => {});
+    await userEvent.click(manage);
+    expect(store.modal.value).toBe('mcp');
+    expect(store.loadMCP).toHaveBeenCalledOnce();
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
   });
 
   it('shows a persistent Shell return control for the active conversation', async () => {
@@ -984,7 +1168,9 @@ describe('Preact-owned chat surfaces', () => {
     const dialog = screen.getByRole('dialog', { name: 'Runtime settings' });
     expect(dialog.tagName).toBe('DIALOG');
     expect(dialog).toHaveAttribute('open');
-    expect(dialog).toHaveTextContent('Provider, model, effort, and speed for the next reply');
+    expect(dialog).toHaveTextContent(
+      'Provider, model, effort, speed, and MCP servers for the next reply',
+    );
     const closeRuntime = screen.getByRole('button', { name: 'Close runtime settings' });
     expect(closeRuntime).toHaveFocus();
     expect(screen.getByRole('combobox', { name: 'Provider' })).not.toHaveFocus();
@@ -1108,13 +1294,16 @@ describe('Preact-owned chat surfaces', () => {
       </StoreContext.Provider>,
     );
 
-    await userEvent.click(screen.getByRole('button', { name: 'Worktree' }));
+    expect(screen.queryByRole('button', { name: /^Worktree / })).not.toBeInTheDocument();
+    await userEvent.click(screen.getByRole('button', { name: 'Project Project' }));
+    await userEvent.click(screen.getByRole('button', { name: 'Worktrees…' }));
     expect(store.modal.value).toBe('worktrees');
     expect(store.endpoints.projectWorktrees).toHaveBeenCalledWith('project-1');
   });
 
   it('shows root after merging the active worktree, ignoring stale draft state', async () => {
     const store = createStore();
+    store.projectsEnabled.value = false;
     store.worktreesEnabled.value = true;
     store.selectedDraftWorktree.value = '/worktrees/stale-draft';
     store.sessions.value = [
@@ -1138,7 +1327,7 @@ describe('Preact-owned chat surfaces', () => {
       </StoreContext.Provider>,
     );
 
-    const trigger = screen.getByRole('button', { name: 'Worktree' });
+    const trigger = screen.getByRole('button', { name: 'Worktree feature' });
     expect(trigger).toHaveTextContent('feature');
 
     await act(async () => {
@@ -8417,7 +8606,7 @@ describe('Preact-owned chat surfaces', () => {
     expect(screen.getByText('No matching servers')).toBeVisible();
   });
 
-  it('counts page tools in the header MCP button', async () => {
+  it('counts page tools in the runtime MCP row', async () => {
     const store = createStore();
     await withPageTools(store);
     render(
@@ -8425,11 +8614,14 @@ describe('Preact-owned chat surfaces', () => {
         <Header />
       </StoreContext.Provider>,
     );
-    // Off by default, so nothing to count yet.
-    expect(screen.queryByRole('button', { name: 'Manage MCP servers' })).toBeNull();
+    expect(document.querySelector('#mcpStatus')).toBeNull();
+    await userEvent.click(screen.getByRole('button', { name: /^Runtime settings:/ }));
+    expect(screen.getByRole('dialog')).toHaveTextContent('None enabled');
+    expect(screen.getByRole('button', { name: 'Manage MCP servers' })).toHaveTextContent('Manage');
     store.setWebMCPEnabled(true);
     const button = await screen.findByRole('button', { name: 'Manage MCP servers' });
-    expect(button).toHaveTextContent('MCP 1');
+    expect(button).toHaveTextContent('1 enabled');
+    expect(screen.getByRole('dialog')).toHaveTextContent('Page tools');
   });
 
   it.each(['needs_sign_in', 'signed_in'])(

@@ -12,10 +12,14 @@
 }
 
 .main-header {
-  min-height: 64px;
+  container: main-header / inline-size;
+  min-height: calc(64px + var(--safe-top));
+  flex: none;
+  display: flex;
+  align-items: center;
   border-bottom: 1px solid var(--border);
   background: var(--surface);
-  padding: calc(0.85rem + var(--safe-top)) calc(1.15rem + var(--safe-right)) 0.85rem
+  padding: calc(0.75rem + var(--safe-top)) calc(1.15rem + var(--safe-right)) 0.75rem
     calc(1.15rem + var(--safe-left));
   position: relative;
   z-index: var(--z-local-raised);
@@ -271,10 +275,6 @@
   min-width: 0;
 }
 
-.worktree-trigger .chip-label {
-  line-height: 1.3;
-}
-
 .effort-meter {
   display: inline-flex;
   align-items: flex-end;
@@ -517,6 +517,7 @@ dialog.chip-popover::backdrop {
 
 .chip-popover-runtime {
   z-index: var(--z-runtime-popover);
+  white-space: normal;
   min-width: 280px;
   padding: 0.75rem;
 }
@@ -686,7 +687,8 @@ dialog.chip-popover::backdrop {
     font-size: 0.95rem;
   }
 
-  .chip-popover-runtime {
+  .chip-popover-runtime,
+  .chip-popover-project {
     border-radius: 18px;
     padding: 0.85rem 0.9rem calc(0.9rem + var(--safe-bottom));
     box-shadow:
@@ -742,17 +744,6 @@ dialog.chip-popover::backdrop {
   }
 }
 
-.mcp-status {
-  appearance: none;
-  margin-left: 0.35rem;
-  color: var(--text-muted);
-  font-weight: 600;
-}
-
-.mcp-status[hidden] {
-  display: none;
-}
-
 .stats-muted {
   color: var(--text-muted);
   font-weight: 500;
@@ -801,4 +792,244 @@ dialog.chip-popover::backdrop {
 .settings-select:focus {
   outline: 2px solid var(--border-strong);
   border-color: var(--border-strong);
+}
+
+/* Breadcrumb actions are intentionally not header-action: their line-height and
+   touch targets must not expand the second phone row. */
+.header-title-context {
+  display: flex;
+  align-items: baseline;
+  gap: 0.45rem;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.header-crumb {
+  appearance: none;
+  display: inline-flex;
+  align-items: baseline;
+  gap: 0.3rem;
+  padding: 0.2rem 0.3rem;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-muted);
+  font: inherit;
+  font-size: 1rem;
+  font-weight: 560;
+  line-height: 1.3;
+  cursor: pointer;
+  min-width: 0;
+}
+
+.header-crumb > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.header-crumb:first-child {
+  margin-inline-start: -0.3rem;
+}
+
+.header-crumb-project {
+  flex: 0 0 auto;
+  max-width: 14rem;
+}
+
+/* Crumbs mark hover and open state with text colour only: a filled box would
+   crowd the controls directly above the breadcrumb in the phone header. */
+.header-crumb:focus-visible,
+.header-crumb[aria-expanded='true'] {
+  color: var(--text);
+}
+
+/* Touch screens keep :hover after a tap or long press, which would leave the
+   crumb highlighted after its surface closes. */
+@media (hover: hover) {
+  .header-crumb:hover {
+    color: var(--text);
+  }
+
+  .header-title-badge:hover {
+    background: var(--surface-3);
+    color: var(--text);
+  }
+}
+
+/* The project name opens a menu. The chevron says so where nothing can hover,
+   and flips while the menu is open. */
+.header-crumb-chevron {
+  flex: none;
+  align-self: center;
+  width: 0.78em;
+  height: 0.78em;
+  stroke-width: 2.2;
+}
+
+.header-crumb[aria-expanded='true'] .header-crumb-chevron {
+  transform: rotate(180deg);
+}
+
+.header-crumb:focus-visible,
+.header-title-badge:focus-visible {
+  outline: none;
+  box-shadow:
+    0 0 0 2px var(--surface),
+    0 0 0 4px var(--accent);
+}
+
+.header-crumb-worktree {
+  flex: 0 1 auto;
+  min-width: 4.5rem;
+  max-width: 11rem;
+  font-size: 0.84rem;
+}
+
+.header-crumb-worktree svg {
+  flex: none;
+  width: 0.88rem;
+  height: 0.88rem;
+}
+
+/* Space, not a separator glyph, sets the title apart: the muted crumbs against
+   the bold title already carry the hierarchy. A sibling (not adjacent)
+   combinator keeps the space while the project menu's dialog sits between. */
+.header-crumb ~ .header-title {
+  margin-inline-start: 0.3rem;
+}
+
+.header-title-context.has-context .header-title {
+  flex: 0 4 auto;
+  min-width: 8rem;
+}
+
+.header-title-badge {
+  appearance: none;
+  flex: none;
+  padding: 0.12rem 0.4rem;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--text-muted);
+  font: inherit;
+  font-size: 0.68rem;
+  line-height: 1.2;
+  cursor: pointer;
+}
+
+.shell-return-icon {
+  display: none;
+}
+
+.chip-popover-project {
+  width: 280px;
+  padding: 0.5rem;
+}
+
+.chip-popover-project .chip-popover-item svg {
+  width: 1rem;
+  height: 1rem;
+  flex: none;
+  color: var(--text-muted);
+}
+
+@media (width <= 540px) {
+  .chip-popover-project {
+    width: auto;
+    padding: 0.85rem 0.9rem calc(0.9rem + var(--safe-bottom));
+  }
+}
+
+.project-popover-path {
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-variant-ligatures: none;
+  font-size: 0.75rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.runtime-mcp-row {
+  border-top: 1px solid var(--border);
+  padding-top: 0.65rem;
+}
+
+.runtime-mcp-row > div {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.runtime-mcp-manage {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  flex: none;
+  padding: 0.4rem 0.5rem;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--surface);
+  color: var(--text);
+  font: inherit;
+  cursor: pointer;
+}
+
+.runtime-mcp-manage svg {
+  width: 0.85rem;
+  height: 0.85rem;
+}
+
+@media (width >= 768px) {
+  .chip-popover-runtime {
+    max-height: min(520px, calc(var(--app-height) - 1rem));
+  }
+
+  @container main-header (width < 920px) {
+    /* The 4px row gap lets the title breathe below its context line; the
+       negative block margin keeps the folded header at the one-line height. */
+    .header-title-context.has-context {
+      display: grid;
+      grid-template-columns: max-content minmax(0, max-content) max-content minmax(0, 1fr);
+      grid-template-rows: auto auto;
+      gap: 4px 0.3rem;
+      margin-block: -1.5px;
+      align-items: baseline;
+    }
+
+    .has-context > .header-title {
+      grid-row: 2;
+      grid-column: 1 / -1;
+      min-width: 0;
+      width: 100%;
+      margin-inline-start: 0;
+    }
+
+    .has-context > .header-crumb,
+    .has-context > .header-title-badge {
+      grid-row: 1;
+      padding: 0;
+      margin: 0;
+      border: 0;
+      font-size: 0.72rem;
+      font-weight: 600;
+      line-height: 1.3;
+    }
+
+    .has-context > .header-crumb-worktree {
+      min-width: 0;
+    }
+
+    .has-context > .header-crumb-worktree svg {
+      width: 0.72rem;
+      height: 0.72rem;
+    }
+
+    .has-context > .header-crumb ~ .header-crumb::before,
+    .has-context > .header-crumb ~ .header-title-badge::before {
+      content: '·';
+      margin-right: 0.2rem;
+      color: var(--text-muted);
+    }
+  }
 }
