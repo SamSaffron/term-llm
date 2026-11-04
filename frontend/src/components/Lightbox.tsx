@@ -206,7 +206,7 @@ export function Lightbox({ returnFocus, onMount }: LightboxProps = {}) {
       fallbackOnRelease.current = false;
     };
     // The gallery snapshot is stable for the lifetime of one open modal.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    // oxlint-disable-next-line react/exhaustive-deps
   }, [media]);
   if (!media || !current) return null;
 

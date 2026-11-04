@@ -108,7 +108,7 @@ export function Overlay({
     };
     // Opening focus is a mount-time decision; re-running would re-acquire the
     // overlay token.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    // oxlint-disable-next-line react/exhaustive-deps
   }, []);
   return (
     <div
