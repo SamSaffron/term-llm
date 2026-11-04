@@ -642,7 +642,7 @@ test('keeps running controls while a response transport reconnects', async ({ pa
   const requests = await open(page, '', { holdStream: true });
   await page.getByRole('textbox', { name: 'Message' }).fill('Long request');
   await page.getByRole('button', { name: 'Send message' }).click();
-  // With an empty composer, Stop takes the send slot and keeps the running ring.
+  // With an empty composer, Stop takes the send slot.
   const stop = page.getByRole('button', { name: 'Stop', exact: true });
   await expect(stop).toBeEnabled();
   await expect(stop).toHaveClass(/\bloading\b/);
@@ -697,6 +697,8 @@ test('breadcrumb header preserves desktop height and fixed phone rows with every
   await composer.fill('/shell');
   await composer.press('Enter');
   await expect(page.getByRole('region', { name: 'Interactive shell' })).toBeVisible();
+  // The overlay opens before the shell starts; Return to shell needs a started shell.
+  await expect(page.getByText('Exited (0)')).toBeVisible();
   await page.getByRole('button', { name: 'Back to chat' }).click();
   await expect(page.getByRole('button', { name: 'Return to shell' })).toHaveText('Shell');
   const contextMeter = page.getByRole('button', {

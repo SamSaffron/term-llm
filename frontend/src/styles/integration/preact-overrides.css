@@ -402,6 +402,8 @@ a.message-file:focus-visible {
 
 .streaming-indicator {
   display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
   align-self: flex-start;
   min-width: 0;
   max-width: min(calc(100vw - 3rem), 42rem);
@@ -409,6 +411,25 @@ a.message-file:focus-visible {
   color: var(--text);
   font-size: 0.78rem;
   animation: streaming-status-enter 180ms ease-out both;
+}
+
+/* The dot is the running signal now that Stop no longer spins. It pulses
+   opacity only, so the compositor animates it without repainting the text. */
+.streaming-indicator::before {
+  content: '';
+  flex: none;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--accent);
+  animation: streaming-status-pulse 1.4s ease-in-out infinite;
+}
+
+/* Stopping and unknown are not progress, so their dot holds still. */
+.streaming-indicator-stopping::before,
+.streaming-indicator-unknown::before {
+  background: var(--text-muted);
+  animation: none;
 }
 
 /* Keep waiting text static: the clipped, animated gradient kept WebKit
@@ -433,8 +454,15 @@ a.message-file:focus-visible {
   }
 }
 
+@keyframes streaming-status-pulse {
+  50% {
+    opacity: 0.35;
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
-  .streaming-indicator {
+  .streaming-indicator,
+  .streaming-indicator::before {
     animation: none;
   }
 }
