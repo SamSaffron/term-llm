@@ -48,7 +48,9 @@ describe('thinking commands and voice controls', () => {
       store.prompt.value = '/thinking expanded';
     });
     expect(screen.getByRole('button', { name: 'Send text to live voice' })).toBeDisabled();
-    view.unmount();
+    // Unmount inside act: Preact defers passive cleanup, and this test ends the
+    // file, so a deferred cleanup could run after jsdom is torn down.
+    await act(() => view.unmount());
     store.dispose();
   });
 });
