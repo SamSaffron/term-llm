@@ -133,7 +133,7 @@ Do not edit files unless the user asks.
 ---
 name: review
 description: Review changes without consuming the parent transcript
-argument-hint: [scope]
+argument-hint: "[scope]"
 context: fork
 agent: reviewer
 model: fast
@@ -154,7 +154,7 @@ name: commit-message
 description: Draft a commit message in an isolated specialist
 context: fork
 agent: commit-message
-argument-hint: [scope]
+argument-hint: "[scope]"
 allowed-tools: [shell]
 ---
 
