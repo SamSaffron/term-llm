@@ -296,3 +296,26 @@ describe('ServerEventCoordinator', () => {
     coordinator.dispose();
   });
 });
+
+describe('activity scope event interest', () => {
+  it('keeps root child events while drilling without duplicating same-scope channels', async () => {
+    const { coordinator, endpoints } = harness();
+    coordinator.updateInterest('child', 'child', 'parent');
+    void coordinator.prepare();
+    await vi.waitFor(() => expect(endpoints.serverEventStream).toHaveBeenCalled());
+    expect(endpoints.serverEventStream.mock.calls[0][1]).toEqual([
+      'session:child',
+      'files:child',
+      'children:child',
+      'children:parent',
+    ]);
+    coordinator.updateInterest('parent', 'parent', 'parent');
+    await vi.waitFor(() => expect(endpoints.serverEventStream).toHaveBeenCalledTimes(2));
+    expect(endpoints.serverEventStream.mock.calls[1][1]).toEqual([
+      'session:parent',
+      'files:parent',
+      'children:parent',
+    ]);
+    coordinator.dispose();
+  });
+});

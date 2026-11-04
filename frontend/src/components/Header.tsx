@@ -14,6 +14,7 @@ import { observePopoverPosition, positionPopover } from '../platform/browser';
 import { containPopoverScroll } from '../platform/popover-scroll';
 import { Icon } from './Icon';
 import { ContextMeter } from './ContextMeter';
+import { ActivityMeter } from './ActivityMeter';
 import { HeaderBreadcrumb } from './HeaderBreadcrumb';
 import { resolveProjectContext } from '../domain/project-context';
 
@@ -361,6 +362,7 @@ export function Header() {
             <div class="header-stats" id="headerStats">
               <RuntimePicker />
             </div>
+            <ActivityMeter />
             <ContextMeter />
             <div class="header-context-actions">
               {resumableShell && session && (

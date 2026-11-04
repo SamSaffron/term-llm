@@ -1,0 +1,267 @@
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/preact';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { StoreContext } from '../app/context';
+import { AppStore } from '../stores/app-store';
+import { testConfig } from '../stores/store-test-fixtures';
+import { activityChild, activitySnapshot } from '../test/activity-fixtures';
+import { ActivityGlyph, ActivityMeter } from './ActivityMeter';
+import { ActivitySheet } from './ActivitySheet';
+
+let store: AppStore;
+afterEach(() => {
+  store?.dispose();
+  vi.restoreAllMocks();
+});
+function setup() {
+  store = new AppStore(testConfig);
+  store.childSessionStore.activitySessionId.value = 'parent';
+  store.childSessionStore.activity.value = activitySnapshot();
+}
+
+function mount(children: preact.ComponentChildren) {
+  return render(<StoreContext.Provider value={store}>{children}</StoreContext.Provider>);
+}
+
+describe('native ActivityMeter', () => {
+  it('hides pristine activity and shows one grey idle head without a zero or partial dot', () => {
+    setup();
+    store.childSessionStore.activity.value = activitySnapshot({ agents: [] });
+    const { container } = mount(<ActivityMeter />);
+    expect(screen.queryByRole('button', { name: /^Activity:/ })).toBeNull();
+    store.childSessionStore.activity.value = activitySnapshot({
+      agents: [activityChild({ live: false, state: 'complete' })],
+      agents_partial: false,
+    });
+    return waitFor(() => {
+      const button = screen.getByRole('button', { name: 'Activity: idle' });
+      expect(button).toHaveAttribute('data-state', 'idle');
+      expect(button.querySelectorAll('g')).toHaveLength(1);
+      expect(button.querySelector('.activity-count')).toBeNull();
+      expect(container.querySelector('.activity-stale')).toBeNull();
+    });
+  });
+
+  it.each([
+    [0, 1, 'translate(4.04 1.57)'],
+    [1, 1, 'translate(4.04 1.57)'],
+    [2, 2, 'translate(2.54 0.57)'],
+    [3, 3, 'translate(1.04 -0.43)'],
+    [9, 3, 'translate(1.04 -0.43)'],
+  ])('centres %i active with %i heads', (count, heads, transform) => {
+    const { container } = render(<ActivityGlyph count={count as number} />);
+    expect(container.querySelectorAll('g')).toHaveLength(heads as number);
+    expect(container.querySelector('g:last-child')?.getAttribute('transform')).toBe(
+      `${transform} scale(.58)`,
+    );
+    expect(container.querySelector('svg')).toHaveAttribute('viewBox', '0 0 22 16');
+  });
+
+  it('shows one uncapped active count and opens the lazy accessible sheet with focus restoration', async () => {
+    setup();
+    store.childSessionStore.activity.value = activitySnapshot({
+      agents: Array.from({ length: 7 }, (_, i) => activityChild({ session_id: `c${i}` })),
+    });
+    const { container } = mount(
+      <header>
+        <ActivityMeter />
+      </header>,
+    );
+    const trigger = screen.getByRole('button', { name: 'Activity: 7 active' });
+    expect(trigger.querySelectorAll('g')).toHaveLength(3);
+    expect(trigger.querySelectorAll('.activity-count')).toHaveLength(1);
+    expect(trigger).toHaveTextContent('7');
+    expect(trigger.style.color).toBe(''); // Active foreground inherits the native theme.
+    expect(trigger.querySelector('g')).toHaveAttribute('fill', 'var(--bg)');
+    trigger.focus();
+    fireEvent.click(trigger);
+    const dialog = await screen.findByRole('dialog', { name: 'Activity' });
+    expect(container.contains(dialog)).toBe(false); // Escape the header stacking context.
+    expect(within(dialog).getAllByRole('img', { name: 'Running' })).toHaveLength(7);
+    fireEvent.keyDown(dialog, { key: 'Escape' });
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    expect(trigger).toHaveFocus();
+  });
+});
+
+describe('native ActivitySheet', () => {
+  it('shows all active and finished rows, actual models, accessible states and unavailable coverage', () => {
+    setup();
+    store.childSessionStore.activity.value = activitySnapshot({
+      agents: [
+        activityChild({ state: 'error', live: false, title: 'Failed work' }),
+        activityChild({ session_id: 'waiting', pending_asks: 1, title: 'Review work' }),
+      ],
+      jobs: [
+        {
+          job_id: 'j',
+          run_id: 'r',
+          title: 'Remote report',
+          status: 'complete',
+          model: 'actual-job-model',
+        },
+      ],
+      jobs_availability: 'unavailable',
+      agents_partial: true,
+    });
+    const { container } = mount(<ActivitySheet onClose={vi.fn()} />);
+    expect(
+      [...container.querySelectorAll('.activity-label')].map((node) => node.textContent),
+    ).toEqual(['Review work', 'Failed work', 'Remote report']);
+    expect(screen.getByRole('img', { name: 'Waiting' })).toBeInTheDocument();
+    expect(screen.getByRole('img', { name: 'Failed' })).toBeInTheDocument();
+    expect(screen.getByText('actual-job-model · Job')).toBeInTheDocument();
+    expect(screen.getByText(/Job activity is unavailable/)).toBeInTheDocument();
+    expect(screen.getByText(/bounded snapshot/)).toBeInTheDocument();
+    expect(container.querySelector('details:not(.activity-help)')).toBeNull();
+    expect(container.querySelector('.activity-help')).not.toHaveAttribute('open');
+    expect(screen.getByRole('button', { name: /Remote report/ })).toBeInTheDocument();
+    expect(screen.queryByText(/Advanced/)).toBeNull();
+  });
+
+  it('uses native selection only for trusted local sessions from job details', async () => {
+    setup();
+    store.childSessionStore.activity.value = activitySnapshot({
+      agents: [],
+      jobs: [
+        {
+          job_id: 'j',
+          run_id: 'r',
+          title: 'Local report',
+          status: 'running',
+          session_id: 'trusted',
+        },
+      ],
+    });
+    vi.spyOn(store.endpoints, 'sessionActivityRun').mockResolvedValue({
+      job_id: 'j',
+      run_id: 'r',
+      title: 'Local report',
+      status: 'running',
+      session_id: 'trusted',
+      truncated: false,
+    });
+    const select = vi.spyOn(store, 'resolveAndSelectSession').mockResolvedValue(null);
+    const close = vi.fn();
+    mount(<ActivitySheet onClose={close} />);
+    fireEvent.click(screen.getByRole('button', { name: /Local report/ }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Open conversation' }));
+    expect(close).toHaveBeenCalledOnce();
+    expect(select).toHaveBeenCalledWith('trusted', false, { newChatOnMiss: false });
+  });
+});
+
+describe('uncertain activity accessibility', () => {
+  it('does not claim idle, finished, or no history on a failed first snapshot or incomplete idle snapshot', async () => {
+    setup();
+    store.childSessionStore.activity.value = null;
+    store.childSessionStore.activityStale.value = true;
+    mount(<ActivityMeter />);
+    const trigger = screen.getByRole('button', {
+      name: /Activity: Status unknown.*incomplete or out of date/,
+    });
+    expect(trigger.querySelector('.activity-count')).toBeNull();
+    fireEvent.click(trigger);
+    const dialog = await screen.findByRole('dialog', { name: 'Activity' });
+    expect(dialog).not.toHaveTextContent('All finished');
+    expect(dialog).not.toHaveTextContent('No related activity in this snapshot');
+    store.childSessionStore.activity.value = activitySnapshot({
+      agents: [activityChild({ live: false, state: 'complete' })],
+      jobs_partial: true,
+    });
+    await waitFor(() => expect(trigger).toHaveAttribute('data-state', 'unknown'));
+    expect(trigger).not.toHaveAccessibleName('Activity: idle');
+  });
+});
+
+describe('scoped job drilldown lifecycle', () => {
+  function jobSetup() {
+    setup();
+    store.childSessionStore.activity.value = activitySnapshot({
+      agents: [],
+      jobs: [{ job_id: 'j', run_id: 'run', title: 'Report run', status: 'running' }],
+    });
+  }
+
+  it('loads the exact scoped run, renders output as safe text, and restores row focus on Back without remote navigation', async () => {
+    jobSetup();
+    const request = vi.spyOn(store.endpoints, 'sessionActivityRun').mockResolvedValue({
+      job_id: 'j',
+      run_id: 'run',
+      title: 'Report run',
+      status: 'complete',
+      response: '<script>bad()</script>',
+      stdout: '<b>plain output</b>',
+      stderr: 'stderr output',
+      error: 'run error',
+      truncated: true,
+    });
+    const { container } = mount(<ActivitySheet onClose={vi.fn()} />);
+    fireEvent.click(screen.getByRole('button', { name: /Report run/ }));
+    expect(await screen.findByText('<script>bad()</script>')).toBeInTheDocument();
+    expect(request).toHaveBeenCalledWith('parent', 'run', expect.any(AbortSignal));
+    expect(container.querySelector('.activity-output script')).toBeNull();
+    expect(container.querySelector('.activity-output b')).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Open conversation' })).toBeNull();
+    expect(screen.getByText(/Output was truncated/)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Back to activity' }));
+    expect(screen.getByRole('button', { name: /Report run/ })).toHaveFocus();
+  });
+
+  it('cancels old detail generations on Back, scope change and close, ignoring late output', async () => {
+    jobSetup();
+    const pending: Array<{
+      signal: AbortSignal;
+      resolve: (detail: import('../api/endpoints').ActivityJobDetail) => void;
+    }> = [];
+    vi.spyOn(store.endpoints, 'sessionActivityRun').mockImplementation(
+      (_scope, _run, signal) =>
+        new Promise((resolve) => {
+          pending.push({ signal: signal!, resolve });
+        }),
+    );
+    const { unmount } = mount(<ActivitySheet onClose={vi.fn()} />);
+    fireEvent.click(screen.getByRole('button', { name: /Report run/ }));
+    await waitFor(() => expect(pending).toHaveLength(1));
+    fireEvent.click(screen.getByRole('button', { name: 'Back to activity' }));
+    expect(pending[0].signal.aborted).toBe(true);
+    fireEvent.click(screen.getByRole('button', { name: /Report run/ }));
+    await waitFor(() => expect(pending).toHaveLength(2));
+    pending[0].resolve({
+      job_id: 'j',
+      run_id: 'run',
+      title: 'Report run',
+      status: 'complete',
+      response: 'Obsolete output',
+      truncated: false,
+    });
+    await Promise.resolve();
+    expect(screen.queryByText('Obsolete output')).toBeNull();
+    store.childSessionStore.activitySessionId.value = 'other';
+    await waitFor(() => expect(pending[1].signal.aborted).toBe(true));
+    fireEvent.click(screen.getByRole('button', { name: /Report run/ }));
+    await waitFor(() => expect(pending).toHaveLength(3));
+    unmount();
+    await waitFor(() => expect(pending[2].signal.aborted).toBe(true));
+  });
+
+  it('keeps Back available after a forbidden or missing scoped detail response', async () => {
+    jobSetup();
+    vi.spyOn(store.endpoints, 'sessionActivityRun').mockRejectedValue(new Error('403'));
+    mount(<ActivitySheet onClose={vi.fn()} />);
+    fireEvent.click(screen.getByRole('button', { name: /Report run/ }));
+    expect(await screen.findByText(/Job details are unavailable/)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Back to activity' }));
+    expect(screen.getByRole('button', { name: /Report run/ })).toBeInTheDocument();
+  });
+
+  it('keeps pristine sessions hidden when optional jobs are unsupported', () => {
+    setup();
+    store.childSessionStore.activity.value = activitySnapshot({
+      agents: [],
+      jobs: [],
+      jobs_availability: 'unavailable',
+    });
+    mount(<ActivityMeter />);
+    expect(screen.queryByRole('button', { name: /^Activity:/ })).toBeNull();
+  });
+});

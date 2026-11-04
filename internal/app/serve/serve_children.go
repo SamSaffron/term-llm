@@ -10,6 +10,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/samsaffron/term-llm/internal/app/serve/sessionactivity"
 	"github.com/samsaffron/term-llm/internal/session"
 	"github.com/samsaffron/term-llm/internal/tools"
 )
@@ -46,49 +47,8 @@ func terminalChildRevision(revision int64) int64 {
 	return revision
 }
 
-// webSessionMetrics contains durable counters, not request-level pricing data.
-type webSessionMetrics struct {
-	InputTokens       int `json:"input_tokens"`
-	OutputTokens      int `json:"output_tokens"`
-	CachedInputTokens int `json:"cached_input_tokens"`
-	CacheWriteTokens  int `json:"cache_write_tokens"`
-	ToolCalls         int `json:"tool_calls"`
-	LLMTurns          int `json:"llm_turns"`
-}
-
-type childRunProjection struct {
-	webSessionMetrics
-	Model             string `json:"model,omitempty"`
-	SessionID         string `json:"session_id"`
-	ParentSessionID   string `json:"parent_session_id"`
-	ParentSpawnItemID int64  `json:"parent_spawn_item_id,omitempty"`
-	ParentSpawnCallID string `json:"parent_spawn_call_id,omitempty"`
-	Title             string `json:"title"`
-	// Kind separates a spawned subagent from an isolated skill run. Both are
-	// children of the same parent, and the UI must not call one the other.
-	Kind        string                `json:"kind,omitempty"`
-	Agent       string                `json:"agent,omitempty"`
-	TaskSummary string                `json:"task_summary,omitempty"`
-	State       session.SessionStatus `json:"state"`
-	Attention   bool                  `json:"attention"`
-	ResponseID  string                `json:"response_id,omitempty"`
-	RunEpoch    int64                 `json:"run_epoch,omitempty"`
-	// Live/Steerable/RunID describe this process's view of a delegated run in
-	// flight. A durable-only projection cannot distinguish "finished" from
-	// "running somewhere this server cannot see".
-	Live             bool   `json:"live,omitempty"`
-	Steerable        bool   `json:"steerable,omitempty"`
-	ChildRunID       string `json:"child_run_id,omitempty"`
-	PendingAsks      int    `json:"pending_asks,omitempty"`
-	Revision         int64  `json:"revision"`
-	StartedAt        int64  `json:"started_at,omitempty"`
-	EndedAt          int64  `json:"ended_at,omitempty"`
-	ApproximateTimes bool   `json:"approximate_times,omitempty"`
-	// A delegated run spends real money on its own session row. Pricing it here
-	// is what lets the parent report what the work actually cost.
-	CostUSD     *float64 `json:"cost_usd,omitempty"`
-	CostPartial bool     `json:"cost_partial,omitempty"`
-}
+type webSessionMetrics = sessionactivity.WebSessionMetrics
+type childRunProjection = sessionactivity.ChildRunProjection
 
 type childSpawnProvenance struct {
 	ItemID int64
@@ -144,10 +104,6 @@ func delegatedChildKind(name string) string {
 	return "subagent"
 }
 
-func terminalChildStatus(status session.SessionStatus) bool {
-	return status == session.StatusComplete || status == session.StatusError || status == session.StatusInterrupted
-}
-
 func (s *serveServer) handleSessionChildren(w http.ResponseWriter, r *http.Request, parentID string) {
 	if r.Method != http.MethodGet {
 		w.Header().Set("Allow", http.MethodGet)
@@ -162,15 +118,43 @@ func (s *serveServer) handleSessionChildren(w http.ResponseWriter, r *http.Reque
 		writeOpenAIError(w, http.StatusNotFound, "not_found_error", "parent session not found")
 		return
 	}
-	spawnProvenance := childSpawnProvenanceForParent(r.Context(), s.store, parentID)
-	children, err := s.store.List(r.Context(), session.ListOptions{
-		ParentID:       parentID,
-		Limit:          maxChildRunProjection,
-		SortByActivity: true,
-	})
+	projection, err := s.projectSessionChildren(r.Context(), parentID)
 	if err != nil {
 		writeOpenAIError(w, http.StatusInternalServerError, "server_error", "failed to list child sessions")
 		return
+	}
+	w.Header().Set("ETag", projection.ETag)
+	w.Header().Set("Cache-Control", "no-cache")
+	if r.Header.Get("If-None-Match") == projection.ETag {
+		w.WriteHeader(http.StatusNotModified)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"parent_session_id":  parentID,
+		"revision":           projection.Revision,
+		"children":           projection.Items,
+		"limit":              maxChildRunProjection,
+		"children_truncated": projection.Truncated,
+	})
+}
+
+type childProjection struct {
+	Items     []childRunProjection
+	Revision  int64
+	ETag      string
+	Truncated bool
+}
+
+// projectSessionChildren is shared by direct-child links and conversation activity.
+func (s *serveServer) projectSessionChildren(ctx context.Context, parentID string) (childProjection, error) {
+	spawnProvenance := childSpawnProvenanceForParent(ctx, s.store, parentID)
+	children, err := s.store.List(ctx, session.ListOptions{
+		ParentID:       parentID,
+		Limit:          maxChildRunProjection + 1,
+		SortByActivity: true,
+	})
+	if err != nil {
+		return childProjection{}, fmt.Errorf("list child sessions: %w", err)
 	}
 	sort.SliceStable(children, func(i, j int) bool {
 		if children[i].UpdatedAt.Equal(children[j].UpdatedAt) {
@@ -188,7 +172,7 @@ func (s *serveServer) handleSessionChildren(w http.ResponseWriter, r *http.Reque
 	for _, child := range children {
 		durableUpdatedAt := child.UpdatedAt.UnixNano()
 		item := childRunProjection{
-			webSessionMetrics: webSessionMetrics{InputTokens: child.InputTokens, OutputTokens: child.OutputTokens, CachedInputTokens: child.CachedInputTokens, CacheWriteTokens: child.CacheWriteTokens, ToolCalls: child.ToolCalls, LLMTurns: child.LLMTurns},
+			WebSessionMetrics: webSessionMetrics{InputTokens: child.InputTokens, OutputTokens: child.OutputTokens, CachedInputTokens: child.CachedInputTokens, CacheWriteTokens: child.CacheWriteTokens, ToolCalls: child.ToolCalls, LLMTurns: child.LLMTurns},
 			Model:             child.Model,
 			SessionID:         child.ID,
 			ParentSessionID:   parentID,
@@ -201,8 +185,8 @@ func (s *serveServer) handleSessionChildren(w http.ResponseWriter, r *http.Reque
 			StartedAt:         child.CreatedAt.UnixMilli(),
 			ApproximateTimes:  true,
 		}
-		item.CostUSD, item.CostPartial = aggregateCost(child.Model, item.webSessionMetrics)
-		terminal := terminalChildStatus(child.Status)
+		item.CostUSD, item.CostPartial = aggregateCost(child.Model, item.WebSessionMetrics)
+		terminal := child.Status == session.StatusComplete || child.Status == session.StatusError || child.Status == session.StatusInterrupted
 		if spawn, ok := spawnProvenance[child.ID]; ok {
 			item.ParentSpawnItemID = spawn.ItemID
 			item.ParentSpawnCallID = spawn.CallID
@@ -211,7 +195,7 @@ func (s *serveServer) handleSessionChildren(w http.ResponseWriter, r *http.Reque
 			item.EndedAt = child.UpdatedAt.UnixMilli()
 			item.Revision = terminalChildRevision(item.Revision)
 		}
-		if messages, messagesErr := s.store.GetMessages(r.Context(), child.ID, 1, 0); messagesErr == nil && len(messages) > 0 {
+		if messages, messagesErr := s.store.GetMessages(ctx, child.ID, 1, 0); messagesErr == nil && len(messages) > 0 {
 			item.TaskSummary = strings.TrimSpace(messages[0].TextContent)
 			if runes := []rune(item.TaskSummary); len(runes) > 240 {
 				item.TaskSummary = string(runes[:240]) + "…"
@@ -296,25 +280,14 @@ func (s *serveServer) handleSessionChildren(w http.ResponseWriter, r *http.Reque
 		}
 	}
 	etagPayload, err := json.Marshal(struct {
-		ParentID string              `json:"parent_id"`
-		Items    []childETagSnapshot `json:"items"`
-	}{ParentID: parentID, Items: etagItems})
+		ParentID  string              `json:"parent_id"`
+		Items     []childETagSnapshot `json:"items"`
+		Truncated bool                `json:"truncated"`
+	}{ParentID: parentID, Items: etagItems, Truncated: len(children) > maxChildRunProjection})
 	if err != nil {
-		writeOpenAIError(w, http.StatusInternalServerError, "server_error", "failed to encode child projection")
-		return
+		return childProjection{}, fmt.Errorf("encode child projection: %w", err)
 	}
 	digest := sha256.Sum256(etagPayload)
 	etag := fmt.Sprintf(`"children-%s"`, hex.EncodeToString(digest[:16]))
-	w.Header().Set("ETag", etag)
-	w.Header().Set("Cache-Control", "no-cache")
-	if r.Header.Get("If-None-Match") == etag {
-		w.WriteHeader(http.StatusNotModified)
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]any{
-		"parent_session_id": parentID,
-		"revision":          revision,
-		"children":          items,
-		"limit":             maxChildRunProjection,
-	})
+	return childProjection{Items: items, Revision: revision, ETag: etag, Truncated: len(children) > maxChildRunProjection}, nil
 }

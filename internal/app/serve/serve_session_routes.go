@@ -23,6 +23,11 @@ func (s *serveServer) routeSessionCore(w http.ResponseWriter, r *http.Request, s
 		return true
 	}
 
+	if suffix == "activity" || strings.HasPrefix(suffix, "activity/runs/") {
+		s.handleSessionActivity(w, r, sessionID, suffix)
+		return true
+	}
+
 	if suffix == "children" {
 		s.handleSessionChildren(w, r, sessionID)
 		return true

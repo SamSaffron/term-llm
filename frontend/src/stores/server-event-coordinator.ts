@@ -112,12 +112,13 @@ export class ServerEventCoordinator {
     events.forEach((event) => this.route(event));
   }
 
-  updateInterest(sessionId: string, childrenParentId = ''): void {
+  updateInterest(sessionId: string, childrenParentId = '', activityScopeId = ''): void {
     const id = sessionId.trim();
     const parentId = childrenParentId.trim();
     const next = [
       ...(id ? [`session:${id}`, `files:${id}`] : []),
       ...(parentId ? [`children:${parentId}`] : []),
+      ...(activityScopeId && activityScopeId !== parentId ? [`children:${activityScopeId}`] : []),
     ];
     if (next.join(',') === this.interestChannels.join(',')) return;
     this.interestChannels = next;

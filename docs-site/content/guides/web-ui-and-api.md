@@ -89,6 +89,8 @@ With the default base path of `/ui`, the web runtime exposes:
 - `GET /ui/v1/sessions?project_id=prj_...&cursor=...`
 - `GET /ui/v1/sessions/search?q=...&project_id=prj_...`
 - `PATCH /ui/v1/sessions/pinned-order` (`{"session_ids": [...]}` moves the listed pinned conversations, in order, into the positions they already hold; other pins keep theirs)
+- `GET /ui/v1/sessions/:id/children` (direct-child projection)
+- `GET /ui/v1/sessions/:id/activity` (conversation-scoped descendant agents and related job runs)
 - `POST /ui/v1/sessions/:id/project` (validated one-time historical assignment)
 - `POST|DELETE /ui/v1/sessions/:id/shell`
 - `GET /ui/v1/sessions/:id/shell/stream` (SSE)
@@ -98,6 +100,43 @@ With the default base path of `/ui`, the web runtime exposes:
 - `GET /ui/` for the browser UI
 - `GET /ui/images/:file` for legacy/generated images
 - `GET /ui/media/:file` for authenticated media published by `show_media`
+
+### Conversation activity
+
+The header's robot activity button opens a native sheet of delegated agents and
+related queued job runs. It shows one live execution count, including agents
+waiting for input; completed rows stay visible below active work. The button is
+hidden for a conversation with no known activity. Opening a known child keeps the
+original conversation's activity scope, and uses ordinary session navigation.
+
+`GET /ui/v1/sessions/:id/activity` returns `agents`, `jobs`, independent
+`agents_availability` / `jobs_availability`, and `agents_partial` / `jobs_partial`.
+It supports conditional requests with `ETag` / `If-None-Match`. `/children`
+continues to return only direct children. Activity discovery is bounded to eight
+levels, 100 descendants, the latest 500 stored messages per session, and 50 job
+runs; partial snapshots are identified rather than presented as exhaustive history.
+
+Jobs come from the local jobs manager when running `serve web jobs`, or from an
+explicit `TERM_LLM_JOBS_SERVER` (and optional `TERM_LLM_JOBS_TOKEN`) for a separate
+jobs service. There is no implicit jobs-server address. Membership comes only
+from persisted, paired successful `queue_agent` / `wait_for_jobs` results and
+structured job notifications in the conversation or its descendants. An exact
+run link never includes other runs of the same job; text mentions, shell commands,
+and global job names are not used for discovery. Jobs outages do not hide agent
+activity. Linked devices can read agents but receive jobs as `restricted`, without
+contacting the owner's jobs backend. Remote job session IDs do not become local
+conversation links. The snapshot excludes runner configuration and job output.
+Selecting a job run opens bounded, read-only output through
+`GET /ui/v1/sessions/:id/activity/runs/:run_id`. This endpoint rechecks persisted
+membership on every request, never includes sibling runs of an exact-run link,
+and denies linked-device requests before contacting jobs. Each output field is
+limited to 64 KiB; truncation is explicit. Runner configuration is never returned.
+
+Agent token totals are cumulative disjoint input, output, cached-input and
+cache-write counters, not context-window size. Job counters without cache fields
+are not displayed as complete totals. Times are elapsed wall-clock estimates;
+`~` marks historical estimates that can include gaps after a resume. Unknown
+usage is omitted, and partial or stale activity is called out in the sheet.
 
 ### Showing local media
 

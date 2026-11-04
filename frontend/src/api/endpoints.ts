@@ -5,6 +5,9 @@ import type {
   ServeSessionActivity,
   WebSessionMetrics,
   ChildRunProjection,
+  SessionActivityResponse,
+  ActivityJobRun,
+  ActivityJobDetail,
   SharingCapabilitiesResponse as GeneratedSharingCapabilitiesResponse,
   SessionShareResponse as GeneratedSessionShareResponse,
   ShareVisibility as GeneratedShareVisibility,
@@ -75,6 +78,11 @@ export interface SessionStats {
   unavailable?: string[];
 }
 export type StatsChild = ChildRunProjection;
+export type { ActivityJobRun, ActivityJobDetail };
+export type ActivitySnapshot = SessionActivityResponse & {
+  __etag?: string;
+  __notModified?: boolean;
+};
 
 export interface SessionChildrenResponse {
   children: StatsChild[];
@@ -314,6 +322,35 @@ export const endpoints = (api: APIClient) => ({
       __etag: response.headers.get('ETag') || '',
     };
   },
+  sessionActivity: async (
+    id: string,
+    signal?: AbortSignal,
+    etag = '',
+  ): Promise<ActivitySnapshot> => {
+    const response = await api.request(
+      `/v1/sessions/${encoded(id)}/activity`,
+      { signal, headers: etag ? { 'If-None-Match': etag } : undefined },
+      { policy: 'safe-read' },
+    );
+    if (response.status === 304)
+      return {
+        __notModified: true,
+        __etag: response.headers.get('ETag') || etag,
+      } as ActivitySnapshot;
+    if (!response.ok) {
+      const body = await response.text();
+      throw new Error(body || `Activity request returned ${response.status}`);
+    }
+    return {
+      ...((await response.json()) as SessionActivityResponse),
+      __etag: response.headers.get('ETag') || '',
+    };
+  },
+  sessionActivityRun: (id: string, runId: string, signal?: AbortSignal) =>
+    api.get<ActivityJobDetail>(
+      `/v1/sessions/${encoded(id)}/activity/runs/${encoded(runId)}`,
+      signal,
+    ),
   selectedSession: (id: string) =>
     api.get<Record<string, unknown>>(
       `/v1/sessions?selected_only=1&include_transcript=1&include_widget_status=1&selected_session=${encoded(id)}`,

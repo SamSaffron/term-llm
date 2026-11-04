@@ -1,3 +1,5 @@
+ActivityJobDetail
+ActivityJobRun
 ChildRunProjection
 CreateWebSessionRequest
 HubNodeDiagnostic
@@ -22,6 +24,8 @@ ServeSessionActivity
 ServeShellCreateRequest
 ServeShellInputRequest
 ServeSkillRunEvent
+SessionActivityMetrics
+SessionActivityResponse
 SessionInterruptRequest
 SessionMessageEntry
 SessionMessagePartEntry

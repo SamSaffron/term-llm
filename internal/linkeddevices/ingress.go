@@ -174,7 +174,7 @@ func sessionReadAllowed(path string) bool {
 	}
 	suffix := parts[1]
 	switch suffix {
-	case "messages", "state", "transcript", "transcript/bodies", "attention/unseen", "children",
+	case "messages", "state", "transcript", "transcript/bodies", "attention/unseen", "children", "activity",
 		"runtime/approvals", "diff-comments", "inspect", "inspect/bodies":
 		return true
 	}

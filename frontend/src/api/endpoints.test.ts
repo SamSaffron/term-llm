@@ -644,3 +644,62 @@ describe('session search sort endpoint', () => {
     expect(get.mock.calls[1][1]).toBe(signal);
   });
 });
+
+describe('session activity snapshot transport', () => {
+  it.each(['/ui', '/hub/nodes/node-one/proxy'])(
+    'uses APIClient prefix/auth, encoded scope and ETag at %s',
+    async (prefix) => {
+      const fetcher = vi
+        .spyOn(globalThis, 'fetch')
+        .mockResolvedValue(new Response(null, { status: 304, headers: { ETag: 'snapshot-v2' } }));
+      try {
+        const api = new APIClient(readInjectedConfig({ TERM_LLM_UI_PREFIX: prefix } as Window), {
+          getToken: () => 'test-token',
+          onAuthRequired: vi.fn(),
+        });
+        const signal = new AbortController().signal;
+        const response = await endpoints(api).sessionActivity('parent/one', signal, 'snapshot-v1');
+        expect(response).toEqual({ __notModified: true, __etag: 'snapshot-v2' });
+        expect(fetcher.mock.calls[0][0]).toContain(`${prefix}/v1/sessions/parent%2Fone/activity`);
+        const headers = new Headers(fetcher.mock.calls[0][1]?.headers);
+        expect(headers.get('If-None-Match')).toBe('snapshot-v1');
+        expect(headers.get('Authorization')).toBe('Bearer test-token');
+      } finally {
+        fetcher.mockRestore();
+      }
+    },
+  );
+});
+
+describe('scoped job detail transport', () => {
+  it('reads an exact encoded run through the authenticated APIClient prefix', async () => {
+    const detail = {
+      job_id: 'j',
+      run_id: 'run/one',
+      title: 'Report',
+      status: 'complete',
+      response: 'Output',
+      truncated: false,
+    };
+    const fetcher = vi
+      .spyOn(globalThis, 'fetch')
+      .mockResolvedValue(new Response(JSON.stringify(detail)));
+    try {
+      const api = new APIClient(
+        readInjectedConfig({ TERM_LLM_UI_PREFIX: '/hub/nodes/n/proxy' } as Window),
+        { getToken: () => 'test-token', onAuthRequired: vi.fn() },
+      );
+      await expect(
+        endpoints(api).sessionActivityRun('parent/one', 'run/one', new AbortController().signal),
+      ).resolves.toEqual(detail);
+      expect(fetcher.mock.calls[0][0]).toContain(
+        '/hub/nodes/n/proxy/v1/sessions/parent%2Fone/activity/runs/run%2Fone',
+      );
+      expect(new Headers(fetcher.mock.calls[0][1]?.headers).get('Authorization')).toBe(
+        'Bearer test-token',
+      );
+    } finally {
+      fetcher.mockRestore();
+    }
+  });
+});
