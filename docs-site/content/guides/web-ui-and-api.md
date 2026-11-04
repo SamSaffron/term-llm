@@ -651,7 +651,8 @@ chat.example.com {
 Start term-llm with your usual authentication and:
 
 ```sh
-term-llm serve web --identity-header Remote-User \
+term-llm serve web --public-url https://chat.example.com/ui/ \
+  --identity-header Remote-User \
   --identity-name-header Remote-Name --identity-email-header Remote-Email
 ```
 
