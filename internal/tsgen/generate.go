@@ -19,8 +19,9 @@ import (
 // Roots must name declarations directly, not cmd compatibility aliases: an alias
 // can emit a duplicate, self-referential wire name after its declaration moves.
 var Registry = []string{
+	"internal/app/serve/sessionactivity.SessionActivityResponse", "internal/app/serve/sessionactivity.ActivityJobRun", "internal/app/serve/sessionactivity.ActivityJobDetail",
 	"internal/app/serve.webAuthor",
-	"internal/app/serve.childRunProjection", "internal/app/serve.webSessionEntry", "internal/app/serve.webSelectedSessionEntry", "internal/app/serve.createWebSessionRequest", "internal/app/serve.serveEvent", "internal/app/serve.serveSkillRunEvent", "internal/app/serve/jobs.RunEvent", "internal/app/serve.hubNodeView", "internal/app/serve.webSessionMetrics",
+	"internal/app/serve/sessionactivity.ChildRunProjection", "internal/app/serve.webSessionEntry", "internal/app/serve.webSelectedSessionEntry", "internal/app/serve.createWebSessionRequest", "internal/app/serve.serveEvent", "internal/app/serve.serveSkillRunEvent", "internal/app/serve/jobs.RunEvent", "internal/app/serve.hubNodeView", "internal/app/serve/sessionactivity.WebSessionMetrics",
 	"internal/app/serve.serveMentionSearchRequest", "internal/app/serve.serveMentionSearchResponse",
 	"internal/app/serve.sessionShareRequest", "internal/app/serve.sessionShareResponse", "internal/app/serve.sharingCapabilitiesResponse",
 	"internal/app/serve.serveShellCreateRequest", "internal/app/serve.serveShellInputRequest", "internal/app/serve.sessionInterruptRequest", "internal/app/serve.sessionRuntimeGoalRequest",
@@ -116,13 +117,18 @@ var bareNamePackages = map[string]bool{
 // Wire names survive Go declaration moves/renames. Add overrides only when a
 // declaration enters the registered closure; RunEvent is currently the sole jobs DTO.
 var wireNames = map[string]string{
-	"internal/app/serve/jobs.RunEvent":          "JobsV2RunEvent",
-	"internal/linkeddevices.AuthorityStatement": "LinkedDevicesAuthorityStatement",
-	"internal/linkeddevices.DeviceStatus":       "LinkedDevicesDeviceStatus",
-	"internal/linkeddevices.InvitationStatus":   "LinkedDevicesInvitationStatus",
-	"internal/linkeddevices.RequestStatus":      "LinkedDevicesRequestStatus",
-	"internal/linkeddevices.State":              "LinkedDevicesState",
-	"internal/linkeddevices.Status":             "LinkedDevicesStatus",
+	"internal/app/serve/sessionactivity.ActivityJobDetail":       "ActivityJobDetail",
+	"internal/app/serve/sessionactivity.ChildRunProjection":      "ChildRunProjection",
+	"internal/app/serve/sessionactivity.SessionActivityResponse": "SessionActivityResponse",
+	"internal/app/serve/sessionactivity.ActivityJobRun":          "ActivityJobRun",
+	"internal/app/serve/sessionactivity.WebSessionMetrics":       "SessionActivityMetrics",
+	"internal/app/serve/jobs.RunEvent":                           "JobsV2RunEvent",
+	"internal/linkeddevices.AuthorityStatement":                  "LinkedDevicesAuthorityStatement",
+	"internal/linkeddevices.DeviceStatus":                        "LinkedDevicesDeviceStatus",
+	"internal/linkeddevices.InvitationStatus":                    "LinkedDevicesInvitationStatus",
+	"internal/linkeddevices.RequestStatus":                       "LinkedDevicesRequestStatus",
+	"internal/linkeddevices.State":                               "LinkedDevicesState",
+	"internal/linkeddevices.Status":                              "LinkedDevicesStatus",
 }
 
 func tsName(key string) string {

@@ -673,6 +673,7 @@ export class AppStore {
         ),
       eventFeedHealthy: () => this.serverEventCoordinator?.isHealthy() || false,
       acknowledgeAttention: () => this.attentionAck.evaluate(),
+      descendantActivityActive: () => this.childSessionStore.activityActive.peek(),
     });
     this.serverEventCoordinator = new ServerEventCoordinator(this.services, {
       startupDone: this.startupDone,
@@ -1123,6 +1124,7 @@ export class AppStore {
           void this.reconcile('visibility', { authoritative: true });
           void this.refreshHubAgents();
         } else {
+          this.childSessionStore.pauseActivity();
           // Mobile WebKit may never deliver pagehide before suspension.
           this.services.workspaceCache.flush();
         }
@@ -1521,6 +1523,9 @@ export class AppStore {
     const navigating = this.selectionStore.selectSession(session, replace, {
       fromCache: options.fromCache,
     });
+    // Selection is synchronous; don't show the old conversation's activity
+    // while the new transcript is still hydrating.
+    this.syncSessionInterest();
     // The navigation bumps the selection generation synchronously; tying the
     // rebind to that generation keeps a stale response from moving the call
     // back after the user has already gone somewhere else.
@@ -2234,6 +2239,8 @@ export class AppStore {
     this.statusReconciler.start();
   }
   private async refreshStatus(authoritative = false): Promise<void> {
+    // Optional activity discovery must not delay interactions or transcript recovery.
+    void this.childSessionStore.refreshActivity(authoritative);
     await this.statusReconciler.refresh(authoritative);
   }
 

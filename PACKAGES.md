@@ -45,6 +45,7 @@ One line per root-module package, generated from package doc comments by `make d
 - `internal/app/serve/modelswap` — holds the provider-independent rules for how a mid-conversation model switch attempt ends.
 - `internal/app/serve/protocol` — encodes and parses the OSC 7770 markers that frame serve shell commands and output.
 - `internal/app/serve/server` — owns serve HTTP/platform behavior extracted from the command layer.
+- `internal/app/serve/sessionactivity` — builds bounded conversation-scoped agent and job-run read models.
 - `internal/app/serve/sessionsearch` — handles session-search HTTP validation, querying and projection.
 - `internal/app/serve/shell` — manages per-session PTY shell generations for `term-llm serve`.
 - `internal/app/serve/wire` — owns the shared HTTP JSON, SSE, compression, and steering projection helpers.

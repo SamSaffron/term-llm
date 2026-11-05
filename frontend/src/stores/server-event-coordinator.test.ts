@@ -296,3 +296,25 @@ describe('ServerEventCoordinator', () => {
     coordinator.dispose();
   });
 });
+
+describe('activity scope event interest', () => {
+  it('follows the selected subtree without retaining ancestor channels', async () => {
+    const { coordinator, endpoints } = harness();
+    coordinator.updateInterest('child', 'child');
+    void coordinator.prepare();
+    await vi.waitFor(() => expect(endpoints.serverEventStream).toHaveBeenCalled());
+    expect(endpoints.serverEventStream.mock.calls[0][1]).toEqual([
+      'session:child',
+      'files:child',
+      'children:child',
+    ]);
+    coordinator.updateInterest('parent', 'parent');
+    await vi.waitFor(() => expect(endpoints.serverEventStream).toHaveBeenCalledTimes(2));
+    expect(endpoints.serverEventStream.mock.calls[1][1]).toEqual([
+      'session:parent',
+      'files:parent',
+      'children:parent',
+    ]);
+    coordinator.dispose();
+  });
+});

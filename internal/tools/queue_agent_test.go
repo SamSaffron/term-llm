@@ -375,8 +375,11 @@ func TestWaitForJobsPollsUntilTerminal(t *testing.T) {
 	if result.JobID != "job_123" || result.Status != "succeeded" || result.Response != "STATUS: COMPLETE\nOK" || result.Stdout != payload {
 		t.Fatalf("unexpected result metadata or output lengths: job=%q status=%q response=%q stdout=%d", result.JobID, result.Status, result.Response, len(result.Stdout))
 	}
-	if strings.Contains(out.Content, "run_id") {
-		t.Fatalf("wait output should not expose run_id")
+	// A job_ids wait pins one run. The persisted result must name that run so the
+	// conversation activity view can stay exact instead of exposing every
+	// execution of the job.
+	if result.RunID != "run_123" {
+		t.Fatalf("wait output must record the pinned run: %+v", result)
 	}
 	if result.DurationSeconds == nil || *result.DurationSeconds < 57.9 || *result.DurationSeconds > 58.0 {
 		t.Fatalf("duration = %#v, want about 57.9", result.DurationSeconds)

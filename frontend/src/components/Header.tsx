@@ -14,8 +14,14 @@ import { observePopoverPosition, positionPopover } from '../platform/browser';
 import { containPopoverScroll } from '../platform/popover-scroll';
 import { Icon } from './Icon';
 import { ContextMeter } from './ContextMeter';
+import { lazyComponent } from './lazyComponent';
 import { HeaderBreadcrumb } from './HeaderBreadcrumb';
 import { resolveProjectContext } from '../domain/project-context';
+
+// Activity is optional presentation; keep it out of the initial chat bundle.
+const ActivityMeter = lazyComponent(() =>
+  import('./ActivityMeter').then((module) => module.ActivityMeter).catch(() => () => null),
+);
 
 function EffortMeter() {
   return (
@@ -361,6 +367,7 @@ export function Header() {
             <div class="header-stats" id="headerStats">
               <RuntimePicker />
             </div>
+            <ActivityMeter />
             <ContextMeter />
             <div class="header-context-actions">
               {resumableShell && session && (

@@ -1,0 +1,261 @@
+.modal-overlay:has(> .activity-panel) {
+  align-items: flex-end;
+  padding: 0;
+}
+
+.activity-panel.modal {
+  box-sizing: border-box;
+  width: min(100%, 520px);
+  max-height: 82dvh;
+  overflow: auto;
+  background: #fff;
+  color: #262b31;
+  border: 1px solid rgb(0 0 0 / 5%);
+  border-radius: 22px 22px 0 0;
+  padding: 18px 20px calc(16px + env(safe-area-inset-bottom));
+  box-shadow: 0 -10px 48px rgb(27 37 52 / 10%);
+  overflow-wrap: anywhere;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+}
+
+.activity-panel .modal-title-row {
+  margin-bottom: 0;
+}
+
+.activity-panel .close-button {
+  color: #777f88;
+  min-width: 44px;
+  min-height: 44px;
+}
+
+.activity-panel .activity-summary {
+  color: #6b7280;
+  font-size: 13px;
+  margin: 0 0 19px;
+}
+
+.activity-row {
+  box-sizing: border-box;
+  width: 100%;
+  min-height: 70px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  border: 0;
+  border-bottom: 1px solid #eff1f4;
+  background: transparent;
+  padding: 12px 0;
+  color: inherit;
+  text-decoration: none;
+  text-align: left;
+  font: inherit;
+  cursor: pointer;
+  border-radius: 0;
+}
+
+.activity-row:hover {
+  background: #f8fafc;
+}
+
+.activity-copy {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.activity-label {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 1.35;
+  letter-spacing: -0.1px;
+}
+
+.activity-meta {
+  font-size: 12px;
+  color: #6b7280;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  line-height: 1.4;
+}
+
+.activity-state {
+  width: 24px;
+  height: 24px;
+  flex: none;
+  display: grid;
+  place-items: center;
+  color: #929ba6;
+}
+
+.activity-state svg {
+  width: 19px;
+  height: 19px;
+}
+
+.activity-state[data-tone='running'] {
+  color: #4c7bd0;
+}
+
+.activity-state[data-tone='waiting'] {
+  color: #b88a3c;
+}
+
+.activity-state[data-tone='done'] {
+  color: #7c9e8b;
+}
+
+.activity-state[data-tone='error'] {
+  color: #c46c65;
+}
+
+.activity-state[data-icon='running'] svg {
+  animation: activity-state-spin 2s linear infinite;
+}
+
+.activity-chevron {
+  flex: none;
+  color: #b7bec7;
+  width: 16px;
+  height: 16px;
+  display: inline-flex;
+}
+
+.activity-chevron svg {
+  display: block;
+  width: 16px;
+  height: 16px;
+}
+
+.activity-row:not(button) {
+  cursor: default;
+}
+
+.activity-row:not(button):hover {
+  background: transparent;
+}
+
+.activity-panel .activity-notice {
+  font-size: 11px;
+  line-height: 1.5;
+  color: #6b7280;
+  margin: 8px 0 0;
+}
+
+.activity-panel :focus-visible {
+  outline: 2px solid #88a5ca;
+  outline-offset: 3px;
+}
+
+@keyframes activity-state-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (width >= 700px) {
+  .modal-overlay:has(> .activity-panel) {
+    align-items: center;
+  }
+
+  .activity-panel.modal {
+    border-radius: 20px;
+    padding-bottom: 20px;
+    max-height: min(78dvh, 720px);
+  }
+}
+
+@media (width <= 374px) {
+  .activity-panel.modal {
+    padding-left: 16px;
+    padding-right: 16px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .activity-state[data-icon='running'] svg {
+    animation: none;
+  }
+}
+
+.activity-panel .modal-title-row h2 {
+  font-size: 20px;
+  font-weight: 600;
+  letter-spacing: -0.35px;
+  margin: 0;
+  line-height: 1.3;
+}
+
+.activity-section-title {
+  color: #6b7280;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  margin: 17px 0 4px;
+}
+
+.activity-help {
+  margin-top: 12px;
+  color: #6b7280;
+  font-size: 12px;
+}
+
+.activity-help summary {
+  cursor: pointer;
+  padding-block: 8px;
+}
+
+.activity-back {
+  display: inline-flex;
+  gap: 6px;
+  align-items: center;
+  min-height: 44px;
+  padding: 6px 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  font: inherit;
+}
+
+.activity-back svg {
+  width: 16px;
+  height: 16px;
+}
+
+.activity-output {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  max-height: 260px;
+  overflow: auto;
+  font-size: 12px;
+  padding: 12px;
+  border-radius: 8px;
+  background: #f7f8fa;
+  color: #34383d;
+}
+
+.activity-detail h3 {
+  font-size: 16px;
+}
+
+.activity-detail h4 {
+  font-size: 12px;
+  font-weight: 500;
+  color: #6b7280;
+}
+
+.activity-panel .activity-detail-meta {
+  color: #6b7280;
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}

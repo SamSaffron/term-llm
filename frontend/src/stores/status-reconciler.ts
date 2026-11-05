@@ -62,6 +62,7 @@ export interface StatusReconcilerHost {
   ) => void;
   eventFeedHealthy: () => boolean;
   acknowledgeAttention?: () => void;
+  descendantActivityActive?: () => boolean;
 }
 
 /** Owns polling generations and reconciliation of authoritative server status. */
@@ -101,6 +102,7 @@ export class StatusReconciler {
         await this.host.reconcile('poll', false).catch(() => undefined);
       }
       const anyActive =
+        this.host.descendantActivityActive?.() ||
         this.host.sessionStore.activity.anyActive.peek() ||
         this.host.stoppedResponseCount() > 0 ||
         Object.values(this.host.pendingIntents.peek()).some((intents) =>
