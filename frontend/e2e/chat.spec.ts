@@ -882,6 +882,13 @@ test('mobile viewport opens a styled sidebar and returns to a usable composer', 
   const mobileMenu = page.getByRole('button', { name: 'Open sidebar' });
   await expect(diffToggle.locator('.diff-toggle-file-icon')).toBeVisible();
   await expect(diffToggle.locator('.diff-toggle-badge')).toHaveCSS('position', 'static');
+  // Ghost button: no visible box, but the full touch target remains.
+  await expect(mobileMenu).toHaveCSS('background-color', 'rgba(0, 0, 0, 0)');
+  await expect(mobileMenu).toHaveCSS('border-top-color', 'rgba(0, 0, 0, 0)');
+  const menuBox = await mobileMenu.boundingBox();
+  expect(menuBox!.width).toBe(44);
+  expect(menuBox!.height).toBe(44);
+  expect(menuBox!.x).toBeGreaterThanOrEqual(0);
   await mobileMenu.click();
   const sidebar = page.locator('#sidebar');
   await expect(sidebar).toHaveClass(/open/);

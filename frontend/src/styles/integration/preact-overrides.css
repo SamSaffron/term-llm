@@ -693,10 +693,28 @@ mark.diff-word {
     display: contents;
   }
 
-  .mobile-menu {
+  /* A ghost button: the 44px target stays, but a filled, bordered box would
+     outweigh the title it sits above. The negative margin pulls the glyph
+     towards the title's left edge. */
+  .icon-btn.mobile-menu {
     grid-area: menu;
     width: 44px;
     height: 44px;
+    margin-inline-start: -0.5rem;
+    border-color: transparent;
+    background: transparent;
+    color: var(--text);
+  }
+
+  .icon-btn.mobile-menu:active {
+    background: var(--surface-2);
+  }
+
+  /* Touch screens keep :hover after a tap, which would leave the box showing. */
+  @media (hover: hover) {
+    .icon-btn.mobile-menu:hover {
+      background: var(--surface-2);
+    }
   }
 
   .connection-state {
@@ -712,7 +730,7 @@ mark.diff-word {
   }
 
   .header-title {
-    font-size: 0.98rem;
+    font-size: 1.0625rem;
   }
 
   .header-title-context.has-context .header-title {
