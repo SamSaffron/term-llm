@@ -371,3 +371,26 @@
 .modal-title-row h2 {
   margin: 0;
 }
+
+/* New chat reopens an unsent draft; the dot says so before the click. */
+.new-chat-draft-dot {
+  width: 7px;
+  height: 7px;
+  flex-shrink: 0;
+  border-radius: var(--radius-full);
+  background: var(--link);
+}
+
+.new-chat-btn .new-chat-draft-dot {
+  margin-left: auto;
+}
+
+.sidebar-rail-btn.has-draft {
+  position: relative;
+}
+
+.sidebar-rail-btn .new-chat-draft-dot {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+}

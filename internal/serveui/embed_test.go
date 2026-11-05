@@ -237,8 +237,10 @@ func TestProductionBundleSizeBudgets(t *testing.T) {
 		// the runtime popover) takes it to 177.0/34.39 kB; retain ~1% gzip headroom.
 		// The header context meter's ring chip and tones are eager (its card's
 		// styles load with the card): 178.2/34.68 kB.
-		// Ordered-list marker clearance measures 178.6/34.76 kB.
-		"dist/app.css": {raw: 180_000, gzip: 34_800},
+		// Ordered-list marker clearance plus the sidebar's unsent-draft rows,
+		// New chat draft dot and toast action button measure 179.95/35.02 kB.
+		// Retain the draft feature's bounded raw and gzip headroom.
+		"dist/app.css": {raw: 181_500, gzip: 35_250},
 		// Measured after the completed standalone port: 67.7/21.5 KiB JS and
 		// 16.7/4.1 KiB CSS. These limits retain modest growth headroom without
 		// allowing chat-only rendering dependencies into the Hub graph. The

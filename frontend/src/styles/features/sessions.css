@@ -545,3 +545,47 @@
   .session-menu-trigger {
   visibility: hidden;
 }
+
+/* Unsent new-chat drafts read as work in progress: a tinted surface, an edit
+   glyph and an italic preview, distinct from saved conversations. */
+.session-row-draft .session-btn {
+  padding-right: calc(var(--sidebar-row-padding-inline) + 28px);
+  border-color: color-mix(in srgb, var(--link) 22%, transparent);
+  background: color-mix(in srgb, var(--link) 7%, transparent);
+}
+
+.session-row-draft .session-btn:hover {
+  background: color-mix(in srgb, var(--link) 12%, transparent);
+}
+
+.session-row-draft .session-title {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  color: var(--text-muted);
+  font-style: italic;
+}
+
+.session-draft-preview {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.session-draft-icon,
+.session-draft-discard svg {
+  flex: none;
+  width: 0.85rem;
+  height: 0.85rem;
+}
+
+.session-draft-icon {
+  color: var(--link);
+}
+
+.session-draft-discard {
+  display: grid;
+  place-items: center;
+  padding: 0;
+}
