@@ -114,6 +114,7 @@ export class ComposerStore {
    * undo. Attachment blobs are kept, matching the conservative blob retention.
    */
   discardNewChatDraft(id: string): DraftMessage | null {
+    if (this.host.draftActive.peek() && id === this.storageId()) return null;
     const draft = this.readUnsentNewChats().find((entry) => entry.sessionId === id);
     if (!draft) return null;
     try {
@@ -121,21 +122,21 @@ export class ComposerStore {
         sessionId: id,
         content: '',
         updated: Date.now(),
+        rev: draft.rev,
       });
     } catch (error) {
       this.services.toast(error, 'error');
       return null;
     }
     this.refreshUnsentNewChats();
-    return draft;
+    // Undo is based on the deletion revision, not an unconditional overwrite:
+    // another tab may still have this draft open and save a newer edit.
+    return { ...draft, rev: (draft.rev || 0) + 1 };
   }
 
   restoreNewChatDraft(draft: DraftMessage): void {
     try {
-      saveDraft(this.services.storage, this.services.keys.draftMessages, {
-        ...draft,
-        rev: undefined,
-      });
+      saveDraft(this.services.storage, this.services.keys.draftMessages, draft);
     } catch (error) {
       this.services.toast(error, 'error');
     }

@@ -25,7 +25,9 @@ npm --prefix frontend test
 npm --prefix frontend run test:e2e
 ```
 
-`typecheck` runs the TypeScript 7 native compiler, installed under the `@typescript/native` alias. TypeScript 7 has no JavaScript compiler API, so the `typescript` package name is aliased to `@typescript/typescript6` for typescript-eslint and other API consumers; it provides `tsc6`, not `tsc`. Collapse the aliases once typescript-eslint supports TypeScript 7.
+`typecheck` runs the TypeScript 7 native compiler from the `typescript` package.
+JavaScript and TypeScript linting uses Oxlint; formatting remains in Prettier and
+CSS linting remains in Stylelint. No TypeScript 6 compatibility compiler is needed.
 
 From the repository root, `scripts/browser_lifecycle_smoke.sh` builds and starts a temporary `term-llm serve web --no-auth` process and runs the Playwright chat suite. `scripts/hub_browser_lifecycle_smoke.sh` exercises the bearer-authenticated Hub dashboard and a real proxied chat node, while `scripts/hub_passkey_smoke.sh` exercises passkey setup, login, recovery, and security administration with Chromium virtual authenticators. Run `make frontend-deps` first; standalone smokes fail immediately rather than downloading dependencies implicitly. On macOS the specs use an installed Google Chrome (`/Applications` or `~/Applications`), so no `playwright install` is needed; elsewhere, the smoke scripts use a `chromium` on `PATH`. `PLAYWRIGHT_CHROMIUM_EXECUTABLE=/path/to/browser` overrides both. CI installs the Playwright-pinned browser.
 
@@ -35,15 +37,21 @@ The chat smoke uses HTTP transport only.
 
 `scripts/check_frontend_network_policy.sh` fails closed unless `git grep` can scan production sources (tracked and untracked) and enforces transport ownership for `fetch`, browser fetch aliases, XHR, EventSource, WebSocket, and beacon calls. Raw transports are allowed only under `src/api`. The fixed chat baseline and the last generated results live in `payload-baseline.json` and `payload-final.json`; `payload-report.md` explains inclusion rules and deltas. Those results are a historical record; the measurement script that produced them has been removed.
 
-## Dependency security overrides
+## Lint configuration
 
-`package.json` overrides `minimatch` to 11.0.4 to address
-[GHSA-g3hv-75wg-m249](https://github.com/advisories/GHSA-g3hv-75wg-m249).
-ESLint, `@eslint/config-array`, and `@typescript-eslint/typescript-estree` still
-request vulnerable 10.x versions, including in their current releases. Remove the
-override once those upstream dependencies accept a patched version. The override
-only affects development tooling; run frontend lint and typechecking when updating
-it to verify compatibility across the major-version boundary.
+`.oxlintrc.json` explicitly maps the previous ESLint and typescript-eslint
+recommended rules, plus Rules of Hooks and exhaustive dependency checks, to native
+Oxlint rules. Default rule categories are disabled to avoid silently adding unrelated
+rules. TypeScript handles compiler diagnostics such as undefined names in TS/TSX;
+JavaScript files retain the corresponding lint checks. Legacy octal literals are
+rejected by the module parser rather than a separate `no-octal` rule.
+
+Unused parameters and caught errors prefixed with `_` remain allowed, as does
+explicit `any`. Mount-lifetime Hooks exceptions remain local and documented.
+`no-useless-assignment` is disabled only in the live and shell stores: Oxlint
+1.91.0 incorrectly reports their retry-backoff assignments as unused even though
+later iterations consume them when a connection fails before the reset. Remove
+those overrides when the loop analysis is fixed.
 
 ## Build contract
 

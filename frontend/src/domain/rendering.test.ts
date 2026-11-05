@@ -26,6 +26,46 @@ import {
   type MentionSearchResponse,
 } from './completions';
 
+describe('ordered list marker gutters', () => {
+  it.each([
+    ['20 items', Array.from({ length: 20 }, () => '1. Element').join('\n'), ['4ch']],
+    ['100 items', Array.from({ length: 100 }, () => '1. Element').join('\n'), ['5ch']],
+    ['200 items', Array.from({ length: 200 }, () => '1. Element').join('\n'), ['5ch']],
+    ['1000 items', Array.from({ length: 1000 }, () => '1. Element').join('\n'), ['6ch']],
+    ['large start', '9999. Element\n10000. Element', ['7ch']],
+    ['nested lists', '1000. Outer\n      1. Inner', ['6ch', '3ch']],
+    ['reversed default start', '<ol reversed><li>A</li><li>B</li></ol>', ['3ch']],
+    ['reversed zero crossing', '<ol reversed start="0"><li>A</li><li>B</li></ol>', ['4ch']],
+    ['reversed large start', '<ol reversed start="1000"><li>A</li><li>B</li></ol>', ['6ch']],
+    ['value override', '<ol><li value="9999">A</li><li>B</li></ol>', ['7ch']],
+    ['negative override', '<ol><li value="-1000">A</li><li>B</li></ol>', ['7ch']],
+  ] as const)('sizes %s in chat and documents', (_name, source, expected) => {
+    for (const html of [
+      renderMarkdown(source),
+      markdownDocumentBlocks(source)
+        .map((block) => block.html)
+        .join(''),
+    ]) {
+      const root = document.createElement('div');
+      root.innerHTML = html;
+      expect(
+        [...root.querySelectorAll('ol')].map((list) =>
+          list.style.getPropertyValue('--list-marker-width'),
+        ),
+      ).toEqual(expected);
+    }
+  });
+
+  it('does not trust model-supplied styles or add gutters to bullet lists', () => {
+    const root = document.createElement('div');
+    root.innerHTML = renderMarkdown(
+      '<ol style="color:red;--list-marker-width:999px"><li>A</li></ol>\n\n- Bullet',
+    );
+    expect(root.querySelector('ol')!.getAttribute('style')).toBe('--list-marker-width: 3ch;');
+    expect(root.querySelector('ul')!.hasAttribute('style')).toBe(false);
+  });
+});
+
 describe('markdown security and streaming', () => {
   it('shares link hardening while retaining each parser’s existing tilde behavior', () => {
     const source = '~literal~ ~~deleted~~ [**label**](https://example.com/?a=1&b=2 "a & b")';

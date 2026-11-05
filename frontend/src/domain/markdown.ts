@@ -25,7 +25,7 @@ export function sanitizeMarkdownHTML(
   source: string,
   variant: 'chat' | 'document' = 'chat',
 ): string {
-  return DOMPurify.sanitize(source, {
+  const sanitized = DOMPurify.sanitize(source, {
     USE_PROFILES: { html: true },
     ADD_ATTR: ['target', 'rel', 'data-language'],
     FORBID_TAGS: [
@@ -42,6 +42,27 @@ export function sanitizeMarkdownHTML(
     FORBID_ATTR: ['style', 'srcdoc', 'onerror', 'onload'],
     ALLOW_UNKNOWN_PROTOCOLS: false,
   });
+  if (!/<ol\b/i.test(sanitized)) return sanitized;
+
+  // Only add trusted layout values after sanitization; model-provided styles stay forbidden.
+  const root = document.createElement('template');
+  root.innerHTML = sanitized;
+  for (const list of root.content.querySelectorAll('ol')) {
+    const items = [...list.children].filter(
+      (child): child is HTMLLIElement => child.tagName === 'LI',
+    );
+    const step = list.reversed ? -1 : 1;
+    let number = list.hasAttribute('start') ? list.start : list.reversed ? items.length : 1;
+    let characters = 1;
+    for (const item of items) {
+      if (item.hasAttribute('value')) number = item.value;
+      characters = Math.max(characters, String(number).length);
+      number += step;
+    }
+    // Allow for the decimal suffix and the space between marker and content.
+    list.style.setProperty('--list-marker-width', `${characters + 2}ch`);
+  }
+  return root.innerHTML;
 }
 
 export interface MarkdownMediaTarget {

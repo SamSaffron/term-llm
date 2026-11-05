@@ -198,6 +198,42 @@ describe('new chat draft', () => {
     ]);
   });
 
+  it('does not overwrite a newer edit from another tab when undoing discard', async () => {
+    const store = setup();
+    store.newChat();
+    store.prompt.value = 'original idea';
+    await store.selectSession(store.sessions.peek()[0]);
+    const [draft] = store.composer.unsentNewChats.value;
+    store.discardNewChatDraft(draft!.sessionId);
+    const undo = store.toasts.value.at(-1)!.action!;
+
+    // Another tab still has the discarded draft open and saves a newer edit.
+    saveDraft(store.storage, store.keys.draftMessages, {
+      ...draft!,
+      content: 'newer idea from another tab',
+    });
+    undo.run();
+
+    expect(readDrafts(store.storage, store.keys.draftMessages)).toEqual([
+      expect.objectContaining({ content: 'newer idea from another tab' }),
+    ]);
+    expect(store.toasts.value.at(-1)).toMatchObject({ kind: 'error' });
+  });
+
+  it('does not discard the draft currently open in the composer', () => {
+    const store = setup();
+    store.newChat();
+    store.prompt.value = 'still editing';
+    store.composer.persist();
+
+    store.discardNewChatDraft(store.composer.storageId());
+
+    expect(readDrafts(store.storage, store.keys.draftMessages)).toEqual([
+      expect.objectContaining({ content: 'still editing' }),
+    ]);
+    expect(store.toasts.value).toEqual([]);
+  });
+
   it('discards a listed draft and restores it on undo', async () => {
     const store = setup();
     store.newChat();

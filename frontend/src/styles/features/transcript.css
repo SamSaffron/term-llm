@@ -456,6 +456,11 @@
   padding-left: 1.3rem;
 }
 
+.markdown-body ol {
+  /* Each sanitized list supplies its widest marker, including numbering overrides. */
+  padding-left: max(1.3rem, var(--list-marker-width, 0px));
+}
+
 .markdown-body blockquote {
   margin: 0.7em 0;
   padding: 0 0 0 0.9em;
