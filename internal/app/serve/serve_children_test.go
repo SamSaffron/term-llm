@@ -7,6 +7,8 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"sort"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -339,4 +341,67 @@ func executeCancelledStatsChild(t *testing.T, ctx context.Context, cancel contex
 		t.Fatal(result.err)
 	}
 	return result.output
+}
+
+// A scoped read is that session's own subtree: selecting a child must not
+// resurrect its parent or expose sibling branches, and a parent read must not
+// flatten grandchildren into direct children.
+func TestHandleSessionChildrenScopedToChildExcludesParentAndSiblings(t *testing.T) {
+	ctx := context.Background()
+	store, err := session.NewSQLiteStore(session.Config{Enabled: true, Path: filepath.Join(t.TempDir(), "sessions.db")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	sessions := []*session.Session{
+		{ID: "parent", Provider: "debug", Model: "fast", Mode: session.ModeChat},
+		{ID: "child", ParentID: "parent", IsSubagent: true, Agent: "developer", Provider: "debug", Model: "fast", Mode: session.ModeChat},
+		{ID: "sibling", ParentID: "parent", IsSubagent: true, Agent: "reviewer", Provider: "debug", Model: "fast", Mode: session.ModeChat},
+		{ID: "grandchild", ParentID: "child", IsSubagent: true, Agent: "codebase", Provider: "debug", Model: "fast", Mode: session.ModeChat},
+		{ID: "unrelated", Provider: "debug", Model: "fast", Mode: session.ModeChat},
+	}
+	for _, item := range sessions {
+		if err := store.Create(ctx, item); err != nil {
+			t.Fatal(err)
+		}
+	}
+	runs := newServeResponseRunManager()
+	defer runs.Close()
+	srv := &serveServer{store: store, responseRuns: runs}
+	children := func(id string) []string {
+		t.Helper()
+		recorder := httptest.NewRecorder()
+		srv.handleSessionChildren(recorder, httptest.NewRequest(http.MethodGet, "/v1/sessions/"+id+"/children", nil), id)
+		if recorder.Code != http.StatusOK {
+			t.Fatalf("%s children status = %d, body = %s", id, recorder.Code, recorder.Body.String())
+		}
+		var payload struct {
+			ParentSessionID string               `json:"parent_session_id"`
+			Children        []childRunProjection `json:"children"`
+		}
+		if err := json.Unmarshal(recorder.Body.Bytes(), &payload); err != nil {
+			t.Fatal(err)
+		}
+		if payload.ParentSessionID != id {
+			t.Fatalf("%s projection parent = %q", id, payload.ParentSessionID)
+		}
+		ids := make([]string, 0, len(payload.Children))
+		for _, child := range payload.Children {
+			if child.ParentSessionID != id {
+				t.Fatalf("%s exposed a non-descendant row: %+v", id, child)
+			}
+			ids = append(ids, child.SessionID)
+		}
+		sort.Strings(ids)
+		return ids
+	}
+	if got := children("child"); strings.Join(got, ",") != "grandchild" {
+		t.Fatalf("scoped child subtree = %v, want only its own child", got)
+	}
+	if got := children("parent"); strings.Join(got, ",") != "child,sibling" {
+		t.Fatalf("parent direct children = %v, want child,sibling", got)
+	}
+	if got := children("grandchild"); len(got) != 0 {
+		t.Fatalf("leaf child subtree = %v, want none", got)
+	}
 }

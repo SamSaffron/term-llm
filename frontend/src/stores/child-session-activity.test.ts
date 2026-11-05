@@ -23,30 +23,56 @@ function harness() {
 }
 
 describe('ChildSessionStore activity snapshot', () => {
-  it('keeps direct children independent and retains scope while drilling known descendants/local jobs', async () => {
+  it('scopes each drill-down to its own subtree, hides leaf work, and restores parent scope on Back', async () => {
     const { store, endpoints } = harness();
-    endpoints.sessionActivity.mockResolvedValue(
+    endpoints.sessionActivity.mockImplementation(async (id) =>
       activitySnapshot({
-        agents: [
-          activityChild(),
-          activityChild({ session_id: 'grandchild', parent_session_id: 'child' }),
-        ],
-        jobs: [
-          { job_id: 'j', run_id: 'r', title: 'Job', status: 'running', session_id: 'local-job' },
-        ],
+        session_id: String(id),
+        agents:
+          id === 'parent'
+            ? [
+                activityChild(),
+                activityChild({ session_id: 'grandchild', parent_session_id: 'child' }),
+              ]
+            : id === 'child'
+              ? [activityChild({ session_id: 'grandchild', parent_session_id: 'child' })]
+              : [],
+        jobs:
+          id === 'parent'
+            ? [
+                {
+                  job_id: 'j',
+                  run_id: 'r',
+                  title: 'Job',
+                  status: 'running',
+                  session_id: 'local-job',
+                },
+              ]
+            : [],
       }),
     );
     store.selectSession(testSession({ id: 'parent' }));
     await vi.waitFor(() => expect(store.activity.value?.agents).toHaveLength(2));
     expect(store.children.value).toHaveLength(1);
+    store.selectSession(testSession({ id: 'child', parentSessionId: 'parent' }));
+    expect(store.activitySessionId.value).toBe('child');
+    expect(store.activity.value).toBeNull();
+    await vi.waitFor(() => expect(store.activity.value?.session_id).toBe('child'));
+    expect(store.activity.value?.agents?.map((row) => row.session_id)).toEqual(['grandchild']);
+    expect(store.activity.value?.jobs).toEqual([]);
     store.selectSession(testSession({ id: 'grandchild', parentSessionId: 'child' }));
     expect(store.parentSessionId.value).toBe('grandchild');
-    expect(store.activitySessionId.value).toBe('parent');
+    expect(store.activitySessionId.value).toBe('grandchild');
+    await vi.waitFor(() => expect(store.activity.value?.agents).toEqual([]));
+    expect(store.activityActive.value).toBe(false);
     store.selectSession(testSession({ id: 'local-job' }));
-    expect(store.activitySessionId.value).toBe('parent');
+    expect(store.activitySessionId.value).toBe('local-job');
+    await vi.waitFor(() => expect(store.activity.value?.session_id).toBe('local-job'));
+    expect(store.activity.value?.jobs).toEqual([]);
     store.selectSession(testSession({ id: 'parent' }));
+    await vi.waitFor(() => expect(store.activity.value?.agents).toHaveLength(2));
     expect(store.activitySessionId.value).toBe('parent');
-    expect(endpoints.sessionActivity).toHaveBeenCalledTimes(1);
+    expect(endpoints.sessionActivity).toHaveBeenCalledTimes(5);
     store.selectSession(null);
     expect(store.activity.value).toBeNull();
     expect(store.activitySessionId.value).toBe('');

@@ -2,9 +2,10 @@ package sessionactivity
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
-	servejobs "github.com/samsaffron/term-llm/internal/app/serve/jobs"
 	"io"
 	"net/http"
 	"net/url"
@@ -12,7 +13,42 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	servejobs "github.com/samsaffron/term-llm/internal/app/serve/jobs"
 )
+
+// errActivityRunNotFound marks a record retention has already removed. It is
+// not an outage: only a genuine transport, timeout or 5xx failure may make the
+// whole jobs source unavailable.
+var errActivityRunNotFound = errors.New("activity run not found")
+
+// activityJobsStatusError keeps a backend status code without propagating its
+// body, which can contain credentials.
+type activityJobsStatusError struct{ status int }
+
+func (e activityJobsStatusError) Error() string {
+	return fmt.Sprintf("activity jobs status %d", e.status)
+}
+
+// expiredOrError tags a missing single record as retention expiry. A job-scope
+// list deliberately does not use it: a pruned job legitimately lists zero runs,
+// while a 404 from a list route is a misconfigured server, not an expiry.
+func expiredOrError(err error) error {
+	var status activityJobsStatusError
+	if err == nil {
+		return nil
+	}
+	if errors.Is(err, sql.ErrNoRows) || (errors.As(err, &status) && status.status == http.StatusNotFound) {
+		return fmt.Errorf("%w: %v", errActivityRunNotFound, err)
+	}
+	return err
+}
+
+// activityRunMissing reports whether a per-reference error means the run is
+// simply no longer retained.
+func activityRunMissing(err error) bool {
+	return errors.Is(err, errActivityRunNotFound)
+}
 
 type activityJobsSource struct {
 	local   *servejobs.Manager
@@ -49,7 +85,7 @@ func (source *activityJobsSource) getJSON(ctx context.Context, path string, out 
 	}
 	defer response.Body.Close()
 	if response.StatusCode != http.StatusOK {
-		return fmt.Errorf("activity jobs status %d", response.StatusCode)
+		return activityJobsStatusError{status: response.StatusCode}
 	}
 	// Run summaries are small. Never read unbounded output from a misconfigured
 	// server or propagate its response/error text (which can contain credentials).
@@ -66,15 +102,16 @@ func (source *activityJobsSource) runs(ctx context.Context, ref jobReference) ([
 			err = source.getJSON(ctx, "/v2/runs/"+url.PathEscape(ref.RunID)+"?summary=true", &run)
 		}
 		if err != nil {
-			return nil, false, err
+			return nil, false, expiredOrError(err)
 		}
 		if run.ID != ref.RunID || run.JobID != ref.JobID {
 			return nil, false, fmt.Errorf("activity run membership mismatch")
 		}
 		return []servejobs.Run{run}, false, nil
 	}
-	// Legacy persisted results with only a job id establish job scope. Exact
-	// run references above MUST NOT use this branch or reveal sibling executions.
+	// Only provenance-established legacy results reach this branch with a job id
+	// alone. Exact run references above MUST NOT use it or reveal sibling
+	// executions, and a pruned job simply lists zero runs.
 	if source.local != nil {
 		runs, total, err := source.local.ListRunSummaries(ref.JobID, maxActivityRuns, 0)
 		return runs, total > len(runs), err
@@ -136,16 +173,22 @@ func (s Handler) collectActivityJobs(ctx context.Context, refs []jobReference, s
 			continue
 		}
 		runs, partial, err := source.runs(ctx, ref)
-		snapshot.JobsPartial = snapshot.JobsPartial || partial
 		if err != nil {
+			if activityRunMissing(err) {
+				// Retention removed this run, or the whole ephemeral job. Omit the
+				// expired reference and keep the rest of the snapshot authoritative.
+				continue
+			}
 			snapshot.JobsAvailability = "unavailable"
 			snapshot.JobsPartial = true
 			snapshot.Jobs = append(snapshot.Jobs, activityJobPlaceholder(ref))
 			continue
 		}
+		snapshot.JobsPartial = snapshot.JobsPartial || partial
 		if len(runs) == 0 {
-			snapshot.Jobs = append(snapshot.Jobs, activityJobPlaceholder(ref))
-			snapshot.JobsPartial = true
+			// A job-scope reference whose job and runs are both gone. Omit it
+			// rather than inventing an unknown row or a partial snapshot.
+			continue
 		}
 		matched := false
 		for _, run := range runs {

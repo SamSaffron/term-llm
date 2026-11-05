@@ -106,8 +106,12 @@ With the default base path of `/ui`, the web runtime exposes:
 The header's robot activity button opens a native sheet of delegated agents and
 related queued job runs. It shows one live execution count, including agents
 waiting for input; completed rows stay visible below active work. The button is
-hidden for a conversation with no known activity. Opening a known child keeps the
-original conversation's activity scope, and uses ordinary session navigation.
+hidden for a conversation with no known activity, including a long conversation
+whose discovery window is bounded. Coverage limits are shown in the sheet without
+turning known finished executions into unknown statuses. Activity follows the selected
+conversation: opening a child shows only that child's own subtree and related jobs,
+not its parent or siblings. Leaf agents without delegated work have no activity
+button. Ordinary Back navigation restores the parent's activity and unsent drafts.
 
 `GET /ui/v1/sessions/:id/activity` returns `agents`, `jobs`, independent
 `agents_availability` / `jobs_availability`, and `agents_partial` / `jobs_partial`.
@@ -120,9 +124,11 @@ Jobs come from the local jobs manager when running `serve web jobs`, or from an
 explicit `TERM_LLM_JOBS_SERVER` (and optional `TERM_LLM_JOBS_TOKEN`) for a separate
 jobs service. There is no implicit jobs-server address. Membership comes only
 from persisted, paired successful `queue_agent` / `wait_for_jobs` results and
-structured job notifications in the conversation or its descendants. An exact
-run link never includes other runs of the same job; text mentions, shell commands,
-and global job names are not used for discovery. Jobs outages do not hide agent
+structured job notifications in the conversation or its descendants. Wait results
+identify the observed run; legacy wait results without a run id add no scope.
+An exact run link never includes other runs of the same job; text mentions, shell
+commands, and global job names are not used for discovery. Retention-pruned runs
+are omitted rather than presented as a jobs outage. Jobs outages do not hide agent
 activity. Linked devices can read agents but receive jobs as `restricted`, without
 contacting the owner's jobs backend. Remote job session IDs do not become local
 conversation links. The snapshot excludes runner configuration and job output.

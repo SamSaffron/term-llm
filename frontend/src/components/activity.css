@@ -30,7 +30,7 @@
 }
 
 .activity-panel .activity-summary {
-  color: #7a828d;
+  color: #6b7280;
   font-size: 13px;
   margin: 0 0 19px;
 }
@@ -81,7 +81,7 @@
 
 .activity-meta {
   font-size: 12px;
-  color: #9198a2;
+  color: #6b7280;
   white-space: normal;
   overflow-wrap: anywhere;
   line-height: 1.4;
@@ -146,7 +146,7 @@
 .activity-panel .activity-notice {
   font-size: 11px;
   line-height: 1.5;
-  color: #a0a6af;
+  color: #6b7280;
   margin: 8px 0 0;
 }
 
@@ -195,7 +195,7 @@
 }
 
 .activity-section-title {
-  color: #8a929d;
+  color: #6b7280;
   font-size: 11px;
   font-weight: 600;
   letter-spacing: 0.05em;
@@ -205,7 +205,7 @@
 
 .activity-help {
   margin-top: 12px;
-  color: #7a828d;
+  color: #6b7280;
   font-size: 12px;
 }
 
@@ -251,11 +251,11 @@
 .activity-detail h4 {
   font-size: 12px;
   font-weight: 500;
-  color: #78828e;
+  color: #6b7280;
 }
 
 .activity-panel .activity-detail-meta {
-  color: #7a828d;
+  color: #6b7280;
   font-size: 12px;
   overflow-wrap: anywhere;
 }

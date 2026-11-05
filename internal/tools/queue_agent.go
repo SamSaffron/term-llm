@@ -44,6 +44,7 @@ type QueueAgentArgs struct {
 	Model          string `json:"model,omitempty"`
 	Cwd            string `json:"cwd,omitempty"`
 	NotifyWhenDone bool   `json:"notify_when_done,omitempty"`
+	Label          string `json:"label,omitempty"`
 }
 
 type QueueAgentResult struct {
@@ -194,6 +195,7 @@ func (t *QueueAgentTool) Spec() core.ToolSpec {
 					"type":        "boolean",
 					"description": "When true, notify this request's originating session or chat when the queued job finishes. Defaults to false.",
 				},
+				"label": queueAgentLabelSchema(),
 			},
 			"required":             []string{"agent_name", "prompt"},
 			"additionalProperties": false,
@@ -212,6 +214,9 @@ func (t *QueueAgentTool) Execute(ctx context.Context, args json.RawMessage) (cor
 	}
 	if strings.TrimSpace(a.Prompt) == "" {
 		return queuedAgentErrorOutput(formatQueuedAgentError(ErrInvalidParams, "prompt is required")), nil
+	}
+	if err := queueAgentLabel(a.Label); err != nil {
+		return queuedAgentErrorOutput(formatQueuedAgentError(ErrInvalidParams, err.Error())), nil
 	}
 	timeout := a.Timeout
 	if timeout <= 0 || timeout > defaultQueuedAgentTimeout {
@@ -710,10 +715,6 @@ func (c *jobsBackedAgentClient) getTerminalRun(ctx context.Context, terminal job
 	return run, nil
 }
 
-func (c *jobsBackedAgentClient) waitForJob(ctx context.Context, jobID string, pollInterval time.Duration) (jobsV2AgentRunResponse, error) {
-	return c.waitForJobWithProgress(ctx, jobID, pollInterval, "", nil)
-}
-
 func (c *jobsBackedAgentClient) waitForJobWithProgress(ctx context.Context, jobID string, pollInterval time.Duration, waitCallID string, callback SubagentEventCallback) (jobsV2AgentRunResponse, error) {
 	if pollInterval <= 0 {
 		pollInterval = defaultQueuedAgentPollInterval * time.Second
@@ -906,6 +907,7 @@ func queuedJobResultFromJobsRun(jobID string, run jobsV2AgentRunResponse) Queued
 	}
 	return QueuedJobResult{
 		JobID:           jobID,
+		RunID:           run.ID,
 		Status:          run.Status,
 		ExitReason:      run.ExitReason,
 		Truncated:       run.Truncated,

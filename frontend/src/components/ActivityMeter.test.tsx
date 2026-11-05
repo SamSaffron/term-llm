@@ -23,6 +23,22 @@ function mount(children: preact.ComponentChildren) {
 }
 
 describe('native ActivityMeter', () => {
+  it('keeps bounded-history chats hidden without known activity and terminal history idle', async () => {
+    setup();
+    store.childSessionStore.activity.value = activitySnapshot({ agents: [], jobs_partial: true });
+    mount(<ActivityMeter />);
+    expect(screen.queryByRole('button', { name: /^Activity:/ })).toBeNull();
+    store.childSessionStore.activity.value = activitySnapshot({
+      agents: [activityChild({ live: false, state: 'complete' })],
+      jobs_partial: true,
+    });
+    const trigger = await screen.findByRole('button', { name: /^Activity: idle/ });
+    expect(trigger).toHaveAttribute('data-state', 'idle');
+    expect(trigger).toHaveAccessibleName(/Activity may be incomplete or out of date/);
+    fireEvent.click(trigger);
+    expect(await screen.findByText(/bounded snapshot/)).toBeVisible();
+  });
+
   it('hides pristine activity and shows one grey idle head without a zero or partial dot', () => {
     setup();
     store.childSessionStore.activity.value = activitySnapshot({ agents: [] });

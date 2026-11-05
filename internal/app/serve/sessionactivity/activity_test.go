@@ -253,3 +253,97 @@ func TestActivityMethodsAndMissingSessions(t *testing.T) {
 		}
 	}
 }
+
+func activityJobsManager(t *testing.T) (*servejobs.Manager, servejobs.Job) {
+	t.Helper()
+	manager, err := servejobs.NewManager(":memory:", 0, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = manager.Close() })
+	job, err := manager.CreateJob(servejobs.Job{Name: "retention", Enabled: true, RunnerType: servejobs.RunnerProgram, RunnerConfig: json.RawMessage(`{"command":"true"}`), TriggerType: servejobs.TriggerManual, TriggerConfig: json.RawMessage(`{}`), ConcurrencyPolicy: "allow", MaxConcurrentRuns: 5})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return manager, job
+}
+
+// Retention deletes terminal runs and ephemeral queue_agent jobs. A pruned run
+// must not turn the whole jobs source into an outage or make the snapshot
+// partial, because that pins the conversation to "unknown" forever.
+func TestActivityRetentionPrunedRunsStayAvailable(t *testing.T) {
+	t.Setenv("TERM_LLM_JOBS_SERVER", "")
+	store := activityStore(t)
+	manager, job := activityJobsManager(t)
+	live, err := manager.TriggerJob(job.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	persistJobReference(t, store, "parent", job.ID, live.ID)
+	persistJobReference(t, store, "parent", job.ID, "run_pruned_by_retention")
+	handler := Handler{Store: store, Jobs: manager, Children: noChildren}
+	snapshot, _ := requestActivity(t, handler, httptest.NewRequest(http.MethodGet, "/v1/sessions/parent/activity", nil))
+	if snapshot.JobsAvailability != "available" || snapshot.JobsPartial || len(snapshot.Jobs) != 1 || snapshot.Jobs[0].RunID != live.ID {
+		t.Fatalf("pruned local run changed source state: %+v", snapshot)
+	}
+	recorder := httptest.NewRecorder()
+	handler.ServeRun(recorder, httptest.NewRequest(http.MethodGet, "/activity", nil), "parent", "run_pruned_by_retention")
+	if recorder.Code != http.StatusNotFound {
+		t.Fatalf("pruned detail = %d %s", recorder.Code, recorder.Body.String())
+	}
+}
+
+func TestActivityExternalRetentionPruningIsNotAnOutage(t *testing.T) {
+	t.Setenv("TERM_LLM_JOBS_TOKEN", "")
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch strings.TrimPrefix(r.URL.Path, "/mounted") {
+		case "/v2/runs/run_retained":
+			writeTestJSON(w, map[string]string{"id": "run_retained", "job_id": "job_cron", "status": "succeeded", "response": "retained output"})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer backend.Close()
+	t.Setenv("TERM_LLM_JOBS_SERVER", backend.URL+"/mounted")
+	store := activityStore(t)
+	persistJobReference(t, store, "parent", "job_cron", "run_retained")
+	persistJobReference(t, store, "parent", "job_cron", "run_pruned")
+	handler := Handler{Store: store, Children: noChildren}
+	snapshot, _ := requestActivity(t, handler, httptest.NewRequest(http.MethodGet, "/v1/sessions/parent/activity", nil))
+	if snapshot.JobsAvailability != "available" || snapshot.JobsPartial || len(snapshot.Jobs) != 1 || snapshot.Jobs[0].RunID != "run_retained" {
+		t.Fatalf("pruned remote run changed source state: %+v", snapshot)
+	}
+	recorder := httptest.NewRecorder()
+	handler.ServeRun(recorder, httptest.NewRequest(http.MethodGet, "/activity", nil), "parent", "run_pruned")
+	if recorder.Code != http.StatusNotFound {
+		t.Fatalf("pruned remote detail = %d %s", recorder.Code, recorder.Body.String())
+	}
+	recorder = httptest.NewRecorder()
+	handler.ServeRun(recorder, httptest.NewRequest(http.MethodGet, "/activity", nil), "parent", "run_retained")
+	if recorder.Code != http.StatusOK || !strings.Contains(recorder.Body.String(), "retained output") {
+		t.Fatalf("retained detail = %d %s", recorder.Code, recorder.Body.String())
+	}
+
+	// Every reference pruned: the snapshot is authoritative and empty, so a
+	// cached row is cleared instead of being pinned by an unavailable source.
+	pruned := activityStore(t)
+	persistJobReference(t, pruned, "parent", "job_cron", "run_pruned")
+	snapshot, _ = requestActivity(t, Handler{Store: pruned, Children: noChildren}, httptest.NewRequest(http.MethodGet, "/v1/sessions/parent/activity", nil))
+	if snapshot.JobsAvailability != "available" || snapshot.JobsPartial || len(snapshot.Jobs) != 0 {
+		t.Fatalf("fully pruned scope = %+v", snapshot)
+	}
+
+	// A genuine backend failure still makes the source unavailable.
+	outage := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "private backend failure", http.StatusInternalServerError)
+	}))
+	defer outage.Close()
+	t.Setenv("TERM_LLM_JOBS_SERVER", outage.URL)
+	snapshot, recorder = requestActivity(t, Handler{Store: store, Children: noChildren}, httptest.NewRequest(http.MethodGet, "/v1/sessions/parent/activity", nil))
+	if snapshot.JobsAvailability != "unavailable" || !snapshot.JobsPartial || len(snapshot.Jobs) != 2 {
+		t.Fatalf("backend outage = %+v", snapshot)
+	}
+	if strings.Contains(recorder.Body.String(), "private backend failure") {
+		t.Fatal("backend error disclosed")
+	}
+}

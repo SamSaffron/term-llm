@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
-	"strings"
 	"time"
 	"unicode/utf8"
 
@@ -54,21 +53,29 @@ func (s Handler) ServeRun(w http.ResponseWriter, r *http.Request, sessionID, run
 		writeError(w, http.StatusServiceUnavailable, "server_error", "job activity is unavailable")
 		return
 	}
-	ref, found := detailReference(refs, runID)
-	if !found {
+	if !detailAuthorized(refs, runID) {
 		writeError(w, http.StatusNotFound, "not_found_error", "activity run not found")
 		return
 	}
 	run, err := source.detail(ctx, runID)
 	if err != nil {
+		if activityRunMissing(err) {
+			// Retention removed this run. An expired record is not a source outage.
+			writeError(w, http.StatusNotFound, "not_found_error", "activity run not found")
+			return
+		}
 		writeError(w, http.StatusServiceUnavailable, "server_error", "job activity is unavailable")
 		return
 	}
-	if run.ID != runID || !detailMember(refs, run) {
+	if run.ID != runID {
 		writeError(w, http.StatusNotFound, "not_found_error", "activity run not found")
 		return
 	}
-	ref.JobID = run.JobID
+	ref, found := detailReference(refs, run)
+	if !found {
+		writeError(w, http.StatusNotFound, "not_found_error", "activity run not found")
+		return
+	}
 	detail := ActivityJobDetail{ActivityJobRun: s.projectActivityJobRun(ctx, source, ref, run), Truncated: run.Truncated}
 	fields := []struct {
 		source string
@@ -86,44 +93,54 @@ func (s Handler) ServeRun(w http.ResponseWriter, r *http.Request, sessionID, run
 	_ = json.NewEncoder(w).Encode(detail)
 }
 
-func detailReference(refs []jobReference, runID string) (jobReference, bool) {
+// detailAuthorized reports whether the stored conversation may attempt a
+// backend read for runID at all: an exact run reference, or a legacy job-wide
+// reference whose job is confirmed against the loaded run below.
+func detailAuthorized(refs []jobReference, runID string) bool {
 	for _, ref := range refs {
-		if ref.RunID == runID {
-			return ref, true
-		}
-	}
-	// Only an explicit legacy job-wide reference can authorize a backend lookup
-	// without an exact run id. The returned job id is checked again below.
-	for _, ref := range refs {
-		if ref.RunID == "" {
-			return ref, true
-		}
-	}
-	return jobReference{}, false
-}
-
-func detailMember(refs []jobReference, run servejobs.Run) bool {
-	for _, ref := range refs {
-		if ref.JobID == run.JobID && (ref.RunID == run.ID || ref.RunID == "") {
+		if ref.RunID == runID || ref.RunID == "" {
 			return true
 		}
 	}
 	return false
 }
 
+// detailReference prefers the exact run reference, then the job-wide reference
+// for the run's own job, so a detail page never borrows another job's title.
+func detailReference(refs []jobReference, run servejobs.Run) (jobReference, bool) {
+	for _, ref := range refs {
+		if ref.RunID == run.ID && ref.JobID == run.JobID {
+			return ref, true
+		}
+	}
+	for _, ref := range refs {
+		if ref.RunID == "" && ref.JobID == run.JobID {
+			return ref, true
+		}
+	}
+	return jobReference{}, false
+}
+
 func (source *activityJobsSource) detail(ctx context.Context, id string) (servejobs.Run, error) {
 	if source.local != nil {
-		return source.local.GetRun(id)
+		run, err := source.local.GetRun(id)
+		return run, expiredOrError(err)
 	}
 	var run servejobs.Run
 	err := source.getJSON(ctx, "/v2/runs/"+id, &run)
-	return run, err
+	return run, expiredOrError(err)
 }
 
+// boundedOutput caps a preview at maxActivityOutputBytes. Only a partial rune at
+// the cut is backed out; interior invalid bytes are kept because encoding/json
+// already replaces them with U+FFFD.
 func boundedOutput(value string) string {
-	value = value[:maxActivityOutputBytes]
-	for !utf8.ValidString(value) {
-		value = strings.TrimSuffix(value, value[len(value)-1:])
+	if len(value) <= maxActivityOutputBytes {
+		return value
 	}
-	return value
+	cut := maxActivityOutputBytes
+	for back := 0; back < utf8.UTFMax-1 && cut > 0 && !utf8.RuneStart(value[cut]); back++ {
+		cut--
+	}
+	return value[:cut]
 }

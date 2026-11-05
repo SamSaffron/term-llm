@@ -97,7 +97,7 @@ describe('AppStore compatibility behavior', () => {
       activeResponseId: 'response-1',
     });
     expect(resumeResponse).toHaveBeenCalledWith('child-1', 'response-1');
-    expect(updateInterest).toHaveBeenLastCalledWith('child-1', 'child-1', 'child-1');
+    expect(updateInterest).toHaveBeenLastCalledWith('child-1', 'child-1');
     store.dispose();
     history.replaceState(null, '', previousRoute);
   });

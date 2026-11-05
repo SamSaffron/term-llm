@@ -5,6 +5,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/samsaffron/term-llm/internal/formatutil"
 	"github.com/samsaffron/term-llm/internal/llm/core"
 	"github.com/samsaffron/term-llm/internal/session"
 	"github.com/samsaffron/term-llm/internal/tools"
@@ -32,6 +33,13 @@ func validActivityID(id string) bool {
 // Only machine-stored successful results paired to their calls, and trusted
 // notification markers, establish membership. Prompts, tool arguments, shell
 // commands and provider-visible notification text never establish membership.
+//
+// A queue_agent result or a structured job notification establishes the job. A
+// wait_for_jobs result that names its run establishes that exact run only, so
+// sibling and future executions of the job stay out of scope. A legacy wait
+// result without a run id establishes nothing: it can neither add a job nor
+// widen an exact reference, because the queue_agent result or notification that
+// started that job already carries its own scope.
 func jobReferences(messages []session.Message) []jobReference {
 	calls := make(map[string]string)
 	labels := make(map[string]string)
@@ -68,6 +76,7 @@ func jobReferences(messages []session.Message) []jobReference {
 			if part.Type == core.PartJobNotification && part.JobNotification != nil {
 				info := part.JobNotification
 				add(jobReference{JobID: info.JobID, RunID: info.RunID, Agent: info.Agent})
+				continue
 			}
 			result := part.ToolResult
 			if result == nil || result.IsError || message.Role != core.RoleTool {
@@ -87,6 +96,9 @@ func jobReferences(messages []session.Message) []jobReference {
 				var values []tools.QueuedJobResult
 				if json.Unmarshal([]byte(result.Content), &values) == nil {
 					for _, value := range values {
+						if value.RunID == "" {
+							continue // Legacy run-less wait: never membership evidence.
+						}
 						add(jobReference{JobID: value.JobID, RunID: value.RunID})
 					}
 				}
@@ -112,9 +124,5 @@ func queuedTaskLabel(arguments json.RawMessage) string {
 	if json.Unmarshal(arguments, &args) != nil {
 		return ""
 	}
-	label := strings.Join(strings.Fields(args.Label), " ")
-	if len([]rune(label)) > 76 || strings.Contains(label, "@") {
-		return ""
-	}
-	return label
+	return formatutil.NormalizeDisplayLabel(args.Label)
 }

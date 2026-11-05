@@ -1476,11 +1476,7 @@ export class AppStore {
     const session = this.activeSession.peek();
     this.childSessionStore.selectSession(session);
     const sessionId = session?.id || '';
-    this.serverEventCoordinator.updateInterest(
-      sessionId,
-      sessionId,
-      this.childSessionStore.activitySessionId.peek(),
-    );
+    this.serverEventCoordinator.updateInterest(sessionId, sessionId);
   }
 
   /**
@@ -2243,10 +2239,9 @@ export class AppStore {
     this.statusReconciler.start();
   }
   private async refreshStatus(authoritative = false): Promise<void> {
-    await Promise.all([
-      this.statusReconciler.refresh(authoritative),
-      this.childSessionStore.refreshActivity(authoritative),
-    ]);
+    // Optional activity discovery must not delay interactions or transcript recovery.
+    void this.childSessionStore.refreshActivity(authoritative);
+    await this.statusReconciler.refresh(authoritative);
   }
 
   dispose(): void {

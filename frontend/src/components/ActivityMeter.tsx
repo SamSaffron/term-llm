@@ -1,7 +1,11 @@
 import { createPortal } from 'preact/compat';
 import { useEffect, useState } from 'preact/hooks';
 import { useStore } from '../app/context';
-import { activeExecutionCount, activityUncertain } from '../domain/session-activity-summary';
+import {
+  activeExecutionCount,
+  activityStatusUnknown,
+  activityUncertain,
+} from '../domain/session-activity-summary';
 import { lazyComponent } from './lazyComponent';
 import { Overlay } from './Overlay';
 
@@ -74,14 +78,15 @@ export function ActivityMeter() {
     !!children.activity.value?.jobs?.length;
   const count = activeExecutionCount(children.activity.value);
   const uncertain = activityUncertain(children.activity.value, children.activityStale.value);
+  const unknown = activityStatusUnknown(children.activity.value, children.activityStale.value);
   const caveat = uncertain ? ' · Activity may be incomplete or out of date' : '';
-  const label = count ? `${count} active` : uncertain ? 'Status unknown' : 'idle';
+  const label = count ? `${count} active` : unknown ? 'Status unknown' : 'idle';
   const [open, setOpen] = useState(false);
   useEffect(() => setOpen(false), [scope]);
   if (
     !scope ||
     (!children.activity.value && !children.activityStale.value) ||
-    (!hasRows && !uncertain)
+    (!hasRows && !unknown)
   )
     return null;
   return (
@@ -90,7 +95,7 @@ export function ActivityMeter() {
         type="button"
         class="activity-trigger header-action narrow-header-action"
         style={{ paddingInline: '6.4px', color: count ? undefined : '#8a919a' }}
-        data-state={count ? 'active' : uncertain ? 'unknown' : 'idle'}
+        data-state={count ? 'active' : unknown ? 'unknown' : 'idle'}
         aria-haspopup="dialog"
         aria-expanded={open}
         aria-label={`Activity: ${label}${caveat}`}

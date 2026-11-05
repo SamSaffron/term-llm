@@ -11,6 +11,9 @@ import (
 	"unicode/utf8"
 
 	"github.com/samsaffron/term-llm/internal/linkeddevices"
+	"github.com/samsaffron/term-llm/internal/llm/core"
+	"github.com/samsaffron/term-llm/internal/session"
+	"github.com/samsaffron/term-llm/internal/tools"
 )
 
 func TestActivityRunDetailRevalidatesMembershipAndDeniesDevice(t *testing.T) {
@@ -89,5 +92,99 @@ func TestActivityOutputBoundPreservesUTF8(t *testing.T) {
 	output := boundedOutput(strings.Repeat("a", maxActivityOutputBytes-1) + "🙂")
 	if len(output) > maxActivityOutputBytes || !utf8.ValidString(output) || len(output) != maxActivityOutputBytes-1 {
 		t.Fatalf("invalid bounded output: %d", len(output))
+	}
+}
+
+// A run detail must take its title from the reference for that run's own job,
+// never from whichever job-wide reference happened to come first.
+func TestActivityRunDetailUsesTheMatchingJobReference(t *testing.T) {
+	store := activityStore(t)
+	persistLegacyJobLabel(t, store, "parent", "job_alpha", "Alpha report")
+	persistLegacyJobLabel(t, store, "parent", "job_beta", "Beta report")
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v2/runs/run_beta":
+			writeTestJSON(w, map[string]string{"id": "run_beta", "job_id": "job_beta", "status": "succeeded", "response": "beta output"})
+		case "/v2/runs/run_other":
+			writeTestJSON(w, map[string]string{"id": "run_other", "job_id": "job_other", "status": "succeeded", "response": "other output"})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer backend.Close()
+	t.Setenv("TERM_LLM_JOBS_SERVER", backend.URL)
+	handler := Handler{Store: store, Children: noChildren}
+	recorder := httptest.NewRecorder()
+	handler.ServeRun(recorder, httptest.NewRequest(http.MethodGet, "/activity", nil), "parent", "run_beta")
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("detail status %d: %s", recorder.Code, recorder.Body.String())
+	}
+	var detail ActivityJobDetail
+	if err := json.Unmarshal(recorder.Body.Bytes(), &detail); err != nil {
+		t.Fatal(err)
+	}
+	if detail.JobID != "job_beta" || detail.Title != "Beta report" {
+		t.Fatalf("detail reference = %+v", detail.ActivityJobRun)
+	}
+	denied := httptest.NewRecorder()
+	handler.ServeRun(denied, httptest.NewRequest(http.MethodGet, "/activity", nil), "parent", "run_other")
+	if denied.Code != http.StatusNotFound || strings.Contains(denied.Body.String(), "other output") {
+		t.Fatalf("out-of-scope detail = %d %s", denied.Code, denied.Body.String())
+	}
+}
+
+func TestActivityOutputBoundRetainsInteriorInvalidBytes(t *testing.T) {
+	input := strings.Repeat("a", 10) + "\xff" + strings.Repeat("b", maxActivityOutputBytes+10)
+	output := boundedOutput(input)
+	if len(output) != maxActivityOutputBytes || output != input[:maxActivityOutputBytes] {
+		t.Fatalf("bounded output = %d bytes, want %d", len(output), maxActivityOutputBytes)
+	}
+	encoded, err := json.Marshal(output)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var decoded string
+	if err := json.Unmarshal(encoded, &decoded); err != nil {
+		t.Fatal(err)
+	}
+	want := strings.Repeat("a", 10) + "\uFFFD" + strings.Repeat("b", maxActivityOutputBytes-11)
+	if decoded != want {
+		t.Fatalf("JSON replacement dropped output: %d bytes", len(decoded))
+	}
+}
+
+func TestActivityOutputBoundCutsOnlyPartialRunes(t *testing.T) {
+	for _, test := range []struct {
+		name, suffix string
+		keep         int
+	}{
+		{"one byte of a four-byte rune", "🙂", 1},
+		{"two bytes of a four-byte rune", "🙂", 2},
+		{"three bytes of a four-byte rune", "🙂", 3},
+		{"one byte of a three-byte rune", "€", 1},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			prefix := maxActivityOutputBytes - test.keep
+			output := boundedOutput(strings.Repeat("a", prefix) + test.suffix + "tail")
+			if len(output) != prefix || output != strings.Repeat("a", prefix) || !utf8.ValidString(output) {
+				t.Fatalf("bounded output = %d bytes, want %d valid rune boundary", len(output), prefix)
+			}
+		})
+	}
+}
+
+// Legacy job-wide references carry their label on the queue_agent call.
+func persistLegacyJobLabel(t *testing.T, store session.Store, id, job, label string) {
+	t.Helper()
+	callID := "legacy-" + job
+	output, _ := json.Marshal(tools.QueueAgentResult{JobID: job, AgentName: "developer"})
+	arguments, _ := json.Marshal(map[string]string{"agent_name": "developer", "prompt": "work", "label": label})
+	for _, message := range []core.Message{
+		{Role: core.RoleAssistant, Parts: []core.Part{{Type: core.PartToolCall, ToolCall: &core.ToolCall{ID: callID, Name: tools.QueueAgentToolName, Arguments: arguments}}}},
+		core.ToolResultMessage(callID, tools.QueueAgentToolName, string(output), nil),
+	} {
+		if err := store.AddMessage(context.Background(), id, session.NewMessage(id, message, -1)); err != nil {
+			t.Fatal(err)
+		}
 	}
 }

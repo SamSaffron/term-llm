@@ -16,12 +16,19 @@ export function activeExecutionCount(snapshot: ActivitySnapshot | null): number 
   return executions.size;
 }
 
-export function activityUncertain(snapshot: ActivitySnapshot | null, stale = false): boolean {
+/** Incomplete discovery is a coverage caveat, not an unknown execution status. */
+export function activityStatusUnknown(snapshot: ActivitySnapshot | null, stale = false): boolean {
   return (
     stale ||
     !snapshot ||
-    Boolean(snapshot.agents_partial || snapshot.jobs_partial) ||
     snapshot.agents_availability !== 'available' ||
     (snapshot.jobs_availability !== 'available' && Boolean(snapshot.jobs?.length))
+  );
+}
+
+export function activityUncertain(snapshot: ActivitySnapshot | null, stale = false): boolean {
+  return (
+    activityStatusUnknown(snapshot, stale) ||
+    Boolean(snapshot?.agents_partial || snapshot?.jobs_partial)
   );
 }

@@ -58,17 +58,9 @@ export class ChildSessionStore {
   }
 
   private selectActivity(id: string): void {
-    const scope = this.activitySessionId.peek();
-    const snapshot = this.activity.peek();
-    // Drilling into a known descendant (including trusted local job sessions)
-    // keeps the original conversation's activity visible. Drafts clear it.
-    if (
-      id &&
-      (id === scope ||
-        snapshot?.agents?.some((row) => row.session_id === id) ||
-        snapshot?.jobs?.some((row) => row.session_id === id))
-    )
-      return;
+    // Activity belongs to the conversation being viewed, never its ancestors.
+    // Clear immediately on drill-down so a leaf cannot inherit the parent's robot.
+    if (id === this.activitySessionId.peek()) return;
     this.activityGeneration += 1;
     this.pauseActivity();
     this.activityEtag = '';

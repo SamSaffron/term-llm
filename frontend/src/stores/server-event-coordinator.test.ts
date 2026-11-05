@@ -298,18 +298,17 @@ describe('ServerEventCoordinator', () => {
 });
 
 describe('activity scope event interest', () => {
-  it('keeps root child events while drilling without duplicating same-scope channels', async () => {
+  it('follows the selected subtree without retaining ancestor channels', async () => {
     const { coordinator, endpoints } = harness();
-    coordinator.updateInterest('child', 'child', 'parent');
+    coordinator.updateInterest('child', 'child');
     void coordinator.prepare();
     await vi.waitFor(() => expect(endpoints.serverEventStream).toHaveBeenCalled());
     expect(endpoints.serverEventStream.mock.calls[0][1]).toEqual([
       'session:child',
       'files:child',
       'children:child',
-      'children:parent',
     ]);
-    coordinator.updateInterest('parent', 'parent', 'parent');
+    coordinator.updateInterest('parent', 'parent');
     await vi.waitFor(() => expect(endpoints.serverEventStream).toHaveBeenCalledTimes(2));
     expect(endpoints.serverEventStream.mock.calls[1][1]).toEqual([
       'session:parent',
