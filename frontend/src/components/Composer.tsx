@@ -396,6 +396,11 @@ function ConversationComposer() {
   const projectId =
     session?.projectId || (store.draftActive.value ? store.activeProjectId.value : '') || '';
   const worktreeDir = store.currentWorktreeDir.value;
+  const draftActive = store.draftActive.value;
+  // A new chat's skills follow its workspace selection until the first send.
+  useEffect(() => {
+    if (draftActive) void store.loadSkills().catch(() => undefined);
+  }, [store, draftActive, projectId, worktreeDir]);
   const composerOwner = store.composerOwnerKey();
   useEffect(() => {
     if (

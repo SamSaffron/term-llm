@@ -578,6 +578,11 @@ export class AppStore {
       viewer: this.viewer,
       activeSession: this.activeSession,
       activeSessionId: this.activeSessionId,
+      draftActive: this.draftActive,
+      activeProjectId: this.activeProjectId,
+      projectsEnabled: this.projectsEnabled,
+      currentWorktreeDir: this.currentWorktreeDir,
+      ensureSession: () => this.ensureSession(),
       streaming: this.streaming,
       prompt: this.prompt,
       modal: this.modal,
@@ -2183,8 +2188,12 @@ export class AppStore {
     return this.worktreeStore.remove(dir, force);
   }
 
-  async loadSkills(sessionId = this.activeSession.value?.id || ''): Promise<void> {
-    await this.skillStore.loadSkills(sessionId);
+  async loadSkills(sessionId?: string): Promise<void> {
+    if (sessionId === undefined && this.draftActive.peek()) {
+      await this.skillStore.loadDraftSkills();
+      return;
+    }
+    await this.skillStore.loadSkills(sessionId ?? (this.activeSession.value?.id || ''));
   }
   async invokeSkill(name: string, args: string): Promise<void> {
     await this.skillStore.invokeSkill(name, args);

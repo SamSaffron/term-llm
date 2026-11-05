@@ -21,7 +21,6 @@ import (
 	"github.com/samsaffron/term-llm/internal/session"
 	"github.com/samsaffron/term-llm/internal/skills"
 	"github.com/samsaffron/term-llm/internal/tools"
-	chatui "github.com/samsaffron/term-llm/internal/tui/chat"
 )
 
 func newServeSkillRun(id, sessionID, childSessionID string, activation *skills.Activation, cancel context.CancelFunc) *serveSkillRun {
@@ -203,7 +202,7 @@ func (s *serveServer) handleSessionSkills(w http.ResponseWriter, r *http.Request
 
 	switch {
 	case suffix == "skills" && r.Method == http.MethodGet:
-		s.handleSessionSkillsList(w, r, sess)
+		s.writeSkillCatalog(w, s.skillsForServeSession(sess), s.sessionSkillRunSnapshots(sess.ID))
 	case suffix == "skills/invoke" && r.Method == http.MethodPost:
 		if err := requireJSONContentType(r); err != nil {
 			writeOpenAIError(w, http.StatusUnsupportedMediaType, "invalid_request_error", err.Error())
@@ -342,58 +341,6 @@ func configureRuntimeSkillsMetadataLocked(rt *serveRuntime, setup *skills.Setup)
 		rt.baseSystemPrompt = basePrompt
 	}
 	rt.systemPrompt = InjectSkillsMetadata(basePrompt, setup)
-}
-
-func (s *serveServer) handleSessionSkillsList(w http.ResponseWriter, r *http.Request, sess *session.Session) {
-	setup := s.skillsForServeSession(sess)
-	if setup == nil || setup.Registry == nil {
-		writeJSON(w, http.StatusOK, map[string]any{"skills": []any{}, "runs": s.sessionSkillRunSnapshots(sess.ID)})
-		return
-	}
-	catalog, diagnostics, err := setup.Registry.ListUserInvocable()
-	if err != nil {
-		writeOpenAIError(w, http.StatusInternalServerError, "server_error", err.Error())
-		return
-	}
-	items := make([]map[string]any, 0, len(catalog))
-	builtinNames := serveBuiltinSlashNames()
-	for _, skill := range catalog {
-		metadata, metadataErr := skills.InvocationFor(skill)
-		if metadataErr != nil {
-			continue
-		}
-		items = append(items, map[string]any{
-			"name":                  skill.Name,
-			"description":           skill.Description,
-			"argument_hint":         metadata.ArgumentHint,
-			"execution":             metadata.Execution.String(),
-			"source":                skill.Source.SourceName(),
-			"collides_with_builtin": builtinNames[skill.Name],
-		})
-	}
-	diagnosticItems := make([]map[string]string, 0, len(diagnostics))
-	for _, diagnostic := range diagnostics {
-		diagnosticItems = append(diagnosticItems, map[string]string{"name": diagnostic.Name, "error": diagnostic.Err.Error()})
-	}
-	writeJSON(w, http.StatusOK, map[string]any{"skills": items, "diagnostics": diagnosticItems, "runs": s.sessionSkillRunSnapshots(sess.ID)})
-}
-
-func serveBuiltinSlashNames() map[string]bool {
-	set := make(map[string]bool)
-	for _, command := range chatui.AllCommands() {
-		if name := strings.ToLower(strings.TrimSpace(command.Name)); name != "" {
-			set[name] = true
-		}
-		for _, alias := range command.Aliases {
-			if name := strings.ToLower(strings.TrimSpace(alias)); name != "" {
-				set[name] = true
-			}
-		}
-	}
-	for _, name := range []string{"archive", "pin", "rename"} {
-		set[name] = true
-	}
-	return set
 }
 
 type serveSkillInvokeRequest struct {

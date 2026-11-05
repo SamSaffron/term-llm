@@ -11,6 +11,12 @@ export interface SkillStoreHost {
   viewer?: ReadonlySignal<Author | undefined>;
   activeSession: ReadonlySignal<Session | null>;
   activeSessionId: ReadonlySignal<string>;
+  draftActive: ReadonlySignal<boolean>;
+  activeProjectId: ReadonlySignal<string>;
+  projectsEnabled: ReadonlySignal<boolean>;
+  currentWorktreeDir: ReadonlySignal<string>;
+  /** Creates the session for the open draft; resolves '' after reporting a failure. */
+  ensureSession: () => Promise<string>;
   streaming: ReadonlySignal<boolean>;
   prompt: Signal<string>;
   modal: Signal<Modal>;
@@ -52,6 +58,19 @@ export class SkillStore {
     }
     const data = await this.services.endpoints.skills(sessionId);
     if (epoch !== this.epoch || this.host.activeSessionId.peek() !== sessionId) return;
+    this.skills.value = listFrom(data, 'skills', 'items');
+  }
+  /** Loads skills for an unsent new chat from the workspace it will bind to. */
+  async loadDraftSkills(): Promise<void> {
+    const epoch = ++this.epoch;
+    if (!this.host.draftActive.peek()) return;
+    const projectId = this.host.activeProjectId.peek();
+    const data = await this.services.endpoints.draftSkills(
+      projectId,
+      this.host.currentWorktreeDir.peek(),
+      this.host.projectsEnabled.peek() && !projectId,
+    );
+    if (epoch !== this.epoch || !this.host.draftActive.peek()) return;
     this.skills.value = listFrom(data, 'skills', 'items');
   }
   private skillRunTerminal(status: unknown): boolean {
@@ -188,10 +207,19 @@ export class SkillStore {
       this.services.schedule(() => void this.followSkillRun(runId), 1_000);
   }
   async invokeSkill(name: string, args: string): Promise<void> {
-    const session = this.host.activeSession.value;
-    if (!session) {
+    const restorePrompt = () => {
       if (!this.host.prompt.value)
         this.host.prompt.value = `/${name}${args.trim() ? ` ${args.trim()}` : ''}`;
+    };
+    // A skill may be the first thing sent from a new chat, so create its session.
+    // ensureSession reports its own failure.
+    if (this.host.draftActive.peek() && !(await this.host.ensureSession())) {
+      restorePrompt();
+      return;
+    }
+    const session = this.host.draftActive.peek() ? null : this.host.activeSession.peek();
+    if (!session) {
+      restorePrompt();
       this.services.toast('Start a conversation before running a skill.', 'error');
       return;
     }
