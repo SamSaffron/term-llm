@@ -199,6 +199,14 @@ func newSwapFixture(t *testing.T, rejects int32, helper func() core.Provider) *s
 	f.candidate.Touch()
 	f.manager = newServeSessionManager(time.Minute, 100, nil)
 	t.Cleanup(f.manager.Close)
+	t.Cleanup(func() {
+		// A later test may replace restart.Default. Stop and join this fixture's
+		// lease-renewal loop before it can observe another test's coordinator.
+		if srv.responseLifecycleCancel != nil {
+			srv.responseLifecycleCancel()
+			srv.responseLifecycleWG.Wait()
+		}
+	})
 	srv.sessionMgr = f.manager
 	putTestSession(f.manager, sess.ID, f.previous)
 	var created atomic.Int32
@@ -240,6 +248,29 @@ func startStoppableSwap(t *testing.T, rejects int32) *stoppedSwapFixture {
 	f.start(t)
 	waitForResponseRunEvent(t, f.run, "response.output_text.delta")
 	return f
+}
+
+func TestStoppedSwapFixtureStopsResponseLifecycle(t *testing.T) {
+	var srv *serveServer
+	t.Cleanup(func() {
+		// Also clean up the regression's failing path before the fixture is fixed.
+		if srv != nil && srv.responseLifecycleCancel != nil {
+			srv.responseLifecycleCancel()
+			srv.responseLifecycleWG.Wait()
+		}
+	})
+	t.Run("fixture", func(t *testing.T) {
+		f := startStoppableSwap(t, 0)
+		srv = f.srv
+		f.stop(t)
+	})
+	done := make(chan struct{})
+	go func() { srv.responseLifecycleWG.Wait(); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("swap fixture leaked its response lifecycle into subsequent tests")
+	}
 }
 
 func (f *stoppedSwapFixture) stop(t *testing.T) {
