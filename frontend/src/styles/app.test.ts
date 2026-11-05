@@ -331,6 +331,10 @@ describe('header styles', () => {
     expect(mobile).toMatch(/\.header-title-row\s*\{[^}]*display: grid;/s);
     expect(mobile).toContain("'title title title'");
     expect(mobile).toMatch(/\.header-left\s*\{[^}]*display: contents;/s);
+    // A filled, bordered menu box would outweigh the title row beneath it.
+    expect(mobile).toMatch(
+      /\.icon-btn\.mobile-menu\s*\{[^}]*width: 44px;[^}]*height: 44px;[^}]*border-color: transparent;[^}]*background: transparent;/s,
+    );
     expect(mobile).toMatch(/\.header-title-context\s*\{[^}]*grid-area: title;[^}]*width: 100%;/s);
     expect(appCSS).not.toContain('.header-project-subtitle');
     expect(appCSS).toContain('@container main-header (width < 920px)');
