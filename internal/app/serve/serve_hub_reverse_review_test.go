@@ -111,11 +111,23 @@ func TestHubReverseCancelAfterSuccessfulWrite(t *testing.T) {
 					t.Fatalf("delivered request %s was orphaned: no cancel after healthy barrier", sent.ID)
 				}
 			}
+			// Peer receipt precedes writeFrame returning and the cancel worker
+			// releasing its slot. Wait for that asynchronous local cleanup too;
+			// the healthy barrier above can finish before the cancel is written.
+			watchdog = time.After(2 * time.Second)
+			for len(c.active) != 0 {
+				select {
+				case <-watchdog:
+					t.Fatalf("local work retained: active=%d", len(c.active))
+				default:
+					runtime.Gosched()
+				}
+			}
 			c.pendingMu.Lock()
 			count := len(c.pending)
 			c.pendingMu.Unlock()
-			if count != 0 || len(c.active) != 0 {
-				t.Fatalf("local work retained: pending=%d active=%d", count, len(c.active))
+			if count != 0 {
+				t.Fatalf("local work retained: pending=%d", count)
 			}
 		})
 	}
