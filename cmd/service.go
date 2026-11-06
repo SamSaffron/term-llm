@@ -61,7 +61,14 @@ func init() {
 	for _, action := range []string{"status", "open", "start", "stop", "restart", "uninstall", "setup", "recover", "token"} {
 		action := action
 		c := &cobra.Command{Use: action + " [web|hub]", Short: service.ActionDescription(action), Args: cobra.MaximumNArgs(1), RunE: func(cmd *cobra.Command, args []string) error { return serviceApp.Manage(cmd, action, args) }}
+		if action == "status" {
+			c.Flags().Bool("json", false, "Emit the versioned machine-readable service status")
+		}
+		if action == "stop" {
+			c.Flags().Bool("keep-enabled", false, "Stop without changing login autostart")
+		}
 		if action == "start" || action == "restart" {
+			c.Flags().Bool("no-enable", false, "Start or restart without changing or requiring login autostart")
 			c.Flags().Bool("debug", false, "Trace startup checks and native commands; include status and recent logs on failure")
 		}
 		if action == "setup" || action == "recover" {
@@ -69,6 +76,10 @@ func init() {
 		}
 		serviceCmd.AddCommand(c)
 	}
+	autostart := &cobra.Command{Use: "autostart [web|hub] on|off|status", Short: service.ActionDescription("autostart"), Args: func(_ *cobra.Command, args []string) error { return service.ValidateAutostartArgs(args) }, RunE: func(cmd *cobra.Command, args []string) error {
+		return serviceApp.Autostart(cmd, args)
+	}}
+	serviceCmd.AddCommand(autostart)
 	var follow bool
 	logs := &cobra.Command{Use: "logs [web|hub]", Short: "Show native service logs", Args: cobra.MaximumNArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
 		return service.Logs(cmd, args, follow)

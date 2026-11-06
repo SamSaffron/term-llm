@@ -1304,6 +1304,10 @@ Run an MCP server exposing term-llm tools over HTTP
 
 Install and manage per-user Web and Hub services
 
+### `term-llm service autostart`
+
+Change or query login autostart without starting or stopping
+
 ### `term-llm service install`
 
 Install or reconcile a service (defaults to web)
@@ -1341,11 +1345,12 @@ Authorize temporary passkey recovery and restart
 
 ### `term-llm service restart`
 
-Restart an enabled service (interrupts active work)
+Restart an enabled service (or use --no-enable; interrupts active work)
 
 | Flag | Type | Description |
 |---|---|---|
 | `--debug` | bool | Trace startup checks and native commands; include status and recent logs on failure |
+| `--no-enable` | bool | Start or restart without changing or requiring login autostart |
 
 ### `term-llm service setup`
 
@@ -1357,19 +1362,28 @@ Create a fresh first-passkey setup code and restart
 
 ### `term-llm service start`
 
-Enable autostart and start
+Enable autostart and start (or use --no-enable)
 
 | Flag | Type | Description |
 |---|---|---|
 | `--debug` | bool | Trace startup checks and native commands; include status and recent logs on failure |
+| `--no-enable` | bool | Start or restart without changing or requiring login autostart |
 
 ### `term-llm service status`
 
 Show installed Web and Hub services
 
+| Flag | Type | Description |
+|---|---|---|
+| `--json` | bool | Emit the versioned machine-readable service status |
+
 ### `term-llm service stop`
 
-Stop and disable autostart
+Stop and disable autostart (or use --keep-enabled)
+
+| Flag | Type | Description |
+|---|---|---|
+| `--keep-enabled` | bool | Stop without changing login autostart |
 
 ### `term-llm service token`
 

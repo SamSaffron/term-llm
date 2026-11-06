@@ -86,7 +86,7 @@ func Logs(cmd *cobra.Command, args []string, follow bool) error {
 
 // ActionDescription is the short help for a lifecycle action command.
 func ActionDescription(action string) string {
-	return map[string]string{"status": "Show installed Web and Hub services", "open": "Open the service's configured browser URL", "start": "Enable autostart and start", "stop": "Stop and disable autostart", "restart": "Restart an enabled service (interrupts active work)", "uninstall": "Remove service registration, preserving credentials and user data", "setup": "Create a fresh first-passkey setup code and restart", "recover": "Authorize temporary passkey recovery and restart", "token": "Explicitly reveal the managed bearer token"}[action]
+	return map[string]string{"status": "Show installed Web and Hub services", "open": "Open the service's configured browser URL", "start": "Enable autostart and start (or use --no-enable)", "stop": "Stop and disable autostart (or use --keep-enabled)", "restart": "Restart an enabled service (or use --no-enable; interrupts active work)", "autostart": "Change or query login autostart without starting or stopping", "uninstall": "Remove service registration, preserving credentials and user data", "setup": "Create a fresh first-passkey setup code and restart", "recover": "Authorize temporary passkey recovery and restart", "token": "Explicitly reveal the managed bearer token"}[action]
 }
 
 type serviceEnvironment struct {

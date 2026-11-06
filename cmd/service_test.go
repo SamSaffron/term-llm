@@ -64,3 +64,41 @@ func TestServiceStartRestartHaveDebugFlag(t *testing.T) {
 		}
 	}
 }
+
+func TestServiceIndependentControlFlags(t *testing.T) {
+	for _, tc := range []struct{ command, flag string }{
+		{"status", "json"}, {"start", "no-enable"}, {"restart", "no-enable"}, {"stop", "keep-enabled"},
+	} {
+		child, _, err := serviceCmd.Find([]string{tc.command})
+		if err != nil {
+			t.Fatal(err)
+		}
+		flag := child.Flags().Lookup(tc.flag)
+		if flag == nil || flag.DefValue != "false" {
+			t.Fatalf("%s missing default-false --%s", tc.command, tc.flag)
+		}
+	}
+	for _, name := range []string{"start", "restart", "stop", "open", "autostart"} {
+		child, _, err := serviceCmd.Find([]string{name})
+		if err != nil || child.Flags().Lookup("json") != nil {
+			t.Fatalf("--json must be status-only: %s (%v)", name, err)
+		}
+	}
+}
+
+func TestServiceAutostartArgs(t *testing.T) {
+	child, _, err := serviceCmd.Find([]string{"autostart"})
+	if err != nil || child == serviceCmd {
+		t.Fatalf("missing autostart: %v", err)
+	}
+	for _, args := range [][]string{{"on"}, {"off"}, {"status"}, {"web", "on"}, {"hub", "off"}, {"web", "status"}} {
+		if err := child.ValidateArgs(args); err != nil {
+			t.Fatalf("%v: %v", args, err)
+		}
+	}
+	for _, args := range [][]string{nil, {"web"}, {"other", "on"}, {"web", "enable"}, {"on", "web"}, {"web", "on", "off"}} {
+		if err := child.ValidateArgs(args); err == nil {
+			t.Fatalf("accepted %v", args)
+		}
+	}
+}

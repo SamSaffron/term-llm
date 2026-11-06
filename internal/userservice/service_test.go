@@ -403,3 +403,72 @@ func TestDarwinEnabledReadsPrintDisabled(t *testing.T) {
 		})
 	}
 }
+
+func TestNativeIndependentControls(t *testing.T) {
+	for _, platform := range []string{"linux", "darwin"} {
+		t.Run(platform, func(t *testing.T) {
+			var calls []string
+			n := Native{OS: platform, Home: t.TempDir(), ConfigHome: t.TempDir(), UID: 501, Run: func(_ context.Context, name string, args ...string) ([]byte, error) {
+				calls = append(calls, name+" "+strings.Join(args, " "))
+				return nil, nil
+			}}
+			ctx := context.Background()
+			tests := []struct {
+				name          string
+				run           func() error
+				linux, darwin []string
+			}{
+				{"enable only", func() error { return n.SetEnabled(ctx, "web", true) }, []string{"systemctl --user enable " + n.Path("web")}, []string{"launchctl enable gui/501/com.term-llm.web"}},
+				{"disable only", func() error { return n.SetEnabled(ctx, "web", false) }, []string{"systemctl --user disable term-llm-web.service"}, []string{"launchctl disable gui/501/com.term-llm.web"}},
+				{"start without enable", func() error { return n.StartWithoutEnable(ctx, "web", false) }, []string{"systemctl --user daemon-reload", "systemctl --user reset-failed term-llm-web.service", "systemctl --user start term-llm-web.service"}, []string{"launchctl print gui/501/com.term-llm.web", "launchctl kickstart gui/501/com.term-llm.web"}},
+				{"restart without enable", func() error { return n.StartWithoutEnable(ctx, "web", true) }, []string{"systemctl --user daemon-reload", "systemctl --user reset-failed term-llm-web.service", "systemctl --user restart term-llm-web.service"}, []string{"launchctl print gui/501/com.term-llm.web", "launchctl kickstart -k gui/501/com.term-llm.web"}},
+				{"stop without disable", func() error { return n.StopWithoutDisable(ctx, "web") }, []string{"systemctl --user stop term-llm-web.service"}, []string{"launchctl print gui/501/com.term-llm.web", "launchctl bootout gui/501/com.term-llm.web"}},
+			}
+			for _, tc := range tests {
+				t.Run(tc.name, func(t *testing.T) {
+					calls = nil
+					if err := tc.run(); err != nil {
+						t.Fatal(err)
+					}
+					want := tc.linux
+					if platform == "darwin" {
+						want = tc.darwin
+					}
+					if !reflect.DeepEqual(calls, want) {
+						t.Fatalf("calls = %q, want %q", calls, want)
+					}
+				})
+			}
+		})
+	}
+}
+
+func TestNativeStartWithoutEnableUnloadedDarwin(t *testing.T) {
+	var calls []string
+	n := Native{OS: "darwin", Home: t.TempDir(), UID: 501}
+	n.Run = func(_ context.Context, name string, args ...string) ([]byte, error) {
+		calls = append(calls, name+" "+strings.Join(args, " "))
+		if args[0] == "print" {
+			return []byte("Could not find service"), errors.New("not loaded")
+		}
+		return nil, nil
+	}
+	if err := n.StartWithoutEnable(context.Background(), "hub", true); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"launchctl print gui/501/com.term-llm.hub", "launchctl load -F " + n.Path("hub")}
+	if !reflect.DeepEqual(calls, want) {
+		t.Fatalf("calls = %q, want %q", calls, want)
+	}
+}
+
+func TestNativeSetEnabledPropagatesFailure(t *testing.T) {
+	for _, platform := range []string{"linux", "darwin"} {
+		n := Native{OS: platform, Run: func(context.Context, string, ...string) ([]byte, error) { return nil, errors.New("denied") }}
+		for _, enabled := range []bool{false, true} {
+			if err := n.SetEnabled(context.Background(), "web", enabled); err == nil {
+				t.Fatalf("%s enabled=%v ignored failure", platform, enabled)
+			}
+		}
+	}
+}

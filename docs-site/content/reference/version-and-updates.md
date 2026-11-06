@@ -33,6 +33,13 @@ including typical `curl ... | sh` invocations: 64 MiB archives, 512 KiB manifest
 `term-llm` file is installed. The shell installer does not execute the downloaded
 binary.
 
+If the resolved `term-llm` executable has a `<executable>.managed.json` sidecar,
+`term-llm upgrade` refuses to run and names the installing application instead of
+downloading anything. Desktop installers use that marker when they verify a
+payload, keep an installation manifest and roll back on failure; self-upgrade
+would bypass that chain. A malformed marker still blocks. Remove the marker only
+if that installer no longer owns the executable.
+
 These are integrity checks, **not publisher authentication**. The archive and
 checksum manifest share the same GitHub release trust boundary; someone able to
 replace both can publish a matching malicious binary. Neither consumer currently

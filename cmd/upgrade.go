@@ -16,7 +16,11 @@ By default, upgrades to the latest version. Use --version to install a specific 
 
 Examples:
   term-llm upgrade                    # upgrade to latest
-  term-llm upgrade --version v0.2.0   # install specific version`,
+  term-llm upgrade --version v0.2.0   # install specific version
+
+An executable owned by a desktop installer (a "<executable>.managed.json"
+sidecar beside the resolved binary) refuses self-upgrade. Update it through that
+installer instead.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		options := upgradeOptions
 		options.CurrentVersion = Version

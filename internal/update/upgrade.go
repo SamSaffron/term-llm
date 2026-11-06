@@ -14,6 +14,20 @@ import (
 
 // RunUpgrade performs the upgrade to the specified version (or latest if empty)
 func RunUpgrade(ctx context.Context, currentVersion, targetVersion string, stdout, stderr io.Writer) error {
+	// Refuse before any network or download work: an installer that owns this
+	// executable verifies its payload, keeps a manifest and can roll back.
+	// Self-upgrade would bypass that chain.
+	exePath, err := os.Executable()
+	if err != nil {
+		return fmt.Errorf("determine executable path: %w", err)
+	}
+	if resolved, resolveErr := filepath.EvalSymlinks(exePath); resolveErr == nil && resolved != "" {
+		exePath = resolved
+	}
+	if err := managedUpgradeRefusal(exePath); err != nil {
+		return err
+	}
+
 	targetTag := strings.TrimSpace(targetVersion)
 	if targetTag == "" {
 		info, err := FetchLatestRelease(ctx)
@@ -56,15 +70,6 @@ func RunUpgrade(ctx context.Context, currentVersion, targetVersion string, stdou
 	archivePath, err := downloadVerifiedArchive(ctx, releaseHTTPClient(), releaseURL, assetName, tmpDir)
 	if err != nil {
 		return err
-	}
-
-	exePath, err := os.Executable()
-	if err != nil {
-		return fmt.Errorf("determine executable path: %w", err)
-	}
-	resolvedPath, err := filepath.EvalSymlinks(exePath)
-	if err == nil && resolvedPath != "" {
-		exePath = resolvedPath
 	}
 
 	destDir := filepath.Dir(exePath)
