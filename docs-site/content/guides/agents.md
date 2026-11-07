@@ -48,20 +48,22 @@ term-llm ships with these built-in agents:
 | `web-researcher` | Information gathering with web search. |
 | `widget-builder` | Builds, edits, and debugs local Web UI widget applications. |
 | `extension-builder` | Personalizes the web interface with local CSS/JavaScript extensions and config. |
-| `reviewer` | Read-only code review with git-aware inspection tools. |
+| `reviewer` | Code review with git-aware inspection tools. |
 | `shell` | General shell command helper. |
 | `sysadmin` | Diagnoses and administers the local host with host facts and host-wide reads. |
 | `video-editor` | Safely inspects, plans, previews, and renders local media with FFmpeg. |
 
 A few good starting points:
 
-- `@reviewer` for code review without letting the model edit files
+- `@reviewer` for code review with git-aware inspection tools
 - `@codebase` for architecture questions and tracing behavior across a repo
 - `@developer` when you want implementation work done
 - `@widget-builder` to build or refine a [local Web UI widget](/guides/widgets/)
 - `@extension-builder` to [make the web interface yours](/guides/extensions/) with CSS and JavaScript
 - `@web-researcher` when the answer depends on current web information
 - `@commit-message` when you want a clean commit message without fuss
+
+The bundled `reviewer` omits dedicated file-editing tools but retains approved shell commands that can write files. It is not an enforced read-only sandbox.
 
 ### Developer shell policy
 
