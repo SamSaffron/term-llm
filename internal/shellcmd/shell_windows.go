@@ -41,15 +41,6 @@ func Args(shellPath, command string) []string {
 	}
 }
 
-// IsPowerShell reports whether shellPath is a PowerShell executable.
-func IsPowerShell(shellPath string) bool {
-	switch strings.ToLower(filepath.Base(shellPath)) {
-	case "powershell", "powershell.exe", "pwsh", "pwsh.exe":
-		return true
-	}
-	return false
-}
-
 // Invocation returns the shell and argv for a non-interactive command.
 func Invocation(command string) (string, []string) {
 	path := Path()

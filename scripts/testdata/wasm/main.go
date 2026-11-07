@@ -122,11 +122,11 @@ func (s *smoke) runEngine() {
 
 func (s *smoke) runUnsupportedFacilities() {
 	cmd := exec.Command("/bin/true")
-	cleanup, err := procutil.PrepareCommand(cmd)
+	owned, err := procutil.PrepareCommand(cmd)
 	s.check(err == nil, "prepare subprocess: %v", err)
 	if err == nil {
-		defer cleanup()
-		err = procutil.RunCommand(cmd)
+		defer owned.Close()
+		err = owned.Run()
 		s.check(err != nil && cmd.Process == nil, "subprocess unexpectedly started on js/wasm: %v", err)
 	}
 

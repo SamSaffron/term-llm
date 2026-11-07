@@ -555,12 +555,11 @@ func (t *ShellTool) executeLocal(ctx context.Context, args json.RawMessage) (cor
 	cmd.Dir = workDir
 	cmd.Env = env
 
-	cleanup, prepErr := prepareToolCommand(cmd)
+	owned, prepErr := prepareToolCommand(cmd)
 	if prepErr != nil {
 		return errorOutput(formatToolError(NewToolErrorf(ErrExecutionFailed, "command setup error: %v", prepErr))), nil
 	}
-	cleanup = sync.OnceFunc(cleanup)
-	defer cleanup()
+	defer owned.Close()
 
 	stdout := newLimitedBuffer(t.limits.MaxBytes)
 	stderr := newLimitedBuffer(t.limits.MaxBytes)
@@ -574,10 +573,10 @@ func (t *ShellTool) executeLocal(ctx context.Context, args json.RawMessage) (cor
 	}
 
 	// Run command
-	err := procutil.RunCommand(cmd)
+	err := owned.Run()
 	// Stop descendants before reading the filesystem so tracking captures the
 	// state the shell invocation actually leaves behind.
-	cleanup()
+	_ = owned.Close()
 
 	// Diff against the snapshot even on timeout or failure — partial writes
 	// are real changes.
@@ -853,9 +852,5 @@ func truncateCommand(cmd string) string {
 // POSIX "-c command" form keeps its existing lossless preview and approval
 // cache key; other platforms show the real argv.
 func shellApprovalCommand(shellPath, command string, env map[string]string) string {
-	args := shellcmd.Args(shellPath, command)
-	if len(args) == 2 && args[0] == "-c" {
-		return procutil.ShellEnvironmentCommand(command, shellPath, env)
-	}
-	return procutil.ShellEnvironmentCommandArgs(shellPath, args, env)
+	return shellcmd.ApprovalCommand(shellPath, command, env)
 }

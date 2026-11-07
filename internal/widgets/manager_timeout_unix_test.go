@@ -6,6 +6,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -39,11 +40,9 @@ func TestWidgetStartupTimeoutKillsProcessGroup(t *testing.T) {
 	}
 	deadline := time.Now().Add(3 * time.Second)
 	for time.Now().Before(deadline) {
-		if syscall.Kill(pid, 0) == syscall.ESRCH {
-			if entry.cmd != nil && entry.cmd.Process != nil {
-				if err := syscall.Kill(entry.cmd.Process.Pid, 0); err == nil || err != syscall.ESRCH {
-					t.Fatalf("shell leader %d survived startup timeout: %v", entry.cmd.Process.Pid, err)
-				}
+		if !processAlive(pid) {
+			if entry.cmd != nil && entry.cmd.Process != nil && processAlive(entry.cmd.Process.Pid) {
+				t.Fatalf("shell leader %d survived startup timeout", entry.cmd.Process.Pid)
 			}
 			return
 		}
@@ -51,4 +50,18 @@ func TestWidgetStartupTimeoutKillsProcessGroup(t *testing.T) {
 	}
 	_ = syscall.Kill(pid, syscall.SIGKILL)
 	t.Fatalf("widget child %d survived startup timeout", pid)
+}
+
+func processAlive(pid int) bool {
+	if err := syscall.Kill(pid, 0); err != nil {
+		return false
+	}
+	out, err := exec.Command("ps", "-o", "stat=", "-p", strconv.Itoa(pid)).Output()
+	if err == nil {
+		state := strings.TrimSpace(string(out))
+		if state == "" || strings.HasPrefix(state, "Z") {
+			return false
+		}
+	}
+	return true
 }

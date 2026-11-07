@@ -91,12 +91,12 @@ func defaultCursorModelsCommandOutput(ctx context.Context, p *CursorBinProvider,
 	}
 	cmd.Env = auditedEnv
 	defer stopCLIWireAudit(wireAudit)
-	cleanupProcess, err := procutil.PrepareCommand(cmd)
+	owned, err := procutil.PrepareCommand(cmd)
 	if err != nil {
 		return nil, fmt.Errorf("prepare cursor models command: %w", err)
 	}
-	defer cleanupProcess()
-	return procutil.OutputCommand(cmd)
+	defer owned.Close()
+	return owned.Output()
 }
 
 var cursorModelsCommandOutput = defaultCursorModelsCommandOutput

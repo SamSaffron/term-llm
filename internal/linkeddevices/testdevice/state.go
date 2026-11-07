@@ -7,6 +7,8 @@ import (
 	"errors"
 	"fmt"
 	"os"
+
+	"github.com/samsaffron/term-llm/internal/fileprivacy"
 	"path/filepath"
 
 	"github.com/samsaffron/term-llm/internal/pairing"
@@ -43,8 +45,8 @@ func loadState(path string) (persistedState, error) {
 	if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
 		return persistedState{}, errors.New("testdevice: state path is not a regular file")
 	}
-	if info.Mode().Perm()&0o077 != 0 {
-		return persistedState{}, fmt.Errorf("testdevice: state file %s must not be accessible by group or others", path)
+	if err := fileprivacy.CheckFile(info); err != nil {
+		return persistedState{}, fmt.Errorf("testdevice: state file %s must not be accessible by group or others: %w", path, err)
 	}
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -93,34 +95,13 @@ func writeState(path string, state persistedState) error {
 	}
 	data = append(data, '\n')
 	dir := filepath.Dir(path)
-	if err := os.MkdirAll(dir, 0o700); err != nil {
+	if err := fileprivacy.MkdirAll(dir); err != nil {
 		return fmt.Errorf("testdevice: create state directory: %w", err)
 	}
-	if err := os.Chmod(dir, 0o700); err != nil {
+	if err := fileprivacy.ChmodDir(dir, fileprivacy.DirMode); err != nil {
 		return fmt.Errorf("testdevice: protect state directory: %w", err)
 	}
-	tmp, err := os.CreateTemp(dir, ".testdevice-state-*")
-	if err != nil {
-		return fmt.Errorf("testdevice: create temporary state: %w", err)
-	}
-	tmpName := tmp.Name()
-	defer os.Remove(tmpName)
-	if err := tmp.Chmod(0o600); err != nil {
-		_ = tmp.Close()
-		return fmt.Errorf("testdevice: protect temporary state: %w", err)
-	}
-	if _, err := tmp.Write(data); err != nil {
-		_ = tmp.Close()
-		return fmt.Errorf("testdevice: write state: %w", err)
-	}
-	if err := tmp.Sync(); err != nil {
-		_ = tmp.Close()
-		return fmt.Errorf("testdevice: sync state: %w", err)
-	}
-	if err := tmp.Close(); err != nil {
-		return fmt.Errorf("testdevice: close state: %w", err)
-	}
-	if err := os.Rename(tmpName, path); err != nil {
+	if err := fileprivacy.WriteFileAtomic(path, data); err != nil {
 		return fmt.Errorf("testdevice: install state: %w", err)
 	}
 	return nil

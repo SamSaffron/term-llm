@@ -50,14 +50,14 @@ func (r *Repository) runPublishCommand(ctx context.Context, program string, args
 	cmd.Dir = r.root
 	cmd.Env = gitEnvironment(map[string]string{"GH_PROMPT_DISABLED": "1", "GH_PAGER": "cat"})
 	cmd.WaitDelay = 2 * time.Second
-	cleanup, err := procutil.PrepareCommandProcessGroup(cmd)
+	owned, err := procutil.PrepareCommandProcessGroup(cmd)
 	if err != nil {
 		return nil, err
 	}
-	defer cleanup()
+	defer owned.Close()
 	out, stderr := &limitBuffer{max: maxCommitOutput}, &limitBuffer{max: maxCommitOutput}
 	cmd.Stdout, cmd.Stderr = out, stderr
-	err = procutil.RunCommand(cmd)
+	err = owned.Run()
 	if ctx.Err() != nil {
 		return nil, typed(ErrUncertain, "Publishing timed out; check the remote before retrying", ctx.Err())
 	}

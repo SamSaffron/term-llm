@@ -339,7 +339,7 @@ func (r *ProgramRunner) Run(ctx context.Context, job Job, pw ProgressWriter) (Ru
 		cmd.Env = append(os.Environ(), cfg.Env...)
 	}
 
-	cleanup, prepErr := tools.PrepareCommand(cmd)
+	owned, prepErr := tools.PrepareCommand(cmd)
 	if prepErr != nil {
 		return RunResult{}, fmt.Errorf("program setup failed: %w", prepErr)
 	}
@@ -348,7 +348,7 @@ func (r *ProgramRunner) Run(ctx context.Context, job Job, pw ProgressWriter) (Ru
 		waitDelay = ProgramWaitDelay
 	}
 	cmd.WaitDelay = waitDelay
-	defer cleanup()
+	defer owned.Close()
 
 	outputLimit := r.OutputLimit
 	if outputLimit <= 0 {
@@ -359,7 +359,7 @@ func (r *ProgramRunner) Run(ctx context.Context, job Job, pw ProgressWriter) (Ru
 	cmd.Stdout = stdout
 	cmd.Stderr = stderr
 
-	err := procutil.RunCommand(cmd)
+	err := owned.Run()
 	exitCode := 0
 	result := RunResult{Stdout: stdout.String(), Stderr: stderr.String(), Truncated: stdout.Truncated() || stderr.Truncated()}
 	if errors.Is(ctx.Err(), context.DeadlineExceeded) {

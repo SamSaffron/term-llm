@@ -2,6 +2,6 @@
 
 package procutil
 
-// KillTaggedDescendants is a no-op on Windows: the process tree is reaped with
-// taskkill /T, which does not depend on environment tagging.
+// KillTaggedDescendants is a no-op on Windows: the owned Job Object reaps the
+// process tree, so environment tagging is not needed.
 func KillTaggedDescendants(string, string) {}

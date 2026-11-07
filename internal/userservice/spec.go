@@ -9,10 +9,9 @@ import (
 	"os"
 	"os/user"
 	"path/filepath"
-	"runtime"
 	"strings"
 
-	"github.com/samsaffron/term-llm/internal/config"
+	"github.com/samsaffron/term-llm/internal/fileprivacy"
 )
 
 const Version = 1
@@ -80,8 +79,11 @@ func ReadPrivate(path string) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	if !info.Mode().IsRegular() || (runtime.GOOS != "windows" && info.Mode().Perm()&0077 != 0) {
+	if !info.Mode().IsRegular() {
 		return nil, fmt.Errorf("%s must be a private regular file (0600)", path)
+	}
+	if err := fileprivacy.CheckFile(info); err != nil {
+		return nil, fmt.Errorf("%s must be a private regular file (0600): %w", path, err)
 	}
 	if info.Size() > 1<<20 {
 		return nil, fmt.Errorf("service file is too large")
@@ -90,15 +92,18 @@ func ReadPrivate(path string) ([]byte, error) {
 }
 
 func PrivateDir(dir string) error {
-	if err := os.MkdirAll(dir, 0700); err != nil {
+	if err := fileprivacy.MkdirAll(dir); err != nil {
 		return err
 	}
 	info, err := os.Lstat(dir)
 	if err != nil {
 		return err
 	}
-	if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 || (runtime.GOOS != "windows" && info.Mode().Perm()&0077 != 0) {
+	if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
 		return fmt.Errorf("service directory %s must be private (0700) and not a symlink", dir)
+	}
+	if err := fileprivacy.CheckDir(info); err != nil {
+		return fmt.Errorf("service directory %s must be private (0700) and not a symlink: %w", dir, err)
 	}
 	return nil
 }
@@ -114,7 +119,7 @@ func WritePrivate(path string, data []byte) error {
 	} else if !os.IsNotExist(err) {
 		return err
 	}
-	return config.WriteFileAtomicallyNoFollow(path, data, 0600)
+	return fileprivacy.WriteFileAtomic(path, data)
 }
 
 func Load(path string) (Spec, error) {

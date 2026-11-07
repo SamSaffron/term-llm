@@ -3,7 +3,8 @@ package passkeyauth
 import (
 	"fmt"
 	"os"
-	"runtime"
+
+	"github.com/samsaffron/term-llm/internal/fileprivacy"
 )
 
 // ReadPrivateSecretFile reads an operator-managed bootstrap/recovery secret
@@ -16,8 +17,8 @@ func ReadPrivateSecretFile(path string) ([]byte, error) {
 	if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
 		return nil, fmt.Errorf("passkey secret file must be a regular non-symlink file")
 	}
-	if runtime.GOOS != "windows" && info.Mode().Perm()&0o077 != 0 {
-		return nil, fmt.Errorf("passkey secret file has insecure permissions %04o; use 0400 or 0600", info.Mode().Perm())
+	if err := fileprivacy.CheckFile(info); err != nil {
+		return nil, fmt.Errorf("passkey secret file has insecure permissions; use 0400 or 0600: %w", err)
 	}
 	data, err := os.ReadFile(path)
 	if err != nil {

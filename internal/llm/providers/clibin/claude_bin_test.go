@@ -14,6 +14,8 @@ import (
 	"time"
 
 	"github.com/samsaffron/term-llm/internal/mcphttp"
+
+	"github.com/samsaffron/term-llm/internal/testutil/processinfo"
 )
 
 func TestClaudeBinProvider_ImplementsToolExecutorSetter(t *testing.T) {
@@ -190,11 +192,11 @@ func TestClaudeBinProvider_prepareClaudeCommand_ConfiguresProcessGroupWaitDelayA
 	// Production code cleans paths; TMPDIR may end in "/" (macOS).
 	workingDir := filepath.Clean(t.TempDir())
 
-	cmd, stdin, cleanup, err := provider.prepareClaudeCommand(context.Background(), []string{"--version"}, "", workingDir)
+	cmd, stdin, owned, err := provider.prepareClaudeCommand(context.Background(), []string{"--version"}, "", workingDir)
 	if err != nil {
 		t.Fatalf("prepareClaudeCommand failed: %v", err)
 	}
-	defer cleanup()
+	defer owned.Close()
 	defer stdin.Close()
 
 	if cmd.Dir != workingDir {
@@ -203,7 +205,7 @@ func TestClaudeBinProvider_prepareClaudeCommand_ConfiguresProcessGroupWaitDelayA
 	if cmd.WaitDelay != claudeCommandWaitDelay {
 		t.Fatalf("WaitDelay = %v, want %v", cmd.WaitDelay, claudeCommandWaitDelay)
 	}
-	if !detachedProcess(cmd.SysProcAttr) {
+	if !processinfo.ProcessIsDetached(cmd.SysProcAttr) {
 		t.Fatal("expected claude subprocess to run in a detached session")
 	}
 	if cmd.Cancel == nil {

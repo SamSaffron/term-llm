@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"os/exec"
 	"sync"
 	"time"
 
@@ -19,21 +18,24 @@ const defaultCommandTerminateDuration = 5 * time.Second
 // children are assigned to an owned Job Object before they can spawn
 // descendants.
 type commandTransport struct {
-	Command           *exec.Cmd
+	Command           *procutil.Command
 	TerminateDuration time.Duration
 	MaxLineLength     int
 }
 
 func (t *commandTransport) Connect(ctx context.Context) (sdkmcp.Connection, error) {
-	stdout, err := t.Command.StdoutPipe()
+	cmd := t.Command.Cmd()
+	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		return nil, err
 	}
-	stdin, err := t.Command.StdinPipe()
+	stdin, err := cmd.StdinPipe()
 	if err != nil {
 		return nil, err
 	}
-	if err := procutil.StartCommand(t.Command); err != nil {
+	if err := t.Command.Start(); err != nil {
+		_ = stdout.Close()
+		_ = stdin.Close()
 		return nil, err
 	}
 	conn, err := (&sdkmcp.IOTransport{
@@ -42,7 +44,7 @@ func (t *commandTransport) Connect(ctx context.Context) (sdkmcp.Connection, erro
 		MaxLineLength: t.MaxLineLength,
 	}).Connect(ctx)
 	if err != nil {
-		_ = procutil.KillCommandTree(t.Command)
+		_ = t.Command.Close()
 		return nil, err
 	}
 	terminate := t.TerminateDuration
@@ -63,7 +65,7 @@ func (nopReadCloser) Close() error { return nil }
 // context cancellation.
 type ownedCommandConn struct {
 	sdkmcp.Connection
-	cmd       *exec.Cmd
+	cmd       *procutil.Command
 	terminate time.Duration
 	once      sync.Once
 	err       error
@@ -82,7 +84,7 @@ func (c *ownedCommandConn) Close() error {
 				c.err = err
 			}
 		case <-time.After(c.terminate):
-			_ = procutil.KillCommandTree(c.cmd)
+			_ = c.cmd.Close()
 			select {
 			case err := <-done:
 				if c.err == nil {
@@ -94,7 +96,7 @@ func (c *ownedCommandConn) Close() error {
 				}
 			}
 		}
-		_ = procutil.KillCommandTree(c.cmd)
+		_ = c.cmd.Close()
 	})
 	return c.err
 }

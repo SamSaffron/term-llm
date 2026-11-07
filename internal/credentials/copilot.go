@@ -6,6 +6,8 @@ import (
 	"os"
 	"path/filepath"
 	"time"
+
+	"github.com/samsaffron/term-llm/internal/fileprivacy"
 )
 
 // CopilotCredentials holds the OAuth token for GitHub Copilot
@@ -79,7 +81,7 @@ func SaveCopilotCredentials(creds *CopilotCredentials) error {
 
 	// Ensure directory exists
 	dir := filepath.Dir(credPath)
-	if err := os.MkdirAll(dir, 0700); err != nil {
+	if err := fileprivacy.MkdirAll(dir); err != nil {
 		return fmt.Errorf("failed to create credentials directory: %w", err)
 	}
 

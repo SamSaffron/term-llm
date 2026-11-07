@@ -128,17 +128,10 @@ func versionDisplayTag(version string) string {
 
 // releaseArchiveName returns the release artifact name for this platform.
 func releaseArchiveName(version string) string {
-	ext := ".tar.gz"
-	if runtime.GOOS == "windows" {
-		ext = ".zip"
-	}
-	return fmt.Sprintf("%s_%s_%s_%s%s", RepoName, version, runtime.GOOS, runtime.GOARCH, ext)
+	return fmt.Sprintf("%s_%s_%s_%s%s", RepoName, version, runtime.GOOS, runtime.GOARCH, releaseArchiveSuffix())
 }
 
 // releaseBinaryName returns the executable member name inside release archives.
 func releaseBinaryName() string {
-	if runtime.GOOS == "windows" {
-		return RepoName + ".exe"
-	}
-	return RepoName
+	return RepoName + releaseBinarySuffix()
 }

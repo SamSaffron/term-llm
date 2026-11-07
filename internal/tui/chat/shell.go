@@ -177,34 +177,7 @@ func interactiveShellPath() string {
 }
 
 func interactiveShellArgs(shellPath string, noRC bool) ([]string, error) {
-	if !noRC {
-		return nil, nil
-	}
-	name := strings.TrimSuffix(strings.ToLower(filepath.Base(shellPath)), ".exe")
-	switch name {
-	case "powershell", "pwsh":
-		// Windows PowerShell has no rc-file switch equivalent to bash --norc;
-		// -NoProfile skips profile scripts.
-		return []string{"-NoLogo", "-NoProfile"}, nil
-	case "cmd":
-		return nil, nil
-	case "zsh":
-		return []string{"-f"}, nil
-	case "bash":
-		return []string{"--noprofile", "--norc"}, nil
-	case "fish":
-		return []string{"--no-config"}, nil
-	case "csh", "tcsh":
-		return []string{"-f"}, nil
-	case "nu", "nushell":
-		return []string{"--no-config-file"}, nil
-	case "sh", "dash", "ash", "ksh", "mksh", "pdksh":
-		// POSIX-ish shells commonly use ENV for interactive startup. There is
-		// no portable no-rc flag, so interactiveShellEnv removes ENV below.
-		return nil, nil
-	default:
-		return nil, fmt.Errorf("/shell --no-rc is not supported for shell %q", shellPath)
-	}
+	return shellcmd.InteractiveArgs(shellPath, noRC)
 }
 
 func interactiveShellEnv(environ []string, dir string, worktreeDir string, noRC bool) []string {
@@ -579,10 +552,10 @@ func (m *Model) runDirectShellCmd(ctx, lifecycleCtx context.Context, generation 
 		// serialize writes, preserving the order in which stdout/stderr is observed.
 		cmd.Stdout = writer
 		cmd.Stderr = writer
-		cleanup, err := procutil.PrepareCommand(cmd)
+		owned, err := procutil.PrepareCommand(cmd)
 		if err == nil {
-			defer cleanup()
-			err = procutil.RunCommand(cmd)
+			defer owned.Close()
+			err = owned.Run()
 		}
 
 		done := directShellDoneMsg{generation: generation, err: err}

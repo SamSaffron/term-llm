@@ -217,7 +217,6 @@ func (c *Client) createStdioTransport(ctx context.Context) (mcp.Transport, error
 
 	cmd := exec.CommandContext(processCtx, c.config.Command, c.config.Args...)
 	cmd.WaitDelay = mcpCommandWaitDelay
-	procutil.ConfigureDetachedCommand(cmd)
 	stderr := newSynchronizedLimitedBuffer(mcpStderrLimit)
 	cmd.Stderr = stderr
 	c.mu.Lock()
@@ -234,7 +233,11 @@ func (c *Client) createStdioTransport(ctx context.Context) (mcp.Transport, error
 			cmd.Env = append(cmd.Env, fmt.Sprintf("%s=%s", k, v))
 		}
 	}
-	return &commandTransport{Command: cmd}, nil
+	owned, err := procutil.PrepareCommand(cmd)
+	if err != nil {
+		return nil, fmt.Errorf("prepare MCP transport: %w", err)
+	}
+	return &commandTransport{Command: owned}, nil
 }
 
 func (c *Client) withStdioStderr(err error) error {

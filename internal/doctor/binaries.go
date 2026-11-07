@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"os/exec"
-	"runtime"
 	"sort"
 
 	"github.com/samsaffron/term-llm/internal/config"
@@ -41,11 +40,7 @@ func defaultBinaries() []BinarySpec {
 	specs := []BinarySpec{
 		{Name: "git", Missing: SeverityError, Purpose: "workspace detection, diffs, commits, worktrees, and file-change tracking"},
 	}
-	// Windows uses PowerShell/COMSPEC for the shell tool and $(...) config
-	// values, both of which ship with the OS.
-	if runtime.GOOS != "windows" {
-		specs = append(specs, BinarySpec{Name: "sh", Missing: SeverityError, Purpose: "the shell tool and $(...) config value resolution"})
-	}
+	specs = append(specs, platformShellBinaries()...)
 	return append(specs,
 		BinarySpec{Name: "rg", Missing: SeverityWarn, Purpose: "fast code search; the grep tool falls back to a slower built-in scan", Install: "install ripgrep"},
 		BinarySpec{Name: "ffprobe", Missing: SeverityInfo, Purpose: "duration checks for audio and video transcription", Install: "install ffmpeg"},

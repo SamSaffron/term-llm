@@ -617,13 +617,13 @@ func (p *VibeBinProvider) startVibeACPProcess(ctx context.Context, debug bool, m
 		_ = stdin.Close()
 		return nil, fail("get vibe-acp stderr: %w", err)
 	}
-	cleanup, err := procutil.PrepareCommand(cmd)
+	owned, err := procutil.PrepareCommand(cmd)
 	if err != nil {
 		_ = stdin.Close()
 		return nil, fail("prepare vibe-acp command: %w", err)
 	}
-	if err := procutil.StartCommand(cmd); err != nil {
-		cleanup()
+	if err := owned.Start(); err != nil {
+		owned.Close()
 		return nil, fail("start vibe-acp: %w", err)
 	}
 
@@ -655,9 +655,9 @@ func (p *VibeBinProvider) startVibeACPProcess(ctx context.Context, debug bool, m
 		})
 	}()
 	go func() {
-		process.waitErr = cmd.Wait()
+		process.waitErr = owned.Wait()
 		<-process.stderrDone
-		cleanup()
+		owned.Close()
 		close(process.waitDone)
 	}()
 	defer func() {

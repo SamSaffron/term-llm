@@ -3,26 +3,17 @@
 package testutil
 
 import (
-	"os/exec"
-	"strconv"
 	"syscall"
+
+	"github.com/samsaffron/term-llm/internal/testutil/processinfo"
 )
 
-const createNewProcessGroup = 0x00000200
-
-// ProcessIsDetached reports whether attr starts the child in a new process
-// group. Windows has no sessions; a new process group is the closest mapping.
 func ProcessIsDetached(attr *syscall.SysProcAttr) bool {
-	return attr != nil && attr.CreationFlags&createNewProcessGroup != 0
+	return processinfo.ProcessIsDetached(attr)
 }
 
-// ProcessIsProcessGroup reports whether attr starts the child in a new process
-// group.
 func ProcessIsProcessGroup(attr *syscall.SysProcAttr) bool {
-	return ProcessIsDetached(attr)
+	return processinfo.ProcessIsProcessGroup(attr)
 }
 
-// KillProcess forcefully terminates pid and its descendants.
-func KillProcess(pid int) error {
-	return exec.Command("taskkill", "/T", "/F", "/PID", strconv.Itoa(pid)).Run()
-}
+func KillProcess(pid int) error { return processinfo.KillProcess(pid) }

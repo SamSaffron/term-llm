@@ -11,13 +11,13 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"runtime"
 	"sort"
 	"sync"
 	"time"
 
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/filelock"
+	"github.com/samsaffron/term-llm/internal/fileprivacy"
 )
 
 const (
@@ -151,13 +151,13 @@ func OpenSessions(opts SessionsOptions) (*Sessions, error) {
 		return nil, fmt.Errorf("session store path, RP ID, user ID, and credential validator are required")
 	}
 	s := newSessions(opts)
-	if err := os.MkdirAll(filepath.Dir(s.path), 0o700); err != nil {
+	if err := fileprivacy.MkdirAll(filepath.Dir(s.path)); err != nil {
 		return nil, fmt.Errorf("create passkey session directory: %w", err)
 	}
-	if runtime.GOOS != "windows" {
-		if d, err := os.Stat(filepath.Dir(s.path)); err != nil || d.Mode().Perm()&0o077 != 0 {
-			return nil, fmt.Errorf("passkey session directory must have private permissions (0700)")
-		}
+	if d, err := os.Stat(filepath.Dir(s.path)); err != nil {
+		return nil, fmt.Errorf("inspect passkey session directory: %w", err)
+	} else if err := fileprivacy.CheckDir(d); err != nil {
+		return nil, fmt.Errorf("passkey session directory must have private permissions (0700): %w", err)
 	}
 	unlock, err := filelock.TryLock(s.path + ".lock")
 	if err != nil {
@@ -193,16 +193,16 @@ func (s *Sessions) open() error {
 		}
 		return s.writeLocked()
 	}
-	if runtime.GOOS != "windows" {
-		if parent, err := os.Stat(filepath.Dir(s.path)); err != nil || parent.Mode().Perm()&0o077 != 0 {
-			return fmt.Errorf("passkey session directory must have private permissions (0700)")
-		}
+	if parent, err := os.Stat(filepath.Dir(s.path)); err != nil {
+		return fmt.Errorf("inspect passkey session directory: %w", err)
+	} else if err := fileprivacy.CheckDir(parent); err != nil {
+		return fmt.Errorf("passkey session directory must have private permissions (0700): %w", err)
 	}
 	if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
 		return fmt.Errorf("passkey session store must be a regular non-symlink file")
 	}
-	if runtime.GOOS != "windows" && info.Mode().Perm()&0o077 != 0 {
-		return fmt.Errorf("passkey session store %s has insecure permissions %04o; require 0600", s.path, info.Mode().Perm())
+	if err := fileprivacy.CheckFile(info); err != nil {
+		return fmt.Errorf("passkey session store %s has insecure permissions; require 0600: %w", s.path, err)
 	}
 	data, err := os.ReadFile(s.path)
 	if err != nil {
@@ -562,13 +562,13 @@ func (s *Sessions) writeLocked() error {
 	if s.path == "" {
 		return nil
 	}
-	if err := os.MkdirAll(filepath.Dir(s.path), 0o700); err != nil {
+	if err := fileprivacy.MkdirAll(filepath.Dir(s.path)); err != nil {
 		return fmt.Errorf("create passkey session directory: %w", err)
 	}
-	if runtime.GOOS != "windows" {
-		if d, err := os.Stat(filepath.Dir(s.path)); err != nil || d.Mode().Perm()&0o077 != 0 {
-			return fmt.Errorf("passkey session directory must have private permissions (0700)")
-		}
+	if d, err := os.Stat(filepath.Dir(s.path)); err != nil {
+		return fmt.Errorf("inspect passkey session directory: %w", err)
+	} else if err := fileprivacy.CheckDir(d); err != nil {
+		return fmt.Errorf("passkey session directory must have private permissions (0700): %w", err)
 	}
 	if info, err := os.Lstat(s.path); err == nil && (info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular()) {
 		return fmt.Errorf("refusing to write passkey session store through a symlink")
@@ -595,7 +595,7 @@ func (s *Sessions) writeLocked() error {
 	if err != nil {
 		return fmt.Errorf("encode passkey session store: %w", err)
 	}
-	if err := s.writeFile(s.path, append(data, '\n'), 0o600); err != nil {
+	if err := s.writeFile(s.path, append(data, '\n'), fileprivacy.FileMode); err != nil {
 		return fmt.Errorf("write passkey session store: %w", err)
 	}
 	for _, r := range s.byID {

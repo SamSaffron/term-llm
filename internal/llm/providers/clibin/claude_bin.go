@@ -704,7 +704,7 @@ func shellQuote(s string) string {
 	return s
 }
 
-func (p *ClaudeBinProvider) prepareClaudeCommand(ctx context.Context, args []string, effort, workingDir string) (*exec.Cmd, io.WriteCloser, func(), error) {
+func (p *ClaudeBinProvider) prepareClaudeCommand(ctx context.Context, args []string, effort, workingDir string) (*exec.Cmd, io.WriteCloser, *procutil.Command, error) {
 	cmd, err := newCLICommand(ctx, "claude", args, workingDir)
 	if err != nil {
 		return nil, nil, nil, fmt.Errorf("prepare claude command: %w", err)
@@ -723,18 +723,14 @@ func (p *ClaudeBinProvider) prepareClaudeCommand(ctx context.Context, args []str
 		return nil, nil, nil, fmt.Errorf("failed to get stdin pipe: %w", err)
 	}
 
-	cleanupProcess, err := procutil.PrepareCommand(cmd)
+	owned, err := procutil.PrepareCommand(cmd)
 	if err != nil {
 		_ = stdin.Close()
 		stopCLIWireAudit(wireAudit)
 		return nil, nil, nil, fmt.Errorf("failed to prepare claude command: %w", err)
 	}
-	cleanup := func() {
-		cleanupProcess()
-		stopCLIWireAudit(wireAudit)
-	}
-
-	return cmd, stdin, cleanup, nil
+	owned.SetCloseHook(func() { stopCLIWireAudit(wireAudit) })
+	return cmd, stdin, owned, nil
 }
 
 func (p *ClaudeBinProvider) executeClaudeCommand(ctx context.Context, args []string, effort, userPrompt, workingDir string, debug bool, send eventSender, ephemeral, exposeToolBridge bool) error {
@@ -768,11 +764,11 @@ func (p *ClaudeBinProvider) runClaudeCommand(
 		runtimeoutput.Printf("=== DEBUG: Claude CLI Command ===\nclaude %s\nPrompt length: %d bytes (via stdin)\nCLAUDE_CODE_EFFORT_LEVEL=%s\n=================================\n", strings.Join(args, " "), len(userPrompt), level)
 	}
 
-	cmd, stdin, cleanup, err := p.prepareClaudeCommand(ctx, args, effort, workingDir)
+	cmd, stdin, owned, err := p.prepareClaudeCommand(ctx, args, effort, workingDir)
 	if err != nil {
 		return err
 	}
-	defer cleanup()
+	defer owned.Close()
 
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
@@ -784,7 +780,7 @@ func (p *ClaudeBinProvider) runClaudeCommand(
 		return fmt.Errorf("failed to get stderr pipe: %w", err)
 	}
 
-	if err := procutil.StartCommand(cmd); err != nil {
+	if err := owned.Start(); err != nil {
 		return fmt.Errorf("failed to start claude: %w", err)
 	}
 
@@ -918,7 +914,7 @@ func (p *ClaudeBinProvider) runClaudeCommand(
 	}
 
 	// Now safe to call Wait() — all pipe reads are done.
-	cmdErr := cmd.Wait()
+	cmdErr := owned.Wait()
 
 	// Wait for the stderr scanner goroutine to finish so the tail buffer
 	// is fully populated before we format error messages or log diagnostics.

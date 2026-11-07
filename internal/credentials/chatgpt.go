@@ -8,6 +8,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/samsaffron/term-llm/internal/fileprivacy"
 	"github.com/samsaffron/term-llm/internal/oauth"
 )
 
@@ -169,7 +170,7 @@ func refreshChatGPTCredentials(creds *ChatGPTCredentials, rejectedAccessToken st
 	if err != nil {
 		return err
 	}
-	if err := os.MkdirAll(filepath.Dir(credPath), 0700); err != nil {
+	if err := fileprivacy.MkdirAll(filepath.Dir(credPath)); err != nil {
 		return fmt.Errorf("failed to create credentials directory: %w", err)
 	}
 	// Acquire ownership before loading the disk generation, and retain it
@@ -268,7 +269,7 @@ func withChatGPTCredentialsLock(fn func(credPath string) error) (err error) {
 	if err != nil {
 		return err
 	}
-	if err := os.MkdirAll(filepath.Dir(credPath), 0700); err != nil {
+	if err := fileprivacy.MkdirAll(filepath.Dir(credPath)); err != nil {
 		return fmt.Errorf("failed to create credentials directory: %w", err)
 	}
 

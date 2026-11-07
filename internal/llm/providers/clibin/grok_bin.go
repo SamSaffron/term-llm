@@ -586,7 +586,7 @@ func (p *GrokBinProvider) buildCommandEnvForHome(grokHome string) []string {
 	return filtered
 }
 
-func (p *GrokBinProvider) prepareGrokCommand(ctx context.Context, args []string, workingDir string) (*exec.Cmd, func(), error) {
+func (p *GrokBinProvider) prepareGrokCommand(ctx context.Context, args []string, workingDir string) (*exec.Cmd, *procutil.Command, error) {
 	cmd, err := newCLICommand(ctx, "grok", args, workingDir)
 	if err != nil {
 		return nil, nil, fmt.Errorf("prepare grok command: %w", err)
@@ -598,16 +598,13 @@ func (p *GrokBinProvider) prepareGrokCommand(ctx context.Context, args []string,
 		return nil, nil, err
 	}
 	cmd.Env = auditedEnv
-	cleanupProcess, err := procutil.PrepareCommand(cmd)
+	owned, err := procutil.PrepareCommand(cmd)
 	if err != nil {
 		stopCLIWireAudit(wireAudit)
 		return nil, nil, fmt.Errorf("prepare grok command: %w", err)
 	}
-	cleanup := func() {
-		cleanupProcess()
-		stopCLIWireAudit(wireAudit)
-	}
-	return cmd, cleanup, nil
+	owned.SetCloseHook(func() { stopCLIWireAudit(wireAudit) })
+	return cmd, owned, nil
 }
 
 func (p *GrokBinProvider) runGrokCommand(
@@ -626,11 +623,11 @@ func (p *GrokBinProvider) runGrokCommand(
 		runtimeoutput.Printf("=== DEBUG: Grok CLI Command ===\ngrok %s\nPrompt length: %d bytes (via --prompt-file)\n================================\n", shellJoin(redactedGrokArgs(args)), len(prompt))
 	}
 
-	cmd, cleanup, err := p.prepareGrokCommand(ctx, args, workingDir)
+	cmd, owned, err := p.prepareGrokCommand(ctx, args, workingDir)
 	if err != nil {
 		return grokCommandResult{}, err
 	}
-	defer cleanup()
+	defer owned.Close()
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		return grokCommandResult{}, fmt.Errorf("get grok stdout pipe: %w", err)
@@ -639,7 +636,7 @@ func (p *GrokBinProvider) runGrokCommand(
 	if err != nil {
 		return grokCommandResult{}, fmt.Errorf("get grok stderr pipe: %w", err)
 	}
-	if err := procutil.StartCommand(cmd); err != nil {
+	if err := owned.Start(); err != nil {
 		return grokCommandResult{}, fmt.Errorf("start grok: %w", err)
 	}
 
@@ -715,7 +712,7 @@ func (p *GrokBinProvider) runGrokCommand(
 			_ = cmd.Process.Kill()
 		}
 	}
-	cmdErr := cmd.Wait()
+	cmdErr := owned.Wait()
 	<-stderrDone
 
 	if dispatchErr != nil {

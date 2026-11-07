@@ -13,7 +13,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/samsaffron/term-llm/internal/procutil"
 	"github.com/samsaffron/term-llm/internal/shellcmd"
 	"github.com/samsaffron/term-llm/internal/tools"
 	"github.com/samsaffron/term-llm/internal/ui"
@@ -55,18 +54,18 @@ func RunCaptureInDir(command, input, baseDir string) (Result, error) {
 	cmd.Dir = dir
 	cmd.Stdin = strings.NewReader(input)
 
-	cleanup, prepErr := tools.PrepareCommand(cmd)
+	owned, prepErr := tools.PrepareCommand(cmd)
 	if prepErr != nil {
 		return Result{}, fmt.Errorf("on_complete setup failed: %w", prepErr)
 	}
-	defer cleanup()
+	defer owned.Close()
 	cmd.WaitDelay = onCompleteWaitDelay
 
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 
-	err := procutil.RunCommand(cmd)
+	err := owned.Run()
 	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
 		return Result{Stdout: stdout.String(), Stderr: stderr.String()}, fmt.Errorf("timed out after %s", onCompleteTimeout)
 	}

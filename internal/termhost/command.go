@@ -77,10 +77,10 @@ func runCommand(ctx context.Context, path string, args []string, stdin []byte) e
 	// io.Discard would make os/exec create copier pipes that a background
 	// descendant can inherit and keep open after the bridge is killed.
 	command.WaitDelay = commandWaitDelay
-	cleanup, err := procutil.PrepareCommand(command)
+	owned, err := procutil.PrepareCommand(command)
 	if err != nil {
 		return fmt.Errorf("prepare lifecycle command: %w", err)
 	}
-	defer cleanup()
-	return procutil.RunCommand(command)
+	defer owned.Close()
+	return owned.Run()
 }

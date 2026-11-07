@@ -3,7 +3,9 @@
 package shellcmd
 
 import (
+	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -37,7 +39,7 @@ func TestPathFallsBackToPowerShell(t *testing.T) {
 	if got == "" {
 		t.Fatal("Path returned empty")
 	}
-	if !IsPowerShell(got) && got != `C:\Windows\System32\cmd.exe` && got != "cmd.exe" {
+	if base := filepath.Base(strings.ToLower(got)); base != "powershell.exe" && base != "pwsh.exe" && base != "cmd.exe" {
 		t.Fatalf("Path = %q, want a PowerShell or cmd fallback", got)
 	}
 }

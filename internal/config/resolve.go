@@ -12,10 +12,10 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"time"
 
+	"github.com/samsaffron/term-llm/internal/pathutil"
 	"github.com/samsaffron/term-llm/internal/procutil"
 	"github.com/samsaffron/term-llm/internal/shellcmd"
 	"gopkg.in/yaml.v3"
@@ -115,35 +115,8 @@ func resolveSRV(srvURL string) (string, error) {
 	return fmt.Sprintf("https://%s:%d%s", host, addr.Port, path), nil
 }
 
-// parseFileURL accepts both the RFC form (file:///C:/path) and the practical
-// Windows form users write (file://C:\path). The latter cannot go through
-// url.Parse because the drive letter looks like a host with a port.
 func parseFileURL(fileURL string) (path, fragment string, err error) {
-	raw := strings.TrimPrefix(fileURL, "file://")
-	if i := strings.Index(raw, "#"); i >= 0 {
-		raw, fragment = raw[:i], raw[i+1:]
-	}
-	if runtime.GOOS == "windows" {
-		if isWindowsDrivePath(raw) || strings.HasPrefix(raw, `\\`) {
-			return raw, fragment, nil
-		}
-	}
-	u, err := url.Parse(fileURL)
-	if err != nil {
-		return "", "", fmt.Errorf("invalid file:// URL: %w", err)
-	}
-	if u.Host != "" && u.Host != "localhost" {
-		return "", "", fmt.Errorf("file:// URL host must be empty or localhost: %s", fileURL)
-	}
-	path = u.Path
-	if runtime.GOOS == "windows" && len(path) >= 3 && path[0] == '/' && path[2] == ':' {
-		path = path[1:]
-	}
-	return path, u.Fragment, nil
-}
-
-func isWindowsDrivePath(p string) bool {
-	return len(p) >= 2 && ((p[0] >= 'a' && p[0] <= 'z') || (p[0] >= 'A' && p[0] <= 'Z')) && p[1] == ':'
+	return pathutil.ParseLocalFileURL(fileURL)
 }
 
 func resolveFile(fileURL string) (string, error) {
@@ -249,18 +222,18 @@ func runResolverCommand(name string, args ...string) (string, error) {
 	cmd := exec.CommandContext(ctx, name, args...)
 	cmd.WaitDelay = resolveExecWaitDelay
 
-	cleanup, prepErr := procutil.PrepareCommandProcessGroup(cmd)
+	owned, prepErr := procutil.PrepareCommandProcessGroup(cmd)
 	if prepErr != nil {
 		return "", fmt.Errorf("command setup failed: %w", prepErr)
 	}
-	defer cleanup()
+	defer owned.Close()
 
 	stdout := procutil.NewLimitedBuffer(resolveExecOutputLimit)
 	stderr := procutil.NewLimitedBuffer(resolveExecOutputLimit)
 	cmd.Stdout = stdout
 	cmd.Stderr = stderr
 
-	err := procutil.RunCommand(cmd)
+	err := owned.Run()
 	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
 		return "", fmt.Errorf("timed out after %s", resolveExecTimeout)
 	}

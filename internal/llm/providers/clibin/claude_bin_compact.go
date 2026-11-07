@@ -78,20 +78,20 @@ func (p *ClaudeBinProvider) NativeCompact(ctx context.Context, req core.NativeCo
 }
 
 func (p *ClaudeBinProvider) runNativeCompact(ctx context.Context, args []string, effort, workingDir, stdin string) ([]byte, error) {
-	cmd, stdinPipe, cleanup, err := p.prepareClaudeCommand(ctx, args, effort, workingDir)
+	cmd, stdinPipe, owned, err := p.prepareClaudeCommand(ctx, args, effort, workingDir)
 	if err != nil {
 		return nil, err
 	}
-	defer cleanup()
+	defer owned.Close()
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
-	if err := cmd.Start(); err != nil {
+	if err := owned.Start(); err != nil {
 		_ = stdinPipe.Close()
 		return nil, fmt.Errorf("start claude: %w", err)
 	}
 	_, writeErr := io.WriteString(stdinPipe, stdin+"\n")
 	_ = stdinPipe.Close()
-	if err := cmd.Wait(); err != nil {
+	if err := owned.Wait(); err != nil {
 		tail := strings.TrimSpace(stderr.String())
 		if len(tail) > 4096 {
 			tail = tail[len(tail)-4096:]

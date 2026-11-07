@@ -88,6 +88,7 @@ One line per root-module package, generated from package doc comments by `make d
 - `internal/exitcode` — defines term-llm's process exit codes and the error type carrying them.
 - `internal/extensions` — discovers trusted local CSS/JavaScript web extensions.
 - `internal/filelock` — takes cross-process advisory file locks on shared state files.
+- `internal/fileprivacy` — owns owner-only filesystem policy for application state: private file/directory modes, permission checks, and atomic private-file creation.
 - `internal/filetrack` — records file changes made by agent tools so sessions can expose a cumulative diff (baseline = file state at first touch in a session).
 - `internal/formatutil` — provides dependency-light shared display formatting.
 - `internal/gitcommit` — provides the host-owned Git transaction used by native commit workflows.
@@ -148,7 +149,7 @@ One line per root-module package, generated from package doc comments by `make d
 - `internal/plan` — owns the shared update_plan snapshot model, validation, history extraction, and bounded rendering helpers.
 - `internal/pprof` — runs the opt-in profiling HTTP server and tracks its port file.
 - `internal/process` — provides advisory process discovery, never restart authority.
-- `internal/procutil` — prepares child processes with process groups and bounded output capture.
+- `internal/procutil` — owns child-process lifetime, bounded output capture, shell environment rendering, and Unix tagged-descendant cleanup.
 - `internal/project` — resolves canonical project identity and assigns sessions to projects.
 - `internal/prompt` — builds system and user prompts for ask, edit, suggest, help and goal flows.
 - `internal/providerhttp` — owns shared provider HTTP requests, status errors and Retry-After parsing.
@@ -190,6 +191,7 @@ One line per root-module package, generated from package doc comments by `make d
 - `internal/testutil/mcptest` — provides the shared real MCP subprocess used by tests.
 - `internal/testutil/mediafixture` — synthesizes small structural identification fixtures.
 - `internal/testutil/procenv` — owns process-wide test environment isolation shared by command and application test binaries.
+- `internal/testutil/processinfo` — provides cycle-safe process predicates shared by tests.
 - `internal/textmatch` — provides string similarity, slug and line-range helpers.
 - `internal/tooldiscovery` — implements deferred MCP tool search, tool_search and planning.
 - `internal/tooldiscovery/evalcmd` — runs tool-discovery evaluations against fixture MCP servers and catalogues.

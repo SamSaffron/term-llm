@@ -59,36 +59,21 @@ func (b *limitedBuffer) Truncated() bool {
 	return b.total > int64(b.buf.Len())
 }
 
-func prepareToolCommand(cmd *exec.Cmd) (func(), error) {
-	var stdinCloser func()
-	if cmd.Stdin == nil {
-		if devNull, err := os.OpenFile(os.DevNull, os.O_RDONLY, 0); err == nil {
-			cmd.Stdin = devNull
-			stdinCloser = func() { _ = devNull.Close() }
-		}
+func prepareToolCommand(cmd *exec.Cmd) (*procutil.Command, error) {
+	owned, err := procutil.PrepareCommand(cmd)
+	if err != nil {
+		return nil, err
 	}
-
-	procutil.ConfigureDetachedCommand(cmd)
 	configureToolWait(cmd)
 	nonce := tagCommandWithNonce(cmd)
-
-	cleanup := func() {
+	owned.SetCloseHook(func() {
 		// Tools must leave the world clean: after the command returns (success,
 		// failure, timeout, or cancellation) reap every descendant it spawned.
-		//
-		// First pass: SIGKILL the process group so `nohup foo &` style children
-		// that stayed in our pgid die immediately.
-		_ = procutil.KillCommandTree(cmd)
-		// Second pass: walk /proc for any process still alive that inherited
-		// the nonce env var. This catches descendants that escaped the pgroup
-		// via setsid, double-fork daemonisation, or explicit setpgid. We retry
-		// a few times because a process may be mid-exec when we scan.
+		// The owner has already killed the process group; this second pass walks
+		// /proc for descendants that escaped it via setsid/daemonisation.
 		procutil.KillTaggedDescendants(shellNonceEnvVar, nonce)
-		if stdinCloser != nil {
-			stdinCloser()
-		}
-	}
-	return cleanup, nil
+	})
+	return owned, nil
 }
 
 const scriptBusyMaxRetries = 4
@@ -128,7 +113,7 @@ func tagCommandWithNonce(cmd *exec.Cmd) string {
 // PrepareCommand configures a tool-owned command for safe, non-interactive
 // execution. The child starts a new session so it cannot open the caller's
 // controlling terminal, and cancellation tears down its process group.
-func PrepareCommand(cmd *exec.Cmd) (func(), error) {
+func PrepareCommand(cmd *exec.Cmd) (*procutil.Command, error) {
 	return prepareToolCommand(cmd)
 }
 
