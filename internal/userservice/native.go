@@ -225,22 +225,24 @@ func (n Native) Install(s Spec, specPath string) (replaced bool, err error) {
 
 // Start starts or restarts the process without replacing its native registration.
 func (n Native) Start(ctx context.Context, kind string, restart bool) error {
-	return n.start(ctx, kind, restart, false)
+	return n.start(ctx, kind, restart, false, true)
 }
 
 // Reconcile starts an installed service, reloading its native definition when changed.
 func (n Native) Reconcile(ctx context.Context, kind string, changed bool) error {
-	return n.start(ctx, kind, changed, changed)
+	return n.start(ctx, kind, changed, changed, true)
 }
 
-func (n Native) start(ctx context.Context, kind string, restart, reload bool) error {
+func (n Native) start(ctx context.Context, kind string, restart, reload, enable bool) error {
 	if n.OS == "linux" {
 		if _, err := n.run(ctx, "systemctl", "--user", "daemon-reload"); err != nil {
 			return err
 		}
 		_, _ = n.run(ctx, "systemctl", "--user", "reset-failed", n.Label(kind))
-		if _, err := n.run(ctx, "systemctl", "--user", "enable", n.Path(kind)); err != nil {
-			return err
+		if enable {
+			if err := n.SetEnabled(ctx, kind, true); err != nil {
+				return err
+			}
 		}
 		action := "start"
 		if restart {
@@ -250,8 +252,10 @@ func (n Native) start(ctx context.Context, kind string, restart, reload bool) er
 		return err
 	}
 	target := n.domain() + "/" + n.Label(kind)
-	if _, err := n.run(ctx, "launchctl", "enable", target); err != nil {
-		return err
+	if enable {
+		if err := n.SetEnabled(ctx, kind, true); err != nil {
+			return err
+		}
 	}
 	_, loaded := n.run(ctx, "launchctl", "print", target)
 	if loaded == nil && reload {
@@ -261,6 +265,12 @@ func (n Native) start(ctx context.Context, kind string, restart, reload bool) er
 		loaded = fmt.Errorf("reload")
 	}
 	if loaded != nil {
+		if !enable {
+			// Force a one-session load even when the persistent disabled override
+			// is set. Unlike load -w, load -F does not change that override.
+			_, err := n.run(ctx, "launchctl", "load", "-F", n.Path(kind))
+			return err
+		}
 		_, err := n.run(ctx, "launchctl", "bootstrap", n.domain(), n.Path(kind))
 		return err
 	}
@@ -306,7 +316,7 @@ func (n Native) Remove(ctx context.Context, kind, specPath string) error {
 }
 func (n Native) Status(ctx context.Context, kind string) (string, error) {
 	if n.OS == "linux" {
-		out, err := n.run(ctx, "systemctl", "--user", "show", n.Label(kind), "--property=ActiveState,SubState,UnitFileState,MainPID", "--no-pager")
+		out, err := n.run(ctx, "systemctl", "--user", "show", n.Label(kind), "--property=ActiveState,SubState,UnitFileState,MainPID,ExecMainStatus", "--no-pager")
 		return string(out), err
 	}
 	out, err := n.run(ctx, "launchctl", "print", n.domain()+"/"+n.Label(kind))

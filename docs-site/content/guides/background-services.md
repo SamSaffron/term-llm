@@ -192,8 +192,32 @@ term-llm service logs hub --follow
 term-llm service stop web           # stop AND disable autostart
 term-llm service start web          # enable autostart and start
 term-llm service restart web        # enabled service only; interrupts active work
+term-llm service start web --no-enable    # start without changing autostart
+term-llm service restart web --no-enable  # restart even when autostart is disabled
+term-llm service stop web --keep-enabled  # stop without changing autostart
+term-llm service autostart web on         # enable login autostart only
+term-llm service autostart web off        # disable login autostart only
+term-llm service autostart web status     # prints enabled or disabled
 term-llm service uninstall hub      # preserve user data and saved setup
 ```
+
+Running and login autostart are independent controls. The default `start` still
+**enables and starts**, and the default `stop` still **disables and stops**.
+`start --no-enable` and `restart --no-enable` leave autostart unchanged and do not
+require it to be enabled. Ordinary `restart` requires autostart to be enabled,
+but does not change it. All restarts interrupt active work.
+
+`stop --keep-enabled` leaves the autostart setting unchanged (including when it
+was already disabled). On macOS it unloads the current LaunchAgent without
+changing its persistent login setting. Starting an unloaded macOS service with
+`--no-enable` uses a forced, one-session `launchctl load -F`, without `-w`, so a
+disabled login override remains disabled.
+
+`autostart on|off` changes only the login setting: turning it on does not start a
+stopped service, and turning it off does not stop a running service. `autostart
+status` prints `enabled` or `disabled` and exits successfully on a successful
+query. These operations require an installed managed specification and an owned
+native definition; they never adopt an unmanaged service.
 
 For startup failures, enable diagnostics:
 
@@ -245,6 +269,105 @@ it is safe to interrupt active work:
 term-llm upgrade
 term-llm service restart web
 ```
+
+### Machine-readable status
+
+```bash
+term-llm service status --json       # web, then hub (even when not installed)
+term-llm service status web --json   # only web
+term-llm service status hub --json   # only hub
+```
+
+`--json` is available only on `status`. It writes one JSON object, with service
+failures represented as data rather than a failing exit status. Flag/usage errors
+still fail normally. The default, human-readable status output is unchanged.
+Inspection does not create files, change autostart, or load/start/stop services.
+
+The envelope has `schema_version: 1`, `generated_at` (UTC RFC 3339 timestamp),
+`uid` (the inspected user ID), `platform` (`darwin` or `linux`), and `services`
+(an array in the order above). Consumers should check the schema version and
+ignore unknown fields for forward compatibility. For example:
+
+```json
+{
+  "schema_version": 1,
+  "generated_at": "2026-11-07T09:00:00Z",
+  "uid": 501,
+  "platform": "darwin",
+  "services": [
+    {
+      "kind": "web",
+      "installed": true,
+      "managed": true,
+      "registered": true,
+      "state": "ready",
+      "running": true,
+      "pid": 1234,
+      "autostart": false,
+      "binary": "/opt/term-llm/bin/term-llm",
+      "url": "http://127.0.0.1:8765/ui/",
+      "host": "127.0.0.1",
+      "port": 8765,
+      "base_path": "/ui",
+      "auth": "bearer",
+      "enrollment": "not_required",
+      "healthy": true,
+      "health_error": "",
+      "spec_path": "/Users/example/.config/term-llm/services/web/service.json",
+      "native_path": "/Users/example/Library/LaunchAgents/com.term-llm.web.plist",
+      "last_exit_code": 0,
+      "error": ""
+    }
+  ]
+}
+```
+
+Per-service fields:
+
+| Field | Meaning |
+|---|---|
+| `kind` | `web` or `hub`. |
+| `installed` | The managed specification exists and loads successfully. |
+| `managed` | A valid matching specification is present and any native definition passes the installer ownership-marker check. True for a retained specification without a native definition. |
+| `registered` | The native definition exists on disk; this does not mean the job is currently loaded or running. |
+| `state` | One of the states below. |
+| `running`, `pid` | The native manager reports a positive PID; otherwise false and zero. |
+| `autostart` | Native login-enabled setting (`launchctl print-disabled` or `systemctl --user is-enabled`); false when unknown or not managed/registered. Independent of `running`. |
+| `binary` | Recorded executable path, not the executable invoking status. No binary is executed to discover its version. `version` is currently omitted (it is not the specification version). |
+| `url`, `host`, `port`, `base_path` | Browser URL and local bind/mount metadata from the specification. URL user information, query and fragment are removed. Empty strings/zero when unavailable. For an installed service `base_path` is the normalized mount prefix the server actually uses (for example `/ui`); the serve base-path parser rejects an empty value or `/`, so those appear only when the specification is unavailable. |
+| `auth` | `bearer`, `passkey`, or `none`; empty when unavailable. |
+| `enrollment` | `not_required` except for passkey auth: `pending` for zero credentials, `enrolled` otherwise. Empty with `state: "error"` if the count cannot be inspected. Only the count is inspected, never credential contents emitted. |
+| `healthy`, `health_error` | True only for a running process whose local health endpoint returns HTTP 200. A failed probe supplies a sanitized diagnostic; otherwise the error string is empty. |
+| `spec_path`, `native_path` | Expected managed specification and native definition paths, including when absent. Empty if the environment cannot be resolved. |
+| `last_exit_code` | Integer when reported by the native manager; omitted when unknown. |
+| `error` | Sanitized inspection/manager error, otherwise empty. Never native command output. |
+
+All listed boolean and string fields, and `pid`/`port`, remain present even when
+false, empty or zero. No arguments, environment values, tokens, secrets,
+credential contents, or log output are included.
+
+States are:
+
+- `not_installed`: no specification or native definition.
+- `unmanaged`: a native definition exists without a loadable managed
+  specification, or fails the ownership check. It is left untouched. Without a
+  managed specification, `installed` and `managed` are false while `registered`
+  is true.
+- `not_registered`: the specification is retained but the native definition is
+  absent (for example after uninstall).
+- `stopped`: registered and managed, but no native running PID. An unloaded
+  macOS job with a retained plist is also stopped.
+- `ready`: a native running PID **and** a local `/healthz` HTTP 200 response.
+- `unhealthy`: a native running PID, but the health probe failed. Inspect
+  `health_error`.
+- `error`: inspection or manager status query failed. Inspect `error`.
+
+Health probes use the local host, port and mount, just like installation
+readiness checks, not the public browser URL. They use a bounded two-second
+request, with no proxy, authentication or redirects. Manager queries are also
+bounded. A foreign HTTP responder without a managed running PID cannot make a
+service ready. Unknown/unavailable status is not an instruction to reinstall or
+adopt the service.
 
 ### Preview without touching the OS
 

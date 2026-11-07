@@ -13,6 +13,9 @@ import (
 )
 
 func (a App) manageUserService(cmd *cobra.Command, action string, args []string) (result error) {
+	if jsonStatus, _ := cmd.Flags().GetBool("json"); action == "status" && jsonStatus {
+		return a.StatusJSON(cmd, args)
+	}
 	serviceDebug(cmd, "Preparing %s service management", action)
 	e, err := newServiceEnvironment()
 	if err != nil {
@@ -116,6 +119,9 @@ func printUserServiceToken(cmd *cobra.Command, e serviceEnvironment, spec userse
 }
 
 func stopUserService(cmd *cobra.Command, e serviceEnvironment, kind string) error {
+	if keepEnabled, _ := cmd.Flags().GetBool("keep-enabled"); keepEnabled {
+		return e.native.StopWithoutDisable(cmd.Context(), kind)
+	}
 	return e.native.Stop(cmd.Context(), kind)
 }
 
@@ -133,7 +139,8 @@ func uninstallUserService(cmd *cobra.Command, e serviceEnvironment, kind, path s
 }
 
 func startUserService(cmd *cobra.Command, e serviceEnvironment, spec userservice.Spec, kind, action string) error {
-	if action == "restart" {
+	noEnable, _ := cmd.Flags().GetBool("no-enable")
+	if action == "restart" && !noEnable {
 		enabled, err := e.native.Enabled(cmd.Context(), kind)
 		if err != nil {
 			return err
@@ -169,7 +176,7 @@ func startUserService(cmd *cobra.Command, e serviceEnvironment, spec userservice
 			return err
 		}
 	}
-	err := e.native.Start(cmd.Context(), kind, action == "restart")
+	err := startNativeUserService(cmd, e, kind, action)
 	if err == nil {
 		serviceDebug(cmd, "Waiting up to 15s for local health endpoint and native running PID")
 		err = waitUserService(cmd.Context(), spec, e.native)
