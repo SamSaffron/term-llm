@@ -9,7 +9,6 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
-	"syscall"
 	"testing"
 	"time"
 
@@ -84,7 +83,7 @@ func TestJobsV2ProgramRunner_CleansUpBackgroundChildOnSuccess(t *testing.T) {
 	pid := readJobsV2ProgramPID(t, pidPath)
 	defer func() {
 		if !testutil.ProcessHasExited(pid) {
-			_ = syscall.Kill(pid, syscall.SIGKILL)
+			_ = testutil.KillProcess(pid)
 		}
 	}()
 

@@ -639,7 +639,7 @@ func (p *GrokBinProvider) runGrokCommand(
 	if err != nil {
 		return grokCommandResult{}, fmt.Errorf("get grok stderr pipe: %w", err)
 	}
-	if err := cmd.Start(); err != nil {
+	if err := procutil.StartCommand(cmd); err != nil {
 		return grokCommandResult{}, fmt.Errorf("start grok: %w", err)
 	}
 

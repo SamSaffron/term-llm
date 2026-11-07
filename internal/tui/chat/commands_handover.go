@@ -17,6 +17,7 @@ import (
 	"github.com/samsaffron/term-llm/internal/llm/core"
 	"github.com/samsaffron/term-llm/internal/llm/engine"
 	"github.com/samsaffron/term-llm/internal/modelpolicy"
+	"github.com/samsaffron/term-llm/internal/procutil"
 	projectpkg "github.com/samsaffron/term-llm/internal/project"
 	"github.com/samsaffron/term-llm/internal/session"
 	"github.com/samsaffron/term-llm/internal/tools"
@@ -418,7 +419,7 @@ func runHandoverScript(ctx context.Context, approvalMgr *tools.ApprovalManager, 
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 
-	err = cmd.Run()
+	err = procutil.RunCommand(cmd)
 	if errors.Is(execCtx.Err(), context.DeadlineExceeded) {
 		return "", fmt.Errorf("handover script timed out after 30s")
 	}

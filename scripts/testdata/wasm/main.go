@@ -126,7 +126,7 @@ func (s *smoke) runUnsupportedFacilities() {
 	s.check(err == nil, "prepare subprocess: %v", err)
 	if err == nil {
 		defer cleanup()
-		err = cmd.Run()
+		err = procutil.RunCommand(cmd)
 		s.check(err != nil && cmd.Process == nil, "subprocess unexpectedly started on js/wasm: %v", err)
 	}
 

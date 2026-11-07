@@ -48,6 +48,7 @@ type askStreamModel struct {
 	deferredStreamRead bool
 	streamChan         <-chan ui.StreamEvent
 	streamErr          error
+	userInterrupted    bool
 
 	// Subagent progress tracking
 	subagentTracker *ui.SubagentTracker
@@ -117,6 +118,7 @@ type askStreamEventMsg struct {
 }
 type askDoneMsg struct{}
 type askCancelledMsg struct{}
+type askUserCancelledMsg struct{}
 type askUsageMsg struct {
 	InputTokens  int
 	OutputTokens int
@@ -459,6 +461,7 @@ func (m askStreamModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.approvalForm = nil
 			m.approvalResponseCh = nil
 			m.approvalDesc = ""
+			m.userInterrupted = true
 			return m, tea.Quit
 		}
 
@@ -468,7 +471,7 @@ func (m askStreamModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.KeyPressMsg:
 		if msg.String() == "ctrl+c" || msg.String() == "esc" {
-			return m, func() tea.Msg { return askCancelledMsg{} }
+			return m, func() tea.Msg { return askUserCancelledMsg{} }
 		}
 		// Handle CTRL-O to open inspector (works during streaming too)
 		if msg.String() == "ctrl+o" && m.store != nil && m.sess != nil {
@@ -537,6 +540,9 @@ func (m askStreamModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.handleReasoningMessage(msg)
 	case askDoneMsg:
 		return m.handleDoneMessage(msg)
+	case askUserCancelledMsg:
+		m.userInterrupted = true
+		return m.handleCancelledMessage(askCancelledMsg{})
 	case askCancelledMsg:
 		return m.handleCancelledMessage(msg)
 	case ui.SmoothTickMsg:
@@ -972,8 +978,13 @@ func RunStreamProgram(ctx context.Context, p *tea.Program) error {
 	if result.err != nil {
 		return result.err
 	}
-	if model, ok := result.model.(askStreamModel); ok && model.streamErr != nil {
-		return model.streamErr
+	if model, ok := result.model.(askStreamModel); ok {
+		if model.userInterrupted && isOnlyCancellation(model.streamErr) {
+			return errUserInterrupted
+		}
+		if model.streamErr != nil {
+			return model.streamErr
+		}
 	}
 	return nil
 }

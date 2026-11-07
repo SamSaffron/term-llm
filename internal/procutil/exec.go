@@ -62,11 +62,12 @@ func prepareCommand(cmd *exec.Cmd, configure func(*exec.Cmd)) (func(), error) {
 			cmd.Stdin = devNull
 			configure(cmd)
 			return func() {
+				releaseCommand(cmd)
 				_ = devNull.Close()
 			}, nil
 		}
 	}
 
 	configure(cmd)
-	return func() {}, nil
+	return func() { releaseCommand(cmd) }, nil
 }

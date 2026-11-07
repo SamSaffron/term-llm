@@ -907,7 +907,7 @@ func (p *GrokBinProvider) startGrokACPProcess(ctx context.Context, req core.Requ
 		_ = stdin.Close()
 		return nil, fmt.Errorf("prepare grok ACP command: %w", err)
 	}
-	if err := cmd.Start(); err != nil {
+	if err := procutil.StartCommand(cmd); err != nil {
 		cancel()
 		cleanup()
 		stopCLIWireAudit(wireAudit)

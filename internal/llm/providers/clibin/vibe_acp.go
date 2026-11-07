@@ -622,7 +622,7 @@ func (p *VibeBinProvider) startVibeACPProcess(ctx context.Context, debug bool, m
 		_ = stdin.Close()
 		return nil, fail("prepare vibe-acp command: %w", err)
 	}
-	if err := cmd.Start(); err != nil {
+	if err := procutil.StartCommand(cmd); err != nil {
 		cleanup()
 		return nil, fail("start vibe-acp: %w", err)
 	}

@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"runtime"
 
+	"github.com/samsaffron/term-llm/internal/atomicfile"
 	"github.com/samsaffron/term-llm/internal/filelock"
 )
 
@@ -122,12 +123,8 @@ func writePrivateFile(path string, data []byte) (err error) {
 	if err := tmp.Close(); err != nil {
 		return fmt.Errorf("close temp file: %w", err)
 	}
-	if err := os.Rename(tmp.Name(), path); err != nil {
+	if err := atomicfile.Replace(tmp.Name(), path); err != nil {
 		return fmt.Errorf("replace %s: %w", path, err)
-	}
-	if d, derr := os.Open(dir); derr == nil {
-		_ = d.Sync()
-		_ = d.Close()
 	}
 	return nil
 }

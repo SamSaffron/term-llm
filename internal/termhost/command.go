@@ -82,5 +82,5 @@ func runCommand(ctx context.Context, path string, args []string, stdin []byte) e
 		return fmt.Errorf("prepare lifecycle command: %w", err)
 	}
 	defer cleanup()
-	return command.Run()
+	return procutil.RunCommand(command)
 }

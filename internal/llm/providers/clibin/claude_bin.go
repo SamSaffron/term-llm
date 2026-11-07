@@ -784,7 +784,7 @@ func (p *ClaudeBinProvider) runClaudeCommand(
 		return fmt.Errorf("failed to get stderr pipe: %w", err)
 	}
 
-	if err := cmd.Start(); err != nil {
+	if err := procutil.StartCommand(cmd); err != nil {
 		return fmt.Errorf("failed to start claude: %w", err)
 	}
 

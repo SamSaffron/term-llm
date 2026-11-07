@@ -58,7 +58,7 @@ func RunUpgrade(ctx context.Context, currentVersion, targetVersion string, stdou
 	}
 
 	assetVersion := strings.TrimPrefix(targetTag, "v")
-	assetName := fmt.Sprintf("%s_%s_%s_%s.tar.gz", RepoName, assetVersion, runtime.GOOS, runtime.GOARCH)
+	assetName := releaseArchiveName(assetVersion)
 	releaseURL := fmt.Sprintf("https://github.com/%s/%s/releases/download/%s", RepoOwner, RepoName, targetTag)
 
 	tmpDir, err := os.MkdirTemp("", "term-llm-upgrade-*")
@@ -92,11 +92,7 @@ func RunUpgrade(ctx context.Context, currentVersion, targetVersion string, stdou
 		return err
 	}
 
-	if err := os.Chmod(tempPath, 0o755); err != nil {
-		return err
-	}
-
-	if err := os.Rename(tempPath, exePath); err != nil {
+	if err := replaceExecutable(tempPath, exePath); err != nil {
 		if errors.Is(err, os.ErrPermission) {
 			return fmt.Errorf("failed to replace %s (permission denied). try running with sudo", exePath)
 		}
@@ -133,4 +129,21 @@ func versionDisplayTag(version string) string {
 		return "v" + version
 	}
 	return version
+}
+
+// releaseArchiveName returns the release artifact name for this platform.
+func releaseArchiveName(version string) string {
+	ext := ".tar.gz"
+	if runtime.GOOS == "windows" {
+		ext = ".zip"
+	}
+	return fmt.Sprintf("%s_%s_%s_%s%s", RepoName, version, runtime.GOOS, runtime.GOARCH, ext)
+}
+
+// releaseBinaryName returns the executable member name inside release archives.
+func releaseBinaryName() string {
+	if runtime.GOOS == "windows" {
+		return RepoName + ".exe"
+	}
+	return RepoName
 }

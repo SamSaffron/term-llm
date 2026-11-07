@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/samsaffron/term-llm/internal/llm/core"
+	"github.com/samsaffron/term-llm/internal/procutil"
 )
 
 type runAgentScriptCommandFunc func(context.Context, string, []string, string, *limitedBuffer, *limitedBuffer) error
@@ -32,7 +33,7 @@ func executeAgentScriptCommand(ctx context.Context, script string, argv []string
 		return &runAgentScriptSetupError{err: err}
 	}
 	defer cleanup()
-	return cmd.Run()
+	return procutil.RunCommand(cmd)
 }
 
 // RunAgentScriptTool executes scripts bundled in the agent's source directory.

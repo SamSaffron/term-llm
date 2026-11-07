@@ -203,7 +203,7 @@ func TestClaudeBinProvider_prepareClaudeCommand_ConfiguresProcessGroupWaitDelayA
 	if cmd.WaitDelay != claudeCommandWaitDelay {
 		t.Fatalf("WaitDelay = %v, want %v", cmd.WaitDelay, claudeCommandWaitDelay)
 	}
-	if cmd.SysProcAttr == nil || !cmd.SysProcAttr.Setsid {
+	if !detachedProcess(cmd.SysProcAttr) {
 		t.Fatal("expected claude subprocess to run in a detached session")
 	}
 	if cmd.Cancel == nil {

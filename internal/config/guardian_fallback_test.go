@@ -1,6 +1,7 @@
 package config
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -23,11 +24,11 @@ func TestGuardianFallbackEnabledAndValidate(t *testing.T) {
 		{name: "provider with logging", fallback: GuardianFallbackConfig{Provider: "chatgpt", LogPath: "~/.cache/guardian.jsonl"}, backend: "classify", enabled: true},
 		{name: "logging off is still configured", fallback: GuardianFallbackConfig{Provider: "chatgpt", LogPath: "off"}, backend: "classify", enabled: true},
 		{name: "logging OFF is case-insensitive", fallback: GuardianFallbackConfig{Provider: "chatgpt", LogPath: " OFF "}, backend: "classify", enabled: true},
-		{name: "absolute log path", fallback: GuardianFallbackConfig{Provider: "chatgpt", LogPath: "/var/tmp/escalations.jsonl"}, backend: "classify", enabled: true},
+		{name: "absolute log path", fallback: GuardianFallbackConfig{Provider: "chatgpt", LogPath: filepath.Join(t.TempDir(), "escalations.jsonl")}, backend: "classify", enabled: true},
 		{name: "relative log path is rejected", fallback: GuardianFallbackConfig{Provider: "chatgpt", LogPath: "logs/escalations.jsonl"}, backend: "classify", enabled: true, wantErr: `guardian.fallback.log_path must be absolute, start with ~, or be off (got "logs/escalations.jsonl")`},
 		{name: "bare file name is rejected", fallback: GuardianFallbackConfig{Model: "gpt-5.6-luna-low", LogPath: "escalations.jsonl"}, backend: "classify", enabled: true, wantErr: `guardian.fallback.log_path must be absolute, start with ~, or be off (got "escalations.jsonl")`},
-		{name: "log path only", fallback: GuardianFallbackConfig{LogPath: "/tmp/escalations.jsonl"}, backend: "classify", wantErr: "guardian.fallback.log_path requires guardian.fallback.provider or guardian.fallback.model"},
-		{name: "log path only on llm", fallback: GuardianFallbackConfig{LogPath: "/tmp/escalations.jsonl"}, backend: "llm", wantErr: "guardian.fallback.log_path requires guardian.fallback.provider or guardian.fallback.model"},
+		{name: "log path only", fallback: GuardianFallbackConfig{LogPath: filepath.Join(t.TempDir(), "escalations.jsonl")}, backend: "classify", wantErr: "guardian.fallback.log_path requires guardian.fallback.provider or guardian.fallback.model"},
+		{name: "log path only on llm", fallback: GuardianFallbackConfig{LogPath: filepath.Join(t.TempDir(), "escalations.jsonl")}, backend: "llm", wantErr: "guardian.fallback.log_path requires guardian.fallback.provider or guardian.fallback.model"},
 		{name: "provider on default backend", fallback: GuardianFallbackConfig{Provider: "chatgpt"}, backend: "", enabled: true, wantErr: "guardian.fallback requires guardian.backend: classify"},
 		{name: "provider on llm backend", fallback: GuardianFallbackConfig{Model: "gpt-5.6-luna-low"}, backend: "llm", enabled: true, wantErr: "guardian.fallback requires guardian.backend: classify"},
 		{name: "logging on llm backend", fallback: GuardianFallbackConfig{Provider: "chatgpt", LogPath: "off"}, backend: "llm", enabled: true, wantErr: "guardian.fallback requires guardian.backend: classify"},
@@ -79,7 +80,8 @@ func TestGuardianFallbackLoadsFromYAML(t *testing.T) {
 	if err := os.MkdirAll(configDir, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	contents := "guardian:\n  backend: classify\n  fallback:\n    provider: chatgpt\n    model: gpt-5.6-luna-low\n    log_path: /tmp/guardian-escalations.jsonl\n"
+	logPath := filepath.Join(t.TempDir(), "guardian-escalations.jsonl")
+	contents := fmt.Sprintf("guardian:\n  backend: classify\n  fallback:\n    provider: chatgpt\n    model: gpt-5.6-luna-low\n    log_path: %q\n", logPath)
 	if err := os.WriteFile(filepath.Join(configDir, "config.yaml"), []byte(contents), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -89,7 +91,7 @@ func TestGuardianFallbackLoadsFromYAML(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := GuardianFallbackConfig{Provider: "chatgpt", Model: "gpt-5.6-luna-low", LogPath: "/tmp/guardian-escalations.jsonl"}
+	want := GuardianFallbackConfig{Provider: "chatgpt", Model: "gpt-5.6-luna-low", LogPath: logPath}
 	if cfg.Guardian.Fallback != want || !cfg.Guardian.Fallback.Enabled() {
 		t.Fatalf("guardian.fallback = %+v, want %+v", cfg.Guardian.Fallback, want)
 	}
@@ -144,6 +146,7 @@ func TestGuardianEscalationLogPath(t *testing.T) {
 		home := t.TempDir()
 		t.Setenv("XDG_DATA_HOME", "")
 		t.Setenv("HOME", home)
+		t.Setenv("USERPROFILE", home)
 		got, err := GuardianEscalationLogPath()
 		want := filepath.Join(home, ".local", "share", "term-llm", "guardian", "escalations.jsonl")
 		if err != nil || got != want {
@@ -154,6 +157,7 @@ func TestGuardianEscalationLogPath(t *testing.T) {
 		home := t.TempDir()
 		t.Setenv("XDG_DATA_HOME", filepath.Join("relative", "data"))
 		t.Setenv("HOME", home)
+		t.Setenv("USERPROFILE", home)
 		got, err := GuardianEscalationLogPath()
 		want := filepath.Join(home, ".local", "share", "term-llm", "guardian", "escalations.jsonl")
 		if err != nil || got != want {
@@ -163,6 +167,7 @@ func TestGuardianEscalationLogPath(t *testing.T) {
 	t.Run("unresolvable home never uses the working directory", func(t *testing.T) {
 		t.Setenv("XDG_DATA_HOME", "")
 		t.Setenv("HOME", "")
+		t.Setenv("USERPROFILE", "")
 		if _, err := os.UserHomeDir(); err == nil {
 			t.Skip("platform resolves a home directory without HOME")
 		}

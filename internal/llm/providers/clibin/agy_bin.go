@@ -473,7 +473,7 @@ func (p *AgyBinProvider) runCommand(ctx context.Context, args []string, prompt, 
 	if err != nil {
 		return nil, fmt.Errorf("prepare agy process: %w", err)
 	}
-	if err := cmd.Start(); err != nil {
+	if err := procutil.StartCommand(cmd); err != nil {
 		cleanup()
 		return nil, fmt.Errorf("start agy command: %w", err)
 	}

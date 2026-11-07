@@ -16,6 +16,7 @@ import (
 	"github.com/samsaffron/term-llm/internal/llm/core"
 	"github.com/samsaffron/term-llm/internal/procutil"
 	"github.com/samsaffron/term-llm/internal/session"
+	"github.com/samsaffron/term-llm/internal/shellcmd"
 	"github.com/samsaffron/term-llm/internal/terminaltext"
 )
 
@@ -105,7 +106,7 @@ func (m *Model) interactiveShellCommand(opts shellOptions) (*exec.Cmd, string, e
 		return nil, "", err
 	}
 	if opts.Command != "" {
-		shellArgs = append(shellArgs, "-c", opts.Command)
+		shellArgs = append(shellArgs, shellcmd.Args(shellPath, opts.Command)...)
 	}
 	cmd := exec.Command(shellPath, shellArgs...)
 	cmd.Dir = dir
@@ -172,10 +173,7 @@ func (m *Model) boundWorktreeForShellEnv() string {
 }
 
 func interactiveShellPath() string {
-	if shell := strings.TrimSpace(os.Getenv("SHELL")); shell != "" {
-		return shell
-	}
-	return "sh"
+	return shellcmd.InteractivePath()
 }
 
 func interactiveShellArgs(shellPath string, noRC bool) ([]string, error) {
@@ -184,6 +182,12 @@ func interactiveShellArgs(shellPath string, noRC bool) ([]string, error) {
 	}
 	name := strings.TrimSuffix(strings.ToLower(filepath.Base(shellPath)), ".exe")
 	switch name {
+	case "powershell", "pwsh":
+		// Windows PowerShell has no rc-file switch equivalent to bash --norc;
+		// -NoProfile skips profile scripts.
+		return []string{"-NoLogo", "-NoProfile"}, nil
+	case "cmd":
+		return nil, nil
 	case "zsh":
 		return []string{"-f"}, nil
 	case "bash":
@@ -564,7 +568,8 @@ func (m *Model) startDirectShell(raw string) (tea.Model, tea.Cmd) {
 func (m *Model) runDirectShellCmd(ctx, lifecycleCtx context.Context, generation uint64, command, dir string, events chan tea.Msg) tea.Cmd {
 	worktreeDir := m.boundWorktreeForShellEnv()
 	return func() tea.Msg {
-		cmd := exec.CommandContext(ctx, interactiveShellPath(), "-c", command)
+		shellPath := interactiveShellPath()
+		cmd := exec.CommandContext(ctx, shellPath, shellcmd.Args(shellPath, command)...)
 		cmd.Dir = dir
 		cmd.Env = interactiveShellEnv(os.Environ(), dir, worktreeDir, false)
 		cmd.WaitDelay = directShellWaitDelay
@@ -577,7 +582,7 @@ func (m *Model) runDirectShellCmd(ctx, lifecycleCtx context.Context, generation 
 		cleanup, err := procutil.PrepareCommand(cmd)
 		if err == nil {
 			defer cleanup()
-			err = cmd.Run()
+			err = procutil.RunCommand(cmd)
 		}
 
 		done := directShellDoneMsg{generation: generation, err: err}

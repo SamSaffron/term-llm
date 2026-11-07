@@ -99,7 +99,7 @@ func TestLoadConfigDoesNotResolveTypeSafeCredential(t *testing.T) {
 		t.Fatal(err)
 	}
 	marker := filepath.Join(configHome, "resolved")
-	contents := "classify:\n  providers:\n    typesafe:\n      api_key: \"$(touch " + marker + "; printf typesafe-key)\"\n"
+	contents := "classify:\n  providers:\n    typesafe:\n      api_key: '$(touch " + shellPath(marker) + "; printf typesafe-key)'\n"
 	if err := os.WriteFile(filepath.Join(configDir, "config.yaml"), []byte(contents), 0o600); err != nil {
 		t.Fatal(err)
 	}
