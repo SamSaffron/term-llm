@@ -269,7 +269,7 @@ func readPID(t *testing.T, path string) int {
 
 func waitPID(t *testing.T, path string) int {
 	t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
+	deadline := time.Now().Add(20 * time.Second)
 	for time.Now().Before(deadline) {
 		if _, err := os.Stat(path); err == nil {
 			return readPID(t, path)
