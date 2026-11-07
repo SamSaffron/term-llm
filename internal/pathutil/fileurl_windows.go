@@ -17,9 +17,6 @@ func parsePracticalFileURL(raw string) (string, bool) {
 		}
 		return "", false
 	}
-	if strings.HasPrefix(raw, "//") {
-		return `\\` + strings.ReplaceAll(strings.TrimPrefix(raw, "//"), "/", `\`), true
-	}
 	if isWindowsDrivePath(raw) {
 		return raw, true
 	}
@@ -39,6 +36,11 @@ func parseNativeFileURLHost(host, path string) (string, bool) {
 }
 
 func normalizeNativeFileURLPath(path string) string {
+	// Empty-authority UNC URLs are parsed and unescaped before converting the
+	// decoded //server/share path to Windows separators.
+	if strings.HasPrefix(path, "//") {
+		return `\\` + strings.ReplaceAll(strings.TrimPrefix(path, "//"), "/", `\`)
+	}
 	if len(path) >= 3 && path[0] == '/' && isWindowsDrivePath(path[1:]) {
 		return path[1:]
 	}
