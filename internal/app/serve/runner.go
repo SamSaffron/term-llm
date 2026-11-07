@@ -487,7 +487,7 @@ func (r *cmdRunner) prepare(ctx context.Context, req runpkg.Request, sink runpkg
 	}
 
 	if settings.MCP != "" && !borrowedEngine {
-		mcpOpts := &mcpstart.MCPOptions{Provider: provider, Model: modelName, YoloMode: yoloMode, ToolDiscovery: cfg.ToolDiscovery}
+		mcpOpts := &mcpstart.MCPOptions{AgentName: agentName, Provider: provider, Model: modelName, YoloMode: yoloMode, ToolDiscovery: cfg.ToolDiscovery}
 		mgr, err := mcpstart.EnableMCPServersWithFeedback(ctx, settings.MCP, engine, r.errWriter(), mcpOpts)
 		if err != nil {
 			return nil, err

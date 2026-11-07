@@ -271,6 +271,9 @@ func Run(ctx context.Context, args []string, opts Options, deps Dependencies) er
 			YoloMode:      resolvedYolo,
 			ToolDiscovery: cfg.ToolDiscovery,
 		}
+		if agent != nil {
+			mcpOpts.AgentName = agent.Name
+		}
 		if providerCfg := cfg.GetActiveProviderConfig(); providerCfg != nil {
 			mcpOpts.Model = providerCfg.Model
 		}

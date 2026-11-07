@@ -15,12 +15,14 @@ var configUpdateMu sync.Mutex
 
 // Config represents the mcp.json configuration file.
 type Config struct {
+	extra   map[string]json.RawMessage
 	Servers map[string]ServerConfig `json:"servers"`
 }
 
 // ServerConfig represents a configured MCP server.
 // Supports both stdio transport (Command/Args) and HTTP transport (URL).
 type ServerConfig struct {
+	extra map[string]json.RawMessage
 	// Type discriminator: "stdio" (default if command present) or "http"
 	Type string `json:"type,omitempty"`
 
@@ -39,6 +41,8 @@ type ServerConfig struct {
 	// Shared fields
 	Env        map[string]string `json:"env,omitempty"`
 	AlwaysLoad []string          `json:"always_load,omitempty"`
+	// Agents restricts access to exact resolved agent names; empty permits all.
+	Agents []string `json:"agents,omitempty"`
 
 	// Sampling configuration
 	Sampling *SamplingConfig `json:"sampling,omitempty"`
@@ -99,6 +103,9 @@ func (c *ServerConfig) TransportType() string {
 
 // Validate checks that the server configuration is valid.
 func (c *ServerConfig) Validate() error {
+	if err := c.validateAgents(); err != nil {
+		return err
+	}
 	transport := c.TransportType()
 	if transport == "http" {
 		if c.URL == "" {

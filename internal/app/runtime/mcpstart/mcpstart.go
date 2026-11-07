@@ -21,6 +21,7 @@ import (
 
 // MCPOptions contains options for enabling MCP servers.
 type MCPOptions struct {
+	AgentName     string
 	Provider      core.Provider
 	Model         string
 	YoloMode      bool
@@ -35,7 +36,11 @@ func EnableMCPServersWithFeedback(ctx context.Context, mcpFlag string, engine *e
 		return nil, nil
 	}
 
-	mcpManager := mcp.NewManager()
+	agentName := ""
+	if opts != nil {
+		agentName = opts.AgentName
+	}
+	mcpManager := mcp.NewManagerForAgent(agentName)
 	if err := mcpManager.LoadConfig(); err != nil {
 		return nil, fmt.Errorf("failed to load MCP config: %w", err)
 	}
@@ -64,6 +69,10 @@ func EnableMCPServersWithFeedback(ctx context.Context, mcpFlag string, engine *e
 			return nil, fmt.Errorf("MCP server '%s' not configured. Add it with: term-llm mcp add %s", missing[0], missing[0])
 		}
 		return nil, fmt.Errorf("MCP servers not configured: %s. Add them with: term-llm mcp add <name>", strings.Join(missing, ", "))
+	}
+
+	if err := mcpManager.CheckSelection(serverNames); err != nil {
+		return nil, err
 	}
 
 	// Only repaint startup progress when feedback is an interactive terminal.

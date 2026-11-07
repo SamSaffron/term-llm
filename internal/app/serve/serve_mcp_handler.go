@@ -137,7 +137,7 @@ func (rt *serveRuntime) ensureMCPManagerLocked() error {
 		return fmt.Errorf("runtime is unavailable")
 	}
 	if rt.mcpManager == nil {
-		mgr := mcp.NewManager()
+		mgr := mcp.NewManagerForAgent(rt.agentName)
 		if err := mgr.LoadConfig(); err != nil {
 			return fmt.Errorf("failed to load MCP config: %w", err)
 		}
@@ -167,7 +167,7 @@ func buildServeMCPState(manager *mcp.Manager, engine *engine.Engine, mcpSetting,
 
 	available := manager.AvailableServers()
 	availableSet := stringSet(available)
-	enabled := normalizeMCPSelection(append(manager.EnabledServers(), mcpstart.ParseServerList(mcpSetting)...))
+	enabled := normalizeMCPSelection(manager.FilterSelection(append(manager.EnabledServers(), mcpstart.ParseServerList(mcpSetting)...)))
 	enabledSet := stringSet(enabled)
 	states := make(map[string]mcp.ServerState)
 	authStatuses := manager.AuthStatuses()
@@ -193,7 +193,7 @@ func buildServeMCPState(manager *mcp.Manager, engine *engine.Engine, mcpSetting,
 	}
 
 	resp.Enabled = append(resp.Enabled, enabled...)
-	for _, name := range available {
+	for _, name := range manager.FilterSelection(available) {
 		status, err := manager.ServerStatus(name)
 		view := serveMCPServerView{
 			Name:       name,
@@ -306,71 +306,6 @@ func (rt *serveRuntime) registerMCPToolsForServersLocked(serverNames []string) {
 	}
 }
 
-func waitForMCPServersReady(ctx context.Context, manager *mcp.Manager, names []string) error {
-	if manager == nil || len(names) == 0 {
-		return nil
-	}
-	deadline := time.NewTimer(serveMCPStartupTimeout)
-	defer deadline.Stop()
-	ticker := time.NewTicker(80 * time.Millisecond)
-	defer ticker.Stop()
-
-	check := func() (bool, error) {
-		var failed []string
-		var starting []string
-		var stopped []string
-		for _, name := range names {
-			status, err := manager.ServerStatus(name)
-			switch status {
-			case mcp.StatusReady, mcp.StatusAuthRequired:
-				// Settled: sign-in can finish later without discarding selection.
-			case mcp.StatusStarting:
-				starting = append(starting, name)
-			case mcp.StatusFailed:
-				msg := "unknown error"
-				if err != nil {
-					msg = err.Error()
-				}
-				failed = append(failed, fmt.Sprintf("%s (%s)", name, msg))
-			default:
-				stopped = append(stopped, name)
-			}
-		}
-		if len(failed) > 0 {
-			return false, fmt.Errorf("MCP servers failed to start: %s", strings.Join(failed, "; "))
-		}
-		if len(stopped) > 0 {
-			return false, fmt.Errorf("MCP servers stopped before becoming ready: %s", strings.Join(stopped, ", "))
-		}
-		return len(starting) == 0, nil
-	}
-
-	for {
-		ready, err := check()
-		if ready || err != nil {
-			return err
-		}
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-deadline.C:
-			var stillStarting []string
-			for _, name := range names {
-				status, _ := manager.ServerStatus(name)
-				if status == mcp.StatusStarting {
-					stillStarting = append(stillStarting, name)
-				}
-			}
-			if len(stillStarting) == 0 {
-				_, err := check()
-				return err
-			}
-			return fmt.Errorf("timed out waiting for MCP servers to start: %s", strings.Join(stillStarting, ", "))
-		case <-ticker.C:
-		}
-	}
-}
-
 func (rt *serveRuntime) startSelectedMCPServersLocked(ctx context.Context, requested []string) error {
 	authStatuses := rt.mcpManager.AuthStatuses()
 	for _, name := range requested {
@@ -437,6 +372,10 @@ func (rt *serveRuntime) applyMCPSelectionLocked(ctx context.Context, requestedNa
 		return newServeMCPError(http.StatusBadRequest, "invalid_request_error", fmt.Sprintf("MCP servers are not configured: %s", strings.Join(missing, ", ")))
 	}
 
+	if err := rt.mcpManager.CheckSelection(requested); err != nil {
+		return newServeMCPError(http.StatusForbidden, "permission_error", err.Error())
+	}
+
 	currentlyEnabled := rt.mcpManager.EnabledServers()
 	currentSet := stringSet(currentlyEnabled)
 	// rt.mcpSetting is the persisted/session selection. Include it so stale
@@ -466,7 +405,7 @@ func (rt *serveRuntime) applyMCPSelectionLocked(ctx context.Context, requestedNa
 	if err := rt.startSelectedMCPServersLocked(ctx, requested); err != nil {
 		return err
 	}
-	if err := waitForMCPServersReady(ctx, rt.mcpManager, requested); err != nil {
+	if err := mcpstart.WaitForServersReady(ctx, rt.mcpManager, requested, serveMCPStartupTimeout); err != nil {
 		return newServeMCPError(http.StatusInternalServerError, "server_error", err.Error())
 	}
 	rt.recordMCPAuthRequiredGrantsLocked(requested)
@@ -523,7 +462,15 @@ func (s *serveServer) applyPersistedMCPSelectionLocked(ctx context.Context, sess
 	if err != nil || sess == nil {
 		return nil
 	}
-	desired := normalizeMCPSelection(mcpstart.ParseServerList(sess.MCP))
+	if err := rt.ensureMCPManagerLocked(); err != nil {
+		return err
+	}
+	desired := normalizeMCPSelection(rt.mcpManager.FilterSelection(mcpstart.ParseServerList(sess.MCP)))
+	if mcpSelectionString(desired) != mcpSelectionString(mcpstart.ParseServerList(sess.MCP)) {
+		if err := s.persistSessionMCPSelectionLocked(ctx, sessionID, rt, desired); err != nil {
+			return err
+		}
+	}
 	current := normalizeMCPSelection(mcpstart.ParseServerList(rt.mcpSetting))
 	if sameStringSlice(desired, current) && rt.mcpSelectionReadyLocked(desired) {
 		return nil
@@ -684,12 +631,15 @@ func (s *serveServer) configuredMCPState(ctx context.Context, sessionID string) 
 		return serveMCPSessionResponse{}, fmt.Errorf("failed to load MCP config: %w", err)
 	}
 	mcpSetting := ""
+	agentName := ""
 	if s != nil && s.store != nil && strings.TrimSpace(sessionID) != "" {
 		if sess, err := s.store.Get(ctx, sessionID); err == nil && sess != nil {
 			mcpSetting = sess.MCP
+			agentName = sess.Agent
 		}
 	}
-	return buildServeMCPState(mcp.NewManagerWithConfig(cfg), nil, mcpSetting, sessionID), nil
+	manager := mcp.NewManagerWithConfigForAgent(cfg, agentName)
+	return buildServeMCPState(manager, nil, mcpSetting, sessionID), nil
 }
 
 func (s *serveServer) writeConfiguredMCPState(w http.ResponseWriter, r *http.Request, sessionID string) {

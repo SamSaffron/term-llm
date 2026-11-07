@@ -409,7 +409,7 @@ func (r *chatInvocation) buildChatSessionRuntime(ctx context.Context, launch cha
 	}
 
 	// Create MCP manager
-	mcpManager := mcp.NewManager()
+	mcpManager := mcp.NewManagerForAgent(agentName)
 	failureCleanup = append(failureCleanup, mcpManager.StopAll)
 	if err := mcpManager.LoadConfig(); err != nil {
 		// Non-fatal: continue without MCP

@@ -62,6 +62,7 @@ type serverStartup struct {
 type Manager struct {
 	reloadMu          sync.Mutex
 	reloadUnregister  func()
+	agentName         string
 	config            *Config
 	clients           map[string]*Client
 	statuses          map[string]*ServerState
@@ -115,6 +116,7 @@ func (m *Manager) LoadConfig() error {
 	m.mu.Lock()
 	m.config = cfg
 	m.mu.Unlock()
+	m.revokeDisallowed()
 	return nil
 }
 
@@ -125,9 +127,10 @@ func (m *Manager) Config() *Config {
 	if m.config == nil {
 		return nil
 	}
-	copy := &Config{Servers: make(map[string]ServerConfig, len(m.config.Servers))}
+	copy := &Config{Servers: make(map[string]ServerConfig, len(m.config.Servers)), extra: m.config.extra}
 	for name, server := range m.config.Servers {
 		serverCopy := server
+		serverCopy.Agents = append([]string(nil), server.Agents...)
 		serverCopy.AlwaysLoad = append([]string(nil), server.AlwaysLoad...)
 		serverCopy.Args = append([]string(nil), server.Args...)
 		serverCopy.Headers = cloneStringMap(server.Headers)
@@ -340,6 +343,11 @@ func (m *Manager) Enable(ctx context.Context, name string) error {
 	if !ok {
 		m.mu.Unlock()
 		return fmt.Errorf("unknown MCP server: %s", name)
+	}
+
+	if err := serverCfg.CheckAgent(name, m.agentName); err != nil {
+		m.mu.Unlock()
+		return err
 	}
 
 	// Check if already running or starting
@@ -805,6 +813,9 @@ func (m *Manager) CallCatalogTool(ctx context.Context, serverName, toolName, exe
 }
 
 func (m *Manager) callCatalogTool(ctx context.Context, serverName, toolName, displayName string, args json.RawMessage) (core.ToolOutput, error) {
+	if err := m.CheckSelection([]string{serverName}); err != nil {
+		return core.ToolOutput{}, err
+	}
 	ctx, release, reloadErr := restart.Default.Activity(ctx)
 	if reloadErr != nil {
 		return core.ToolOutput{}, reloadErr
