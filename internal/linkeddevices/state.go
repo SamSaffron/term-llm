@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 )
 
 const stateVersion = 1
@@ -33,7 +34,7 @@ func loadJSON(path string, dst any) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	if info.Mode().Perm()&0o077 != 0 {
+	if runtime.GOOS != "windows" && info.Mode().Perm()&0o077 != 0 {
 		return false, fmt.Errorf("linked devices state %s is not private", path)
 	}
 	if err := json.Unmarshal(data, dst); err != nil {

@@ -17,6 +17,7 @@ import (
 	"github.com/samsaffron/term-llm/internal/llm/core"
 	"github.com/samsaffron/term-llm/internal/llm/engine"
 	"github.com/samsaffron/term-llm/internal/procutil"
+	"github.com/samsaffron/term-llm/internal/shellcmd"
 )
 
 const (
@@ -187,7 +188,7 @@ func NewShellTool(approval *ApprovalManager, config *ToolConfig, limits OutputLi
 		approval:  approval,
 		config:    config,
 		limits:    limits,
-		shellPath: detectShell(),
+		shellPath: shellcmd.Path(),
 	}
 }
 
@@ -491,7 +492,7 @@ func (t *ShellTool) executeLocal(ctx context.Context, args json.RawMessage) (cor
 			return errorOutput(formatToolError(NewToolErrorf(ErrExecutionFailed, "cannot resolve shell: %v", err))), nil
 		}
 	}
-	approvalCommand := procutil.ShellEnvironmentCommand(a.Command, shellPath, a.Env)
+	approvalCommand := shellApprovalCommand(shellPath, a.Command, a.Env)
 
 	var claims []normalizedOutputClaim
 	if trackingEnabled {
@@ -550,7 +551,7 @@ func (t *ShellTool) executeLocal(ctx context.Context, args json.RawMessage) (cor
 	execCtx, cancel := context.WithTimeout(ctx, time.Duration(timeout)*time.Second)
 	defer cancel()
 
-	cmd := exec.CommandContext(execCtx, shellPath, "-c", a.Command)
+	cmd := exec.CommandContext(execCtx, shellPath, shellcmd.Args(shellPath, a.Command)...)
 	cmd.Dir = workDir
 	cmd.Env = env
 
@@ -706,14 +707,6 @@ func formatShellResult(result ShellResult, limits OutputLimits) string {
 }
 
 // detectShell returns the user's shell.
-func detectShell() string {
-	shell := os.Getenv("SHELL")
-	if shell == "" {
-		return "bash"
-	}
-	// Use full path for execution
-	return shell
-}
 
 // expandTilde resolves a tilde prefix in a path.
 // "~" or "~/sub" uses os.UserHomeDir; "~user" or "~user/sub" uses user.Lookup.
@@ -854,4 +847,15 @@ func truncateCommand(cmd string) string {
 		return cmd[:47] + "..."
 	}
 	return cmd
+}
+
+// shellApprovalCommand renders the exact shell invocation for approval. The
+// POSIX "-c command" form keeps its existing lossless preview and approval
+// cache key; other platforms show the real argv.
+func shellApprovalCommand(shellPath, command string, env map[string]string) string {
+	args := shellcmd.Args(shellPath, command)
+	if len(args) == 2 && args[0] == "-c" {
+		return procutil.ShellEnvironmentCommand(command, shellPath, env)
+	}
+	return procutil.ShellEnvironmentCommandArgs(shellPath, args, env)
 }

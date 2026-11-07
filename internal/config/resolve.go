@@ -12,10 +12,12 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 
 	"github.com/samsaffron/term-llm/internal/procutil"
+	"github.com/samsaffron/term-llm/internal/shellcmd"
 	"gopkg.in/yaml.v3"
 )
 
@@ -113,21 +115,46 @@ func resolveSRV(srvURL string) (string, error) {
 	return fmt.Sprintf("https://%s:%d%s", host, addr.Port, path), nil
 }
 
-func resolveFile(fileURL string) (string, error) {
+// parseFileURL accepts both the RFC form (file:///C:/path) and the practical
+// Windows form users write (file://C:\path). The latter cannot go through
+// url.Parse because the drive letter looks like a host with a port.
+func parseFileURL(fileURL string) (path, fragment string, err error) {
+	raw := strings.TrimPrefix(fileURL, "file://")
+	if i := strings.Index(raw, "#"); i >= 0 {
+		raw, fragment = raw[:i], raw[i+1:]
+	}
+	if runtime.GOOS == "windows" {
+		if isWindowsDrivePath(raw) || strings.HasPrefix(raw, `\\`) {
+			return raw, fragment, nil
+		}
+	}
 	u, err := url.Parse(fileURL)
 	if err != nil {
-		return "", fmt.Errorf("invalid file:// URL: %w", err)
+		return "", "", fmt.Errorf("invalid file:// URL: %w", err)
 	}
-
 	if u.Host != "" && u.Host != "localhost" {
-		return "", fmt.Errorf("file:// URL host must be empty or localhost: %s", fileURL)
+		return "", "", fmt.Errorf("file:// URL host must be empty or localhost: %s", fileURL)
 	}
+	path = u.Path
+	if runtime.GOOS == "windows" && len(path) >= 3 && path[0] == '/' && path[2] == ':' {
+		path = path[1:]
+	}
+	return path, u.Fragment, nil
+}
 
-	path := expandEnv(u.Path)
+func isWindowsDrivePath(p string) bool {
+	return len(p) >= 2 && ((p[0] >= 'a' && p[0] <= 'z') || (p[0] >= 'A' && p[0] <= 'Z')) && p[1] == ':'
+}
+
+func resolveFile(fileURL string) (string, error) {
+	path, fragment, err := parseFileURL(fileURL)
+	if err != nil {
+		return "", err
+	}
 	if path == "" {
 		return "", fmt.Errorf("file:// URL missing path: %s", fileURL)
 	}
-	path = filepath.Clean(path)
+	path = filepath.Clean(expandEnv(path))
 
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -135,7 +162,7 @@ func resolveFile(fileURL string) (string, error) {
 	}
 	content := strings.TrimSpace(string(data))
 
-	fragment := strings.TrimSpace(u.Fragment)
+	fragment = strings.TrimSpace(fragment)
 	if fragment == "" {
 		return content, nil
 	}
@@ -207,7 +234,8 @@ func lookupFileFragment(v any, fragment string) (string, error) {
 
 // resolveCommand executes a shell command and returns its output
 func resolveCommand(cmd string) (string, error) {
-	output, err := runResolverCommand("sh", "-c", cmd)
+	shellPath, shellArgs := shellcmd.Invocation(cmd)
+	output, err := runResolverCommand(shellPath, shellArgs...)
 	if err != nil {
 		return "", fmt.Errorf("command failed: %w", err)
 	}

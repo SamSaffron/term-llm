@@ -11,9 +11,22 @@ next:
 ---
 ### Supported release platforms
 
-The release installer and published archives target **Linux and macOS**, on **amd64** and **arm64**. Homebrew is the macOS option. PowerShell completion support does not imply that a native Windows binary is published by the current release configuration.
+Published archives target **Linux** and **macOS** on **amd64** and **arm64**, and
+**Windows** on **amd64**. Homebrew is the macOS option; Windows uses the ZIP
+archive and the PowerShell installer below.
 
-Published binaries include the browser workspace. You do not need Go or Node.js to run a release; those are source-build prerequisites. You can also [download an archive and its checksums](https://github.com/samsaffron/term-llm/releases) instead of executing the installer script.
+Published binaries include the browser workspace. You do not need Go or Node.js to
+run a release; those are source-build prerequisites. You can also
+[download an archive and its checksums](https://github.com/samsaffron/term-llm/releases)
+instead of executing an installer.
+
+Windows support covers the native CLI: `ask`, `exec`, `chat` and its TUI, file and
+shell tools, sessions, and `serve web`/`serve api`. The shell tool uses PowerShell
+(PowerShell 7 when installed, otherwise Windows PowerShell) or `COMSPEC`; it does
+not provide a POSIX `sh`, so commands written for bash are not portable. The
+background `service` commands (systemd/launchd) are not supported on Windows, and
+Windows on ARM64 is not published or tested. WSL is a Linux host and is not
+counted as native Windows coverage.
 
 ### One-liner (recommended)
 
@@ -32,6 +45,25 @@ Or with options:
 ```bash
 curl -fsSL https://raw.githubusercontent.com/samsaffron/term-llm/main/install.sh | sh -s -- --version v0.1.0 --install-dir ~/bin
 ```
+
+### Windows (PowerShell)
+
+Requires PowerShell 5.1 or later. The installer downloads the Windows amd64 ZIP
+and `checksums.txt`, verifies the SHA-256 checksum, and installs `term-llm.exe`.
+It does not run the downloaded binary.
+
+```powershell
+irm https://raw.githubusercontent.com/samsaffron/term-llm/main/install.ps1 | iex
+```
+
+Or with options:
+
+```powershell
+.\install.ps1 -Version v0.9.93 -InstallDir C:\tools\term-llm
+```
+
+The default install directory is `%LOCALAPPDATA%\term-llm\bin`; the installer
+prints the PATH command when that directory is not already on `PATH`.
 
 ### Homebrew
 

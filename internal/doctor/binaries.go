@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os/exec"
+	"runtime"
 	"sort"
 
 	"github.com/samsaffron/term-llm/internal/config"
@@ -37,13 +38,19 @@ func (c *BinaryCheck) ID() string { return "binaries" }
 func (c *BinaryCheck) Title() string { return "External commands" }
 
 func defaultBinaries() []BinarySpec {
-	return []BinarySpec{
+	specs := []BinarySpec{
 		{Name: "git", Missing: SeverityError, Purpose: "workspace detection, diffs, commits, worktrees, and file-change tracking"},
-		{Name: "sh", Missing: SeverityError, Purpose: "the shell tool and $(...) config value resolution"},
-		{Name: "rg", Missing: SeverityWarn, Purpose: "fast code search; the grep tool falls back to a slower built-in scan", Install: "install ripgrep"},
-		{Name: "ffprobe", Missing: SeverityInfo, Purpose: "duration checks for audio and video transcription", Install: "install ffmpeg"},
-		{Name: "node", Missing: SeverityInfo, Purpose: "running the bundled JavaScript tests"},
 	}
+	// Windows uses PowerShell/COMSPEC for the shell tool and $(...) config
+	// values, both of which ship with the OS.
+	if runtime.GOOS != "windows" {
+		specs = append(specs, BinarySpec{Name: "sh", Missing: SeverityError, Purpose: "the shell tool and $(...) config value resolution"})
+	}
+	return append(specs,
+		BinarySpec{Name: "rg", Missing: SeverityWarn, Purpose: "fast code search; the grep tool falls back to a slower built-in scan", Install: "install ripgrep"},
+		BinarySpec{Name: "ffprobe", Missing: SeverityInfo, Purpose: "duration checks for audio and video transcription", Install: "install ffmpeg"},
+		BinarySpec{Name: "node", Missing: SeverityInfo, Purpose: "running the bundled JavaScript tests"},
+	)
 }
 
 // providerBinaries maps provider types that shell out to their CLI.

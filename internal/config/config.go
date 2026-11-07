@@ -10,6 +10,7 @@ import (
 	"time"
 
 	mapstructure "github.com/go-viper/mapstructure/v2"
+	"github.com/samsaffron/term-llm/internal/atomicfile"
 	"github.com/samsaffron/term-llm/internal/providerspec"
 	"gopkg.in/yaml.v3"
 )
@@ -1804,7 +1805,7 @@ func markProviderConfigPresence(cfg *Config, file *fileSettings) {
 	}
 }
 
-// WriteFileAtomically replaces path with data using a temp-file + fsync + rename sequence.
+// WriteFileAtomically replaces path with data using a temp file, fsync and a durable rename.
 // If path already exists, its mode is preserved; otherwise defaultPerm is used.
 // A final-path symlink is followed so dotfile-managed config symlinks keep pointing
 // at the original target instead of being replaced by a regular file.
@@ -1879,26 +1880,11 @@ func writeFileAtomically(path string, data []byte, perm os.FileMode) error {
 	if err := tf.Close(); err != nil {
 		return fmt.Errorf("close temp file: %w", err)
 	}
-	if err := os.Rename(tempPath, path); err != nil {
-		return fmt.Errorf("rename temp file: %w", err)
+	if err := atomicfile.Replace(tempPath, path); err != nil {
+		return fmt.Errorf("replace config file: %w", err)
 	}
 	cleanup = false
-	if err := syncDirectory(dir); err != nil {
-		return fmt.Errorf("sync config directory after replacing %s: %w", path, err)
-	}
 
-	return nil
-}
-
-func syncDirectory(dir string) error {
-	df, err := os.Open(dir)
-	if err != nil {
-		return fmt.Errorf("open config directory: %w", err)
-	}
-	defer df.Close()
-	if err := df.Sync(); err != nil {
-		return fmt.Errorf("sync config directory: %w", err)
-	}
 	return nil
 }
 

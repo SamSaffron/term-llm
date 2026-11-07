@@ -667,15 +667,6 @@ func removeSocket(mode, widgetID string) {
 	}
 }
 
-func killProcessGroup(proc *os.Process, sig syscall.Signal) {
-	if proc == nil {
-		return
-	}
-	if err := syscall.Kill(-proc.Pid, sig); err != nil {
-		_ = proc.Signal(sig)
-	}
-}
-
 func (m *Manager) idleLoop() {
 	ticker := time.NewTicker(time.Minute)
 	defer ticker.Stop()

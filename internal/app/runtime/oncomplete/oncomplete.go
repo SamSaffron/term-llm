@@ -13,6 +13,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/samsaffron/term-llm/internal/shellcmd"
 	"github.com/samsaffron/term-llm/internal/tools"
 	"github.com/samsaffron/term-llm/internal/ui"
 )
@@ -48,7 +49,8 @@ func RunCaptureInDir(command, input, baseDir string) (Result, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), onCompleteTimeout)
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, "sh", "-c", command)
+	shellPath, shellArgs := shellcmd.Invocation(command)
+	cmd := exec.CommandContext(ctx, shellPath, shellArgs...)
 	cmd.Dir = dir
 	cmd.Stdin = strings.NewReader(input)
 

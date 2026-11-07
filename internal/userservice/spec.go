@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/user"
 	"path/filepath"
+	"runtime"
 	"strings"
 
 	"github.com/samsaffron/term-llm/internal/config"
@@ -79,7 +80,7 @@ func ReadPrivate(path string) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	if !info.Mode().IsRegular() || info.Mode().Perm()&0077 != 0 {
+	if !info.Mode().IsRegular() || (runtime.GOOS != "windows" && info.Mode().Perm()&0077 != 0) {
 		return nil, fmt.Errorf("%s must be a private regular file (0600)", path)
 	}
 	if info.Size() > 1<<20 {
@@ -96,7 +97,7 @@ func PrivateDir(dir string) error {
 	if err != nil {
 		return err
 	}
-	if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 || info.Mode().Perm()&0077 != 0 {
+	if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 || (runtime.GOOS != "windows" && info.Mode().Perm()&0077 != 0) {
 		return fmt.Errorf("service directory %s must be private (0700) and not a symlink", dir)
 	}
 	return nil

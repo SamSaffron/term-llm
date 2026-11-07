@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -45,12 +46,16 @@ func TestGrokCredentialsSecureAtomicStorage(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if info.Mode().Perm() != 0o600 {
+	if runtime.GOOS != "windows" && info.Mode().Perm() != 0o600 {
 		t.Fatalf("mode = %o, want 600", info.Mode().Perm())
 	}
 	loaded, err := GetGrokCredentials()
 	if err != nil || *loaded != *creds {
 		t.Fatalf("loaded = %+v, err=%v", loaded, err)
+	}
+	if runtime.GOOS == "windows" {
+		// Windows credentials are protected by profile ACLs, not POSIX bits.
+		return
 	}
 	if err := os.Chmod(path, 0o644); err != nil {
 		t.Fatal(err)

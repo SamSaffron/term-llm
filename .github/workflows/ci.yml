@@ -113,6 +113,52 @@ jobs:
             (cd "$module" && GODEBUG=checkptr=2 go test ./...)
           done
 
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Build frontend assets
+        run: |
+          npm --prefix frontend ci
+          npm --prefix frontend run build
+
+      - name: Build
+        run: go build ./...
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Test platform and state packages
+        shell: bash
+        run: |
+          # The full suite is still POSIX-heavy; this is the coherent native
+          # Windows set covering process/config/update/auth contracts.
+          go test -short -count=1 \
+            ./internal/atomicfile \
+            ./internal/shellcmd \
+            ./internal/procutil \
+            ./internal/config \
+            ./internal/update \
+            ./internal/doctor \
+            ./internal/testutil \
+            ./internal/widgets \
+            ./internal/mcp/oauth \
+            ./internal/pairing
+
   race:
     needs: changes
     runs-on: ubuntu-latest

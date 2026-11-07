@@ -35,3 +35,29 @@ func TestChildLifecyclePreservesCancellationAfterInitialTurn(t *testing.T) {
 		t.Fatalf("cancelled run consumed a lifecycle event: %+v err=%v", pending, err)
 	}
 }
+
+func TestJoinRunErrorsKeepsSubstantiveFailureOverCleanupCancellation(t *testing.T) {
+	providerErr := errors.New("provider failed")
+	tests := []struct {
+		name     string
+		existing error
+		extra    error
+		want     string
+	}{
+		{name: "cleanup cancellation after provider failure", existing: providerErr, extra: context.Canceled, want: "provider failed"},
+		{name: "provider failure before cancellation", existing: context.Canceled, extra: providerErr, want: "provider failed"},
+		{name: "only cancellation", existing: nil, extra: context.Canceled, want: "context canceled"},
+		{name: "only provider failure", existing: providerErr, extra: nil, want: "provider failed"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			err := runpkg.JoinErrors(tc.existing, tc.extra)
+			if err == nil || err.Error() != tc.want {
+				t.Fatalf("joinRunErrors = %v, want %q", err, tc.want)
+			}
+			if tc.want == "context canceled" && !errors.Is(err, context.Canceled) {
+				t.Fatalf("cancellation status lost: %v", err)
+			}
+		})
+	}
+}

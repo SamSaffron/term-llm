@@ -57,6 +57,7 @@ One line per root-module package, generated from package doc comments by `make d
 - `internal/app/usage` — implements `term-llm usage`: local token reports plus provider billing and limit checks.
 - `internal/app/version` — implements `term-llm version` over linker-injected build metadata.
 - `internal/appdata` — resolves term-llm's XDG data directory.
+- `internal/atomicfile` — replaces files atomically and flushes the containing directory where the platform supports it.
 - `internal/audio` — implements the text-to-speech providers behind `term-llm audio`.
 - `internal/authoridentity` — validates display-only sender identities and records CLI authors without replacing directory metadata.
 - `internal/awsauth` — implements the AWS authentication and event framing needed by the Bedrock transport, without linking an AWS SDK.
@@ -173,6 +174,7 @@ One line per root-module package, generated from package doc comments by `make d
 - `internal/session/transcriptprefix` — compares persisted transcript prefixes for replacement and compaction.
 - `internal/sessiontitle` — generates and validates short and long LLM session titles.
 - `internal/share` — defines provider-neutral transcript sharing.
+- `internal/shellcmd` — resolves the user's shell and the argv used to run a command or an interactive session on each platform.
 - `internal/sidequestion` — builds and runs private side questions over a conversation snapshot.
 - `internal/signal` — derives contexts cancelled by SIGINT and SIGTERM.
 - `internal/skills` — provides Agent Skills integration for term-llm.

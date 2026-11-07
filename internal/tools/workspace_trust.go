@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"time"
@@ -233,7 +234,7 @@ func (s *fileWorkspaceTrustStore) loadLocked() (rememberedWorkspaceFile, string,
 		}
 		return rememberedWorkspaceFile{}, "", fmt.Errorf("stat remembered workspaces: %w", err)
 	}
-	if info.Mode().Perm()&0o077 != 0 {
+	if runtime.GOOS != "windows" && info.Mode().Perm()&0o077 != 0 {
 		return rememberedWorkspaceFile{}, "", fmt.Errorf("remembered workspaces file %s has insecure permissions %o; want 0600", path, info.Mode().Perm())
 	}
 	data, err := os.ReadFile(path)

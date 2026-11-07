@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"runtime"
 	"strings"
 )
 
@@ -15,7 +16,7 @@ func ReadSecretFile(path string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("peerbroker: inspect secret file: %w", err)
 	}
-	if !info.Mode().IsRegular() || info.Mode().Perm()&0o077 != 0 || info.Size() > 4096 {
+	if !info.Mode().IsRegular() || (runtime.GOOS != "windows" && info.Mode().Perm()&0o077 != 0) || info.Size() > 4096 {
 		return "", fmt.Errorf("peerbroker: secret file must be private (0600), regular, and at most 4096 bytes")
 	}
 	file, err := os.Open(path)

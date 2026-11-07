@@ -66,7 +66,7 @@ func ShellEnvironmentCommand(command, shell string, overrides map[string]string)
 		return command
 	}
 	quote := func(value string) string {
-		return "'" + strings.ReplaceAll(value, "'", "'\"'\"'") + "'"
+		return "'" + strings.ReplaceAll(value, "'", `'"'"'`) + "'"
 	}
 	var b strings.Builder
 	b.WriteString("env --")
@@ -78,5 +78,29 @@ func ShellEnvironmentCommand(command, shell string, overrides map[string]string)
 	b.WriteString(quote(shell))
 	b.WriteString(" -c ")
 	b.WriteString(quote(command))
+	return b.String()
+}
+
+// ShellEnvironmentCommandArgs renders an exact shell invocation as approval
+// evidence. Platforms whose shell does not use "-c command" pass the real argv
+// so reviewers and approval caches see what will actually run.
+func ShellEnvironmentCommandArgs(shell string, args []string, overrides map[string]string) string {
+	quote := func(value string) string {
+		return "'" + strings.ReplaceAll(value, "'", `'"'"'`) + "'"
+	}
+	var b strings.Builder
+	if len(overrides) != 0 {
+		b.WriteString("env --")
+		for _, key := range shellEnvironmentKeys(overrides) {
+			b.WriteByte(' ')
+			b.WriteString(quote(key + "=" + overrides[key]))
+		}
+		b.WriteByte(' ')
+	}
+	b.WriteString(quote(shell))
+	for _, arg := range args {
+		b.WriteByte(' ')
+		b.WriteString(quote(arg))
+	}
 	return b.String()
 }

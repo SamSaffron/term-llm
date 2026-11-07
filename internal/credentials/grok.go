@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sync"
 	"time"
 
@@ -79,7 +80,7 @@ func readGrokCredentials(path string) (*GrokCredentials, error) {
 	if !info.Mode().IsRegular() {
 		return nil, errors.New("Grok credentials file is not a regular file")
 	}
-	if info.Mode().Perm()&0o077 != 0 {
+	if runtime.GOOS != "windows" && info.Mode().Perm()&0o077 != 0 {
 		return nil, fmt.Errorf("Grok credentials file has insecure permissions %04o; require 0600", info.Mode().Perm())
 	}
 	if info.Size() > maxGrokCredentialBytes {

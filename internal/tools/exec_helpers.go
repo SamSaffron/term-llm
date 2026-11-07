@@ -10,7 +10,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"time"
 
@@ -79,14 +78,12 @@ func prepareToolCommand(cmd *exec.Cmd) (func(), error) {
 		//
 		// First pass: SIGKILL the process group so `nohup foo &` style children
 		// that stayed in our pgid die immediately.
-		platformKillProcessGroup(cmd)
+		_ = procutil.KillCommandTree(cmd)
 		// Second pass: walk /proc for any process still alive that inherited
 		// the nonce env var. This catches descendants that escaped the pgroup
 		// via setsid, double-fork daemonisation, or explicit setpgid. We retry
 		// a few times because a process may be mid-exec when we scan.
-		if nonce != "" {
-			killTaggedDescendants(nonce)
-		}
+		procutil.KillTaggedDescendants(shellNonceEnvVar, nonce)
 		if stdinCloser != nil {
 			stdinCloser()
 		}
@@ -126,52 +123,6 @@ func tagCommandWithNonce(cmd *exec.Cmd) string {
 		cmd.Env = append(cmd.Env, entry)
 	}
 	return nonce
-}
-
-// killTaggedDescendants SIGKILLs every process whose environment contains the
-// given nonce. Safe no-op on systems without /proc (e.g. macOS in tests).
-// We retry a handful of times with short sleeps to handle races where a
-// descendant forks right as we scan.
-func killTaggedDescendants(nonce string) {
-	needle := []byte(shellNonceEnvVar + "=" + nonce)
-	for attempt := 0; attempt < 3; attempt++ {
-		pids := findPidsWithEnv(needle)
-		if len(pids) == 0 {
-			return
-		}
-		for _, pid := range pids {
-			platformKillPid(pid)
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
-}
-
-// findPidsWithEnv returns PIDs whose /proc/<pid>/environ contains needle.
-// On systems without /proc, returns nil.
-func findPidsWithEnv(needle []byte) []int {
-	entries, err := os.ReadDir("/proc")
-	if err != nil {
-		return nil
-	}
-	selfPid := os.Getpid()
-	var pids []int
-	for _, entry := range entries {
-		if !entry.IsDir() {
-			continue
-		}
-		pid, err := strconv.Atoi(entry.Name())
-		if err != nil || pid <= 1 || pid == selfPid {
-			continue
-		}
-		data, err := os.ReadFile(filepath.Join("/proc", entry.Name(), "environ"))
-		if err != nil {
-			continue
-		}
-		if bytes.Contains(data, needle) {
-			pids = append(pids, pid)
-		}
-	}
-	return pids
 }
 
 // PrepareCommand configures a tool-owned command for safe, non-interactive

@@ -32,7 +32,7 @@ func TestGrokBinProviderPrepareCommandUsesWorkingDir(t *testing.T) {
 	if cmd.WaitDelay != grokCommandWaitDelay {
 		t.Fatalf("WaitDelay = %v, want %v", cmd.WaitDelay, grokCommandWaitDelay)
 	}
-	if cmd.SysProcAttr == nil || !cmd.SysProcAttr.Setsid {
+	if !detachedProcess(cmd.SysProcAttr) {
 		t.Fatal("expected grok subprocess to run in a detached session")
 	}
 }

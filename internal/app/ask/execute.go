@@ -2,7 +2,6 @@ package ask
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"io"
 	"time"
@@ -147,7 +146,7 @@ func (e *askStreamingExecution) run() (askExecutionResult, error) {
 		return result, nil
 	}
 	interrupted := func(err error) bool {
-		return errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)
+		return runInterruption(e.ctx, err)
 	}
 	var streamErr error
 	streamDone := false
@@ -158,6 +157,7 @@ func (e *askStreamingExecution) run() (askExecutionResult, error) {
 		if interrupted(displayErr) || interrupted(streamErr) {
 			return finishInterrupted()
 		}
+		displayErr = terminalRunError(displayErr, streamErr)
 		if e.flags.JSON && !IsTerminalFlushed(displayErr) {
 			_ = EmitFatalError(e.jsonEmit, result.stats, displayErr)
 			result.jsonFinalPending = false

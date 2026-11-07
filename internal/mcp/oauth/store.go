@@ -1,11 +1,9 @@
 package oauth
 
 import (
-	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"net/url"
 	"os"
@@ -14,6 +12,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/samsaffron/term-llm/internal/atomicfile"
 	"github.com/samsaffron/term-llm/internal/filelock"
 	"golang.org/x/oauth2"
 )
@@ -376,18 +375,11 @@ func (s *FileStore) writeLocked(file *storeFile) (err error) {
 	if closeErr != nil {
 		return fmt.Errorf("close MCP OAuth temporary store: %w", closeErr)
 	}
-	if err := os.Rename(tmpPath, s.path); err != nil {
+	if err := atomicfile.Replace(tmpPath, s.path); err != nil {
 		return fmt.Errorf("replace MCP OAuth store: %w", err)
 	}
 	if err := os.Chmod(s.path, 0o600); err != nil {
 		return fmt.Errorf("secure MCP OAuth store: %w", err)
-	}
-	if dirFile, err := os.Open(dir); err == nil {
-		if syncErr := dirFile.Sync(); syncErr != nil && !errors.Is(syncErr, context.Canceled) {
-			_ = dirFile.Close()
-			return fmt.Errorf("sync MCP OAuth store directory: %w", syncErr)
-		}
-		_ = dirFile.Close()
 	}
 	return nil
 }

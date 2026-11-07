@@ -12,3 +12,6 @@ func ConfigureDetachedCommand(cmd *exec.Cmd) {}
 
 // ConfigureCommandProcessGroup is a no-op on WebAssembly.
 func ConfigureCommandProcessGroup(cmd *exec.Cmd) {}
+
+// KillCommandTree is a no-op on WebAssembly, which has no process handles.
+func KillCommandTree(*exec.Cmd) error { return nil }
