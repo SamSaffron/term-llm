@@ -7,14 +7,16 @@ import (
 )
 
 // ParseLocalFileURL parses a local file:// URL while leaving config-style
-// environment expansion, reading, and fragment lookup to the caller. It accepts
-// the RFC form and, on Windows, the practical drive/UNC forms users write.
+// environment expansion, reading, and fragment lookup to the caller. Standard
+// RFC forms are parsed and percent-decoded by net/url, then normalized for the
+// host platform. Practical Windows raw paths with backslashes are returned
+// without unescaping.
 func ParseLocalFileURL(fileURL string) (path, fragment string, err error) {
 	raw := strings.TrimPrefix(fileURL, "file://")
 	if i := strings.Index(raw, "#"); i >= 0 {
 		raw, fragment = raw[:i], raw[i+1:]
 	}
-	if native, ok := parseNativeFileURLPath(raw); ok {
+	if native, ok := parsePracticalFileURL(raw); ok {
 		return native, fragment, nil
 	}
 

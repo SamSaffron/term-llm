@@ -35,9 +35,6 @@ func ReadSecretFile(path string) (string, error) {
 	if !os.SameFile(info, opened) || !opened.Mode().IsRegular() {
 		return "", fmt.Errorf("peerbroker: secret file changed while opening")
 	}
-	if err := fileprivacy.CheckFile(info); err != nil {
-		return "", fmt.Errorf("peerbroker: secret file must be private (0600), regular, and at most 4096 bytes: %w", err)
-	}
 	if err := fileprivacy.CheckFile(opened); err != nil {
 		return "", fmt.Errorf("peerbroker: secret file changed while opening: %w", err)
 	}

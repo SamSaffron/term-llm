@@ -29,9 +29,18 @@ type platformCommand interface {
 	close(*Command) error
 }
 
+// ErrCommandClosed is returned by Start after Close has been called. Close
+// before Start never creates an OS process.
+var ErrCommandClosed = errors.New("procutil: command is closed")
+
+var errCommandAlreadyStarted = errors.New("procutil: command already started")
+
 type Command struct {
 	cmd       *exec.Cmd
 	platform  platformCommand
+	mu        sync.Mutex
+	started   bool
+	closed    bool
 	closeOnce sync.Once
 	closeErr  error
 	closeHook func()
@@ -70,16 +79,36 @@ func (c *Command) Cmd() *exec.Cmd {
 	return c.cmd
 }
 
-// Start starts the prepared command. On failure it releases the platform tree.
+// Start starts the prepared command. Close before Start is rejected before any
+// OS process is created. A failure after process creation always terminates and
+// reaps the direct process, even if the owned tree was closed concurrently.
 func (c *Command) Start() error {
-	if c == nil || c.cmd == nil {
+	if c == nil || c.cmd == nil || c.platform == nil {
 		return errors.New("start command: nil command")
 	}
-	if err := c.platform.start(c); err != nil {
-		_ = c.Close()
-		return err
+	c.mu.Lock()
+	if c.closed {
+		c.mu.Unlock()
+		return ErrCommandClosed
 	}
-	return nil
+	if c.started {
+		c.mu.Unlock()
+		return errCommandAlreadyStarted
+	}
+	c.started = true
+	c.mu.Unlock()
+
+	err := c.platform.start(c)
+	if err == nil {
+		return nil
+	}
+	// Release the platform tree first, then reap outside every platform lock so
+	// a context-cancel callback cannot deadlock against this path.
+	_ = c.Close()
+	if c.cmd.Process != nil {
+		_ = c.Wait()
+	}
+	return err
 }
 
 // Run starts and waits for the command. Close remains the caller's
@@ -95,6 +124,12 @@ func (c *Command) Run() error {
 // it. Windows maps this to tree termination through Close.
 func (c *Command) Signal(sig syscall.Signal) error {
 	if c == nil || c.platform == nil {
+		return nil
+	}
+	c.mu.Lock()
+	closed := c.closed
+	c.mu.Unlock()
+	if closed {
 		return nil
 	}
 	return c.platform.signal(sig)
@@ -140,6 +175,9 @@ func (c *Command) Close() error {
 	if c == nil {
 		return nil
 	}
+	c.mu.Lock()
+	c.closed = true
+	c.mu.Unlock()
 	c.closeOnce.Do(func() {
 		if c.platform != nil {
 			c.closeErr = c.platform.close(c)

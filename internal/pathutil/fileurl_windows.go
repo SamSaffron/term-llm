@@ -4,18 +4,24 @@ package pathutil
 
 import "strings"
 
-func parseNativeFileURLPath(raw string) (string, bool) {
-	if isWindowsDrivePath(raw) {
-		return raw, true
-	}
-	if strings.HasPrefix(raw, `\\`) {
-		return raw, true
+// parsePracticalFileURL accepts only the raw Windows forms users write. RFC
+// forms such as file:///C:/A%20B must reach net/url so escapes are decoded and
+// malformed escapes are rejected.
+func parsePracticalFileURL(raw string) (string, bool) {
+	if strings.Contains(raw, `\`) {
+		if isWindowsDrivePath(raw) || strings.HasPrefix(raw, `\\`) {
+			return raw, true
+		}
+		if len(raw) >= 3 && raw[0] == '/' && isWindowsDrivePath(raw[1:]) {
+			return raw[1:], true
+		}
+		return "", false
 	}
 	if strings.HasPrefix(raw, "//") {
-		return `\\` + strings.TrimPrefix(raw, "//"), true
+		return `\\` + strings.ReplaceAll(strings.TrimPrefix(raw, "//"), "/", `\`), true
 	}
-	if len(raw) >= 3 && raw[0] == '/' && isWindowsDrivePath(raw[1:]) {
-		return raw[1:], true
+	if isWindowsDrivePath(raw) {
+		return raw, true
 	}
 	return "", false
 }

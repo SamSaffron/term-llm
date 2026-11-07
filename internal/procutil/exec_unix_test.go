@@ -4,6 +4,7 @@ package procutil
 
 import (
 	"context"
+	"errors"
 	"os"
 	"os/exec"
 	"strconv"
@@ -126,4 +127,47 @@ func processAlive(pid int) bool {
 	}
 	state := strings.TrimSpace(string(out))
 	return state != "" && !strings.HasPrefix(state, "Z")
+}
+
+func TestCommandCloseBeforeStartCreatesNoProcess(t *testing.T) {
+	cmd := exec.Command("sh", "-c", "sleep 30")
+	owned, err := PrepareCommand(cmd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := owned.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := owned.Start(); !errors.Is(err, ErrCommandClosed) {
+		t.Fatalf("Start after Close = %v, want ErrCommandClosed", err)
+	}
+	if cmd.Process != nil {
+		t.Fatal("Start after Close created an OS process")
+	}
+}
+
+func TestCommandConcurrentStartAndCloseDoesNotLeak(t *testing.T) {
+	for i := 0; i < 20; i++ {
+		cmd := exec.Command("sh", "-c", "sleep 30")
+		owned, err := PrepareCommand(cmd)
+		if err != nil {
+			t.Fatal(err)
+		}
+		startDone := make(chan error, 1)
+		go func() { startDone <- owned.Start() }()
+		closeDone := make(chan struct{})
+		go func() {
+			_ = owned.Close()
+			close(closeDone)
+		}()
+		startErr := <-startDone
+		select {
+		case <-closeDone:
+		case <-time.After(5 * time.Second):
+			t.Fatal("Close hung during Start")
+		}
+		if startErr == nil {
+			_ = owned.Wait()
+		}
+	}
 }

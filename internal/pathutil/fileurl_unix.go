@@ -2,7 +2,7 @@
 
 package pathutil
 
-func parseNativeFileURLPath(string) (string, bool) { return "", false }
+func parsePracticalFileURL(string) (string, bool) { return "", false }
 
 func parseNativeFileURLHost(string, string) (string, bool) { return "", false }
 

@@ -200,6 +200,86 @@ func TestDelayedStartUsesSynchronousOwnership(t *testing.T) {
 	}
 }
 
+func TestCloseBeforeStartCreatesNoProcess(t *testing.T) {
+	cmd := exec.CommandContext(context.Background(), "cmd", "/c", "exit 0")
+	owned := mustPrepare(t, cmd)
+	if err := owned.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := owned.Start(); !errors.Is(err, ErrCommandClosed) {
+		t.Fatalf("Start after Close = %v, want ErrCommandClosed", err)
+	}
+	if cmd.Process != nil {
+		t.Fatal("Start after Close created an OS process")
+	}
+}
+
+func TestCloseBetweenCreationAndAssignmentReapsSuspendedProcess(t *testing.T) {
+	oldBefore := beforeAssignProcess
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	beforeAssignProcess = func() {
+		close(entered)
+		<-release
+	}
+	defer func() { beforeAssignProcess = oldBefore }()
+
+	cmd := exec.CommandContext(context.Background(), "cmd", "/c", "exit 0")
+	owned := mustPrepare(t, cmd)
+	startDone := make(chan error, 1)
+	go func() { startDone <- owned.Start() }()
+	select {
+	case <-entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("assignment was not reached")
+	}
+	closeDone := make(chan struct{})
+	go func() {
+		_ = owned.Close()
+		close(closeDone)
+	}()
+	select {
+	case <-closeDone:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Close hung between process creation and assignment")
+	}
+	close(release)
+	select {
+	case err := <-startDone:
+		if err == nil || !strings.Contains(err.Error(), "job was closed before assignment") {
+			t.Fatalf("Start error = %v, want closed-job diagnostic", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Start hung after Close between creation and assignment")
+	}
+	if cmd.ProcessState == nil || !cmd.ProcessState.Exited() {
+		t.Fatal("Start did not reap the suspended process")
+	}
+}
+
+func TestConcurrentStartAndCloseDoesNotHang(t *testing.T) {
+	for i := 0; i < 10; i++ {
+		cmd := exec.CommandContext(context.Background(), "cmd", "/c", "ping -n 30 127.0.0.1")
+		owned := mustPrepare(t, cmd)
+		startDone := make(chan error, 1)
+		go func() { startDone <- owned.Start() }()
+		closeDone := make(chan struct{})
+		go func() {
+			_ = owned.Close()
+			close(closeDone)
+		}()
+		startErr := <-startDone
+		select {
+		case <-closeDone:
+		case <-time.After(5 * time.Second):
+			t.Fatal("Close hung during Start")
+		}
+		if startErr == nil {
+			_ = owned.Wait()
+		}
+	}
+}
+
 func TestCloseReleasesUnstartedCommand(t *testing.T) {
 	cmd := exec.CommandContext(context.Background(), "cmd", "/c", "exit 0")
 	owned := mustPrepare(t, cmd)

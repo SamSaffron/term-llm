@@ -23,6 +23,8 @@ type windowsPlatformCommand struct {
 	mu       sync.Mutex
 	job      windows.Handle
 	cmd      *exec.Cmd
+	started  bool
+	closed   bool
 	closeOne sync.Once
 	closeErr error
 }
@@ -32,6 +34,7 @@ type windowsPlatformCommand struct {
 var (
 	assignProcessToJobObject = windows.AssignProcessToJobObject
 	resumeProcessThread      = resumeProcess
+	beforeAssignProcess      func()
 )
 
 func configurePlatformCommand(cmd *exec.Cmd, mode CommandMode, owner *Command) (platformCommand, error) {
@@ -65,26 +68,42 @@ func configurePlatformCommand(cmd *exec.Cmd, mode CommandMode, owner *Command) (
 }
 
 func (p *windowsPlatformCommand) start(*Command) error {
+	p.mu.Lock()
+	if p.closed {
+		p.mu.Unlock()
+		return ErrCommandClosed
+	}
+	if p.started {
+		p.mu.Unlock()
+		return errCommandAlreadyStarted
+	}
+	p.started = true
 	cmd := p.cmd
 	cmd.SysProcAttr.CreationFlags |= createSuspended
-	if err := cmd.Start(); err != nil {
+	err := cmd.Start()
+	p.mu.Unlock()
+	if err != nil {
 		return err
 	}
-	if err := p.assignAndResume(); err != nil {
-		_ = p.close(nil)
-		_ = cmd.Wait()
-		return err
+	if beforeAssignProcess != nil {
+		beforeAssignProcess()
 	}
-	return nil
+	return p.assignAndResume()
 }
 
 func (p *windowsPlatformCommand) assignAndResume() error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	if p.job == 0 {
-		return errors.New("assign process tree: job was already closed")
-	}
 	cmd := p.cmd
+	if cmd == nil || cmd.Process == nil {
+		return errors.New("assign process tree: command has no process")
+	}
+	if p.job == 0 || p.closed {
+		// Close may have released the job between process creation and
+		// assignment. The direct process must still be terminated.
+		_ = cmd.Process.Kill()
+		return errors.New("assign process tree: job was closed before assignment")
+	}
 	process, err := windows.OpenProcess(windows.PROCESS_SET_QUOTA|windows.PROCESS_TERMINATE|windows.PROCESS_QUERY_INFORMATION, false, uint32(cmd.Process.Pid))
 	if err == nil {
 		err = assignProcessToJobObject(p.job, process)
@@ -106,6 +125,7 @@ func (p *windowsPlatformCommand) signal(syscall.Signal) error { return p.close(n
 func (p *windowsPlatformCommand) close(*Command) error {
 	p.closeOne.Do(func() {
 		p.mu.Lock()
+		p.closed = true
 		if p.job != 0 {
 			_ = windows.TerminateJobObject(p.job, 1)
 			_ = windows.CloseHandle(p.job)
