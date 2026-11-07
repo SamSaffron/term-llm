@@ -298,6 +298,42 @@ MCP servers are stored in `~/.config/term-llm/mcp.json`:
 }
 ```
 
+### Restricting a server to agents
+
+An optional per-server `agents` allowlist restricts who can start the server and
+use its tools:
+
+```json
+{
+  "servers": {
+    "source-db": {
+      "command": "source-database-mcp",
+      "args": ["--read-only"],
+      "agents": ["migration-data"]
+    }
+  }
+}
+```
+
+Names match the resolved agent name shown by `term-llm agents` exactly (including
+case). Entries must be non-empty strings. An absent or empty `agents` list keeps
+the default behavior: any agent or plain chat can use the server. With a non-empty
+list, plain chats and other agents cannot enable the server, including through
+`--mcp`, the terminal MCP picker, or the serve web session API. The web session
+catalogue omits unavailable servers; an explicit forbidden PATCH returns HTTP 403
+with `permission_error`. Restoring an old session drops selections that are no
+longer permitted.
+
+An agent's own `mcp:` list still selects its default servers; it does not grant
+access. Child agents are checked using their own resolved names, not their
+parent's. Shared-runner platforms (including jobs) use the same checks. `serve mcp`
+exports built-in tools, not the configured upstream servers in `mcp.json`.
+
+This is an application-level guardrail, not an operating-system sandbox or a
+provider allowlist: users who can edit `mcp.json`, run arbitrary shell commands,
+or access the underlying database credentials can bypass it. Configure model
+policies and tool permissions separately for sensitive-data agents.
+
 ### Keeping secrets out of `mcp.json`
 
 `headers`, `env`, and `oauth.client_secret` values support deferred resolution, so the file itself can be tracked in dotfiles:
