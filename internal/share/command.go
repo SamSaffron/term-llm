@@ -222,7 +222,7 @@ func (p *CommandPublisher) run(ctx context.Context, operation Operation, timeout
 		}
 	}()
 
-	runErr := cmd.Run()
+	runErr := procutil.RunCommand(cmd)
 	if errors.Is(timeoutCtx.Err(), context.DeadlineExceeded) {
 		return errorWithDiagnostic(ErrorTimeout, "share helper timed out", stderr.String(), context.DeadlineExceeded)
 	}

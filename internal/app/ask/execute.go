@@ -2,6 +2,7 @@ package ask
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"time"
@@ -49,6 +50,9 @@ type askStreamingExecution struct {
 	jsonInfo        SessionInfo
 	useRichRenderer bool
 	teaProgram      *tea.Program
+	// renderFn overrides the renderer in tests while preserving the execution
+	// and runner lifecycle under test.
+	renderFn func(context.Context, <-chan ui.StreamEvent) error
 }
 
 func (e *askStreamingExecution) run() (askExecutionResult, error) {
@@ -57,11 +61,14 @@ func (e *askStreamingExecution) run() (askExecutionResult, error) {
 	if e.useRichRenderer && e.toolMgr != nil {
 		_, e.teaProgram = NewRendererProgram(e.cfg, e.toolMgr, e.store, e.session, events)
 	}
-	render := func(ctx context.Context, events <-chan ui.StreamEvent) error {
-		if e.teaProgram != nil {
-			return RunStreamProgram(ctx, e.teaProgram)
+	render := e.renderFn
+	if render == nil {
+		render = func(ctx context.Context, events <-chan ui.StreamEvent) error {
+			if e.teaProgram != nil {
+				return RunStreamProgram(ctx, e.teaProgram)
+			}
+			return StreamWithRenderer(ctx, e.cfg, events, e.store, e.session)
 		}
-		return StreamWithRenderer(ctx, e.cfg, events, e.store, e.session)
 	}
 	streamCtx, cancelStream := context.WithCancel(e.ctx)
 	defer cancelStream()
@@ -145,10 +152,19 @@ func (e *askStreamingExecution) run() (askExecutionResult, error) {
 		result.interrupted = true
 		return result, nil
 	}
-	interrupted := func(err error) bool {
-		return runInterruption(e.ctx, err)
-	}
 	var streamErr error
+	interrupted := func(err error) bool {
+		if !runInterruption(e.ctx, err) {
+			return false
+		}
+		// An explicit renderer stop is not allowed to hide a substantive runner
+		// failure. Plain cancellation (including joined cleanup cancellation)
+		// still counts as a user stop.
+		if errors.Is(err, errUserInterrupted) && e.ctx.Err() == nil && !isOnlyCancellation(streamErr) {
+			return false
+		}
+		return true
+	}
 	streamDone := false
 	if displayErr != nil {
 		cancelStream()

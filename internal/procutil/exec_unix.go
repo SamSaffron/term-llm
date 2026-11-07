@@ -33,6 +33,19 @@ func configureProcessGroupCancellation(cmd *exec.Cmd) {
 	cmd.Cancel = func() error { return KillCommandTree(cmd) }
 }
 
+// StartCommand is exec.Cmd.Start for commands prepared with this package.
+func StartCommand(cmd *exec.Cmd) error { return cmd.Start() }
+
+// RunCommand is exec.Cmd.Run for commands prepared with this package.
+func RunCommand(cmd *exec.Cmd) error { return cmd.Run() }
+
+// OutputCommand is exec.Cmd.Output for commands prepared with this package.
+func OutputCommand(cmd *exec.Cmd) ([]byte, error) { return cmd.Output() }
+
+// releaseCommand releases platform process-tree resources. Unix callers use
+// process groups and do not retain a separate handle after Wait.
+func releaseCommand(*exec.Cmd) {}
+
 // KillCommandTree terminates cmd and every process in its process group.
 func KillCommandTree(cmd *exec.Cmd) error {
 	if cmd == nil || cmd.Process == nil {

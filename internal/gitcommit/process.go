@@ -187,7 +187,7 @@ func (r *Repository) runCommit(ctx context.Context, messageFile string) (string,
 	stderr := &limitBuffer{max: maxCommitOutput}
 	cmd.Stdout = stdout
 	cmd.Stderr = stderr
-	waitErr := cmd.Run()
+	waitErr := procutil.RunCommand(cmd)
 	if deadlineErr := commitCtx.Err(); deadlineErr != nil {
 		waitErr = fmt.Errorf("Git commit exceeded %s: %w", commitTimeout, deadlineErr)
 	}

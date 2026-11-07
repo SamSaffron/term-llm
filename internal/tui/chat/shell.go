@@ -173,7 +173,7 @@ func (m *Model) boundWorktreeForShellEnv() string {
 }
 
 func interactiveShellPath() string {
-	return shellcmd.Path()
+	return shellcmd.InteractivePath()
 }
 
 func interactiveShellArgs(shellPath string, noRC bool) ([]string, error) {
@@ -582,7 +582,7 @@ func (m *Model) runDirectShellCmd(ctx, lifecycleCtx context.Context, generation 
 		cleanup, err := procutil.PrepareCommand(cmd)
 		if err == nil {
 			defer cleanup()
-			err = cmd.Run()
+			err = procutil.RunCommand(cmd)
 		}
 
 		done := directShellDoneMsg{generation: generation, err: err}

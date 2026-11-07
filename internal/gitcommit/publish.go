@@ -57,7 +57,7 @@ func (r *Repository) runPublishCommand(ctx context.Context, program string, args
 	defer cleanup()
 	out, stderr := &limitBuffer{max: maxCommitOutput}, &limitBuffer{max: maxCommitOutput}
 	cmd.Stdout, cmd.Stderr = out, stderr
-	err = cmd.Run()
+	err = procutil.RunCommand(cmd)
 	if ctx.Err() != nil {
 		return nil, typed(ErrUncertain, "Publishing timed out; check the remote before retrying", ctx.Err())
 	}

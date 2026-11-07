@@ -574,7 +574,7 @@ func (t *ShellTool) executeLocal(ctx context.Context, args json.RawMessage) (cor
 	}
 
 	// Run command
-	err := cmd.Run()
+	err := procutil.RunCommand(cmd)
 	// Stop descendants before reading the filesystem so tracking captures the
 	// state the shell invocation actually leaves behind.
 	cleanup()

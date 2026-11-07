@@ -234,7 +234,7 @@ func lookupFileFragment(v any, fragment string) (string, error) {
 
 // resolveCommand executes a shell command and returns its output
 func resolveCommand(cmd string) (string, error) {
-	shellPath, shellArgs := shellcmd.Invocation(cmd)
+	shellPath, shellArgs := shellcmd.HookInvocation(cmd)
 	output, err := runResolverCommand(shellPath, shellArgs...)
 	if err != nil {
 		return "", fmt.Errorf("command failed: %w", err)
@@ -260,7 +260,7 @@ func runResolverCommand(name string, args ...string) (string, error) {
 	cmd.Stdout = stdout
 	cmd.Stderr = stderr
 
-	err := cmd.Run()
+	err := procutil.RunCommand(cmd)
 	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
 		return "", fmt.Errorf("timed out after %s", resolveExecTimeout)
 	}

@@ -8,7 +8,7 @@
   not publisher authentication: both files come from the same release.
 
 .PARAMETER Version
-  Release tag to install (for example v0.9.93 or 0.9.93). Defaults to latest.
+  Release tag to install (for example 0.10.0 or v0.10.0). Defaults to latest.
 
 .PARAMETER InstallDir
   Destination directory. Defaults to %LOCALAPPDATA%\term-llm\bin.
@@ -23,7 +23,7 @@
   irm https://raw.githubusercontent.com/samsaffron/term-llm/main/install.ps1 | iex
 
 .EXAMPLE
-  .\install.ps1 -Version v0.9.93 -InstallDir C:\tools\term-llm
+  .\install.ps1 -InstallDir C:\tools\term-llm
 #>
 [CmdletBinding()]
 param(

@@ -359,7 +359,7 @@ func (r *ProgramRunner) Run(ctx context.Context, job Job, pw ProgressWriter) (Ru
 	cmd.Stdout = stdout
 	cmd.Stderr = stderr
 
-	err := cmd.Run()
+	err := procutil.RunCommand(cmd)
 	exitCode := 0
 	result := RunResult{Stdout: stdout.String(), Stderr: stderr.String(), Truncated: stdout.Truncated() || stderr.Truncated()}
 	if errors.Is(ctx.Err(), context.DeadlineExceeded) {

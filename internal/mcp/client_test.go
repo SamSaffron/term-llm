@@ -48,9 +48,9 @@ func TestCreateStdioTransport_InheritsEnv(t *testing.T) {
 	if stdioErr != nil {
 		t.Fatalf("createStdioTransport: %v", stdioErr)
 	}
-	ct, ok := transport.(*sdkmcp.CommandTransport)
+	ct, ok := transport.(*commandTransport)
 	if !ok {
-		t.Fatal("expected sdkmcp.CommandTransport")
+		t.Fatal("expected commandTransport")
 	}
 
 	env := ct.Command.Env
@@ -92,9 +92,9 @@ func TestCreateStdioTransport_NoEnvNil(t *testing.T) {
 	if stdioErr != nil {
 		t.Fatalf("createStdioTransport: %v", stdioErr)
 	}
-	ct, ok := transport.(*sdkmcp.CommandTransport)
+	ct, ok := transport.(*commandTransport)
 	if !ok {
-		t.Fatal("expected sdkmcp.CommandTransport")
+		t.Fatal("expected commandTransport")
 	}
 
 	if ct.Command.Env != nil {
@@ -117,9 +117,9 @@ func TestCreateStdioTransport_EmptyEnvNil(t *testing.T) {
 	if stdioErr != nil {
 		t.Fatalf("createStdioTransport: %v", stdioErr)
 	}
-	ct, ok := transport.(*sdkmcp.CommandTransport)
+	ct, ok := transport.(*commandTransport)
 	if !ok {
-		t.Fatal("expected sdkmcp.CommandTransport")
+		t.Fatal("expected commandTransport")
 	}
 
 	if ct.Command.Env != nil {
@@ -168,7 +168,7 @@ func TestCreateStdioTransport_EnvOverridesParent(t *testing.T) {
 	if stdioErr != nil {
 		t.Fatalf("createStdioTransport: %v", stdioErr)
 	}
-	ct := transport.(*sdkmcp.CommandTransport)
+	ct := transport.(*commandTransport)
 
 	// The overridden value should appear (last wins in exec.Cmd)
 	found := false
@@ -512,7 +512,7 @@ func TestCreateStdioTransport_ConfiguresDetachedProcessGroupCancellation(t *test
 	if stdioErr != nil {
 		t.Fatalf("createStdioTransport: %v", stdioErr)
 	}
-	ct := transport.(*sdkmcp.CommandTransport)
+	ct := transport.(*commandTransport)
 
 	if ct.Command.Cancel == nil {
 		t.Fatalf("expected subprocess cancel hook to be configured")

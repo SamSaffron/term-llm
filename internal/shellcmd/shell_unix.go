@@ -2,7 +2,10 @@
 
 package shellcmd
 
-import "os"
+import (
+	"os"
+	"strings"
+)
 
 // Path returns the user's shell, defaulting to bash.
 func Path() string {
@@ -21,4 +24,20 @@ func Args(_, command string) []string {
 func Invocation(command string) (string, []string) {
 	path := Path()
 	return path, Args(path, command)
+}
+
+// HookInvocation returns the shell used by established POSIX-only call sites
+// (config $(...) expansion and on_complete hooks). Those contracts were always
+// `sh -c`; they must not follow the user's interactive SHELL.
+func HookInvocation(command string) (string, []string) {
+	return "sh", []string{"-c", command}
+}
+
+// InteractivePath preserves the console's historical fallback: a trimmed SHELL
+// when set, otherwise the POSIX sh.
+func InteractivePath() string {
+	if shell := strings.TrimSpace(os.Getenv("SHELL")); shell != "" {
+		return shell
+	}
+	return "sh"
 }

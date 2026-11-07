@@ -4,10 +4,11 @@ package widgets
 
 import (
 	"os"
+	"os/exec"
 	"syscall"
 )
 
-func killProcessGroup(proc *os.Process, sig syscall.Signal) {
+func killProcessGroup(proc *os.Process, _ *exec.Cmd, sig syscall.Signal) {
 	if proc == nil {
 		return
 	}

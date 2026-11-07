@@ -19,6 +19,7 @@ func TestRunInterruptionRequiresLiveCancellation(t *testing.T) {
 		{name: "live context with joined cleanup cancellation", ctx: context.Background, err: errors.Join(providerErr, context.Canceled), want: false},
 		{name: "live context with provider error", ctx: context.Background, err: providerErr, want: false},
 		{name: "nil error", ctx: context.Background, err: nil, want: false},
+		{name: "renderer user interruption with live context", ctx: context.Background, err: errUserInterrupted, want: true},
 		{name: "cancelled context", ctx: func() context.Context {
 			ctx, cancel := context.WithCancel(context.Background())
 			cancel()
@@ -51,6 +52,7 @@ func TestTerminalRunErrorPrefersProviderFailure(t *testing.T) {
 		{name: "provider failure without display error", streamErr: providerErr, want: "streaming failed: provider failed"},
 		{name: "display error remains when stream canceled", displayErr: fmt.Errorf("render failed"), streamErr: context.Canceled, want: "render failed"},
 		{name: "both substantive errors stay visible", displayErr: fmt.Errorf("render failed"), streamErr: providerErr, want: "render failed\nprovider failed"},
+		{name: "renderer interruption yields to provider failure", displayErr: errUserInterrupted, streamErr: providerErr, want: "streaming failed: provider failed"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {

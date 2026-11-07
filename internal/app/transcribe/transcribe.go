@@ -132,7 +132,7 @@ func (w *WhisperCLI) run(ctx context.Context, whisperBin string, args []string) 
 	cmd.Stdout = stdout
 	cmd.Stderr = stderr
 
-	err := cmd.Run()
+	err := procutil.RunCommand(cmd)
 	return stdout.String(), stderr.String(), stdout.Truncated() || stderr.Truncated(), err
 }
 

@@ -52,6 +52,7 @@ type widgetEntry struct {
 	state    processState
 	errMsg   string
 	proc     *os.Process
+	cmd      *exec.Cmd
 	procDone chan struct{}
 	proxy    *httputil.ReverseProxy
 	lastReq  time.Time
@@ -477,11 +478,12 @@ func (e *widgetEntry) startProcess(ctx context.Context, basePath string) error {
 	cmd.Stderr = os.Stderr
 	procutil.ConfigureDetachedCommand(cmd)
 
-	if err := cmd.Start(); err != nil {
+	if err := procutil.StartCommand(cmd); err != nil {
 		if ctx.Err() != nil {
 			e.mu.Lock()
 			e.state = stateStopped
 			e.proc = nil
+			e.cmd = nil
 			e.procDone = nil
 			e.proxy = nil
 			e.port = 0
@@ -494,16 +496,19 @@ func (e *widgetEntry) startProcess(ctx context.Context, basePath string) error {
 	procDone := make(chan struct{})
 	e.mu.Lock()
 	e.proc = cmd.Process
+	e.cmd = cmd
 	e.procDone = procDone
 	e.mu.Unlock()
 
 	go func() {
 		defer close(procDone)
 		_ = cmd.Wait()
+		_ = procutil.KillCommandTree(cmd)
 		e.mu.Lock()
-		if e.proc == cmd.Process && (e.state == stateRunning || e.state == stateStarting) {
+		if e.cmd == cmd && (e.state == stateRunning || e.state == stateStarting) {
 			e.state = stateStopped
 			e.proc = nil
+			e.cmd = nil
 			e.procDone = nil
 			e.proxy = nil
 		}
@@ -572,10 +577,10 @@ func (e *widgetEntry) startProcess(ctx context.Context, basePath string) error {
 	}
 	if lastErr != nil {
 		e.mu.Lock()
-		p := e.proc
+		c := e.cmd
 		e.mu.Unlock()
-		if p != nil {
-			killProcessGroup(p, syscall.SIGKILL)
+		if c != nil {
+			killProcessGroup(nil, c, syscall.SIGKILL)
 		}
 		return e.setError(fmt.Errorf("did not respond within %s: %v", startupTimeout, lastErr))
 	}
@@ -614,11 +619,13 @@ func (e *widgetEntry) stopProcess() error {
 func (e *widgetEntry) stopProcessLocked() (err error) {
 	e.mu.Lock()
 	proc := e.proc
+	cmd := e.cmd
 	done := e.procDone
 	mode, _ := e.manifest.PlaceholderMode()
 	socketID := e.manifest.ID
 	e.state = stateStopped
 	e.proc = nil
+	e.cmd = nil
 	e.procDone = nil
 	e.proxy = nil
 	e.port = 0
@@ -633,10 +640,10 @@ func (e *widgetEntry) stopProcessLocked() (err error) {
 	if proc == nil {
 		return nil
 	}
-	killProcessGroup(proc, syscall.SIGTERM)
+	killProcessGroup(proc, cmd, syscall.SIGTERM)
 	if done == nil {
 		e.mu.Lock()
-		e.proc, e.procDone, e.state, e.errMsg = proc, done, stateError, "widget process has no exit acknowledgement"
+		e.proc, e.cmd, e.procDone, e.state, e.errMsg = proc, cmd, done, stateError, "widget process has no exit acknowledgement"
 		e.mu.Unlock()
 		return fmt.Errorf("widget process has no exit acknowledgement")
 	}
@@ -644,7 +651,7 @@ func (e *widgetEntry) stopProcessLocked() (err error) {
 	case <-done:
 		return nil
 	case <-time.After(3 * time.Second):
-		killProcessGroup(proc, syscall.SIGKILL)
+		killProcessGroup(proc, cmd, syscall.SIGKILL)
 	}
 	select {
 	case <-done:
@@ -653,6 +660,7 @@ func (e *widgetEntry) stopProcessLocked() (err error) {
 		// Retain ownership if even SIGKILL has not produced a wait acknowledgement.
 		e.mu.Lock()
 		e.proc = proc
+		e.cmd = cmd
 		e.procDone = done
 		e.state = stateError
 		e.errMsg = "widget process did not acknowledge exit"

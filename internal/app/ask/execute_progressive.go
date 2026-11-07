@@ -3,6 +3,7 @@ package ask
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"time"
@@ -126,6 +127,15 @@ func (e *askProgressiveExecution) run() (askExecutionResult, error) {
 	}
 	tools.ClearAskUserHooks()
 	if displayErr != nil {
+		if errors.Is(displayErr, errUserInterrupted) && isOnlyCancellation(progressive.Err) {
+			if e.store != nil && e.session != nil {
+				_ = e.store.UpdateStatus(context.Background(), e.session.ID, session.StatusInterrupted)
+				_ = e.store.SetCurrent(context.Background(), e.session.ID)
+			}
+			result.interrupted = true
+			result.skipFinalization = true
+			return result, nil
+		}
 		if e.flags.JSON {
 			_ = EmitFatalError(e.jsonEmit, result.stats, displayErr)
 		}

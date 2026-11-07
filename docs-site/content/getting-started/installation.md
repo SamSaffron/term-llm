@@ -50,7 +50,9 @@ curl -fsSL https://raw.githubusercontent.com/samsaffron/term-llm/main/install.sh
 
 Requires PowerShell 5.1 or later. The installer downloads the Windows amd64 ZIP
 and `checksums.txt`, verifies the SHA-256 checksum, and installs `term-llm.exe`.
-It does not run the downloaded binary.
+It does not run the downloaded binary. Windows artifacts begin with the first
+release cut after native Windows support merges; older release tags do not
+contain a Windows ZIP.
 
 ```powershell
 irm https://raw.githubusercontent.com/samsaffron/term-llm/main/install.ps1 | iex
@@ -59,7 +61,7 @@ irm https://raw.githubusercontent.com/samsaffron/term-llm/main/install.ps1 | iex
 Or with options:
 
 ```powershell
-.\install.ps1 -Version v0.9.93 -InstallDir C:\tools\term-llm
+.\install.ps1 -InstallDir C:\tools\term-llm
 ```
 
 The default install directory is `%LOCALAPPDATA%\term-llm\bin`; the installer

@@ -3,10 +3,7 @@
 package procutil
 
 import (
-	"errors"
-	"os"
 	"os/exec"
-	"strconv"
 	"syscall"
 )
 
@@ -20,19 +17,28 @@ const (
 )
 
 // ConfigureDetachedCommand starts cmd in a new process group with no console
-// window and configures process-tree cancellation.
+// window and prepares an owned Job Object for its process tree.
+//
+// Callers should start the command through StartCommand, RunCommand, or
+// OutputCommand. Those helpers assign the suspended child to the job and resume
+// it synchronously. ConfigureDetachedCommand also keeps direct exec.Cmd.Start/
+// Run working through a compatibility watcher, but new code should use the
+// helpers so setup errors are returned directly.
 func ConfigureDetachedCommand(cmd *exec.Cmd) {
 	ensureSysProcAttr(cmd)
-	cmd.SysProcAttr.CreationFlags |= createNewProcessGroup | createNoWindow
+	cmd.SysProcAttr.CreationFlags |= createNewProcessGroup | createNoWindow | createSuspended
 	configureProcessGroupCancellation(cmd)
+	registerCommandTree(cmd)
 }
 
 // ConfigureCommandProcessGroup starts cmd in its own process group so it can
 // receive its own console control events while keeping the caller's console.
+// It also prepares an owned Job Object; see ConfigureDetachedCommand.
 func ConfigureCommandProcessGroup(cmd *exec.Cmd) {
 	ensureSysProcAttr(cmd)
-	cmd.SysProcAttr.CreationFlags |= createNewProcessGroup
+	cmd.SysProcAttr.CreationFlags |= createNewProcessGroup | createSuspended
 	configureProcessGroupCancellation(cmd)
+	registerCommandTree(cmd)
 }
 
 func ensureSysProcAttr(cmd *exec.Cmd) {
@@ -51,27 +57,36 @@ func configureProcessGroupCancellation(cmd *exec.Cmd) {
 	cmd.Cancel = func() error { return KillCommandTree(cmd) }
 }
 
-// KillCommandTree terminates cmd and its descendants. Windows has no process
-// group kill, so taskkill /T walks the process tree. The os.Process handle is
-// still open at this point, which keeps the PID reserved until Wait/Release:
-// the taskkill lookup therefore cannot target an unrelated process that reused
-// the PID. If taskkill is unavailable, fall back to terminating the direct
-// child only.
+// KillCommandTree terminates every process in cmd's owned Job Object and
+// releases the job handle. It is safe to call after exec.Cmd.Wait, before
+// Wait, concurrently with Wait, and more than once. PID values are never used
+// for termination, so a reused PID cannot be targeted.
 func KillCommandTree(cmd *exec.Cmd) error {
-	if cmd == nil || cmd.Process == nil {
-		return nil
-	}
-	kill := exec.Command("taskkill", "/T", "/F", "/PID", strconv.Itoa(cmd.Process.Pid))
-	kill.SysProcAttr = &syscall.SysProcAttr{HideWindow: true, CreationFlags: createNoWindow}
-	if err := kill.Run(); err == nil {
-		return nil
-	}
-	if cmd.ProcessState != nil {
-		return nil
-	}
-	err := cmd.Process.Kill()
-	if errors.Is(err, os.ErrProcessDone) || errors.Is(err, os.ErrInvalid) {
-		return nil
-	}
-	return err
+	return terminateCommandTree(cmd)
 }
+
+// StartCommand starts a command prepared by ConfigureDetachedCommand or
+// ConfigureCommandProcessGroup, assigns its suspended process to the owned Job
+// Object, and resumes it. On any setup failure the process is terminated before
+// the error is returned.
+func StartCommand(cmd *exec.Cmd) error {
+	return startCommandTree(cmd)
+}
+
+// RunCommand is exec.Cmd.Run for commands prepared by ConfigureDetachedCommand
+// or ConfigureCommandProcessGroup.
+func RunCommand(cmd *exec.Cmd) error {
+	if err := StartCommand(cmd); err != nil {
+		return err
+	}
+	return cmd.Wait()
+}
+
+// OutputCommand is exec.Cmd.Output for commands prepared by
+// ConfigureDetachedCommand or ConfigureCommandProcessGroup.
+func OutputCommand(cmd *exec.Cmd) ([]byte, error) {
+	return outputCommandTree(cmd)
+}
+
+// releaseCommand closes the owned Job Object for a prepared command.
+func releaseCommand(cmd *exec.Cmd) { _ = KillCommandTree(cmd) }

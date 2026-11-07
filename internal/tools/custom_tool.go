@@ -16,6 +16,7 @@ import (
 
 	"github.com/samsaffron/term-llm/internal/agents"
 	"github.com/samsaffron/term-llm/internal/llm/core"
+	"github.com/samsaffron/term-llm/internal/procutil"
 	"github.com/samsaffron/term-llm/internal/runtimeoutput"
 )
 
@@ -160,7 +161,7 @@ func (t *CustomScriptTool) Execute(ctx context.Context, args json.RawMessage) (c
 			return scriptToolErrorOutput(NewToolErrorf(ErrExecutionFailed, "script setup error: %v", prepErr)), nil
 		}
 
-		execErr = cmd.Run()
+		execErr = procutil.RunCommand(cmd)
 		cleanup()
 		if !retryScriptBusy(execCtx, execErr, attempt) {
 			break

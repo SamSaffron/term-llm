@@ -234,7 +234,7 @@ func (c *Client) createStdioTransport(ctx context.Context) (mcp.Transport, error
 			cmd.Env = append(cmd.Env, fmt.Sprintf("%s=%s", k, v))
 		}
 	}
-	return &mcp.CommandTransport{Command: cmd}, nil
+	return &commandTransport{Command: cmd}, nil
 }
 
 func (c *Client) withStdioStderr(err error) error {

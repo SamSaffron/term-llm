@@ -55,3 +55,14 @@ func Invocation(command string) (string, []string) {
 	path := Path()
 	return path, Args(path, command)
 }
+
+// HookInvocation uses native shell selection on Windows, where no POSIX sh
+// contract exists.
+func HookInvocation(command string) (string, []string) {
+	return Invocation(command)
+}
+
+// InteractivePath uses native shell selection on Windows.
+func InteractivePath() string {
+	return Path()
+}

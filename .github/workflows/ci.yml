@@ -158,6 +158,11 @@ jobs:
             ./internal/widgets \
             ./internal/mcp/oauth \
             ./internal/pairing
+          # Whole packages below remain POSIX-oriented, but these tests exercise
+          # the native Windows command ownership and interruption contracts.
+          go test -short -count=1 -run 'TestPrepareToolCommand' ./internal/tools
+          go test -short -count=1 -run 'TestCreateStdioTransport|TestClientStartIncludesServerStderr' ./internal/mcp
+          go test -short -count=1 -run 'TestExecutionRendererInterruption|TestRunStreamProgramDistinguishes|TestRunInterruption|TestTerminalRunError' ./internal/app/ask
 
   race:
     needs: changes

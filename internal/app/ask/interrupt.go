@@ -6,6 +6,13 @@ import (
 	"fmt"
 )
 
+// errUserInterrupted is an explicit renderer-owned stop signal. Rich renderers
+// handle Esc/Ctrl+C locally without cancelling the outer context; keeping that
+// signal distinct from provider and cleanup cancellation lets the execution
+// layer stop outstanding children and persist interrupted output without
+// hiding a substantive provider failure.
+var errUserInterrupted = errors.New("user interrupted")
+
 // runInterruption reports whether the run was stopped by the caller (Ctrl-C or
 // --timeout) rather than by a provider or tool failure. Checking the live
 // context instead of errors.Is(err, context.Canceled) matters because runner
@@ -15,7 +22,7 @@ func runInterruption(ctx context.Context, err error) bool {
 	if err == nil || ctx == nil {
 		return false
 	}
-	return isCancellationError(ctx.Err())
+	return isCancellationError(ctx.Err()) || errors.Is(err, errUserInterrupted)
 }
 
 func isCancellationError(err error) bool {
@@ -30,8 +37,32 @@ func terminalRunError(displayErr, streamErr error) error {
 	if streamErr == nil || isCancellationError(streamErr) {
 		return displayErr
 	}
-	if displayErr == nil || isCancellationError(displayErr) {
+	if displayErr == nil || isCancellationError(displayErr) || errors.Is(displayErr, errUserInterrupted) {
 		return fmt.Errorf("streaming failed: %w", streamErr)
 	}
 	return errors.Join(displayErr, streamErr)
+}
+
+// isOnlyCancellation reports whether err contains no substantive failure. It
+// distinguishes a plain cancellation or joined cleanup cancellation from an
+// error that also carries a provider/tool diagnostic.
+func isOnlyCancellation(err error) bool {
+	if err == nil {
+		return true
+	}
+	if err == context.Canceled || err == context.DeadlineExceeded || errors.Is(err, errUserInterrupted) {
+		return true
+	}
+	if multi, ok := err.(interface{ Unwrap() []error }); ok {
+		for _, child := range multi.Unwrap() {
+			if !isOnlyCancellation(child) {
+				return false
+			}
+		}
+		return true
+	}
+	if single, ok := err.(interface{ Unwrap() error }); ok {
+		return isOnlyCancellation(single.Unwrap())
+	}
+	return false
 }

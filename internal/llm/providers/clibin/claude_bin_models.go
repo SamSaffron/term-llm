@@ -227,7 +227,7 @@ func defaultClaudeModelsCommandOutput(ctx context.Context, p *ClaudeBinProvider)
 		return nil, fmt.Errorf("prepare claude command: %w", err)
 	}
 	defer cleanupProcess()
-	return cmd.Output()
+	return procutil.OutputCommand(cmd)
 }
 
 var claudeModelsCommandOutput = defaultClaudeModelsCommandOutput
