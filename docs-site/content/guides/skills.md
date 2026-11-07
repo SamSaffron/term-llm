@@ -92,7 +92,7 @@ Listings open in a scrollable panel; press Esc to close it. `/skills` commands a
 
 A normal skill runs in the current conversation. Its expanded body is stored as hidden developer context while the concise slash invocation remains visible; `/undo` and `/redo` remove and restore that context together with the turn. A `context: fork` skill starts an isolated child with no parent transcript, displays independent progress, and returns a linked result block. Forked skills can run while the parent is streaming; Esc still targets the parent response, while the skill-run cancel action or `/skills cancel` targets the child.
 
-The browser uses the same server-owned catalog and activation service. Reloading or switching sessions reconnects to active isolated runs instead of converting skill files into client-side prompt text.
+The browser uses the same server-owned catalog and activation service. A new chat lists the skills for the project or worktree selected for it, and running a skill from it starts the conversation. Reloading or switching sessions reconnects to active isolated runs instead of converting skill files into client-side prompt text.
 
 ### Invocation metadata
 

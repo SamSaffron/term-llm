@@ -683,6 +683,15 @@ export const endpoints = (api: APIClient) => ({
       { method: 'POST', body: JSON.stringify(body) },
       { policy: 'mutation', timeoutMs: 150_000 },
     ),
+  // A new chat has no session yet; list skills for the workspace it will bind to.
+  draftSkills: (projectId: string, worktreeDir: string, noProject: boolean) => {
+    const query = new URLSearchParams();
+    if (projectId) query.set('project_id', projectId);
+    if (worktreeDir) query.set('worktree_dir', worktreeDir);
+    if (noProject) query.set('no_project', 'true');
+    const suffix = query.toString();
+    return api.get<Record<string, unknown>>(`/v1/skills${suffix ? `?${suffix}` : ''}`);
+  },
   skills: (id: string) =>
     api.json<Record<string, unknown>>(
       `/v1/sessions/${encoded(id)}/skills`,

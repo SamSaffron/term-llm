@@ -243,6 +243,8 @@ export class SelectionStore {
       this.services.storage.setItem(this.services.keys.lastProject, selectedProject);
     updateSessionRoute(this.services.config.prefix, null, replace);
     this.composer.restore(this.composer.storageId(), 'draft');
+    // Slash-command skills must not wait for the first send to create a session.
+    void this.skillStore.loadDraftSkills().catch(() => undefined);
   }
 
   /**

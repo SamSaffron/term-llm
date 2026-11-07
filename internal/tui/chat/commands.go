@@ -39,6 +39,27 @@ type Subcommand struct {
 	Description string
 }
 
+// CommandNames returns the lowercase names and aliases of all slash commands,
+// plus any client-specific command names in extra.
+func CommandNames(extra ...string) map[string]bool {
+	set := make(map[string]bool)
+	add := func(name string) {
+		if name = strings.ToLower(strings.TrimSpace(name)); name != "" {
+			set[name] = true
+		}
+	}
+	for _, command := range AllCommands() {
+		add(command.Name)
+		for _, alias := range command.Aliases {
+			add(alias)
+		}
+	}
+	for _, name := range extra {
+		add(name)
+	}
+	return set
+}
+
 // AllCommands returns all available slash commands
 func AllCommands() []Command {
 	return []Command{
