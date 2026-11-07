@@ -13,6 +13,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"golang.org/x/sys/windows"
 )
 
 func TestConfigureDetachedCommandCreatesProcessGroupWithoutWindow(t *testing.T) {
@@ -312,35 +314,70 @@ func TestStartCommandFailureReleasesTree(t *testing.T) {
 	}
 }
 
-func TestConfiguredDirectRunParticipatesInOwnedJob(t *testing.T) {
-	cmd := exec.Command("cmd", "/c", "exit 0")
+func TestDelayedStartCommandUsesSynchronousOwnership(t *testing.T) {
+	cmd := exec.CommandContext(context.Background(), "cmd", "/c", "exit 0")
 	ConfigureDetachedCommand(cmd)
-	if err := cmd.Run(); err != nil {
-		t.Fatalf("direct cmd.Run with configured command: %v", err)
+	time.Sleep(50 * time.Millisecond)
+	start := time.Now()
+	if err := RunCommand(cmd); err != nil {
+		t.Fatalf("RunCommand after delayed configure: %v", err)
+	}
+	if elapsed := time.Since(start); elapsed > 5*time.Second {
+		t.Fatalf("delayed safe start took %s", elapsed)
 	}
 	if err := KillCommandTree(cmd); err != nil {
 		t.Fatalf("cleanup: %v", err)
 	}
 }
 
-func TestDirectRunAfterParentExitReapsBackgroundChild(t *testing.T) {
-	dir := t.TempDir()
-	helper := filepath.Join(dir, "termllm-direct-run-child.exe")
-	copyOwnedPing(t, helper)
-	pidFile := filepath.Join(dir, "child.pid")
-	script := `$p=Start-Process -FilePath '` + helper + `' -ArgumentList '-n','60','127.0.0.1' -WindowStyle Hidden -PassThru; [IO.File]::WriteAllText('` + pidFile + `',[string]$p.Id)`
-
-	cmd := exec.Command("powershell.exe", "-NoProfile", "-NonInteractive", "-Command", script)
+func TestKillCommandTreeReleasesUnstartedConfiguredCommand(t *testing.T) {
+	cmd := exec.CommandContext(context.Background(), "cmd", "/c", "exit 0")
 	ConfigureDetachedCommand(cmd)
-	if err := cmd.Run(); err != nil {
-		t.Fatalf("direct parent Run: %v", err)
+	if lookupCommandTree(cmd) == nil {
+		t.Fatal("configured command missing registry entry")
 	}
-	pid := readPID(t, pidFile)
-	defer exec.Command("taskkill", "/F", "/PID", strconv.Itoa(pid)).Run()
 	if err := KillCommandTree(cmd); err != nil {
-		t.Fatalf("cleanup: %v", err)
+		t.Fatalf("release unstarted command: %v", err)
 	}
-	if processRunningPID(t, pid) {
-		t.Fatalf("direct Run background child %d survived cleanup", pid)
+	if lookupCommandTree(cmd) != nil {
+		t.Fatal("unstarted command registry entry was not released")
+	}
+}
+
+func TestStartCommandAssignmentFailureReapsProcess(t *testing.T) {
+	oldAssign := assignProcessToJobObject
+	assignProcessToJobObject = func(windows.Handle, windows.Handle) error { return errors.New("forced assignment failure") }
+	defer func() { assignProcessToJobObject = oldAssign }()
+
+	cmd := exec.CommandContext(context.Background(), "cmd", "/c", "ping -n 30 127.0.0.1")
+	ConfigureDetachedCommand(cmd)
+	err := StartCommand(cmd)
+	if err == nil || !strings.Contains(err.Error(), "forced assignment failure") {
+		t.Fatalf("StartCommand error = %v, want forced assignment diagnostic", err)
+	}
+	if cmd.ProcessState == nil || !cmd.ProcessState.Exited() {
+		t.Fatal("post-Start assignment failure did not reap the process")
+	}
+	if lookupCommandTree(cmd) != nil {
+		t.Fatal("post-Start assignment failure leaked the command tree")
+	}
+}
+
+func TestStartCommandResumeFailureReapsProcess(t *testing.T) {
+	oldResume := resumeProcessThread
+	resumeProcessThread = func(int) error { return errors.New("forced resume failure") }
+	defer func() { resumeProcessThread = oldResume }()
+
+	cmd := exec.CommandContext(context.Background(), "cmd", "/c", "ping -n 30 127.0.0.1")
+	ConfigureDetachedCommand(cmd)
+	err := StartCommand(cmd)
+	if err == nil || !strings.Contains(err.Error(), "forced resume failure") {
+		t.Fatalf("StartCommand error = %v, want forced resume diagnostic", err)
+	}
+	if cmd.ProcessState == nil || !cmd.ProcessState.Exited() {
+		t.Fatal("post-Start resume failure did not reap the process")
+	}
+	if lookupCommandTree(cmd) != nil {
+		t.Fatal("post-Start resume failure leaked the command tree")
 	}
 }

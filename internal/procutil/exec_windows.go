@@ -19,14 +19,15 @@ const (
 // ConfigureDetachedCommand starts cmd in a new process group with no console
 // window and prepares an owned Job Object for its process tree.
 //
-// Callers should start the command through StartCommand, RunCommand, or
-// OutputCommand. Those helpers assign the suspended child to the job and resume
-// it synchronously. ConfigureDetachedCommand also keeps direct exec.Cmd.Start/
-// Run working through a compatibility watcher, but new code should use the
-// helpers so setup errors are returned directly.
+// Callers MUST start the command through StartCommand, RunCommand, or
+// OutputCommand. Those helpers create the child suspended, assign it to the job,
+// and resume it synchronously. Direct exec.Cmd.Start/Run bypasses ownership.
+// If a configured command will not be started, call KillCommandTree (or the
+// cleanup returned by PrepareCommand) to release its job handle and registry
+// entry.
 func ConfigureDetachedCommand(cmd *exec.Cmd) {
 	ensureSysProcAttr(cmd)
-	cmd.SysProcAttr.CreationFlags |= createNewProcessGroup | createNoWindow | createSuspended
+	cmd.SysProcAttr.CreationFlags |= createNewProcessGroup | createNoWindow
 	configureProcessGroupCancellation(cmd)
 	registerCommandTree(cmd)
 }
@@ -36,7 +37,7 @@ func ConfigureDetachedCommand(cmd *exec.Cmd) {
 // It also prepares an owned Job Object; see ConfigureDetachedCommand.
 func ConfigureCommandProcessGroup(cmd *exec.Cmd) {
 	ensureSysProcAttr(cmd)
-	cmd.SysProcAttr.CreationFlags |= createNewProcessGroup | createSuspended
+	cmd.SysProcAttr.CreationFlags |= createNewProcessGroup
 	configureProcessGroupCancellation(cmd)
 	registerCommandTree(cmd)
 }

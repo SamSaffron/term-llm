@@ -8,8 +8,6 @@ import (
 	"fmt"
 	"os/exec"
 	"sync"
-	"sync/atomic"
-	"time"
 	"unsafe"
 
 	"golang.org/x/sys/windows"
@@ -18,16 +16,22 @@ import (
 const createSuspended = 0x00000004
 
 type commandTree struct {
-	mu            sync.Mutex
-	job           windows.Handle
-	createErr     error
-	readyOnce     sync.Once
-	ready         chan struct{}
-	killOnce      sync.Once
-	startOnce     sync.Once
-	startErr      error
-	explicitStart atomic.Bool
+	mu        sync.Mutex
+	job       windows.Handle
+	createErr error
+	readyOnce sync.Once
+	ready     chan struct{}
+	killOnce  sync.Once
+	startOnce sync.Once
+	startErr  error
 }
+
+// Injectable seams keep forced job-assignment/resume failure tests local and
+// serial; production uses the real Windows calls.
+var (
+	assignProcessToJobObject = windows.AssignProcessToJobObject
+	resumeProcessThread      = resumeProcess
+)
 
 var commandTrees sync.Map // map[*exec.Cmd]*commandTree
 
@@ -70,37 +74,6 @@ func registerCommandTree(cmd *exec.Cmd) {
 	}
 	tree.job = job
 	commandTrees.Store(cmd, tree)
-	go tree.watchSuspendedStart(cmd)
-}
-
-// watchSuspendedStart is a compatibility path for callers that use
-// exec.Cmd.Start/Run after ConfigureDetachedCommand instead of StartCommand.
-// Configure creates the child suspended; this watcher assigns the job and
-// resumes it as soon as the process handle is published. StartCommand disables
-// the watcher because it performs the same transition synchronously.
-func (t *commandTree) watchSuspendedStart(cmd *exec.Cmd) {
-	ticker := time.NewTicker(time.Millisecond)
-	defer ticker.Stop()
-	deadline := time.NewTimer(30 * time.Second)
-	defer deadline.Stop()
-	for {
-		if t.explicitStart.Load() {
-			return
-		}
-		if cmd.Process != nil {
-			if err := t.completeStart(cmd); err != nil {
-				releaseCommandTree(cmd, t)
-			}
-			return
-		}
-		select {
-		case <-t.ready:
-			return
-		case <-deadline.C:
-			return
-		case <-ticker.C:
-		}
-	}
 }
 
 func (t *commandTree) completeStart(cmd *exec.Cmd) error {
@@ -124,14 +97,14 @@ func (t *commandTree) assignAndResume(cmd *exec.Cmd) error {
 		uint32(cmd.Process.Pid),
 	)
 	if err == nil {
-		err = windows.AssignProcessToJobObject(t.job, process)
+		err = assignProcessToJobObject(t.job, process)
 		_ = windows.CloseHandle(process)
 	}
 	if err != nil {
 		_ = cmd.Process.Kill()
 		return fmt.Errorf("assign process tree to job: %w", err)
 	}
-	if err := resumeProcess(cmd.Process.Pid); err != nil {
+	if err := resumeProcessThread(cmd.Process.Pid); err != nil {
 		_ = cmd.Process.Kill()
 		return err
 	}
@@ -163,7 +136,6 @@ func startCommandTree(cmd *exec.Cmd) error {
 		return tree.createErr
 	}
 
-	tree.explicitStart.Store(true)
 	ensureSysProcAttr(cmd)
 	cmd.SysProcAttr.CreationFlags |= createSuspended
 	if err := cmd.Start(); err != nil {
@@ -171,7 +143,11 @@ func startCommandTree(cmd *exec.Cmd) error {
 		return err
 	}
 	if err := tree.completeStart(cmd); err != nil {
+		// Start succeeded; the caller will not Wait after a Start error. Reap the
+		// already-created process and release its job/IO/context watchers before
+		// returning the original setup diagnostic.
 		releaseCommandTree(cmd, tree)
+		_ = cmd.Wait()
 		return err
 	}
 	return nil

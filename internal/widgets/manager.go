@@ -580,7 +580,7 @@ func (e *widgetEntry) startProcess(ctx context.Context, basePath string) error {
 		c := e.cmd
 		e.mu.Unlock()
 		if c != nil {
-			killProcessGroup(nil, c, syscall.SIGKILL)
+			killProcessGroup(c.Process, c, syscall.SIGKILL)
 		}
 		return e.setError(fmt.Errorf("did not respond within %s: %v", startupTimeout, lastErr))
 	}
