@@ -157,9 +157,11 @@ export function HeaderBreadcrumb({ context }: { context: ProjectContext | null }
           <span class="chip-label">{label}</span>
         </button>
       )}
-      <h1 class="header-title" id="activeSessionTitle">
-        {session?.title || 'Chat'}
-      </h1>
+      {(session?.title || !context) && (
+        <h1 class="header-title" id="activeSessionTitle">
+          {session?.title || 'Chat'}
+        </h1>
+      )}
       {paths && (
         <button
           class="header-title-badge branch-tree-trigger"

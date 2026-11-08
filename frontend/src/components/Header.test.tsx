@@ -13,6 +13,40 @@ afterEach(() => {
   store = undefined;
 });
 
+describe('header conversation title', () => {
+  it.each([
+    { project: true, draft: true, title: '', expected: null },
+    { project: true, draft: false, title: '', expected: null },
+    { project: false, draft: true, title: '', expected: 'Chat' },
+    { project: false, draft: false, title: '', expected: 'Chat' },
+    { project: true, draft: false, title: 'Fix the header', expected: 'Fix the header' },
+    { project: true, draft: false, title: 'Chat', expected: 'Chat' },
+  ])('renders the conversation title for %j', ({ project, draft, title, expected }) => {
+    store = new AppStore(testConfig);
+    store.projectsEnabled.value = true;
+    store.projects.value = [{ id: 'p', name: 'term-llm', available: true }];
+    store.activeProjectId.value = project ? 'p' : '';
+    store.draftActive.value = draft;
+    store.sessions.value = draft ? [] : [testSession({ title, projectId: project ? 'p' : '' })];
+    store.activeSessionId.value = draft ? '' : 's1';
+
+    render(
+      <StoreContext.Provider value={store}>
+        <Header />
+      </StoreContext.Provider>,
+    );
+
+    if (expected === null) {
+      expect(screen.queryByRole('heading', { level: 1 })).not.toBeInTheDocument();
+    } else {
+      expect(screen.getByRole('heading', { level: 1 })).toHaveTextContent(expected);
+    }
+    if (project) {
+      expect(screen.getByRole('button', { name: 'Project term-llm' })).toBeVisible();
+    }
+  });
+});
+
 describe('runtime header', () => {
   it('keeps the selected model visible while its session swap is in progress', async () => {
     store = new AppStore(testConfig);

@@ -322,10 +322,12 @@ export class ComposerStore {
       const draft = readDrafts(this.services.storage, this.services.keys.draftMessages).find(
         (candidate) => candidate.sessionId === draftSessionId,
       );
-      if (draft?.content.trim() === value)
+      if (draft)
         saveDraft(this.services.storage, this.services.keys.draftMessages, {
           ...draft,
-          content: '',
+          content: draft.content.trim() === value ? '' : draft.content,
+          // Preparation persists attachments before the caption is finished.
+          // Clear submitted IDs independently of text, preserving newer edits.
           attachments: (draft.attachments || []).filter(
             (attachment) => !attachment.id || !submittedIDs.has(attachment.id),
           ),

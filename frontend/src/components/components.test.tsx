@@ -946,7 +946,13 @@ describe('Preact-owned chat surfaces', () => {
       const titleContext = container.querySelector('.header-title-context');
       if (project || crumb) expect(titleContext).toHaveClass('has-context');
       else expect(titleContext).not.toHaveClass('has-context');
-      expect(screen.getByRole('heading', { level: 1 })).toHaveTextContent(draft ? 'Chat' : 'Test');
+      if (draft && project) {
+        expect(screen.queryByRole('heading', { level: 1 })).not.toBeInTheDocument();
+      } else {
+        expect(screen.getByRole('heading', { level: 1 })).toHaveTextContent(
+          draft ? 'Chat' : 'Test',
+        );
+      }
       act(() => {
         store.branchPathCount.value = 3;
       });

@@ -74,6 +74,28 @@ describe('ComposerStore', () => {
     }
   });
 
+  it('clears submitted attachment IDs without removing newer saved text or attachments', () => {
+    const store = new AppStore(testConfig);
+    try {
+      const submitted = { id: 'sent', name: 'sent.png', type: 'image/png' };
+      const newer = { id: 'new', name: 'new.png', type: 'image/png' };
+      store.composer.prompt.value = 'newer text';
+      store.composer.attachments.value = [submitted, newer];
+      store.composer.persist();
+      const draftID = store.composer.storageId();
+
+      store.composer.clearSubmitted('', 'submitted text', [submitted], draftID);
+
+      expect(store.composer.prompt.value).toBe('newer text');
+      expect(store.composer.attachments.value).toEqual([newer]);
+      expect(readDrafts(localStorage, store.keys.draftMessages)).toEqual([
+        expect.objectContaining({ content: 'newer text', attachments: [newer] }),
+      ]);
+    } finally {
+      store.dispose();
+    }
+  });
+
   it('clears only the submitted composer generation', () => {
     const store = new AppStore(testConfig);
     try {

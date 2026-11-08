@@ -156,6 +156,42 @@ describe('new chat draft', () => {
     expect(store.prompt.value).toBe('');
   });
 
+  it.each(['', 'describe this picture'])(
+    'removes the sent picture draft with text %j',
+    async (text) => {
+      const store = setup([]);
+      store.endpoints.createResponse = vi.fn(async () => completedResponse('s9'));
+      store.newChat();
+      store.attachments.value = [
+        {
+          id: 'picture-1',
+          name: 'photo.png',
+          type: 'image/png',
+          dataURL: 'data:image/png;base64,AA==',
+          status: 'ready',
+        },
+      ];
+      // Attachment preparation saves immediately, before the user finishes typing.
+      store.composer.persist();
+      const draftID = store.composer.storageId();
+      store.prompt.value = text;
+
+      await store.send();
+
+      expect(store.endpoints.createResponse).toHaveBeenCalledOnce();
+      expect(store.attachments.value).toEqual([]);
+      expect(store.composer.unsentNewChats.value).toEqual([]);
+      expect(
+        readDrafts(store.storage, store.keys.draftMessages).find(
+          (draft) => draft.sessionId === draftID,
+        )?.attachments || [],
+      ).toEqual([]);
+      store.newChat();
+      expect(store.prompt.value).toBe('');
+      expect(store.attachments.value).toEqual([]);
+    },
+  );
+
   it('lists an unsent draft only while it is not open in the composer', async () => {
     const store = setup();
     store.newChat();
