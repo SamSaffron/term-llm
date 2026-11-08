@@ -210,17 +210,25 @@ func TestServeCompactionAutomaticCompletionCapturesRevision(t *testing.T) {
 	_, err := rt.RunWithEvents(context.Background(), true, false, []core.Message{core.UserText("next turn")}, core.Request{SessionID: "lifecycle", Model: "mock-model"}, func(ev core.Event) error {
 		if ev.Type == core.EventCompactionStatus && !ev.CompactionActive {
 			atCompletion, _ = s.transcriptRev(context.Background(), "lifecycle")
-			if got := rt.activitySnapshot(); got.TranscriptRev != atCompletion {
-				t.Errorf("automatic completion anchor=%d committed=%d", got.TranscriptRev, atCompletion)
-			}
 		}
 		return nil
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := rt.activitySnapshot(); atCompletion <= 0 || got.Status != "completed" || got.TranscriptRev != atCompletion {
-		t.Fatalf("automatic terminal anchor=%+v at completion=%d", got, atCompletion)
+	// The terminal activity is published by the completion path, which may run
+	// just after the event callback. Poll for the committed anchor instead of
+	// requiring the callback to observe it synchronously.
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		got := rt.activitySnapshot()
+		if atCompletion > 0 && got.Status == "completed" && got.TranscriptRev == atCompletion {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("automatic terminal anchor=%+v at completion=%d", got, atCompletion)
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 }
 

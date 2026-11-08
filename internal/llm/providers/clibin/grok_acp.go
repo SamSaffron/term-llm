@@ -900,16 +900,16 @@ func (p *GrokBinProvider) startGrokACPProcess(ctx context.Context, req core.Requ
 		_ = stdin.Close()
 		return nil, fmt.Errorf("get grok ACP stderr: %w", err)
 	}
-	cleanup, err := procutil.PrepareCommand(cmd)
+	owned, err := procutil.PrepareCommand(cmd)
 	if err != nil {
 		cancel()
 		stopCLIWireAudit(wireAudit)
 		_ = stdin.Close()
 		return nil, fmt.Errorf("prepare grok ACP command: %w", err)
 	}
-	if err := cmd.Start(); err != nil {
+	if err := owned.Start(); err != nil {
 		cancel()
-		cleanup()
+		owned.Close()
 		stopCLIWireAudit(wireAudit)
 		return nil, fmt.Errorf("start grok ACP: %w", err)
 	}
@@ -944,9 +944,9 @@ func (p *GrokBinProvider) startGrokACPProcess(ctx context.Context, req core.Requ
 		})
 	}()
 	go func() {
-		process.waitErr = cmd.Wait()
+		process.waitErr = owned.Wait()
 		<-process.stderrDone
-		cleanup()
+		owned.Close()
 		close(process.waitDone)
 	}()
 	defer func() {

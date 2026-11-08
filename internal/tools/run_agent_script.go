@@ -27,12 +27,12 @@ func executeAgentScriptCommand(ctx context.Context, script string, argv []string
 	cmd.Dir = workDir
 	cmd.Stdout = stdout
 	cmd.Stderr = stderr
-	cleanup, err := prepareToolCommand(cmd)
+	owned, err := prepareToolCommand(cmd)
 	if err != nil {
 		return &runAgentScriptSetupError{err: err}
 	}
-	defer cleanup()
-	return cmd.Run()
+	defer owned.Close()
+	return owned.Run()
 }
 
 // RunAgentScriptTool executes scripts bundled in the agent's source directory.

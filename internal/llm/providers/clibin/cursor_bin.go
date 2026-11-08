@@ -443,15 +443,15 @@ func (p *CursorBinProvider) runCursorCommand(ctx context.Context, args []string,
 	if err != nil {
 		return nil, fmt.Errorf("get Cursor stderr: %w", err)
 	}
-	cleanupProcess, err := procutil.PrepareCommand(cmd)
+	owned, err := procutil.PrepareCommand(cmd)
 	if err != nil {
 		return nil, fmt.Errorf("prepare Cursor process: %w", err)
 	}
-	if err := cmd.Start(); err != nil {
-		cleanupProcess()
+	if err := owned.Start(); err != nil {
+		owned.Close()
 		return nil, fmt.Errorf("start Cursor command: %w", err)
 	}
-	defer cleanupProcess()
+	defer owned.Close()
 
 	redactDiagnostic := p.cursorDiagnosticRedactor()
 	lineCh := make(chan string, 64)
@@ -504,7 +504,7 @@ func (p *CursorBinProvider) runCursorCommand(ctx context.Context, args []string,
 	if scanErr != nil {
 		cancel()
 	}
-	waitErr := cmd.Wait()
+	waitErr := owned.Wait()
 	<-stderrDone
 	if dispatchErr != nil {
 		return nil, dispatchErr
@@ -952,23 +952,6 @@ func (p *CursorBinProvider) gcCursorHomes() {
 	}
 	gcStaleCLIHomes(base, p.cursorHome, cursorHomeMaxAge, isGrokHomeID, "cursor-bin")
 }
-
-func defaultCursorModelsCommandOutput(ctx context.Context, p *CursorBinProvider, home string) ([]byte, error) {
-	cmd, err := newCLICommand(ctx, "cursor-agent", []string{"models"}, filepath.Join(home, "cwd"))
-	if err != nil {
-		return nil, err
-	}
-	cmd.Env = p.buildCommandEnv(home)
-	auditedEnv, wireAudit, err := startCLIWireAudit("cursor-bin-models", cmd.Env)
-	if err != nil {
-		return nil, err
-	}
-	cmd.Env = auditedEnv
-	defer stopCLIWireAudit(wireAudit)
-	return cmd.Output()
-}
-
-var cursorModelsCommandOutput = defaultCursorModelsCommandOutput
 
 // ListModels parses the account-specific model list exposed by Cursor Agent.
 func (p *CursorBinProvider) ListModels(ctx context.Context) ([]core.ModelInfo, error) {

@@ -9,8 +9,9 @@ import (
 	"fmt"
 	"io"
 	"os"
+
+	"github.com/samsaffron/term-llm/internal/fileprivacy"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"sync"
 	"time"
@@ -101,16 +102,16 @@ func (s *Store) open() error {
 		s.data = storeFile{Version: StoreVersion, RPID: s.rpID, User: User{ID: id, Name: s.userName, Credentials: []Credential{}}}
 		return s.writeLocked()
 	}
-	if runtime.GOOS != "windows" {
-		if parent, err := os.Stat(filepath.Dir(s.path)); err != nil || parent.Mode().Perm()&0o077 != 0 {
-			return fmt.Errorf("passkey auth directory must have private permissions (0700)")
-		}
+	if parent, err := os.Stat(filepath.Dir(s.path)); err != nil {
+		return fmt.Errorf("inspect passkey auth directory: %w", err)
+	} else if err := fileprivacy.CheckDir(parent); err != nil {
+		return fmt.Errorf("passkey auth directory must have private permissions (0700): %w", err)
 	}
 	if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
 		return fmt.Errorf("passkey auth store must be a regular non-symlink file")
 	}
-	if runtime.GOOS != "windows" && info.Mode().Perm()&0o077 != 0 {
-		return fmt.Errorf("passkey auth store %s has insecure permissions %04o; require 0600", s.path, info.Mode().Perm())
+	if err := fileprivacy.CheckFile(info); err != nil {
+		return fmt.Errorf("passkey auth store %s has insecure permissions; require 0600: %w", s.path, err)
 	}
 	data, err := os.ReadFile(s.path)
 	if err != nil {
@@ -218,13 +219,13 @@ func (s *Store) writeLocked() error {
 	if s.readOnly {
 		return fmt.Errorf("passkey store is read-only")
 	}
-	if err := os.MkdirAll(filepath.Dir(s.path), 0o700); err != nil {
+	if err := fileprivacy.MkdirAll(filepath.Dir(s.path)); err != nil {
 		return fmt.Errorf("create passkey auth directory: %w", err)
 	}
-	if runtime.GOOS != "windows" {
-		if d, err := os.Stat(filepath.Dir(s.path)); err != nil || d.Mode().Perm()&0o077 != 0 {
-			return fmt.Errorf("passkey auth directory must have private permissions (0700)")
-		}
+	if d, err := os.Stat(filepath.Dir(s.path)); err != nil {
+		return fmt.Errorf("inspect passkey auth directory: %w", err)
+	} else if err := fileprivacy.CheckDir(d); err != nil {
+		return fmt.Errorf("passkey auth directory must have private permissions (0700): %w", err)
 	}
 	if info, err := os.Lstat(s.path); err == nil && (info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular()) {
 		return fmt.Errorf("refusing to write passkey auth store through a symlink")
@@ -233,7 +234,7 @@ func (s *Store) writeLocked() error {
 	if err != nil {
 		return fmt.Errorf("encode passkey auth store: %w", err)
 	}
-	if err := s.writeFile(s.path, append(data, '\n'), 0o600); err != nil {
+	if err := s.writeFile(s.path, append(data, '\n'), fileprivacy.FileMode); err != nil {
 		return fmt.Errorf("write passkey auth store: %w", err)
 	}
 	return nil

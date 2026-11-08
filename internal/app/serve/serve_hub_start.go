@@ -10,7 +10,6 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strconv"
 	"strings"
 	"time"
@@ -19,6 +18,7 @@ import (
 	apphub "github.com/samsaffron/term-llm/internal/app/serve/hub"
 	appserver "github.com/samsaffron/term-llm/internal/app/serve/server"
 	"github.com/samsaffron/term-llm/internal/filelock"
+	"github.com/samsaffron/term-llm/internal/fileprivacy"
 	"github.com/samsaffron/term-llm/internal/hub"
 	"github.com/samsaffron/term-llm/internal/passkeyauth"
 	"github.com/samsaffron/term-llm/internal/restart"
@@ -38,14 +38,15 @@ func defaultHubAuthFile() (string, error) { return apphub.DefaultAuthFile() }
 
 func lockHubPasskeyState(authFile string) (func() error, error) {
 	dir := filepath.Dir(authFile)
-	if err := os.MkdirAll(dir, 0o700); err != nil {
+	if err := fileprivacy.MkdirAll(dir); err != nil {
 		return nil, fmt.Errorf("create Hub passkey directory: %w", err)
 	}
-	if runtime.GOOS != "windows" {
-		info, err := os.Stat(dir)
-		if err != nil || info.Mode().Perm()&0o077 != 0 {
-			return nil, fmt.Errorf("passkey auth directory must have private permissions (0700)")
-		}
+	info, err := os.Stat(dir)
+	if err != nil {
+		return nil, fmt.Errorf("inspect Hub passkey directory: %w", err)
+	}
+	if err := fileprivacy.CheckDir(info); err != nil {
+		return nil, fmt.Errorf("passkey auth directory must have private permissions (0700): %w", err)
 	}
 	unlock, err := filelock.TryLock(filepath.Join(dir, "hub-auth.lock"))
 	if err != nil {

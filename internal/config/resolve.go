@@ -15,7 +15,9 @@ import (
 	"strings"
 	"time"
 
+	"github.com/samsaffron/term-llm/internal/pathutil"
 	"github.com/samsaffron/term-llm/internal/procutil"
+	"github.com/samsaffron/term-llm/internal/shellcmd"
 	"gopkg.in/yaml.v3"
 )
 
@@ -114,20 +116,14 @@ func resolveSRV(srvURL string) (string, error) {
 }
 
 func resolveFile(fileURL string) (string, error) {
-	u, err := url.Parse(fileURL)
+	path, fragment, err := pathutil.ParseLocalFileURL(fileURL)
 	if err != nil {
-		return "", fmt.Errorf("invalid file:// URL: %w", err)
+		return "", err
 	}
-
-	if u.Host != "" && u.Host != "localhost" {
-		return "", fmt.Errorf("file:// URL host must be empty or localhost: %s", fileURL)
-	}
-
-	path := expandEnv(u.Path)
 	if path == "" {
 		return "", fmt.Errorf("file:// URL missing path: %s", fileURL)
 	}
-	path = filepath.Clean(path)
+	path = filepath.Clean(expandEnv(path))
 
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -135,7 +131,7 @@ func resolveFile(fileURL string) (string, error) {
 	}
 	content := strings.TrimSpace(string(data))
 
-	fragment := strings.TrimSpace(u.Fragment)
+	fragment = strings.TrimSpace(fragment)
 	if fragment == "" {
 		return content, nil
 	}
@@ -207,7 +203,8 @@ func lookupFileFragment(v any, fragment string) (string, error) {
 
 // resolveCommand executes a shell command and returns its output
 func resolveCommand(cmd string) (string, error) {
-	output, err := runResolverCommand("sh", "-c", cmd)
+	shellPath, shellArgs := shellcmd.HookInvocation(cmd)
+	output, err := runResolverCommand(shellPath, shellArgs...)
 	if err != nil {
 		return "", fmt.Errorf("command failed: %w", err)
 	}
@@ -218,21 +215,21 @@ func runResolverCommand(name string, args ...string) (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), resolveExecTimeout)
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, name, args...)
+	cmd := shellcmd.CommandContextArgs(ctx, name, args...)
 	cmd.WaitDelay = resolveExecWaitDelay
 
-	cleanup, prepErr := procutil.PrepareCommandProcessGroup(cmd)
+	owned, prepErr := procutil.PrepareCommandProcessGroup(cmd)
 	if prepErr != nil {
 		return "", fmt.Errorf("command setup failed: %w", prepErr)
 	}
-	defer cleanup()
+	defer owned.Close()
 
 	stdout := procutil.NewLimitedBuffer(resolveExecOutputLimit)
 	stderr := procutil.NewLimitedBuffer(resolveExecOutputLimit)
 	cmd.Stdout = stdout
 	cmd.Stderr = stderr
 
-	err := cmd.Run()
+	err := owned.Run()
 	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
 		return "", fmt.Errorf("timed out after %s", resolveExecTimeout)
 	}

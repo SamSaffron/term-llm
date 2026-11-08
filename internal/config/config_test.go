@@ -555,7 +555,8 @@ func TestWriteFileAtomically_ReplacesExistingFile(t *testing.T) {
 	if err != nil {
 		t.Fatalf("stat config: %v", err)
 	}
-	if info.Mode().Perm() != 0o600 {
+	// Windows has no POSIX mode bits; os.Chmod only toggles read-only there.
+	if runtime.GOOS != "windows" && info.Mode().Perm() != 0o600 {
 		t.Fatalf("config mode = %o, want %o", info.Mode().Perm(), 0o600)
 	}
 }
@@ -1891,7 +1892,16 @@ func TestLiveOpenAITransportAndVoices(t *testing.T) {
 func TestDiagnosticsDirDoesNotUseWorkingDirectory(t *testing.T) {
 	t.Setenv("HOME", "")
 	t.Setenv("XDG_DATA_HOME", "relative-dir")
-	if got := GetDiagnosticsDir(); got != "" {
+	got := GetDiagnosticsDir()
+	if runtime.GOOS == "windows" {
+		// Windows resolves the profile directory independently of HOME; the
+		// contract is that the result is absolute and never the working directory.
+		if got == "" || !filepath.IsAbs(got) {
+			t.Fatalf("diagnostic directory = %q, want an absolute profile path", got)
+		}
+		return
+	}
+	if got != "" {
 		t.Fatalf("unsafe diagnostic directory = %q", got)
 	}
 }

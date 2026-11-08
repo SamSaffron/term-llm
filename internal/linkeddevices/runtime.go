@@ -20,6 +20,7 @@ import (
 	"github.com/pion/webrtc/v4"
 	"github.com/samsaffron/term-llm/internal/appdata"
 	"github.com/samsaffron/term-llm/internal/filelock"
+	"github.com/samsaffron/term-llm/internal/fileprivacy"
 	"github.com/samsaffron/term-llm/internal/pairing"
 	"github.com/samsaffron/term-llm/internal/peer"
 	"github.com/samsaffron/term-llm/internal/peerbroker"
@@ -214,10 +215,10 @@ func New(opts Options) (*Runtime, error) {
 	}
 	r.ctx, r.cancel = context.WithCancel(context.Background())
 	r.dir = filepath.Join(opts.DataDir, "linked-devices", targetDirectory(opts.Target))
-	if err := os.MkdirAll(r.dir, 0o700); err != nil {
+	if err := fileprivacy.MkdirAll(r.dir); err != nil {
 		return nil, fmt.Errorf("linked devices state directory: %w", err)
 	}
-	if err := os.Chmod(r.dir, 0o700); err != nil {
+	if err := fileprivacy.ChmodDir(r.dir, fileprivacy.DirMode); err != nil {
 		return nil, fmt.Errorf("secure linked devices state directory: %w", err)
 	}
 	unlock, err := filelock.TryLock(filepath.Join(r.dir, "runtime.lock"))

@@ -13,6 +13,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/samsaffron/term-llm/internal/shellcmd"
 	"github.com/samsaffron/term-llm/internal/tools"
 	"github.com/samsaffron/term-llm/internal/ui"
 )
@@ -48,22 +49,23 @@ func RunCaptureInDir(command, input, baseDir string) (Result, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), onCompleteTimeout)
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, "sh", "-c", command)
+	shellPath, shellArgs := shellcmd.HookInvocation(command)
+	cmd := shellcmd.CommandContextArgs(ctx, shellPath, shellArgs...)
 	cmd.Dir = dir
 	cmd.Stdin = strings.NewReader(input)
 
-	cleanup, prepErr := tools.PrepareCommand(cmd)
+	owned, prepErr := tools.PrepareCommand(cmd)
 	if prepErr != nil {
 		return Result{}, fmt.Errorf("on_complete setup failed: %w", prepErr)
 	}
-	defer cleanup()
+	defer owned.Close()
 	cmd.WaitDelay = onCompleteWaitDelay
 
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 
-	err := cmd.Run()
+	err := owned.Run()
 	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
 		return Result{Stdout: stdout.String(), Stderr: stderr.String()}, fmt.Errorf("timed out after %s", onCompleteTimeout)
 	}

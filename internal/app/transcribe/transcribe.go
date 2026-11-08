@@ -121,18 +121,18 @@ func (w *WhisperCLI) Run(ctx context.Context, cfg *config.Config, filePath, lang
 func (w *WhisperCLI) run(ctx context.Context, whisperBin string, args []string) (string, string, bool, error) {
 	cmd := exec.CommandContext(ctx, whisperBin, args...)
 	cmd.WaitDelay = w.WaitDelay
-	cleanup, prepErr := procutil.PrepareCommand(cmd)
+	owned, prepErr := procutil.PrepareCommand(cmd)
 	if prepErr != nil {
 		return "", "", false, fmt.Errorf("whisper-cli setup failed: %w", prepErr)
 	}
-	defer cleanup()
+	defer owned.Close()
 
 	stdout := procutil.NewLimitedBuffer(w.OutputLimit)
 	stderr := procutil.NewLimitedBuffer(w.OutputLimit)
 	cmd.Stdout = stdout
 	cmd.Stderr = stderr
 
-	err := cmd.Run()
+	err := owned.Run()
 	return stdout.String(), stderr.String(), stdout.Truncated() || stderr.Truncated(), err
 }
 

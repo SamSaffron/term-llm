@@ -1,9 +1,13 @@
+//go:build !windows
+
 package credentials
 
 import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/samsaffron/term-llm/internal/fileprivacy"
 )
 
 func TestWriteFileAtomicFailureLeavesExistingFileUntouched(t *testing.T) {
@@ -21,7 +25,7 @@ func TestWriteFileAtomicFailureLeavesExistingFileUntouched(t *testing.T) {
 	}
 	defer func() { _ = os.Chmod(dir, 0o700) }()
 
-	if err := writeFileAtomic(path, []byte(`{"access_token":"new"}`), 0o600); err == nil {
+	if err := fileprivacy.WriteFileAtomic(path, []byte(`{"access_token":"new"}`)); err == nil {
 		t.Fatal("writeFileAtomic succeeded unexpectedly")
 	}
 	got, err := os.ReadFile(path)

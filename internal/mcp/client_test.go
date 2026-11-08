@@ -16,13 +16,13 @@ import (
 	"strconv"
 	"strings"
 	"sync/atomic"
-	"syscall"
 	"testing"
 	"time"
 
 	sdkmcp "github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/samsaffron/term-llm/internal/llm/core"
 	mcpoauth "github.com/samsaffron/term-llm/internal/mcp/oauth"
+	"github.com/samsaffron/term-llm/internal/testutil/processinfo"
 	"golang.org/x/oauth2"
 )
 
@@ -49,12 +49,12 @@ func TestCreateStdioTransport_InheritsEnv(t *testing.T) {
 	if stdioErr != nil {
 		t.Fatalf("createStdioTransport: %v", stdioErr)
 	}
-	ct, ok := transport.(*sdkmcp.CommandTransport)
+	ct, ok := transport.(*commandTransport)
 	if !ok {
-		t.Fatal("expected sdkmcp.CommandTransport")
+		t.Fatal("expected commandTransport")
 	}
 
-	env := ct.Command.Env
+	env := ct.Command.Cmd().Env
 	if env == nil {
 		t.Fatal("expected non-nil env when config has env vars")
 	}
@@ -93,12 +93,12 @@ func TestCreateStdioTransport_NoEnvNil(t *testing.T) {
 	if stdioErr != nil {
 		t.Fatalf("createStdioTransport: %v", stdioErr)
 	}
-	ct, ok := transport.(*sdkmcp.CommandTransport)
+	ct, ok := transport.(*commandTransport)
 	if !ok {
-		t.Fatal("expected sdkmcp.CommandTransport")
+		t.Fatal("expected commandTransport")
 	}
 
-	if ct.Command.Env != nil {
+	if ct.Command.Cmd().Env != nil {
 		t.Error("expected nil env when no config env vars (inherits parent automatically)")
 	}
 }
@@ -118,12 +118,12 @@ func TestCreateStdioTransport_EmptyEnvNil(t *testing.T) {
 	if stdioErr != nil {
 		t.Fatalf("createStdioTransport: %v", stdioErr)
 	}
-	ct, ok := transport.(*sdkmcp.CommandTransport)
+	ct, ok := transport.(*commandTransport)
 	if !ok {
-		t.Fatal("expected sdkmcp.CommandTransport")
+		t.Fatal("expected commandTransport")
 	}
 
-	if ct.Command.Env != nil {
+	if ct.Command.Cmd().Env != nil {
 		t.Error("expected nil env when env map is empty")
 	}
 }
@@ -169,11 +169,11 @@ func TestCreateStdioTransport_EnvOverridesParent(t *testing.T) {
 	if stdioErr != nil {
 		t.Fatalf("createStdioTransport: %v", stdioErr)
 	}
-	ct := transport.(*sdkmcp.CommandTransport)
+	ct := transport.(*commandTransport)
 
 	// The overridden value should appear (last wins in exec.Cmd)
 	found := false
-	for _, e := range ct.Command.Env {
+	for _, e := range ct.Command.Cmd().Env {
 		if e == "TEST_MCP_VAR=overridden" {
 			found = true
 		}
@@ -513,16 +513,16 @@ func TestCreateStdioTransport_ConfiguresDetachedProcessGroupCancellation(t *test
 	if stdioErr != nil {
 		t.Fatalf("createStdioTransport: %v", stdioErr)
 	}
-	ct := transport.(*sdkmcp.CommandTransport)
+	ct := transport.(*commandTransport)
 
-	if ct.Command.Cancel == nil {
+	if ct.Command.Cmd().Cancel == nil {
 		t.Fatalf("expected subprocess cancel hook to be configured")
 	}
-	if ct.Command.SysProcAttr == nil || !ct.Command.SysProcAttr.Setsid {
+	if !processinfo.ProcessIsDetached(ct.Command.Cmd().SysProcAttr) {
 		t.Fatalf("expected subprocess to run in a detached session")
 	}
-	if ct.Command.WaitDelay != time.Second {
-		t.Fatalf("WaitDelay = %v, want %v", ct.Command.WaitDelay, time.Second)
+	if ct.Command.Cmd().WaitDelay != time.Second {
+		t.Fatalf("WaitDelay = %v, want %v", ct.Command.Cmd().WaitDelay, time.Second)
 	}
 	if client.processCancel == nil {
 		t.Fatalf("expected client to retain a stdio process cancel func")
@@ -557,7 +557,7 @@ func TestClientStop_CancelsStdioProcessGroup(t *testing.T) {
 	}
 
 	pid := waitForRecordedPID(t, pidFile)
-	defer killProcessIfRunning(pid)
+	defer func() { _ = processinfo.KillProcess(pid) }()
 
 	if err := client.Stop(); err != nil {
 		t.Fatalf("Stop() error = %v", err)
@@ -594,49 +594,13 @@ func waitForMCPProcessExit(t *testing.T, pid int) {
 
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
-		if mcpProcessHasExited(pid) {
+		if processinfo.ProcessHasExited(pid) {
 			return
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
 
 	t.Fatalf("timed out waiting for process %d to exit", pid)
-}
-
-func killProcessIfRunning(pid int) {
-	if pid <= 0 || mcpProcessHasExited(pid) {
-		return
-	}
-	_ = syscall.Kill(pid, syscall.SIGKILL)
-}
-
-func mcpProcessHasExited(pid int) bool {
-	err := syscall.Kill(pid, 0)
-	if err != nil {
-		return errors.Is(err, syscall.ESRCH)
-	}
-	if runtime.GOOS == "linux" {
-		state, ok := linuxMCPProcState(pid)
-		return ok && state == 'Z'
-	}
-	return false
-}
-
-func linuxMCPProcState(pid int) (byte, bool) {
-	data, err := os.ReadFile(filepath.Join("/proc", strconv.Itoa(pid), "stat"))
-	if err != nil {
-		return 0, false
-	}
-	return mcpProcStatState(data)
-}
-
-func mcpProcStatState(data []byte) (byte, bool) {
-	stat := string(data)
-	end := strings.LastIndex(stat, ")")
-	if end == -1 || end+2 >= len(stat) {
-		return 0, false
-	}
-	return stat[end+2], true
 }
 
 func TestFormatContent(t *testing.T) {

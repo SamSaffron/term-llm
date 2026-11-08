@@ -8,11 +8,11 @@ import (
 	"io"
 	"os"
 	"os/exec"
-	"runtime"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/samsaffron/term-llm/internal/fileprivacy"
 	"github.com/samsaffron/term-llm/internal/procutil"
 )
 
@@ -178,16 +178,16 @@ func (r *Repository) runCommit(ctx context.Context, messageFile string) (string,
 	cmd := exec.CommandContext(commitCtx, "git", args...)
 	cmd.Env = gitEnvironment(nil)
 	cmd.WaitDelay = commitWaitDelay
-	cleanup, err := procutil.PrepareCommandProcessGroup(cmd)
+	owned, err := procutil.PrepareCommandProcessGroup(cmd)
 	if err != nil {
 		return "", "", err
 	}
-	defer cleanup()
+	defer owned.Close()
 	stdout := &limitBuffer{max: maxCommitOutput}
 	stderr := &limitBuffer{max: maxCommitOutput}
 	cmd.Stdout = stdout
 	cmd.Stderr = stderr
-	waitErr := cmd.Run()
+	waitErr := owned.Run()
 	if deadlineErr := commitCtx.Err(); deadlineErr != nil {
 		waitErr = fmt.Errorf("Git commit exceeded %s: %w", commitTimeout, deadlineErr)
 	}
@@ -201,14 +201,11 @@ func (r *Repository) runCommit(ctx context.Context, messageFile string) (string,
 
 func removeFile(path string) { _ = os.Remove(path) }
 func tempMessage(message string) (string, error) {
-	f, err := os.CreateTemp("", "term-llm-commit-message-*")
+	f, err := fileprivacy.CreateTemp("", "term-llm-commit-message-*")
 	if err != nil {
 		return "", err
 	}
 	path := f.Name()
-	if runtime.GOOS != "windows" {
-		_ = f.Chmod(0600)
-	}
 	_, writeErr := io.WriteString(f, message)
 	closeErr := f.Close()
 	if writeErr != nil {

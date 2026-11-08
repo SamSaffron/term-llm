@@ -469,15 +469,15 @@ func (p *AgyBinProvider) runCommand(ctx context.Context, args []string, prompt, 
 	if err != nil {
 		return nil, fmt.Errorf("get agy stderr: %w", err)
 	}
-	cleanup, err := procutil.PrepareCommand(cmd)
+	owned, err := procutil.PrepareCommand(cmd)
 	if err != nil {
 		return nil, fmt.Errorf("prepare agy process: %w", err)
 	}
-	if err := cmd.Start(); err != nil {
-		cleanup()
+	if err := owned.Start(); err != nil {
+		owned.Close()
 		return nil, fmt.Errorf("start agy command: %w", err)
 	}
-	defer cleanup()
+	defer owned.Close()
 	lineCh := make(chan string, 64)
 	scanErrCh := make(chan error, 1)
 	stderrDone := make(chan struct{})
@@ -534,7 +534,7 @@ func (p *AgyBinProvider) runCommand(ctx context.Context, args []string, prompt, 
 		cancel()
 	}
 	<-stderrDone
-	waitErr := cmd.Wait()
+	waitErr := owned.Wait()
 	if scanErr != nil && !errors.Is(scanErr, context.Canceled) {
 		return nil, fmt.Errorf("read agy output: %w", scanErr)
 	}

@@ -7,9 +7,9 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
-	"runtime"
 
 	"github.com/samsaffron/term-llm/internal/filelock"
+	"github.com/samsaffron/term-llm/internal/fileprivacy"
 )
 
 const maxStateFileBytes = 16 << 20
@@ -19,7 +19,7 @@ const maxStateFileBytes = 16 << 20
 // current user, and on Unix not accessible to group or others. Ancestors are
 // not inspected, so shared parents such as /tmp remain usable.
 func ensurePrivateDir(dir string) error {
-	if err := os.MkdirAll(dir, 0o700); err != nil {
+	if err := fileprivacy.MkdirAll(dir); err != nil {
 		return fmt.Errorf("create %s: %w", dir, err)
 	}
 	info, err := os.Lstat(dir)
@@ -29,8 +29,8 @@ func ensurePrivateDir(dir string) error {
 	if info.Mode()&fs.ModeSymlink != 0 || !info.IsDir() {
 		return fmt.Errorf("%s: state directory must be a real directory, not a symlink", dir)
 	}
-	if runtime.GOOS != "windows" && info.Mode().Perm()&0o077 != 0 {
-		return fmt.Errorf("%s: directory permissions %v are too open (want 0700)", dir, info.Mode().Perm())
+	if err := fileprivacy.CheckDir(info); err != nil {
+		return fmt.Errorf("%s: directory permissions are too open (want 0700): %w", dir, err)
 	}
 	if err := checkOwner(dir, info); err != nil {
 		return err
@@ -86,48 +86,20 @@ func checkPrivateFile(path string, info fs.FileInfo) error {
 	if !info.Mode().IsRegular() {
 		return fmt.Errorf("%s: not a regular file", path)
 	}
-	if runtime.GOOS != "windows" && info.Mode().Perm()&0o077 != 0 {
-		return fmt.Errorf("%s: permissions %v are too open (want 0600)", path, info.Mode().Perm())
+	if err := fileprivacy.CheckFile(info); err != nil {
+		return fmt.Errorf("%s: permissions are too open (want 0600): %w", path, err)
 	}
 	return checkOwner(path, info)
 }
 
-// writePrivateFile atomically replaces path with data using mode 0600.
-func writePrivateFile(path string, data []byte) (err error) {
-	dir := filepath.Dir(path)
-	if err := ensurePrivateDir(dir); err != nil {
+// writePrivateFile atomically replaces path with data using the shared
+// private-file policy and durable atomic replacement.
+func writePrivateFile(path string, data []byte) error {
+	if err := ensurePrivateDir(filepath.Dir(path)); err != nil {
 		return err
 	}
-	tmp, err := os.CreateTemp(dir, "."+filepath.Base(path)+".tmp-*")
-	if err != nil {
-		return fmt.Errorf("create temp file: %w", err)
-	}
-	defer func() {
-		if err != nil {
-			_ = os.Remove(tmp.Name())
-		}
-	}()
-	if err := tmp.Chmod(0o600); err != nil && runtime.GOOS != "windows" {
-		_ = tmp.Close()
-		return fmt.Errorf("chmod temp file: %w", err)
-	}
-	if _, err := tmp.Write(data); err != nil {
-		_ = tmp.Close()
-		return fmt.Errorf("write temp file: %w", err)
-	}
-	if err := tmp.Sync(); err != nil {
-		_ = tmp.Close()
-		return fmt.Errorf("sync temp file: %w", err)
-	}
-	if err := tmp.Close(); err != nil {
-		return fmt.Errorf("close temp file: %w", err)
-	}
-	if err := os.Rename(tmp.Name(), path); err != nil {
-		return fmt.Errorf("replace %s: %w", path, err)
-	}
-	if d, derr := os.Open(dir); derr == nil {
-		_ = d.Sync()
-		_ = d.Close()
+	if err := fileprivacy.WriteFileAtomic(path, data); err != nil {
+		return fmt.Errorf("write %s: %w", path, err)
 	}
 	return nil
 }

@@ -17,6 +17,7 @@ import (
 	"github.com/samsaffron/term-llm/internal/llm/core"
 	"github.com/samsaffron/term-llm/internal/llm/engine"
 	"github.com/samsaffron/term-llm/internal/procutil"
+	"github.com/samsaffron/term-llm/internal/shellcmd"
 )
 
 const (
@@ -187,7 +188,7 @@ func NewShellTool(approval *ApprovalManager, config *ToolConfig, limits OutputLi
 		approval:  approval,
 		config:    config,
 		limits:    limits,
-		shellPath: detectShell(),
+		shellPath: shellcmd.Path(),
 	}
 }
 
@@ -491,7 +492,7 @@ func (t *ShellTool) executeLocal(ctx context.Context, args json.RawMessage) (cor
 			return errorOutput(formatToolError(NewToolErrorf(ErrExecutionFailed, "cannot resolve shell: %v", err))), nil
 		}
 	}
-	approvalCommand := procutil.ShellEnvironmentCommand(a.Command, shellPath, a.Env)
+	approvalCommand := shellcmd.ApprovalCommand(shellPath, a.Command, a.Env)
 
 	var claims []normalizedOutputClaim
 	if trackingEnabled {
@@ -550,16 +551,15 @@ func (t *ShellTool) executeLocal(ctx context.Context, args json.RawMessage) (cor
 	execCtx, cancel := context.WithTimeout(ctx, time.Duration(timeout)*time.Second)
 	defer cancel()
 
-	cmd := exec.CommandContext(execCtx, shellPath, "-c", a.Command)
+	cmd := shellcmd.CommandContextFor(execCtx, shellPath, a.Command)
 	cmd.Dir = workDir
 	cmd.Env = env
 
-	cleanup, prepErr := prepareToolCommand(cmd)
+	owned, prepErr := prepareToolCommand(cmd)
 	if prepErr != nil {
 		return errorOutput(formatToolError(NewToolErrorf(ErrExecutionFailed, "command setup error: %v", prepErr))), nil
 	}
-	cleanup = sync.OnceFunc(cleanup)
-	defer cleanup()
+	defer owned.Close()
 
 	stdout := newLimitedBuffer(t.limits.MaxBytes)
 	stderr := newLimitedBuffer(t.limits.MaxBytes)
@@ -573,10 +573,10 @@ func (t *ShellTool) executeLocal(ctx context.Context, args json.RawMessage) (cor
 	}
 
 	// Run command
-	err := cmd.Run()
+	err := owned.Run()
 	// Stop descendants before reading the filesystem so tracking captures the
 	// state the shell invocation actually leaves behind.
-	cleanup()
+	_ = owned.Close()
 
 	// Diff against the snapshot even on timeout or failure — partial writes
 	// are real changes.
@@ -706,14 +706,6 @@ func formatShellResult(result ShellResult, limits OutputLimits) string {
 }
 
 // detectShell returns the user's shell.
-func detectShell() string {
-	shell := os.Getenv("SHELL")
-	if shell == "" {
-		return "bash"
-	}
-	// Use full path for execution
-	return shell
-}
 
 // expandTilde resolves a tilde prefix in a path.
 // "~" or "~/sub" uses os.UserHomeDir; "~user" or "~user/sub" uses user.Lookup.

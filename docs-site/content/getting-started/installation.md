@@ -11,11 +11,12 @@ next:
 ---
 ### Supported release platforms
 
-The release installer and published archives target **Linux and macOS**, on **amd64** and **arm64**. Homebrew is the macOS option. PowerShell completion support does not imply that a native Windows binary is published by the current release configuration.
+Release archives support **Linux/macOS** on **amd64/arm64** and **Windows** on
+**amd64**. They include the browser workspace; Go and Node.js are only needed
+for source builds. You can also [download an archive and its checksums](https://github.com/samsaffron/term-llm/releases)
+instead of using an installer.
 
-Published binaries include the browser workspace. You do not need Go or Node.js to run a release; those are source-build prerequisites. You can also [download an archive and its checksums](https://github.com/samsaffron/term-llm/releases) instead of executing the installer script.
-
-### One-liner (recommended)
+### Linux/macOS (shell installer)
 
 Requires `curl`, `tar`, `gzip`, `awk`, and a SHA-256 utility (`sha256sum` or `shasum`).
 The installer verifies the release archive against its published
@@ -32,6 +33,30 @@ Or with options:
 ```bash
 curl -fsSL https://raw.githubusercontent.com/samsaffron/term-llm/main/install.sh | sh -s -- --version v0.1.0 --install-dir ~/bin
 ```
+
+### Windows (PowerShell)
+
+Requires PowerShell 5.1 or later. The installer verifies the Windows ZIP's
+published SHA-256 checksum before installing `term-llm.exe`. Older releases may
+not include Windows builds.
+
+Windows supports `ask`, `exec`, `chat`, tools, sessions, and `serve web`/`serve api`.
+An explicit `SHELL` overrides automatic selection; otherwise it uses PowerShell 7,
+Windows PowerShell, then `COMSPEC`. Bash syntax is not automatically portable.
+Service installation and Windows ARM64 are unsupported.
+
+```powershell
+irm https://raw.githubusercontent.com/samsaffron/term-llm/main/install.ps1 | iex
+```
+
+For a downloaded installer, choose a different destination with:
+
+```powershell
+.\install.ps1 -InstallDir C:\tools\term-llm
+```
+
+The default is `%LOCALAPPDATA%\term-llm\bin`. If it is not on `PATH`, the installer
+prints a command to add it. Open a new terminal after changing `PATH`.
 
 ### Homebrew
 

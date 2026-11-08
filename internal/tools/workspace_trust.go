@@ -10,8 +10,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/filelock"
+	"github.com/samsaffron/term-llm/internal/fileprivacy"
 	"gopkg.in/yaml.v3"
 )
 
@@ -185,7 +185,7 @@ func (s *fileWorkspaceTrustStore) Remember(workspace string) error {
 	if err != nil {
 		return err
 	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+	if err := fileprivacy.MkdirAll(filepath.Dir(path)); err != nil {
 		return fmt.Errorf("create remembered workspace directory: %w", err)
 	}
 	unlock, err := filelock.Lock(path + ".lock")
@@ -194,9 +194,6 @@ func (s *fileWorkspaceTrustStore) Remember(workspace string) error {
 	}
 	defer func() { _ = unlock() }()
 
-	if err := os.Chmod(path, 0o600); err != nil && !os.IsNotExist(err) {
-		return fmt.Errorf("secure remembered workspace permissions: %w", err)
-	}
 	ledger, _, err := s.loadLocked()
 	if err != nil {
 		return err
@@ -214,7 +211,7 @@ func (s *fileWorkspaceTrustStore) Remember(workspace string) error {
 	if err != nil {
 		return fmt.Errorf("marshal remembered workspaces: %w", err)
 	}
-	if err := config.WriteFileAtomically(path, data, 0o600); err != nil {
+	if err := fileprivacy.WriteFileAtomic(path, data); err != nil {
 		return fmt.Errorf("write remembered workspaces: %w", err)
 	}
 	return nil
@@ -233,8 +230,8 @@ func (s *fileWorkspaceTrustStore) loadLocked() (rememberedWorkspaceFile, string,
 		}
 		return rememberedWorkspaceFile{}, "", fmt.Errorf("stat remembered workspaces: %w", err)
 	}
-	if info.Mode().Perm()&0o077 != 0 {
-		return rememberedWorkspaceFile{}, "", fmt.Errorf("remembered workspaces file %s has insecure permissions %o; want 0600", path, info.Mode().Perm())
+	if err := fileprivacy.CheckFile(info); err != nil {
+		return rememberedWorkspaceFile{}, "", fmt.Errorf("remembered workspaces file %s has insecure permissions: %w", path, err)
 	}
 	data, err := os.ReadFile(path)
 	if err != nil {

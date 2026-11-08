@@ -16,6 +16,7 @@ import (
 	"github.com/samsaffron/term-llm/internal/llm/core"
 	"github.com/samsaffron/term-llm/internal/procutil"
 	"github.com/samsaffron/term-llm/internal/session"
+	"github.com/samsaffron/term-llm/internal/shellcmd"
 	"github.com/samsaffron/term-llm/internal/terminaltext"
 )
 
@@ -105,9 +106,9 @@ func (m *Model) interactiveShellCommand(opts shellOptions) (*exec.Cmd, string, e
 		return nil, "", err
 	}
 	if opts.Command != "" {
-		shellArgs = append(shellArgs, "-c", opts.Command)
+		shellArgs = append(shellArgs, shellcmd.Args(shellPath, opts.Command)...)
 	}
-	cmd := exec.Command(shellPath, shellArgs...)
+	cmd := shellcmd.Command(shellPath, shellArgs...)
 	cmd.Dir = dir
 	cmd.Env = interactiveShellEnv(os.Environ(), dir, m.boundWorktreeForShellEnv(), opts.NoRC)
 	// Full-screen terminal programs must write straight to the terminal. In
@@ -172,35 +173,11 @@ func (m *Model) boundWorktreeForShellEnv() string {
 }
 
 func interactiveShellPath() string {
-	if shell := strings.TrimSpace(os.Getenv("SHELL")); shell != "" {
-		return shell
-	}
-	return "sh"
+	return shellcmd.InteractivePath()
 }
 
 func interactiveShellArgs(shellPath string, noRC bool) ([]string, error) {
-	if !noRC {
-		return nil, nil
-	}
-	name := strings.TrimSuffix(strings.ToLower(filepath.Base(shellPath)), ".exe")
-	switch name {
-	case "zsh":
-		return []string{"-f"}, nil
-	case "bash":
-		return []string{"--noprofile", "--norc"}, nil
-	case "fish":
-		return []string{"--no-config"}, nil
-	case "csh", "tcsh":
-		return []string{"-f"}, nil
-	case "nu", "nushell":
-		return []string{"--no-config-file"}, nil
-	case "sh", "dash", "ash", "ksh", "mksh", "pdksh":
-		// POSIX-ish shells commonly use ENV for interactive startup. There is
-		// no portable no-rc flag, so interactiveShellEnv removes ENV below.
-		return nil, nil
-	default:
-		return nil, fmt.Errorf("/shell --no-rc is not supported for shell %q", shellPath)
-	}
+	return shellcmd.InteractiveArgs(shellPath, noRC)
 }
 
 func interactiveShellEnv(environ []string, dir string, worktreeDir string, noRC bool) []string {
@@ -564,7 +541,8 @@ func (m *Model) startDirectShell(raw string) (tea.Model, tea.Cmd) {
 func (m *Model) runDirectShellCmd(ctx, lifecycleCtx context.Context, generation uint64, command, dir string, events chan tea.Msg) tea.Cmd {
 	worktreeDir := m.boundWorktreeForShellEnv()
 	return func() tea.Msg {
-		cmd := exec.CommandContext(ctx, interactiveShellPath(), "-c", command)
+		shellPath := interactiveShellPath()
+		cmd := shellcmd.CommandContextFor(ctx, shellPath, command)
 		cmd.Dir = dir
 		cmd.Env = interactiveShellEnv(os.Environ(), dir, worktreeDir, false)
 		cmd.WaitDelay = directShellWaitDelay
@@ -574,10 +552,10 @@ func (m *Model) runDirectShellCmd(ctx, lifecycleCtx context.Context, generation 
 		// serialize writes, preserving the order in which stdout/stderr is observed.
 		cmd.Stdout = writer
 		cmd.Stderr = writer
-		cleanup, err := procutil.PrepareCommand(cmd)
+		owned, err := procutil.PrepareCommand(cmd)
 		if err == nil {
-			defer cleanup()
-			err = cmd.Run()
+			defer owned.Close()
+			err = owned.Run()
 		}
 
 		done := directShellDoneMsg{generation: generation, err: err}

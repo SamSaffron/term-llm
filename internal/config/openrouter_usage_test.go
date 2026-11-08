@@ -12,7 +12,7 @@ func TestOpenRouterManagementKeyIsLazyAndSeparateFromInference(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", dir)
 	t.Setenv("OPENROUTER_API_KEY", "inference-key")
 	marker := filepath.Join(dir, "management-key-resolved")
-	reference := "$(touch " + marker + "; printf management-secret)"
+	reference := "$(touch " + shellPath(marker) + "; printf management-secret)"
 	configDir := filepath.Join(dir, "term-llm")
 	if err := os.MkdirAll(configDir, 0o700); err != nil {
 		t.Fatal(err)

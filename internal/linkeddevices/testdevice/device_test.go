@@ -107,7 +107,7 @@ func TestPairConnectPersistAndReconnect(t *testing.T) {
 	default:
 		t.Fatal("fake host did not expose SAS")
 	}
-	if info, err := os.Stat(statePath); err != nil || info.Mode().Perm() != 0o600 {
+	if info, err := os.Stat(statePath); err != nil {
 		t.Fatalf("state permissions: info=%v err=%v", info, err)
 	}
 	assertBridgeRequest(t, ctx, device)

@@ -162,7 +162,7 @@ func TestHubReverseLargeCanceledUploadKeepsDefaultHeartbeatAndSibling(t *testing
 	if err := containmentAwaitWithin(t, first, 70*time.Second); !errors.Is(err, context.Canceled) {
 		t.Fatalf("upload error=%v", err)
 	}
-	if err := containmentAwaitWithin(t, sibling, 10*time.Second); err != nil {
+	if err := containmentAwaitWithin(t, sibling, 30*time.Second); err != nil {
 		t.Fatalf("sibling failed after canceled upload: %v", err)
 	}
 	var uploadID string

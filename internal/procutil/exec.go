@@ -1,10 +1,6 @@
 package procutil
 
-import (
-	"bytes"
-	"os"
-	"os/exec"
-)
+import "bytes"
 
 type LimitedBuffer struct {
 	buf   bytes.Buffer
@@ -34,39 +30,6 @@ func (b *LimitedBuffer) Write(p []byte) (int, error) {
 	return origLen, nil
 }
 
-func (b *LimitedBuffer) String() string {
-	return b.buf.String()
-}
+func (b *LimitedBuffer) String() string { return b.buf.String() }
 
-func (b *LimitedBuffer) Truncated() bool {
-	return b.total > int64(b.buf.Len())
-}
-
-// PrepareCommand configures a captured subprocess in a detached session so it
-// cannot bypass its configured streams through the caller's controlling TTY.
-func PrepareCommand(cmd *exec.Cmd) (func(), error) {
-	return prepareCommand(cmd, ConfigureDetachedCommand)
-}
-
-// PrepareCommandProcessGroup preserves controlling-terminal access while still
-// providing process-group cancellation. Use this only for explicitly
-// interactive helpers such as credential resolvers.
-func PrepareCommandProcessGroup(cmd *exec.Cmd) (func(), error) {
-	return prepareCommand(cmd, ConfigureCommandProcessGroup)
-}
-
-func prepareCommand(cmd *exec.Cmd, configure func(*exec.Cmd)) (func(), error) {
-	if cmd.Stdin == nil {
-		devNull, err := os.OpenFile(os.DevNull, os.O_RDONLY, 0)
-		if err == nil {
-			cmd.Stdin = devNull
-			configure(cmd)
-			return func() {
-				_ = devNull.Close()
-			}, nil
-		}
-	}
-
-	configure(cmd)
-	return func() {}, nil
-}
+func (b *LimitedBuffer) Truncated() bool { return b.total > int64(b.buf.Len()) }

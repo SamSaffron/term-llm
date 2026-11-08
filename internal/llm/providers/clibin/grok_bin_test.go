@@ -13,6 +13,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/samsaffron/term-llm/internal/testutil/processinfo"
 )
 
 func TestGrokBinProviderPrepareCommandUsesWorkingDir(t *testing.T) {
@@ -20,11 +22,11 @@ func TestGrokBinProviderPrepareCommandUsesWorkingDir(t *testing.T) {
 	// Production code cleans paths; TMPDIR may end in "/" (macOS).
 	workingDir := filepath.Clean(t.TempDir())
 
-	cmd, cleanup, err := provider.prepareGrokCommand(context.Background(), []string{"--version"}, workingDir)
+	cmd, owned, err := provider.prepareGrokCommand(context.Background(), []string{"--version"}, workingDir)
 	if err != nil {
 		t.Fatalf("prepareGrokCommand: %v", err)
 	}
-	defer cleanup()
+	defer owned.Close()
 
 	if cmd.Dir != workingDir {
 		t.Fatalf("Dir = %q, want %q", cmd.Dir, workingDir)
@@ -32,7 +34,7 @@ func TestGrokBinProviderPrepareCommandUsesWorkingDir(t *testing.T) {
 	if cmd.WaitDelay != grokCommandWaitDelay {
 		t.Fatalf("WaitDelay = %v, want %v", cmd.WaitDelay, grokCommandWaitDelay)
 	}
-	if cmd.SysProcAttr == nil || !cmd.SysProcAttr.Setsid {
+	if !processinfo.ProcessIsDetached(cmd.SysProcAttr) {
 		t.Fatal("expected grok subprocess to run in a detached session")
 	}
 }
@@ -52,11 +54,11 @@ func TestGrokBinProviderStreamSeparatesProcessAndCLICWD(t *testing.T) {
 	if err != nil {
 		t.Fatalf("buildArgs: %v", err)
 	}
-	cmd, cleanup, err := provider.prepareGrokCommand(context.Background(), args, workingDir)
+	cmd, owned, err := provider.prepareGrokCommand(context.Background(), args, workingDir)
 	if err != nil {
 		t.Fatalf("prepareGrokCommand: %v", err)
 	}
-	defer cleanup()
+	defer owned.Close()
 	if cmd.Dir != workingDir {
 		t.Fatalf("process cwd = %q, want %q", cmd.Dir, workingDir)
 	}

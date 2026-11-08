@@ -44,7 +44,7 @@ func TestCredentialRefConfiguredDoesNotResolve(t *testing.T) {
 	t.Cleanup(ResetCredentialCache)
 
 	marker := filepath.Join(t.TempDir(), "resolved")
-	ref := Cred("$(touch " + marker + "; printf secret)")
+	ref := Cred("$(touch " + shellPath(marker) + "; printf secret)")
 
 	if !ref.Configured() {
 		t.Fatal("deferred credential should report as configured")
@@ -67,7 +67,7 @@ func TestCredentialRefResolveIsMemoized(t *testing.T) {
 	t.Cleanup(ResetCredentialCache)
 
 	counter := filepath.Join(t.TempDir(), "count")
-	ref := Cred("$(printf x >> " + counter + "; printf secret)")
+	ref := Cred("$(printf x >> " + shellPath(counter) + "; printf secret)")
 
 	for i := 0; i < 3; i++ {
 		if got, err := ref.Resolve(); err != nil || got != "secret" {
@@ -130,8 +130,8 @@ func TestLoadConfigDoesNotResolveFeatureCredentials(t *testing.T) {
 	dir := t.TempDir()
 	marker := filepath.Join(dir, "resolved")
 	configYAML := "default_provider: openai\n" +
-		"image:\n  venice:\n    api_key: \"$(touch " + marker + "; printf image-key)\"\n" +
-		"search:\n  brave:\n    api_key: \"$(touch " + marker + "; printf search-key)\"\n"
+		"image:\n  venice:\n    api_key: '$(touch " + shellPath(marker) + "; printf image-key)'\n" +
+		"search:\n  brave:\n    api_key: '$(touch " + shellPath(marker) + "; printf search-key)'\n"
 	if err := os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(configYAML), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -336,17 +336,17 @@ func TestSecretsYAMLSharedByConfigAndMCP(t *testing.T) {
 	configYAML := fmt.Sprintf(`default_provider: openai
 providers:
   openai:
-    api_key: "%s#openai"
+    api_key: '%s#openai'
 image:
   venice:
-    api_key: "%s#venice"
+    api_key: '%s#venice'
 search:
   provider: brave
   brave:
-    api_key: "%s#brave"
+    api_key: '%s#brave'
 serve:
   telegram:
-    token: "%s#telegram"
+    token: '%s#telegram'
 `, ref, ref, ref, ref)
 	if err := os.WriteFile(filepath.Join(configDir, "config.yaml"), []byte(configYAML), 0o600); err != nil {
 		t.Fatal(err)
@@ -382,3 +382,5 @@ serve:
 		t.Fatalf("MCP secrets = %#v, %v", mcp, err)
 	}
 }
+
+func shellPath(p string) string { return filepath.ToSlash(p) }

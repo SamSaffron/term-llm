@@ -10,7 +10,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"time"
 
@@ -60,38 +59,21 @@ func (b *limitedBuffer) Truncated() bool {
 	return b.total > int64(b.buf.Len())
 }
 
-func prepareToolCommand(cmd *exec.Cmd) (func(), error) {
-	var stdinCloser func()
-	if cmd.Stdin == nil {
-		if devNull, err := os.OpenFile(os.DevNull, os.O_RDONLY, 0); err == nil {
-			cmd.Stdin = devNull
-			stdinCloser = func() { _ = devNull.Close() }
-		}
+func prepareToolCommand(cmd *exec.Cmd) (*procutil.Command, error) {
+	owned, err := procutil.PrepareCommand(cmd)
+	if err != nil {
+		return nil, err
 	}
-
-	procutil.ConfigureDetachedCommand(cmd)
 	configureToolWait(cmd)
 	nonce := tagCommandWithNonce(cmd)
-
-	cleanup := func() {
+	owned.SetCloseHook(func() {
 		// Tools must leave the world clean: after the command returns (success,
 		// failure, timeout, or cancellation) reap every descendant it spawned.
-		//
-		// First pass: SIGKILL the process group so `nohup foo &` style children
-		// that stayed in our pgid die immediately.
-		platformKillProcessGroup(cmd)
-		// Second pass: walk /proc for any process still alive that inherited
-		// the nonce env var. This catches descendants that escaped the pgroup
-		// via setsid, double-fork daemonisation, or explicit setpgid. We retry
-		// a few times because a process may be mid-exec when we scan.
-		if nonce != "" {
-			killTaggedDescendants(nonce)
-		}
-		if stdinCloser != nil {
-			stdinCloser()
-		}
-	}
-	return cleanup, nil
+		// The owner has already killed the process group; this second pass walks
+		// /proc for descendants that escaped it via setsid/daemonisation.
+		procutil.KillTaggedDescendants(shellNonceEnvVar, nonce)
+	})
+	return owned, nil
 }
 
 const scriptBusyMaxRetries = 4
@@ -128,56 +110,10 @@ func tagCommandWithNonce(cmd *exec.Cmd) string {
 	return nonce
 }
 
-// killTaggedDescendants SIGKILLs every process whose environment contains the
-// given nonce. Safe no-op on systems without /proc (e.g. macOS in tests).
-// We retry a handful of times with short sleeps to handle races where a
-// descendant forks right as we scan.
-func killTaggedDescendants(nonce string) {
-	needle := []byte(shellNonceEnvVar + "=" + nonce)
-	for attempt := 0; attempt < 3; attempt++ {
-		pids := findPidsWithEnv(needle)
-		if len(pids) == 0 {
-			return
-		}
-		for _, pid := range pids {
-			platformKillPid(pid)
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
-}
-
-// findPidsWithEnv returns PIDs whose /proc/<pid>/environ contains needle.
-// On systems without /proc, returns nil.
-func findPidsWithEnv(needle []byte) []int {
-	entries, err := os.ReadDir("/proc")
-	if err != nil {
-		return nil
-	}
-	selfPid := os.Getpid()
-	var pids []int
-	for _, entry := range entries {
-		if !entry.IsDir() {
-			continue
-		}
-		pid, err := strconv.Atoi(entry.Name())
-		if err != nil || pid <= 1 || pid == selfPid {
-			continue
-		}
-		data, err := os.ReadFile(filepath.Join("/proc", entry.Name(), "environ"))
-		if err != nil {
-			continue
-		}
-		if bytes.Contains(data, needle) {
-			pids = append(pids, pid)
-		}
-	}
-	return pids
-}
-
 // PrepareCommand configures a tool-owned command for safe, non-interactive
 // execution. The child starts a new session so it cannot open the caller's
 // controlling terminal, and cancellation tears down its process group.
-func PrepareCommand(cmd *exec.Cmd) (func(), error) {
+func PrepareCommand(cmd *exec.Cmd) (*procutil.Command, error) {
 	return prepareToolCommand(cmd)
 }
 

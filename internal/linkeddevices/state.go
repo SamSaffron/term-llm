@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+
+	"github.com/samsaffron/term-llm/internal/fileprivacy"
 )
 
 const stateVersion = 1
@@ -33,8 +35,8 @@ func loadJSON(path string, dst any) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	if info.Mode().Perm()&0o077 != 0 {
-		return false, fmt.Errorf("linked devices state %s is not private", path)
+	if err := fileprivacy.CheckFile(info); err != nil {
+		return false, fmt.Errorf("linked devices state %s is not private: %w", path, err)
 	}
 	if err := json.Unmarshal(data, dst); err != nil {
 		return false, fmt.Errorf("decode %s: %w", path, err)
@@ -43,36 +45,16 @@ func loadJSON(path string, dst any) (bool, error) {
 }
 
 func writeJSONPrivate(path string, value any) error {
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+	dir := filepath.Dir(path)
+	if err := fileprivacy.MkdirAll(dir); err != nil {
 		return err
 	}
-	if err := os.Chmod(filepath.Dir(path), 0o700); err != nil {
+	if err := fileprivacy.ChmodDir(dir, fileprivacy.DirMode); err != nil {
 		return err
 	}
 	data, err := json.MarshalIndent(value, "", "  ")
 	if err != nil {
 		return err
 	}
-	tmp, err := os.CreateTemp(filepath.Dir(path), ".linked-devices-*")
-	if err != nil {
-		return err
-	}
-	name := tmp.Name()
-	defer os.Remove(name)
-	if err := tmp.Chmod(0o600); err != nil {
-		tmp.Close()
-		return err
-	}
-	if _, err := tmp.Write(data); err != nil {
-		tmp.Close()
-		return err
-	}
-	if err := tmp.Sync(); err != nil {
-		tmp.Close()
-		return err
-	}
-	if err := tmp.Close(); err != nil {
-		return err
-	}
-	return os.Rename(name, path)
+	return fileprivacy.WriteFileAtomic(path, data)
 }

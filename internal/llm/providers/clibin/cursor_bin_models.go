@@ -1,10 +1,14 @@
 package clibin
 
 import (
-	"github.com/samsaffron/term-llm/internal/llm/core"
+	"context"
+	"fmt"
+	"path/filepath"
 	"strings"
 
 	"github.com/samsaffron/term-llm/internal/cache"
+	"github.com/samsaffron/term-llm/internal/llm/core"
+	"github.com/samsaffron/term-llm/internal/procutil"
 )
 
 const cursorBinModelCacheKey = "cursor-bin"
@@ -74,3 +78,25 @@ func normalizeCursorListedModelID(id string) string {
 	}
 	return id
 }
+
+func defaultCursorModelsCommandOutput(ctx context.Context, p *CursorBinProvider, home string) ([]byte, error) {
+	cmd, err := newCLICommand(ctx, "cursor-agent", []string{"models"}, filepath.Join(home, "cwd"))
+	if err != nil {
+		return nil, err
+	}
+	cmd.Env = p.buildCommandEnv(home)
+	auditedEnv, wireAudit, err := startCLIWireAudit("cursor-bin-models", cmd.Env)
+	if err != nil {
+		return nil, err
+	}
+	cmd.Env = auditedEnv
+	defer stopCLIWireAudit(wireAudit)
+	owned, err := procutil.PrepareCommand(cmd)
+	if err != nil {
+		return nil, fmt.Errorf("prepare cursor models command: %w", err)
+	}
+	defer owned.Close()
+	return owned.Output()
+}
+
+var cursorModelsCommandOutput = defaultCursorModelsCommandOutput

@@ -15,7 +15,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/samsaffron/term-llm/internal/config"
+	"github.com/samsaffron/term-llm/internal/fileprivacy"
 )
 
 // Native is injectable so tests never alter the user's service manager.
@@ -215,12 +215,12 @@ func (n Native) Install(s Spec, specPath string) (replaced bool, err error) {
 		return false, err
 	}
 	path := n.Path(s.Kind)
-	if err = os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+	if err = fileprivacy.MkdirAll(filepath.Dir(path)); err != nil {
 		return false, err
 	}
 	previous, readErr := os.ReadFile(path)
 	replaced = readErr == nil && !bytes.Equal(previous, data)
-	return replaced, config.WriteFileAtomicallyNoFollow(path, data, 0600)
+	return replaced, fileprivacy.WriteFileAtomic(path, data)
 }
 
 // Start starts or restarts the process without replacing its native registration.

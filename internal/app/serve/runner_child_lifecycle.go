@@ -160,7 +160,7 @@ func (env *cmdRunEnvironment) runChildLifecycleTurns(ctx context.Context, sink r
 	runErr := first.err
 
 	if !env.childLifecycleEnabled() || !childLifecycleContinues(ctx, first.err) {
-		return env.childRunResult(latest), joinRunErrors(runErr, ctx.Err())
+		return env.childRunResult(latest), runpkg.JoinErrors(runErr, ctx.Err())
 	}
 
 	limit := env.childTurnLimit()
@@ -170,7 +170,7 @@ func (env *cmdRunEnvironment) runChildLifecycleTurns(ctx context.Context, sink r
 		if !ok {
 			// The child was stopped while it waited for its children: the stop is
 			// the run's outcome and its results stay pending for the host.
-			runErr = joinRunErrors(runErr, ctx.Err())
+			runErr = runpkg.JoinErrors(runErr, ctx.Err())
 			break
 		}
 		if len(events) == 0 {
@@ -178,7 +178,7 @@ func (env *cmdRunEnvironment) runChildLifecycleTurns(ctx context.Context, sink r
 		}
 		outcome, delivered, cause := env.deliverChildLifecycleNotice(ctx, sink, turn, boundary, &budget, events)
 		latest.adopt(outcome)
-		runErr = joinRunErrors(runErr, cause)
+		runErr = runpkg.JoinErrors(runErr, cause)
 		if !delivered {
 			// Undelivered generations stay pending for the owning host. A stopped
 			// run must not keep the child alive.
@@ -244,7 +244,7 @@ func (env *cmdRunEnvironment) deliverChildLifecycleNotice(ctx context.Context, s
 			}
 			return outcome, false, result.err
 		case ctx.Err() != nil:
-			return outcome, false, joinRunErrors(result.err, ctx.Err())
+			return outcome, false, runpkg.JoinErrors(result.err, ctx.Err())
 		case errors.Is(result.err, restart.ErrInterrupt):
 			// The host is reloading; the child ends resumable instead of
 			// holding the reload open.
@@ -447,17 +447,4 @@ func (env *cmdRunEnvironment) childRunResult(latest childLifecycleTurnOutcome) r
 		result.Provider = env.provider.Name()
 	}
 	return result
-}
-
-// joinRunErrors keeps every terminal cause visible without losing the typed
-// classification the caller uses for status (turn limit, cancellation).
-func joinRunErrors(existing, additional error) error {
-	switch {
-	case existing == nil:
-		return additional
-	case additional == nil:
-		return existing
-	default:
-		return errors.Join(existing, additional)
-	}
 }

@@ -4,11 +4,11 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"runtime"
 	"time"
 
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/credentials"
+	"github.com/samsaffron/term-llm/internal/fileprivacy"
 )
 
 // CredentialsCheck inspects stored OAuth credentials without contacting any
@@ -144,25 +144,21 @@ func credentialFindings(source credentialSource, cfg *config.Config, declared ma
 	return append(findings, expiryFinding(source.provider, state))
 }
 
-// permissionFinding flags credential files readable by other users. Windows
-// file modes do not carry POSIX permission bits, so the check is skipped there.
+// permissionFinding flags credential files readable by other users using the
+// shared private-file policy (Windows relies on profile ACLs).
 func permissionFinding(provider, path string, info os.FileInfo) (Finding, bool) {
-	if runtime.GOOS == "windows" {
-		return Finding{}, false
+	if err := fileprivacy.CheckFile(info); err != nil {
+		return Finding{
+			Title:    fmt.Sprintf("%s: credential file is readable by other users", provider),
+			Severity: SeverityWarn,
+			Detail:   fmt.Sprintf("%s: %v", path, err),
+			Remedy:   "restrict it with --fix, or run: chmod 600 " + path,
+			Fix: func(context.Context) error {
+				return fileprivacy.ChmodFile(path, fileprivacy.FileMode)
+			},
+		}, true
 	}
-	mode := info.Mode().Perm()
-	if mode&0o077 == 0 {
-		return Finding{}, false
-	}
-	return Finding{
-		Title:    fmt.Sprintf("%s: credential file is readable by other users", provider),
-		Severity: SeverityWarn,
-		Detail:   fmt.Sprintf("%s has mode %04o, want 0600", path, mode),
-		Remedy:   "restrict it with --fix, or run: chmod 600 " + path,
-		Fix: func(ctx context.Context) error {
-			return os.Chmod(path, 0o600)
-		},
-	}, true
+	return Finding{}, false
 }
 
 func expiryFinding(provider string, state credentialState) Finding {

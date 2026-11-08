@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/samsaffron/term-llm/internal/filelock"
+	"github.com/samsaffron/term-llm/internal/fileprivacy"
 	"github.com/samsaffron/term-llm/internal/oauth"
 )
 
@@ -79,8 +80,8 @@ func readGrokCredentials(path string) (*GrokCredentials, error) {
 	if !info.Mode().IsRegular() {
 		return nil, errors.New("Grok credentials file is not a regular file")
 	}
-	if info.Mode().Perm()&0o077 != 0 {
-		return nil, fmt.Errorf("Grok credentials file has insecure permissions %04o; require 0600", info.Mode().Perm())
+	if err := fileprivacy.CheckFile(info); err != nil {
+		return nil, fmt.Errorf("Grok credentials file has insecure permissions: %w", err)
 	}
 	if info.Size() > maxGrokCredentialBytes {
 		return nil, errors.New("Grok credentials file exceeds size limit")
@@ -131,7 +132,7 @@ func saveGrokCredentials(path string, creds *GrokCredentials) error {
 	if err != nil {
 		return fmt.Errorf("marshal Grok credentials: %w", err)
 	}
-	if err := writeFileAtomic(path, data, 0o600); err != nil {
+	if err := fileprivacy.WriteFileAtomic(path, data); err != nil {
 		return fmt.Errorf("write Grok credentials: %w", err)
 	}
 	return nil
@@ -340,10 +341,10 @@ func withGrokCredentialsLock(fn func(path string) error) (err error) {
 	if err != nil {
 		return err
 	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+	if err := fileprivacy.MkdirAll(filepath.Dir(path)); err != nil {
 		return fmt.Errorf("create Grok credentials directory: %w", err)
 	}
-	if err := os.Chmod(filepath.Dir(path), 0o700); err != nil {
+	if err := fileprivacy.ChmodDir(filepath.Dir(path), fileprivacy.DirMode); err != nil {
 		return fmt.Errorf("secure Grok credentials directory: %w", err)
 	}
 	unlock, err := filelock.Lock(path + ".lock")

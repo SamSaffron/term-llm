@@ -520,6 +520,12 @@ func Run(ctx context.Context, args []string, opts Options, deps Dependencies) er
 		if executionErr != nil {
 			return executionErr
 		}
+		if execution.interrupted {
+			userInterrupted = true
+		}
+		if execution.skipFinalization {
+			return nil
+		}
 	} else {
 		streamEvents = wrapStreamEvents(streamEvents)
 		execution, executionErr := (&askStreamingExecution{

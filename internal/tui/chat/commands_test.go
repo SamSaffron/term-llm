@@ -17,7 +17,6 @@ import (
 	"slices"
 	"strconv"
 	"strings"
-	"syscall"
 	"testing"
 	"time"
 
@@ -3686,33 +3685,13 @@ func waitForProcessExit(t *testing.T, pid int) {
 
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
-		if processHasExited(pid) {
+		if testutil.ProcessHasExited(pid) {
 			return
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
 
 	t.Fatalf("timed out waiting for process %d to exit", pid)
-}
-
-func processHasExited(pid int) bool {
-	err := syscall.Kill(pid, 0)
-	if err != nil {
-		return errors.Is(err, syscall.ESRCH)
-	}
-	if runtime.GOOS == "linux" {
-		state, ok := linuxProcState(pid)
-		return ok && state == 'Z'
-	}
-	return false
-}
-
-func linuxProcState(pid int) (byte, bool) {
-	data, err := os.ReadFile(filepath.Join("/proc", strconv.Itoa(pid), "stat"))
-	if err != nil {
-		return 0, false
-	}
-	return procStatState(data)
 }
 
 func procStatState(data []byte) (byte, bool) {

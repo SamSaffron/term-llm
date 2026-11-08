@@ -155,13 +155,13 @@ func (t *CustomScriptTool) Execute(ctx context.Context, args json.RawMessage) (c
 		cmd.Stdout = stdout
 		cmd.Stderr = stderr
 
-		cleanup, prepErr := prepareToolCommand(cmd)
+		owned, prepErr := prepareToolCommand(cmd)
 		if prepErr != nil {
 			return scriptToolErrorOutput(NewToolErrorf(ErrExecutionFailed, "script setup error: %v", prepErr)), nil
 		}
 
-		execErr = cmd.Run()
-		cleanup()
+		execErr = owned.Run()
+		_ = owned.Close()
 		if !retryScriptBusy(execCtx, execErr, attempt) {
 			break
 		}

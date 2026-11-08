@@ -58,7 +58,7 @@ func RunUpgrade(ctx context.Context, currentVersion, targetVersion string, stdou
 	}
 
 	assetVersion := strings.TrimPrefix(targetTag, "v")
-	assetName := fmt.Sprintf("%s_%s_%s_%s.tar.gz", RepoName, assetVersion, runtime.GOOS, runtime.GOARCH)
+	assetName := releaseArchiveName(assetVersion)
 	releaseURL := fmt.Sprintf("https://github.com/%s/%s/releases/download/%s", RepoOwner, RepoName, targetTag)
 
 	tmpDir, err := os.MkdirTemp("", "term-llm-upgrade-*")
@@ -76,7 +76,7 @@ func RunUpgrade(ctx context.Context, currentVersion, targetVersion string, stdou
 	tempFile, err := os.CreateTemp(destDir, ".term-llm-upgrade-*")
 	if err != nil {
 		if errors.Is(err, os.ErrPermission) {
-			return fmt.Errorf("cannot create temp file in %s (permission denied). try running with sudo", destDir)
+			return fmt.Errorf("cannot create temp file in %s (permission denied)%s", destDir, permissionHint())
 		}
 		return err
 	}
@@ -92,13 +92,9 @@ func RunUpgrade(ctx context.Context, currentVersion, targetVersion string, stdou
 		return err
 	}
 
-	if err := os.Chmod(tempPath, 0o755); err != nil {
-		return err
-	}
-
-	if err := os.Rename(tempPath, exePath); err != nil {
+	if err := replaceExecutable(tempPath, exePath); err != nil {
 		if errors.Is(err, os.ErrPermission) {
-			return fmt.Errorf("failed to replace %s (permission denied). try running with sudo", exePath)
+			return fmt.Errorf("failed to replace %s (permission denied)%s", exePath, permissionHint())
 		}
 		return fmt.Errorf("replace binary: %w", err)
 	}
@@ -133,4 +129,14 @@ func versionDisplayTag(version string) string {
 		return "v" + version
 	}
 	return version
+}
+
+// releaseArchiveName returns the release artifact name for this platform.
+func releaseArchiveName(version string) string {
+	return fmt.Sprintf("%s_%s_%s_%s%s", RepoName, version, runtime.GOOS, runtime.GOARCH, releaseArchiveSuffix())
+}
+
+// releaseBinaryName returns the executable member name inside release archives.
+func releaseBinaryName() string {
+	return RepoName + releaseBinarySuffix()
 }

@@ -7,9 +7,14 @@ builds:
     goos:
       - linux
       - darwin
+      - windows
     goarch:
       - amd64
       - arm64
+    ignore:
+      # Windows support is validated on amd64 only.
+      - goos: windows
+        goarch: arm64
     main: ./main.go
     ldflags:
       - -s -w
@@ -40,6 +45,9 @@ notarize:
 archives:
   - id: default
     name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    format_overrides:
+      - goos: windows
+        formats: [zip]
     files:
       - README.md
       - LICENSE

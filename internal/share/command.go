@@ -208,21 +208,13 @@ func (p *CommandPublisher) run(ctx context.Context, operation Operation, timeout
 	stderr := procutil.NewLimitedBuffer(commandStderrLimit)
 	cmd.Stdout = stdout
 	cmd.Stderr = stderr
-	cleanup, err := procutil.PrepareCommand(cmd)
+	owned, err := procutil.PrepareCommand(cmd)
 	if err != nil {
 		return errorWithDiagnostic(ErrorProvider, "could not start share helper", err.Error(), err)
 	}
-	defer cleanup()
-	defer func() {
-		// A successful helper may have left descendants holding inherited pipes.
-		// Run's WaitDelay closes those pipes, and this group cancellation prevents
-		// the detached descendants from surviving the completed invocation.
-		if cmd.Cancel != nil {
-			_ = cmd.Cancel()
-		}
-	}()
+	defer owned.Close()
 
-	runErr := cmd.Run()
+	runErr := owned.Run()
 	if errors.Is(timeoutCtx.Err(), context.DeadlineExceeded) {
 		return errorWithDiagnostic(ErrorTimeout, "share helper timed out", stderr.String(), context.DeadlineExceeded)
 	}
