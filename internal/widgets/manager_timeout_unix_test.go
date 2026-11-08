@@ -19,15 +19,28 @@ func TestWidgetStartupTimeoutKillsProcessGroup(t *testing.T) {
 	dir := t.TempDir()
 	pidFile := filepath.Join(dir, "child.pid")
 	script := fmt.Sprintf("sleep 60 & echo $! > %s; sleep 60", pidFile)
-	entry := &widgetEntry{manifest: &Manifest{
-		ID:      "timeout-widget",
-		Mount:   "timeout-widget",
-		Dir:     dir,
-		Command: []string{"sh", "-c", script, "$PORT"},
-	}}
-
-	if err := entry.startProcess(context.Background(), ""); err == nil {
-		t.Fatal("startProcess succeeded without a listening widget")
+	var entry *widgetEntry
+	startedUnexpectedly := false
+	for attempt := 0; attempt < 3; attempt++ {
+		entry = &widgetEntry{manifest: &Manifest{
+			ID:      "timeout-widget",
+			Mount:   "timeout-widget",
+			Dir:     dir,
+			Command: []string{"sh", "-c", script, "$PORT"},
+		}}
+		if err := entry.startProcess(context.Background(), ""); err == nil {
+			// A concurrent test/process may have bound the ephemeral port
+			// between allocation and the readiness probe. Retry with a fresh
+			// port instead of making this lifecycle test depend on port luck.
+			startedUnexpectedly = true
+			_ = entry.stopProcess()
+			continue
+		}
+		startedUnexpectedly = false
+		break
+	}
+	if startedUnexpectedly {
+		t.Fatal("startProcess succeeded without a listening widget after retries")
 	}
 
 	data, err := os.ReadFile(pidFile)
