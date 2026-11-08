@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { UploadControls } from '../api/client';
 import { DEFAULT_ATTACHMENT_POLICY } from '../domain/attachments';
 import * as blobs from '../platform/draft-blobs';
-import { readDrafts, saveDraft } from '../platform/storage';
+import { readDrafts, readPendingIntents, saveDraft } from '../platform/storage';
 import { AppStore } from './app-store';
 import { testConfig, testSession } from './store-test-fixtures';
 
@@ -115,6 +115,52 @@ describe('upload reference attachments', () => {
     }
   });
 
+  it('keeps local image bytes in the optimistic row across acceptance without base64', async () => {
+    const store = storeWithRefs();
+    const base64 = vi.spyOn(blobs, 'blobToDataURL');
+    store.endpoints.uploadAttachment = vi.fn(async () => result(0));
+    let accept!: (response: Response) => void;
+    store.endpoints.createResponse = vi.fn(
+      () =>
+        new Promise<Response>((resolve) => {
+          accept = resolve;
+        }),
+    );
+    let controller!: ReadableStreamDefaultController<Uint8Array>;
+    const stream = new ReadableStream<Uint8Array>({
+      start(value) {
+        controller = value;
+      },
+    });
+    let sending: Promise<void> | undefined;
+    try {
+      store.addAttachments([image(0)]);
+      await vi.waitFor(() => expect(store.attachments.value[0]?.status).toBe('ready'));
+      const original = store.attachments.value[0].file;
+      sending = store.send();
+      await vi.waitFor(() => expect(store.endpoints.createResponse).toHaveBeenCalledOnce());
+      const optimistic = store.visibleMessages.value.find((message) => message.role === 'user')!;
+      expect(optimistic.attachments?.[0].file).toBe(original);
+      expect(optimistic.attachments?.[0].previewURL).toBeUndefined();
+      const pending = readPendingIntents(localStorage, store.keys.pendingIntents);
+      expect(pending.s1[0].attachments![0].file).toBeUndefined();
+      expect(pending.s1[0].attachments![0].previewURL).toBeUndefined();
+      accept(new Response(stream, { headers: { 'x-response-id': 'accepted-response' } }));
+      await vi.waitFor(() => expect(URL.revokeObjectURL).toHaveBeenCalledWith('blob:preview'));
+      expect(
+        store.visibleMessages.value.find((message) => message.role === 'user')?.attachments?.[0]
+          .file,
+      ).toBe(original);
+      expect(base64).not.toHaveBeenCalled();
+      expect(store.pendingIntents.value).toEqual({});
+    } finally {
+      accept?.(new Response('rejected', { status: 400 }));
+      store.dispose();
+      controller.close();
+      await sending;
+    }
+  });
+
   it('aborts removal and never starts a removed queued upload', async () => {
     const store = storeWithRefs();
     const started: Array<{ name: string; signal: AbortSignal }> = [];
@@ -176,8 +222,10 @@ describe('upload reference attachments', () => {
         expect(restored.attachments.value.map((entry) => entry.status)).toEqual(['ready', 'error']),
       );
       expect(restored.attachments.value[0].uploadId).toBe(uploadID(0));
+      expect(restored.attachments.value[0].file?.size).toBe(4);
+      expect(restored.attachments.value[0].file?.type).toBe('image/png');
       expect(restored.endpoints.uploadAttachment).not.toHaveBeenCalled();
-      expect(restored.attachments.value[1].file).toBeUndefined();
+      expect(restored.attachments.value[1].file).toMatchObject({ size: 4, type: 'image/png' });
       restored.retryAttachment(ids[1]);
       await vi.waitFor(() =>
         expect(restored.attachments.value[1]).toMatchObject({ status: 'ready', error: '' }),

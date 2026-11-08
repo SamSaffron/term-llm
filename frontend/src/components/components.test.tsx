@@ -3021,11 +3021,24 @@ describe('Preact-owned chat surfaces', () => {
     expect(screen.queryByRole('button', { name: 'Copy details' })).not.toBeInTheDocument();
   });
 
-  const transcriptWithAttachments = (store: AppStore, attachments: Attachment[]) => {
+  const transcriptWithAttachments = (
+    store: AppStore,
+    attachments: Attachment[],
+    clientMessageId?: string,
+  ) => {
     store.sessions.value = [
       {
         ...store.sessions.value[0],
-        messages: [{ id: 'u-files', role: 'user', content: 'look', created: 1, attachments }],
+        messages: [
+          {
+            id: 'u-files',
+            role: 'user',
+            content: 'look',
+            created: 1,
+            attachments,
+            clientMessageId,
+          },
+        ],
       },
     ];
     return render(
@@ -3034,6 +3047,78 @@ describe('Preact-owned chat surfaces', () => {
       </StoreContext.Provider>,
     );
   };
+
+  it('keeps the optimistic image mounted through server renaming until the durable image is decoded', async () => {
+    const store = createStore();
+    const createURL = vi.spyOn(URL, 'createObjectURL').mockReturnValue('blob:transcript-preview');
+    const revokeURL = vi.spyOn(URL, 'revokeObjectURL');
+    let decoded!: () => void;
+    const decode = vi.fn(
+      () =>
+        new Promise<void>((resolve) => {
+          decoded = resolve;
+        }),
+    );
+    vi.stubGlobal(
+      'Image',
+      class {
+        src = '';
+        decode = decode;
+      },
+    );
+    const file = new File(['image'], 'shot.png', { type: 'image/png' });
+    const { container, unmount } = transcriptWithAttachments(
+      store,
+      [{ name: 'shot.png', type: 'image/png', file }],
+      'attachment-send',
+    );
+    try {
+      const thumbnail = container.querySelector('img');
+      expect(thumbnail?.getAttribute('src')).toBe('blob:transcript-preview');
+      expect(createURL).toHaveBeenCalledWith(file);
+      await act(() => {
+        store.sessions.value = store.sessions.value.map((session) => ({
+          ...session,
+          // The real server image part has no filename. Conversion changes
+          // the attachment label from the selected filename to "image".
+          messages: convertServerMessages([
+            {
+              id: 123,
+              role: 'user',
+              created_at: 1,
+              client_message_id: 'attachment-send',
+              parts: [{ type: 'image', image_url: '/ui/images/shot.png', mime_type: 'image/png' }],
+            },
+          ]),
+        }));
+      });
+      expect(decode).toHaveBeenCalledOnce();
+      expect(container.querySelector('img')).toBe(thumbnail);
+      expect(thumbnail?.getAttribute('src')).toBe('blob:transcript-preview');
+      expect(revokeURL).not.toHaveBeenCalledWith('blob:transcript-preview');
+      await act(async () => {
+        decoded();
+      });
+      expect(container.querySelector('img')).toBe(thumbnail);
+      expect(thumbnail?.getAttribute('src')).toBe('/ui/images/shot.png');
+      expect(revokeURL).toHaveBeenCalledWith('blob:transcript-preview');
+    } finally {
+      unmount();
+      store.dispose();
+      createURL.mockRestore();
+      revokeURL.mockRestore();
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('never renders a broken image when an optimistic upload has no local bytes', () => {
+    const store = createStore();
+    const { container } = transcriptWithAttachments(store, [
+      { name: 'shot.png', type: 'image/png', uploadId: 'uploaded-image' },
+    ]);
+    expect(container.querySelector('img')).toBeNull();
+    expect(container.querySelector('.message-file')).toHaveTextContent('shot.png');
+  });
 
   it('renders a downloadable upload chip with a MIME icon and size', () => {
     const store = createStore();

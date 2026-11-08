@@ -138,6 +138,73 @@ test('prepares a selected file in the browser and sends its typed part to Go', a
   expect(durable).toContain('Inspect the prepared attachment');
 });
 
+// Only the image GET is delayed; uploads, admission, and transcript hydration
+// still cross the real browser-to-Go boundary.
+test('keeps the local screenshot mounted until the saved image is fully loaded', async ({
+  page,
+  responseGate,
+}) => {
+  let releaseImage!: () => void;
+  const imageGate = new Promise<void>((resolve) => {
+    releaseImage = resolve;
+  });
+  let imageRequested = false;
+  await page.context().route('**/images/**', async (route) => {
+    imageRequested = true;
+    await imageGate;
+    await route.continue();
+  });
+  try {
+    await page.goto('./?new=1');
+    await page.locator('#fileInput').setInputFiles({
+      name: 'screenshot-preview.png',
+      mimeType: 'image/png',
+      buffer: Buffer.from(
+        'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4//8/AwAI/AL+KDvV3wAAAABJRU5ErkJggg==',
+        'base64',
+      ),
+    });
+    await page.getByRole('textbox', { name: 'Message' }).fill(responseGate.prompt);
+    await expect(page.getByRole('button', { name: 'Send message' })).toBeEnabled({
+      timeout: 15_000,
+    });
+    await page.getByRole('button', { name: 'Send message' }).click();
+    const thumbnail = page.locator('.message.user .message-attachments img');
+    await expect(thumbnail).toHaveAttribute('src', /^blob:/);
+    const original = await thumbnail.elementHandle();
+    expect(original).not.toBeNull();
+    await responseGate.waitStarted();
+    await responseGate.release();
+    await expect(page.getByRole('heading', { name: 'Debug Provider Output' }).last()).toBeVisible({
+      timeout: 15_000,
+    });
+    await reconcileRunningResponse(page);
+    await expect.poll(() => imageRequested, { timeout: 15_000 }).toBe(true);
+    // Hydration changed the saved image's label to "image", but its thumbnail
+    // must remain the original DOM node and keep the ready local bytes.
+    await expect(thumbnail).toHaveAttribute('alt', 'image');
+    await expect(thumbnail).toHaveAttribute('src', /^blob:/);
+    expect(await thumbnail.evaluate((node, previous) => node === previous, original)).toBe(true);
+    expect(
+      await thumbnail.evaluate(
+        (node) => node instanceof HTMLImageElement && node.complete && node.naturalWidth > 0,
+      ),
+    ).toBe(true);
+    releaseImage();
+    await expect(thumbnail).toHaveAttribute('src', /\/images\//);
+    await expect
+      .poll(() =>
+        thumbnail.evaluate(
+          (node) => node instanceof HTMLImageElement && node.complete && node.naturalWidth > 0,
+        ),
+      )
+      .toBe(true);
+    expect(await thumbnail.evaluate((node, previous) => node === previous, original)).toBe(true);
+  } finally {
+    releaseImage();
+  }
+});
+
 test('sends a real uncommitted diff comment through the browser and Go protocol', async ({
   page,
   responseGate,

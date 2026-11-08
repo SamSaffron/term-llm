@@ -635,6 +635,7 @@ export class ComposerStore {
         this.attachmentPolicy.peek().uploadRefs &&
         (!attachment.uploadId || attachment.uploadScope !== this.uploadScope());
       this.updateAttachment(id, {
+        file: record.blob,
         previewURL,
         status: needsUpload ? 'error' : 'ready',
         progress: needsUpload ? 0 : 1,

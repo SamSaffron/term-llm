@@ -4,6 +4,7 @@ import { StoreContext } from '../app/context';
 import { AppStore } from '../stores/app-store';
 import { testConfig, testSession } from '../stores/store-test-fixtures';
 import { Composer } from './Composer';
+import { DraftBlobStore } from '../platform/draft-blobs';
 import { DEFAULT_ATTACHMENT_POLICY } from '../domain/attachments';
 
 const unconfirmed = (clientMessageId: string, content: string) => ({
@@ -226,6 +227,9 @@ it('exposes an ambiguous real new-chat send under its original local owner after
   vi.useFakeTimers();
   const route = `${location.pathname}${location.search}${location.hash}`;
   history.replaceState(null, '', '/ui?new=1');
+  // This synthetic upload has no local original. Model missing draft bytes
+  // without introducing fake-timer-driven IndexedDB work.
+  const getBlob = vi.spyOn(DraftBlobStore.prototype, 'get').mockResolvedValue(null);
   const original = new AppStore(testConfig);
   original.newChat(true);
   original.composer.applyAttachmentPolicy({ ...DEFAULT_ATTACHMENT_POLICY, uploadRefs: true });
@@ -306,6 +310,7 @@ it('exposes an ambiguous real new-chat send under its original local owner after
     view?.unmount();
     original.dispose();
     restored?.dispose();
+    getBlob.mockRestore();
     history.replaceState(null, '', route);
     vi.useRealTimers();
   }

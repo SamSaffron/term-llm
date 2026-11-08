@@ -35,7 +35,8 @@ export interface Attachment {
   mention?: boolean;
   /** True when the chip is an `@path` reference folded into the message text. */
   reference?: boolean;
-  file?: File;
+  /** Local original bytes, including Blobs restored from draft storage. */
+  file?: Blob;
   status?: 'preparing' | 'ready' | 'error';
   progress?: number;
   error?: string;

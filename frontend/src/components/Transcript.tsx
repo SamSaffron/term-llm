@@ -7,11 +7,12 @@ import { createMessageMediaResolvers } from '../domain/media-resolvers';
 import { signal, type ReadonlySignal } from '@preact/signals';
 import { memo } from './memo';
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'preact/hooks';
-import type { Message, ToolCall } from '../domain/types';
+import type { Attachment, Message, ToolCall } from '../domain/types';
 import { windowTranscript } from '../domain/transcript';
 import { useStore } from '../app/context';
 import { Markdown } from './Markdown';
 import { AudioMedia } from './AudioMedia';
+import { useAttachmentPreview } from './useAttachmentPreview';
 import { trustedPublishedMediaURL } from '../domain/audio-media';
 import { bindTranscriptMedia } from './transcript-media';
 import { ChipPicker } from './ChipPicker';
@@ -900,78 +901,78 @@ function FileChip({
   );
 }
 
-function Attachments({ message }: { message: Message }) {
+function MessageAttachment({ attachment }: { attachment: Attachment }) {
   const store = useStore();
+  const src = useAttachmentPreview(
+    attachment.type.startsWith('image/') ? attachment.file : undefined,
+    rebaseHubAssetURL(
+      store.config,
+      attachment.previewURL || attachment.url || attachment.dataURL || '',
+    ),
+  );
+  const file = (
+    <FileChip
+      name={attachment.name}
+      type={attachment.type}
+      size={attachment.size}
+      reference={attachment.reference}
+      href={attachment.downloadURL ? rebaseHubAssetURL(store.config, attachment.downloadURL) : src}
+    />
+  );
+  // A reference, a URL-less chip, and a server-hosted upload are all
+  // chips: only the image/video/audio projections below own a preview.
+  // An upload keeps its download affordance even when its MIME looks like
+  // media, which also avoids a broken <img> for formats the browser
+  // cannot decode (image/tiff, image/heic).
+  if (attachment.reference || attachment.downloadURL || !src) return file;
+  if (attachment.type.startsWith('image/'))
+    return (
+      <button
+        class="message-image-button"
+        type="button"
+        data-lightbox-src={src}
+        data-lightbox-type="image"
+        data-lightbox-name={attachment.name}
+        onClick={() => {
+          openMediaGallery(store, src, 'image');
+        }}
+      >
+        <img
+          src={src}
+          alt={attachment.name}
+          width={attachment.width}
+          height={attachment.height}
+          loading="lazy"
+        />
+      </button>
+    );
+  if (attachment.type.startsWith('video/'))
+    return (
+      <button
+        class="message-image-button"
+        type="button"
+        data-lightbox-src={src}
+        data-lightbox-type="video"
+        data-lightbox-name={attachment.name}
+        onClick={() => {
+          openMediaGallery(store, src, 'video');
+        }}
+      >
+        <video src={src} playsInline />
+      </button>
+    );
+  if (attachment.type.startsWith('audio/')) return <AudioMedia url={src} name={attachment.name} />;
+  return file;
+}
+
+function Attachments({ message }: { message: Message }) {
+  // Sent parts retain their order, but the server may omit original filenames.
+  // A label change must not remount a preview and bypass its decode handoff.
   return (
     <div class="message-attachments">
-      {message.attachments?.map((attachment, index) => {
-        const src = rebaseHubAssetURL(
-          store.config,
-          attachment.previewURL || attachment.url || attachment.dataURL || '',
-        );
-        const file = (
-          <FileChip
-            key={`${attachment.name}-${index}`}
-            name={attachment.name}
-            type={attachment.type}
-            size={attachment.size}
-            reference={attachment.reference}
-            href={
-              attachment.downloadURL ? rebaseHubAssetURL(store.config, attachment.downloadURL) : src
-            }
-          />
-        );
-        // A reference, a URL-less chip, and a server-hosted upload are all
-        // chips: only the image/video/audio projections below own a preview.
-        // An upload keeps its download affordance even when its MIME looks like
-        // media, which also avoids a broken <img> for formats the browser
-        // cannot decode (image/tiff, image/heic).
-        if (attachment.reference || attachment.downloadURL || (attachment.mention && !src))
-          return file;
-        if (attachment.type.startsWith('image/'))
-          return (
-            <button
-              class="message-image-button"
-              type="button"
-              key={`${attachment.name}-${index}`}
-              data-lightbox-src={src}
-              data-lightbox-type="image"
-              data-lightbox-name={attachment.name}
-              onClick={() => {
-                openMediaGallery(store, src, 'image');
-              }}
-            >
-              <img
-                src={src}
-                alt={attachment.name}
-                width={attachment.width}
-                height={attachment.height}
-                loading="lazy"
-              />
-            </button>
-          );
-        if (attachment.type.startsWith('video/'))
-          return (
-            <button
-              class="message-image-button"
-              type="button"
-              key={`${attachment.name}-${index}`}
-              data-lightbox-src={src}
-              data-lightbox-type="video"
-              data-lightbox-name={attachment.name}
-              onClick={() => {
-                openMediaGallery(store, src, 'video');
-              }}
-            >
-              <video src={src} playsInline />
-            </button>
-          );
-        if (attachment.type.startsWith('audio/'))
-          return (
-            <AudioMedia key={`${attachment.name}-${index}`} url={src} name={attachment.name} />
-          );
-        return file;
-      })}
+      {message.attachments?.map((attachment, index) => (
+        <MessageAttachment key={index} attachment={attachment} />
+      ))}
     </div>
   );
 }
@@ -1828,7 +1829,7 @@ export function Transcript() {
                 );
                 return (
                   <MessageRow
-                    key={message.id}
+                    key={message.clientMessageId || message.id}
                     message={message}
                     streaming={messageStreaming}
                     responseText={context?.responseText || message.content}
