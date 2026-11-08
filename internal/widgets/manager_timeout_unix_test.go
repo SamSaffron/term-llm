@@ -41,8 +41,8 @@ func TestWidgetStartupTimeoutKillsProcessGroup(t *testing.T) {
 	deadline := time.Now().Add(3 * time.Second)
 	for time.Now().Before(deadline) {
 		if !processAlive(pid) {
-			if entry.cmd != nil && entry.cmd.Process != nil && processAlive(entry.cmd.Process.Pid) {
-				t.Fatalf("shell leader %d survived startup timeout", entry.cmd.Process.Pid)
+			if entry.process() != nil && processAlive(entry.process().Pid) {
+				t.Fatalf("shell leader %d survived startup timeout", entry.process().Pid)
 			}
 			return
 		}

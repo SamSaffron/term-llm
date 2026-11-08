@@ -3,80 +3,49 @@
 package widgets
 
 import (
-	"errors"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
-	"runtime"
+	"strconv"
 	"strings"
-	"syscall"
 	"testing"
 	"time"
+
+	"github.com/samsaffron/term-llm/internal/procutil"
 )
 
 func TestWidgetStopProcessReapsChildProcessGroup(t *testing.T) {
-	t.Run("entire process group", func(t *testing.T) {
-		testWidgetStopProcessReapsChildProcessGroup(t)
-	})
-}
-
-func testWidgetStopProcessReapsChildProcessGroup(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("process groups are Unix-specific")
-	}
-
-	sleep, err := exec.LookPath("sleep")
+	dir := t.TempDir()
+	pidFile := filepath.Join(dir, "child.pid")
+	cmd := exec.Command("sh", "-c", fmt.Sprintf("sleep 60 & echo $! > %s; wait", pidFile))
+	owned, err := procutil.PrepareCommand(cmd)
 	if err != nil {
-		t.Skipf("sleep executable unavailable: %v", err)
+		t.Fatal(err)
 	}
-	leader := exec.Command(sleep, "60")
-	leader.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	if err := leader.Start(); err != nil {
-		t.Fatalf("start process-group leader: %v", err)
+	if err := owned.Start(); err != nil {
+		t.Fatal(err)
 	}
-	leaderDone := make(chan struct{})
-	go func() {
-		_ = leader.Wait()
-		close(leaderDone)
-	}()
-
-	member := exec.Command(sleep, "60")
-	member.SysProcAttr = &syscall.SysProcAttr{Setpgid: true, Pgid: leader.Process.Pid}
-	if err := member.Start(); err != nil {
-		_ = leader.Process.Kill()
-		<-leaderDone
-		t.Fatalf("start process-group member: %v", err)
-	}
-	memberDone := make(chan struct{})
-	go func() {
-		_ = member.Wait()
-		close(memberDone)
-	}()
-
+	pid := waitWidgetPID(t, pidFile)
+	done := make(chan struct{})
+	go func() { _ = owned.Wait(); close(done) }()
 	e := &widgetEntry{
-		manifest: &Manifest{ID: "test-widget", Mount: "test-widget", Dir: t.TempDir()},
+		manifest: &Manifest{ID: "test-widget", Mount: "test-widget", Dir: dir},
 		state:    stateRunning,
-		proc:     leader.Process,
-		procDone: leaderDone,
+		owned:    owned,
+		procDone: done,
 	}
-	e.stopProcess()
-
-	select {
-	case <-memberDone:
-	case <-time.After(100 * time.Millisecond):
-		_ = member.Process.Kill()
-		t.Fatal("widget process-group member survived stop")
+	if err := e.stopProcess(); err != nil {
+		t.Fatalf("stopProcess: %v", err)
+	}
+	if processAlive(pid) {
+		t.Fatalf("widget child %d survived stop", pid)
 	}
 }
 
 func TestWidgetStopKeepsSocketUntilExitAcknowledged(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("process groups are Unix-specific")
-	}
 	for _, acknowledged := range []bool{false, true} {
 		t.Run(fmt.Sprint("acknowledged=", acknowledged), func(t *testing.T) {
-			// Point the test manifest at a private fixture, not a real widget socket.
 			socket := filepath.Join(t.TempDir(), "widget.sock")
 			id, err := filepath.Rel(socketRuntimeDir, strings.TrimSuffix(socket, ".sock"))
 			if err != nil {
@@ -86,30 +55,50 @@ func TestWidgetStopKeepsSocketUntilExitAcknowledged(t *testing.T) {
 				t.Fatal(err)
 			}
 			child := exec.Command("sleep", "60")
-			child.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-			if err := child.Start(); err != nil {
+			owned, err := procutil.PrepareCommand(child)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := owned.Start(); err != nil {
 				t.Fatal(err)
 			}
 			var done chan struct{}
 			if acknowledged {
 				done = make(chan struct{})
-				go func() { _ = child.Wait(); close(done) }()
-				t.Cleanup(func() { _ = child.Process.Kill(); <-done })
+				go func() { _ = owned.Wait(); close(done) }()
+				t.Cleanup(func() { _ = owned.Close(); <-done })
 			} else {
-				t.Cleanup(func() { _ = child.Process.Kill(); _ = child.Wait() })
+				t.Cleanup(func() { _ = owned.Close(); _ = owned.Wait() })
 			}
-			e := &widgetEntry{manifest: &Manifest{ID: id, Command: []string{"fixture", "$SOCKET"}}, proc: child.Process, procDone: done, state: stateRunning}
+			e := &widgetEntry{manifest: &Manifest{ID: id, Command: []string{"fixture", "$SOCKET"}}, owned: owned, procDone: done, state: stateRunning}
 			err = e.stopProcess()
 			_, statErr := os.Stat(socket)
 			if acknowledged {
-				if err != nil || !errors.Is(statErr, os.ErrNotExist) {
+				if err != nil || !os.IsNotExist(statErr) {
 					t.Fatalf("acknowledged exit did not remove socket: %v %v", err, statErr)
 				}
 			} else {
-				if err == nil || statErr != nil || e.proc != child.Process {
+				if err == nil || statErr != nil || e.owned != owned {
 					t.Fatalf("unacknowledged exit lost process/socket: %v %v", err, statErr)
 				}
 			}
 		})
 	}
+}
+
+func waitWidgetPID(t *testing.T, path string) int {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		data, err := os.ReadFile(path)
+		if err == nil {
+			pid, err := strconv.Atoi(strings.TrimSpace(string(data)))
+			if err == nil {
+				return pid
+			}
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("pid file %s was not written", path)
+	return 0
 }

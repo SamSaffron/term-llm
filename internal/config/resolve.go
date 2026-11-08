@@ -115,12 +115,8 @@ func resolveSRV(srvURL string) (string, error) {
 	return fmt.Sprintf("https://%s:%d%s", host, addr.Port, path), nil
 }
 
-func parseFileURL(fileURL string) (path, fragment string, err error) {
-	return pathutil.ParseLocalFileURL(fileURL)
-}
-
 func resolveFile(fileURL string) (string, error) {
-	path, fragment, err := parseFileURL(fileURL)
+	path, fragment, err := pathutil.ParseLocalFileURL(fileURL)
 	if err != nil {
 		return "", err
 	}
@@ -219,7 +215,7 @@ func runResolverCommand(name string, args ...string) (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), resolveExecTimeout)
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, name, args...)
+	cmd := shellcmd.CommandContextArgs(ctx, name, args...)
 	cmd.WaitDelay = resolveExecWaitDelay
 
 	owned, prepErr := procutil.PrepareCommandProcessGroup(cmd)

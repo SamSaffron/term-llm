@@ -492,7 +492,7 @@ func (t *ShellTool) executeLocal(ctx context.Context, args json.RawMessage) (cor
 			return errorOutput(formatToolError(NewToolErrorf(ErrExecutionFailed, "cannot resolve shell: %v", err))), nil
 		}
 	}
-	approvalCommand := shellApprovalCommand(shellPath, a.Command, a.Env)
+	approvalCommand := shellcmd.ApprovalCommand(shellPath, a.Command, a.Env)
 
 	var claims []normalizedOutputClaim
 	if trackingEnabled {
@@ -551,7 +551,7 @@ func (t *ShellTool) executeLocal(ctx context.Context, args json.RawMessage) (cor
 	execCtx, cancel := context.WithTimeout(ctx, time.Duration(timeout)*time.Second)
 	defer cancel()
 
-	cmd := exec.CommandContext(execCtx, shellPath, shellcmd.Args(shellPath, a.Command)...)
+	cmd := shellcmd.CommandContextFor(execCtx, shellPath, a.Command)
 	cmd.Dir = workDir
 	cmd.Env = env
 
@@ -846,11 +846,4 @@ func truncateCommand(cmd string) string {
 		return cmd[:47] + "..."
 	}
 	return cmd
-}
-
-// shellApprovalCommand renders the exact shell invocation for approval. The
-// POSIX "-c command" form keeps its existing lossless preview and approval
-// cache key; other platforms show the real argv.
-func shellApprovalCommand(shellPath, command string, env map[string]string) string {
-	return shellcmd.ApprovalCommand(shellPath, command, env)
 }

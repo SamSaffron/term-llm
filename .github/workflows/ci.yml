@@ -149,6 +149,8 @@ jobs:
           # Windows set covering process/config/update/auth contracts.
           go test -short -count=1 \
             ./internal/atomicfile \
+            ./internal/fileprivacy \
+            ./internal/pathutil \
             ./internal/shellcmd \
             ./internal/procutil \
             ./internal/config \
@@ -157,12 +159,13 @@ jobs:
             ./internal/testutil \
             ./internal/widgets \
             ./internal/mcp/oauth \
+            ./internal/peerbroker \
             ./internal/pairing
           # Whole packages below remain POSIX-oriented, but these tests exercise
           # the native Windows command ownership and interruption contracts.
           go test -short -count=1 -run 'TestPrepareToolCommand' ./internal/tools
-          go test -short -count=1 -run 'TestCreateStdioTransport|TestClientStartIncludesServerStderr' ./internal/mcp
-          go test -short -count=1 -run 'TestExecutionRendererInterruption|TestRunStreamProgramDistinguishes|TestRunInterruption|TestTerminalRunError' ./internal/app/ask
+          go test -short -count=1 -run 'TestCreateStdioTransport|TestClientStartIncludesServerStderr|TestCommandTransportPipeSetupFailureClosesOwner' ./internal/mcp
+          go test -short -count=1 -run 'TestExecutionRendererInterruption|TestRunStreamProgramDistinguishes|TestRunInterruption|TestTerminalRunError|TestProgressive' ./internal/app/ask
 
   race:
     needs: changes

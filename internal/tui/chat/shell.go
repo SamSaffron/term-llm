@@ -108,7 +108,7 @@ func (m *Model) interactiveShellCommand(opts shellOptions) (*exec.Cmd, string, e
 	if opts.Command != "" {
 		shellArgs = append(shellArgs, shellcmd.Args(shellPath, opts.Command)...)
 	}
-	cmd := exec.Command(shellPath, shellArgs...)
+	cmd := shellcmd.Command(shellPath, shellArgs...)
 	cmd.Dir = dir
 	cmd.Env = interactiveShellEnv(os.Environ(), dir, m.boundWorktreeForShellEnv(), opts.NoRC)
 	// Full-screen terminal programs must write straight to the terminal. In
@@ -542,7 +542,7 @@ func (m *Model) runDirectShellCmd(ctx, lifecycleCtx context.Context, generation 
 	worktreeDir := m.boundWorktreeForShellEnv()
 	return func() tea.Msg {
 		shellPath := interactiveShellPath()
-		cmd := exec.CommandContext(ctx, shellPath, shellcmd.Args(shellPath, command)...)
+		cmd := shellcmd.CommandContextFor(ctx, shellPath, command)
 		cmd.Dir = dir
 		cmd.Env = interactiveShellEnv(os.Environ(), dir, worktreeDir, false)
 		cmd.WaitDelay = directShellWaitDelay

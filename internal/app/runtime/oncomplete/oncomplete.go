@@ -50,7 +50,7 @@ func RunCaptureInDir(command, input, baseDir string) (Result, error) {
 	defer cancel()
 
 	shellPath, shellArgs := shellcmd.HookInvocation(command)
-	cmd := exec.CommandContext(ctx, shellPath, shellArgs...)
+	cmd := shellcmd.CommandContextArgs(ctx, shellPath, shellArgs...)
 	cmd.Dir = dir
 	cmd.Stdin = strings.NewReader(input)
 

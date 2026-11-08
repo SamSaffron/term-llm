@@ -13,7 +13,7 @@ func TestInteractiveArgsSemantics(t *testing.T) {
 		{"/bin/bash", []string{"--noprofile", "--norc"}},
 		{"/usr/bin/fish", []string{"--no-config"}},
 		{"powershell.exe", []string{"-NoLogo", "-NoProfile"}},
-		{"cmd.exe", nil},
+		{"cmd.exe", []string{"/d"}},
 		{"/bin/sh", nil},
 	}
 	for _, tt := range tests {

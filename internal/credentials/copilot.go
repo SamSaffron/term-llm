@@ -93,7 +93,7 @@ func SaveCopilotCredentials(creds *CopilotCredentials) error {
 	// Write with restrictive permissions (owner read/write only). Use a
 	// temp-file-and-rename flow so refresh failures cannot corrupt an existing
 	// credentials file.
-	if err := writeFileAtomic(credPath, data, 0600); err != nil {
+	if err := fileprivacy.WriteFileAtomic(credPath, data); err != nil {
 		return fmt.Errorf("failed to write credentials: %w", err)
 	}
 

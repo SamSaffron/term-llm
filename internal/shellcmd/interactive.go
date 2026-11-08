@@ -21,7 +21,7 @@ func InteractiveArgs(shellPath string, noRC bool) ([]string, error) {
 	case "powershell", "pwsh":
 		return []string{"-NoLogo", "-NoProfile"}, nil
 	case "cmd":
-		return nil, nil
+		return []string{"/d"}, nil
 	case "zsh":
 		return []string{"-f"}, nil
 	case "bash":

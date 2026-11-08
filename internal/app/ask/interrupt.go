@@ -22,7 +22,7 @@ func runInterruption(ctx context.Context, err error) bool {
 	if err == nil || ctx == nil {
 		return false
 	}
-	return isCancellationError(ctx.Err()) || errors.Is(err, errUserInterrupted)
+	return isCancellationError(ctx.Err()) || (errors.Is(err, errUserInterrupted) && isOnlyCancellation(err))
 }
 
 func isCancellationError(err error) bool {
@@ -34,10 +34,10 @@ func isCancellationError(err error) bool {
 // substantive provider failure; the provider diagnostic is authoritative, while
 // two independent failures stay joined so neither is lost.
 func terminalRunError(displayErr, streamErr error) error {
-	if streamErr == nil || isCancellationError(streamErr) {
+	if streamErr == nil || isOnlyCancellation(streamErr) {
 		return displayErr
 	}
-	if displayErr == nil || isCancellationError(displayErr) || errors.Is(displayErr, errUserInterrupted) {
+	if displayErr == nil || isOnlyCancellation(displayErr) {
 		return fmt.Errorf("streaming failed: %w", streamErr)
 	}
 	return errors.Join(displayErr, streamErr)
@@ -50,9 +50,6 @@ func isOnlyCancellation(err error) bool {
 	if err == nil {
 		return true
 	}
-	if err == context.Canceled || err == context.DeadlineExceeded || errors.Is(err, errUserInterrupted) {
-		return true
-	}
 	if multi, ok := err.(interface{ Unwrap() []error }); ok {
 		for _, child := range multi.Unwrap() {
 			if !isOnlyCancellation(child) {
@@ -62,7 +59,9 @@ func isOnlyCancellation(err error) bool {
 		return true
 	}
 	if single, ok := err.(interface{ Unwrap() error }); ok {
-		return isOnlyCancellation(single.Unwrap())
+		if child := single.Unwrap(); child != nil {
+			return isOnlyCancellation(child)
+		}
 	}
-	return false
+	return err == context.Canceled || err == context.DeadlineExceeded || errors.Is(err, errUserInterrupted)
 }

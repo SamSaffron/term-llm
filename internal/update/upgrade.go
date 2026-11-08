@@ -71,7 +71,7 @@ func RunUpgrade(ctx context.Context, currentVersion, targetVersion string, stdou
 	tempFile, err := os.CreateTemp(destDir, ".term-llm-upgrade-*")
 	if err != nil {
 		if errors.Is(err, os.ErrPermission) {
-			return fmt.Errorf("cannot create temp file in %s (permission denied). try running with sudo", destDir)
+			return fmt.Errorf("cannot create temp file in %s (permission denied)%s", destDir, permissionHint())
 		}
 		return err
 	}
@@ -89,7 +89,7 @@ func RunUpgrade(ctx context.Context, currentVersion, targetVersion string, stdou
 
 	if err := replaceExecutable(tempPath, exePath); err != nil {
 		if errors.Is(err, os.ErrPermission) {
-			return fmt.Errorf("failed to replace %s (permission denied). try running with sudo", exePath)
+			return fmt.Errorf("failed to replace %s (permission denied)%s", exePath, permissionHint())
 		}
 		return fmt.Errorf("replace binary: %w", err)
 	}

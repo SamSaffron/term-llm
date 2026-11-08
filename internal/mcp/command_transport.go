@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"sync"
+	"syscall"
 	"time"
 
 	sdkmcp "github.com/modelcontextprotocol/go-sdk/mcp"
@@ -27,15 +28,20 @@ func (t *commandTransport) Connect(ctx context.Context) (sdkmcp.Connection, erro
 	cmd := t.Command.Cmd()
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
+		_ = t.Command.Close()
+		_ = t.Command.Wait()
 		return nil, err
 	}
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
+		_ = stdout.Close()
+		_ = t.Command.Close()
 		return nil, err
 	}
 	if err := t.Command.Start(); err != nil {
 		_ = stdout.Close()
 		_ = stdin.Close()
+		_ = t.Command.Close()
 		return nil, err
 	}
 	conn, err := (&sdkmcp.IOTransport{
@@ -45,6 +51,7 @@ func (t *commandTransport) Connect(ctx context.Context) (sdkmcp.Connection, erro
 	}).Connect(ctx)
 	if err != nil {
 		_ = t.Command.Close()
+		_ = t.Command.Wait()
 		return nil, err
 	}
 	terminate := t.TerminateDuration
@@ -78,25 +85,46 @@ func (c *ownedCommandConn) Close() error {
 		}
 		done := make(chan error, 1)
 		go func() { done <- c.cmd.Wait() }()
-		select {
-		case err := <-done:
-			if c.err == nil {
-				c.err = err
-			}
-		case <-time.After(c.terminate):
-			_ = c.cmd.Close()
-			select {
-			case err := <-done:
-				if c.err == nil {
-					c.err = err
-				}
-			case <-time.After(c.terminate):
-				if c.err == nil {
-					c.err = fmt.Errorf("unresponsive subprocess")
-				}
-			}
+		if err, ok := awaitCommand(done, c.terminate); ok {
+			c.recordWait(err)
+			return
+		}
+		// Give Unix servers the SDK's EOF -> SIGTERM -> SIGKILL sequence.
+		// Windows maps Signal to owned tree termination, so the extra grace
+		// waits only drain an already-killed process.
+		_ = c.cmd.Signal(syscall.SIGTERM)
+		if err, ok := awaitCommand(done, c.terminate); ok {
+			c.recordWait(err)
+			return
+		}
+		_ = c.cmd.Close()
+		if err, ok := awaitCommand(done, c.terminate); ok {
+			c.recordWait(err)
+			return
+		}
+		if c.err == nil {
+			c.err = fmt.Errorf("unresponsive subprocess")
 		}
 		_ = c.cmd.Close()
 	})
 	return c.err
+}
+
+func (c *ownedCommandConn) recordWait(err error) {
+	if c.err == nil {
+		c.err = err
+	}
+	_ = c.cmd.Close()
+}
+
+func awaitCommand(done <-chan error, timeout time.Duration) (error, bool) {
+	if timeout <= 0 {
+		timeout = defaultCommandTerminateDuration
+	}
+	select {
+	case err := <-done:
+		return err, true
+	case <-time.After(timeout):
+		return nil, false
+	}
 }

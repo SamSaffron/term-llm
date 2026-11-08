@@ -3,7 +3,6 @@ package ask
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"time"
@@ -36,6 +35,7 @@ type askProgressiveExecution struct {
 	applyResult     func(run.Result)
 	WrapEvents      func(<-chan ui.StreamEvent) <-chan ui.StreamEvent
 	useRichRenderer bool
+	renderFn        func(context.Context, <-chan ui.StreamEvent) error
 	jsonEmit        *JSONEmitter
 	jsonInfo        SessionInfo
 	captureOutput   func(string) error
@@ -49,6 +49,8 @@ func (e *askProgressiveExecution) run() (askExecutionResult, error) {
 	bridge.Stats().SetModel(bootstrap.ActiveModel(e.cfg))
 	result := askExecutionResult{stats: bridge.Stats()}
 	events := e.WrapEvents(bridge.Events())
+	runCtx, cancelRun := context.WithCancel(e.ctx)
+	defer cancelRun()
 	var drain <-chan struct{}
 	if e.flags.Porcelain && !e.flags.JSON {
 		done := make(chan struct{})
@@ -71,7 +73,7 @@ func (e *askProgressiveExecution) run() (askExecutionResult, error) {
 				appruntime.RecordStoreHelperUsage(context.Background(), e.store, e.session.ID, event.Model, session.ModelUsageGuardian, event.Usage)
 			}
 		}}
-		runResult, err := e.runner.Run(e.ctx, request, sink)
+		runResult, err := e.runner.Run(runCtx, request, sink)
 		e.applyResult(runResult)
 		progressive := runtimeprogressive.RunResult{}
 		if runResult.Progressive != nil {
@@ -88,11 +90,14 @@ func (e *askProgressiveExecution) run() (askExecutionResult, error) {
 	if e.useRichRenderer && e.toolMgr != nil {
 		_, program = NewRendererProgram(e.cfg, e.toolMgr, e.store, e.session, events)
 	}
-	render := func(ctx context.Context) error {
-		if program != nil {
-			return RunStreamProgram(ctx, program)
+	render := e.renderFn
+	if render == nil {
+		render = func(ctx context.Context, events <-chan ui.StreamEvent) error {
+			if program != nil {
+				return RunStreamProgram(ctx, program)
+			}
+			return StreamWithRenderer(ctx, e.cfg, events, e.store, e.session)
 		}
-		return StreamWithRenderer(ctx, e.cfg, events, e.store, e.session)
 	}
 	var progressive askProgressiveRunResult
 	var jsonStreamErr, displayErr error
@@ -116,18 +121,20 @@ func (e *askProgressiveExecution) run() (askExecutionResult, error) {
 			result.jsonTotalTokens, jsonStreamErr, writeErr = StreamJSONEvents(displayCtx, events, e.jsonEmit)
 			displayErr = writeErr
 		case e.useRichRenderer:
-			displayErr = render(displayCtx)
+			displayErr = render(displayCtx, events)
 		default:
 			displayErr = StreamPlainText(displayCtx, events, false, e.stderr)
 		}
-		if displayErr != nil {
-			bridge.Stop()
-		}
-		progressive = <-runCh
+		// The renderer owns only the display context; cancel the child run
+		// context whenever display exits so a quiet provider/tool cannot keep
+		// the process alive after the user interrupted or the UI failed.
+		bridge.Stop()
+		cancelRun()
+		progressive = waitProgressiveRun(runCh, e.cleanupTimeout, e.stderr)
 	}
 	tools.ClearAskUserHooks()
 	if displayErr != nil {
-		if errors.Is(displayErr, errUserInterrupted) && isOnlyCancellation(progressive.Err) {
+		if runInterruption(e.ctx, displayErr) && isOnlyCancellation(progressive.Err) {
 			if e.store != nil && e.session != nil {
 				_ = e.store.UpdateStatus(context.Background(), e.session.ID, session.StatusInterrupted)
 				_ = e.store.SetCurrent(context.Background(), e.session.ID)
@@ -136,10 +143,11 @@ func (e *askProgressiveExecution) run() (askExecutionResult, error) {
 			result.skipFinalization = true
 			return result, nil
 		}
+		err := terminalRunError(displayErr, progressive.Err)
 		if e.flags.JSON {
-			_ = EmitFatalError(e.jsonEmit, result.stats, displayErr)
+			_ = EmitFatalError(e.jsonEmit, result.stats, err)
 		}
-		return result, displayErr
+		return result, err
 	}
 	result.progressive = progressive.Result
 	if progressive.Err != nil {
@@ -191,4 +199,20 @@ func (e *askProgressiveExecution) run() (askExecutionResult, error) {
 type askProgressiveRunResult struct {
 	Result runtimeprogressive.RunResult
 	Err    error
+}
+
+func waitProgressiveRun(runCh <-chan askProgressiveRunResult, timeout time.Duration, stderr io.Writer) askProgressiveRunResult {
+	if timeout <= 0 {
+		timeout = run.DefaultRunnerCleanupTimeout
+	}
+	select {
+	case result := <-runCh:
+		return result
+	case <-time.After(timeout):
+		err := context.Canceled
+		if stderr != nil {
+			_, _ = fmt.Fprintf(stderr, "warning: progressive runner did not stop within %s after display cancellation; detaching\n", timeout)
+		}
+		return askProgressiveRunResult{Err: err}
+	}
 }

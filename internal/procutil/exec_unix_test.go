@@ -3,6 +3,7 @@
 package procutil
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"os"
@@ -170,4 +171,73 @@ func TestCommandConcurrentStartAndCloseDoesNotLeak(t *testing.T) {
 			_ = owned.Wait()
 		}
 	}
+}
+
+func TestCommandCancelAfterExitPreservesErrProcessDone(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "sh", "-c", "exit 0")
+	owned, err := PrepareCommand(cmd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := owned.Start(); err != nil {
+		t.Fatal(err)
+	}
+	if err := owned.Wait(); err != nil {
+		t.Fatalf("Wait: %v", err)
+	}
+	if err := cmd.Cancel(); !errors.Is(err, os.ErrProcessDone) {
+		t.Fatalf("Cancel after exit = %v, want os.ErrProcessDone", err)
+	}
+	if err := owned.Close(); err != nil {
+		t.Fatalf("Close after exit = %v, want nil", err)
+	}
+}
+
+func TestCommandOutputMatchesExecPreconfiguredStreams(t *testing.T) {
+	cmd := exec.Command("sh", "-c", "printf out")
+	cmd.Stdout = &bytes.Buffer{}
+	owned, err := PrepareCommand(cmd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer owned.Close()
+	if _, err := owned.Output(); err == nil || !strings.Contains(err.Error(), "Stdout already set") {
+		t.Fatalf("Output with preset Stdout = %v", err)
+	}
+
+	var stderr bytes.Buffer
+	cmd = exec.Command("sh", "-c", "echo visible >&2; exit 3")
+	cmd.Stderr = &stderr
+	owned, err = PrepareCommand(cmd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer owned.Close()
+	if _, err := owned.Output(); err == nil {
+		t.Fatal("Output unexpectedly succeeded")
+	}
+	if stderr.String() != "visible\n" {
+		t.Fatalf("preset stderr = %q", stderr.String())
+	}
+
+	cmd = exec.Command("sh", "-c", "echo captured >&2; exit 3")
+	owned, err = PrepareCommand(cmd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer owned.Close()
+	_, err = owned.Output()
+	var exitErr *exec.ExitError
+	if !errors.As(err, &exitErr) || !strings.Contains(string(exitErr.Stderr), "captured") {
+		t.Fatalf("ExitError.Stderr = %q, err = %v", exitErrStderr(exitErr), err)
+	}
+}
+
+func exitErrStderr(err *exec.ExitError) string {
+	if err == nil {
+		return ""
+	}
+	return string(err.Stderr)
 }

@@ -26,7 +26,6 @@ type windowsPlatformCommand struct {
 	started  bool
 	closed   bool
 	closeOne sync.Once
-	closeErr error
 }
 
 // Injectable seams keep forced job-assignment/resume failure tests local and
@@ -37,11 +36,11 @@ var (
 	beforeAssignProcess      func()
 )
 
-func configurePlatformCommand(cmd *exec.Cmd, mode CommandMode, owner *Command) (platformCommand, error) {
+func configurePlatformCommand(cmd *exec.Cmd, mode commandMode, owner *Command) (platformCommand, error) {
 	if cmd.SysProcAttr == nil {
 		cmd.SysProcAttr = &syscall.SysProcAttr{}
 	}
-	if mode == DetachedMode {
+	if mode == detachedMode {
 		cmd.SysProcAttr.CreationFlags |= createNewProcessGroup | createNoWindow
 	} else {
 		cmd.SysProcAttr.CreationFlags |= createNewProcessGroup
@@ -62,7 +61,7 @@ func configurePlatformCommand(cmd *exec.Cmd, mode CommandMode, owner *Command) (
 	}
 	p.job = job
 	if cmd.Cancel != nil {
-		cmd.Cancel = func() error { return owner.Close() }
+		cmd.Cancel = func() error { return owner.cancel() }
 	}
 	return p, nil
 }
@@ -120,6 +119,8 @@ func (p *windowsPlatformCommand) assignAndResume() error {
 	return nil
 }
 
+func (p *windowsPlatformCommand) cancel(*Command) error { return p.close(nil) }
+
 func (p *windowsPlatformCommand) signal(syscall.Signal) error { return p.close(nil) }
 
 func (p *windowsPlatformCommand) close(*Command) error {
@@ -133,7 +134,7 @@ func (p *windowsPlatformCommand) close(*Command) error {
 		}
 		p.mu.Unlock()
 	})
-	return p.closeErr
+	return nil
 }
 
 func resumeProcess(pid int) error {

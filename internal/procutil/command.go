@@ -8,26 +8,30 @@ import (
 	"syscall"
 )
 
-// CommandMode selects the ownership model for a prepared command.
-type CommandMode int
+// commandMode selects the ownership model for a prepared command.
+type commandMode int
 
 const (
-	// DetachedMode starts a new session/process group and owns its descendants.
-	DetachedMode CommandMode = iota
-	// ProcessGroupMode starts a new process group while retaining the caller's
+	// detachedMode starts a new session/process group and owns its descendants.
+	detachedMode commandMode = iota
+	// processGroupMode starts a new process group while retaining the caller's
 	// controlling terminal (for interactive helpers).
-	ProcessGroupMode
+	processGroupMode
 )
+
+type platformCommand interface {
+	start(*Command) error
+	signal(syscall.Signal) error
+	cancel(*Command) error
+	close(*Command) error
+}
 
 // Command wraps exec.Cmd with an explicit platform ownership lifetime. Construct
 // one after setting fields such as Dir/Env/Stdout/Stderr, then use
 // Start/Run/Wait and always Close it to release the platform tree.
 // The raw Cmd remains available for field setup and ProcessState inspection.
-type platformCommand interface {
-	start(*Command) error
-	signal(syscall.Signal) error
-	close(*Command) error
-}
+// Start may be called at most once; Wait is the single direct-process reap
+// point. Callers cannot restart a Command after Start or Close.
 
 // ErrCommandClosed is returned by Start after Close has been called. Close
 // before Start never creates an OS process.
@@ -49,16 +53,16 @@ type Command struct {
 // PrepareCommand configures a detached command with the platform ownership
 // policy. The caller must Close the returned Command.
 func PrepareCommand(cmd *exec.Cmd) (*Command, error) {
-	return prepareCommand(cmd, DetachedMode)
+	return prepareCommand(cmd, detachedMode)
 }
 
 // PrepareCommandProcessGroup is PrepareCommand for interactive helpers that
 // retain the caller's controlling terminal.
 func PrepareCommandProcessGroup(cmd *exec.Cmd) (*Command, error) {
-	return prepareCommand(cmd, ProcessGroupMode)
+	return prepareCommand(cmd, processGroupMode)
 }
 
-func prepareCommand(cmd *exec.Cmd, mode CommandMode) (*Command, error) {
+func prepareCommand(cmd *exec.Cmd, mode commandMode) (*Command, error) {
 	if cmd == nil {
 		return nil, errors.New("prepare command: nil command")
 	}
@@ -143,17 +147,25 @@ func (c *Command) Wait() error {
 	return c.cmd.Wait()
 }
 
-// Output runs a prepared command and captures stdout/stderr, preserving
-// exec.ExitError.Stderr semantics.
+// Output runs a prepared command and captures stdout. Like exec.Cmd.Output, it
+// rejects a preconfigured Stdout and preserves a preconfigured Stderr; Stderr is
+// populated on ExitError only when it was previously nil.
 func (c *Command) Output() ([]byte, error) {
 	if c == nil || c.cmd == nil {
 		return nil, errors.New("output command: nil command")
 	}
-	var stdout, stderr bytes.Buffer
+	if c.cmd.Stdout != nil {
+		return nil, errors.New("exec: Stdout already set")
+	}
+	var stdout bytes.Buffer
 	c.cmd.Stdout = &stdout
-	c.cmd.Stderr = &stderr
+	captureStderr := c.cmd.Stderr == nil
+	var stderr bytes.Buffer
+	if captureStderr {
+		c.cmd.Stderr = &stderr
+	}
 	err := c.Run()
-	if exitErr, ok := err.(*exec.ExitError); ok {
+	if exitErr, ok := err.(*exec.ExitError); ok && captureStderr {
 		exitErr.Stderr = stderr.Bytes()
 	}
 	return stdout.Bytes(), err
@@ -166,6 +178,16 @@ func (c *Command) SetCloseHook(fn func()) {
 	if c != nil {
 		c.closeHook = fn
 	}
+}
+
+// cancel is the exec.Cmd context-cancellation hook. It differs from Close by
+// preserving os.ErrProcessDone when the direct process already exited, so
+// os/exec does not turn a successful exit into a cancellation error.
+func (c *Command) cancel() error {
+	if c == nil || c.platform == nil {
+		return nil
+	}
+	return c.platform.cancel(c)
 }
 
 // Close terminates/releases the owned platform tree.

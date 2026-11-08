@@ -17,16 +17,16 @@ type unixPlatformCommand struct {
 	closed  bool
 }
 
-func configurePlatformCommand(cmd *exec.Cmd, mode CommandMode, owner *Command) (platformCommand, error) {
+func configurePlatformCommand(cmd *exec.Cmd, mode commandMode, owner *Command) (platformCommand, error) {
 	attr := &syscall.SysProcAttr{}
-	if mode == DetachedMode {
+	if mode == detachedMode {
 		attr.Setsid = true
 	} else {
 		attr.Setpgid = true
 	}
 	cmd.SysProcAttr = attr
 	if cmd.Cancel != nil {
-		cmd.Cancel = func() error { return owner.Close() }
+		cmd.Cancel = func() error { return owner.cancel() }
 	}
 	return &unixPlatformCommand{cmd: cmd}, nil
 }
@@ -44,6 +44,22 @@ func (p *unixPlatformCommand) start(*Command) error {
 	p.started = true
 	err := p.cmd.Start()
 	p.mu.Unlock()
+	return err
+}
+
+func (p *unixPlatformCommand) cancel(*Command) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.closed || p.cmd == nil || p.cmd.Process == nil {
+		return os.ErrProcessDone
+	}
+	if err := syscall.Kill(-p.cmd.Process.Pid, syscall.SIGKILL); err == nil {
+		return nil
+	}
+	err := p.cmd.Process.Kill()
+	if errors.Is(err, os.ErrProcessDone) {
+		return os.ErrProcessDone
+	}
 	return err
 }
 

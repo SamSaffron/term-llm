@@ -54,7 +54,7 @@ func TestWidgetStopSerializesConcurrentRestart(t *testing.T) {
 	defer e.stopProcess()
 
 	e.mu.Lock()
-	oldProc := e.proc
+	oldProc := e.processLocked()
 	e.mu.Unlock()
 	if oldProc == nil {
 		t.Fatal("initial widget did not record its process")
@@ -105,7 +105,7 @@ func TestWidgetStopSerializesConcurrentRestart(t *testing.T) {
 	}
 
 	e.mu.Lock()
-	newProc := e.proc
+	newProc := e.processLocked()
 	state := e.state
 	proxy := e.proxy
 	e.mu.Unlock()
@@ -366,7 +366,7 @@ func TestManagerCloseContextPreventsStartAfterShutdownBegins(t *testing.T) {
 	}
 
 	e.mu.Lock()
-	proc := e.proc
+	proc := e.processLocked()
 	state := e.state
 	e.mu.Unlock()
 	if proc != nil {

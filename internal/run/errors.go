@@ -20,11 +20,34 @@ func JoinErrors(existing, additional error) error {
 		return additional
 	case additional == nil:
 		return existing
-	case IsCancellation(existing) && !IsCancellation(additional):
+	case isPureCancellation(existing) && !isPureCancellation(additional):
 		return additional
-	case !IsCancellation(existing) && IsCancellation(additional):
+	case !isPureCancellation(existing) && isPureCancellation(additional):
 		return existing
 	default:
 		return errors.Join(existing, additional)
 	}
+}
+
+// isPureCancellation recurses through joined and wrapped errors before deciding
+// that an error is only cancellation. A joined provider failure plus cleanup
+// cancellation is substantive and must not be mistaken for a plain stop.
+func isPureCancellation(err error) bool {
+	if err == nil {
+		return true
+	}
+	if multi, ok := err.(interface{ Unwrap() []error }); ok {
+		for _, child := range multi.Unwrap() {
+			if !isPureCancellation(child) {
+				return false
+			}
+		}
+		return true
+	}
+	if single, ok := err.(interface{ Unwrap() error }); ok {
+		if child := single.Unwrap(); child != nil {
+			return isPureCancellation(child)
+		}
+	}
+	return IsCancellation(err)
 }

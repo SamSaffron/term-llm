@@ -34,7 +34,7 @@ func CreateTemp(dir, pattern string) (*os.File, error) {
 	if err != nil {
 		return nil, err
 	}
-	if err := ChmodFile(file.Name(), FileMode); err != nil {
+	if err := file.Chmod(FileMode); err != nil {
 		name := file.Name()
 		_ = file.Close()
 		_ = os.Remove(name)

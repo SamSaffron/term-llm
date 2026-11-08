@@ -132,7 +132,7 @@ func saveGrokCredentials(path string, creds *GrokCredentials) error {
 	if err != nil {
 		return fmt.Errorf("marshal Grok credentials: %w", err)
 	}
-	if err := writeFileAtomic(path, data, 0o600); err != nil {
+	if err := fileprivacy.WriteFileAtomic(path, data); err != nil {
 		return fmt.Errorf("write Grok credentials: %w", err)
 	}
 	return nil

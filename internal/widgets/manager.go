@@ -51,8 +51,6 @@ type widgetEntry struct {
 	startMu  sync.Mutex // serializes concurrent start attempts
 	state    processState
 	errMsg   string
-	proc     *os.Process
-	cmd      *exec.Cmd
 	owned    *procutil.Command
 	procDone chan struct{}
 	proxy    *httputil.ReverseProxy
@@ -67,6 +65,19 @@ func (e *widgetEntry) setError(err error) error {
 	e.errMsg = err.Error()
 	e.mu.Unlock()
 	return err
+}
+
+func (e *widgetEntry) process() *os.Process {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.processLocked()
+}
+
+func (e *widgetEntry) processLocked() *os.Process {
+	if e.owned == nil || e.owned.Cmd() == nil {
+		return nil
+	}
+	return e.owned.Cmd().Process
 }
 
 // Manager discovers and manages widget sub-processes.
@@ -487,8 +498,6 @@ func (e *widgetEntry) startProcess(ctx context.Context, basePath string) error {
 		if ctx.Err() != nil {
 			e.mu.Lock()
 			e.state = stateStopped
-			e.proc = nil
-			e.cmd = nil
 			e.owned = nil
 			e.procDone = nil
 			e.proxy = nil
@@ -501,8 +510,6 @@ func (e *widgetEntry) startProcess(ctx context.Context, basePath string) error {
 
 	procDone := make(chan struct{})
 	e.mu.Lock()
-	e.proc = cmd.Process
-	e.cmd = cmd
 	e.owned = owned
 	e.procDone = procDone
 	e.mu.Unlock()
@@ -512,10 +519,8 @@ func (e *widgetEntry) startProcess(ctx context.Context, basePath string) error {
 		_ = owned.Wait()
 		_ = owned.Close()
 		e.mu.Lock()
-		if e.cmd == cmd && (e.state == stateRunning || e.state == stateStarting) {
+		if e.owned == owned && (e.state == stateRunning || e.state == stateStarting) {
 			e.state = stateStopped
-			e.proc = nil
-			e.cmd = nil
 			e.owned = nil
 			e.procDone = nil
 			e.proxy = nil
@@ -540,7 +545,7 @@ func (e *widgetEntry) startProcess(ctx context.Context, basePath string) error {
 		}
 
 		e.mu.Lock()
-		alive := e.proc != nil
+		alive := e.owned != nil
 		e.mu.Unlock()
 		if !alive {
 			if ctx.Err() != nil {
@@ -585,13 +590,10 @@ func (e *widgetEntry) startProcess(ctx context.Context, basePath string) error {
 	}
 	if lastErr != nil {
 		e.mu.Lock()
-		c := e.cmd
 		o := e.owned
 		e.mu.Unlock()
 		if o != nil {
 			_ = o.Close()
-		} else if c != nil {
-			killProcessGroup(c.Process, c, syscall.SIGKILL)
 		}
 		return e.setError(fmt.Errorf("did not respond within %s: %v", startupTimeout, lastErr))
 	}
@@ -629,15 +631,11 @@ func (e *widgetEntry) stopProcess() error {
 // stopProcessLocked requires startMu to be held.
 func (e *widgetEntry) stopProcessLocked() (err error) {
 	e.mu.Lock()
-	proc := e.proc
-	cmd := e.cmd
 	owned := e.owned
 	done := e.procDone
 	mode, _ := e.manifest.PlaceholderMode()
 	socketID := e.manifest.ID
 	e.state = stateStopped
-	e.proc = nil
-	e.cmd = nil
 	e.owned = nil
 	e.procDone = nil
 	e.proxy = nil
@@ -650,17 +648,13 @@ func (e *widgetEntry) stopProcessLocked() (err error) {
 		}
 	}()
 
-	if proc == nil {
+	if owned == nil {
 		return nil
 	}
-	if owned != nil {
-		_ = owned.Signal(syscall.SIGTERM)
-	} else {
-		killProcessGroup(proc, cmd, syscall.SIGTERM)
-	}
+	_ = owned.Signal(syscall.SIGTERM)
 	if done == nil {
 		e.mu.Lock()
-		e.proc, e.cmd, e.owned, e.procDone, e.state, e.errMsg = proc, cmd, owned, done, stateError, "widget process has no exit acknowledgement"
+		e.owned, e.procDone, e.state, e.errMsg = owned, done, stateError, "widget process has no exit acknowledgement"
 		e.mu.Unlock()
 		return fmt.Errorf("widget process has no exit acknowledgement")
 	}
@@ -668,11 +662,7 @@ func (e *widgetEntry) stopProcessLocked() (err error) {
 	case <-done:
 		return nil
 	case <-time.After(3 * time.Second):
-		if owned != nil {
-			_ = owned.Close()
-		} else {
-			killProcessGroup(proc, cmd, syscall.SIGKILL)
-		}
+		_ = owned.Close()
 	}
 	select {
 	case <-done:
@@ -680,8 +670,6 @@ func (e *widgetEntry) stopProcessLocked() (err error) {
 	case <-time.After(3 * time.Second):
 		// Retain ownership if even SIGKILL has not produced a wait acknowledgement.
 		e.mu.Lock()
-		e.proc = proc
-		e.cmd = cmd
 		e.owned = owned
 		e.procDone = done
 		e.state = stateError

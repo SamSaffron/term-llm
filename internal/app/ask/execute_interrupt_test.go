@@ -130,3 +130,27 @@ func TestRunStreamProgramDistinguishesUserAndContextCancellation(t *testing.T) {
 		}
 	})
 }
+
+func TestExecutionRendererInterruptionDoesNotHideJoinedProviderFailure(t *testing.T) {
+	providerErr := errors.New("provider failed")
+	runner := &interruptionRunner{
+		started:   make(chan struct{}),
+		canceled:  make(chan struct{}),
+		returnErr: errors.Join(providerErr, context.Canceled),
+	}
+	exec, _ := newInterruptionExecution(runner, func(context.Context, <-chan ui.StreamEvent) error {
+		<-runner.started
+		return errUserInterrupted
+	})
+	store := &askMemoryMessageStore{}
+	exec.store = store
+	exec.session = &session.Session{ID: "renderer-interrupt-joined"}
+
+	result, err := exec.run()
+	if err == nil || !strings.Contains(err.Error(), "provider failed") {
+		t.Fatalf("run() error = %v, want joined provider failure", err)
+	}
+	if result.interrupted {
+		t.Fatal("result.interrupted = true, want provider failure to remain authoritative")
+	}
+}
