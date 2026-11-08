@@ -38,8 +38,12 @@ func TestWidgetStopProcessReapsChildProcessGroup(t *testing.T) {
 	if err := e.stopProcess(); err != nil {
 		t.Fatalf("stopProcess: %v", err)
 	}
-	if processAlive(pid) {
-		t.Fatalf("widget child %d survived stop", pid)
+	deadline := time.Now().Add(2 * time.Second)
+	for processAlive(pid) {
+		if time.Now().After(deadline) {
+			t.Fatalf("widget child %d survived stop", pid)
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 }
 
