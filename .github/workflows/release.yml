@@ -6,16 +6,19 @@ on:
       - 'v*'
 
 jobs:
-  release:
+  # npm install scripts run only in this job, which gets no secrets and a
+  # read-only token. The release job embeds its output as data.
+  frontend:
     runs-on: ubuntu-latest
     permissions:
-      contents: write
+      contents: read
     steps:
       - name: Checkout
         uses: actions/checkout@v7
         with:
-          # GoReleaser builds the changelog from history since the previous tag.
+          # The UI source archive is stamped with `git describe --tags`.
           fetch-depth: 0
+          persist-credentials: false
 
       - name: Set up Go
         uses: actions/setup-go@v7
@@ -32,14 +35,93 @@ jobs:
       - name: Build frontend assets
         run: make frontend
 
+      - name: Upload frontend assets
+        uses: actions/upload-artifact@v7
+        with:
+          name: frontend-assets
+          path: |
+            internal/serveui/static/dist/
+            internal/uisource/assets/term-llm-ui-source.tar.gz
+          if-no-files-found: error
+          retention-days: 1
+
+  # Holds the release token and macOS signing secrets, so it must not run npm
+  # or restore caches that jobs running npm could have written.
+  release:
+    needs: frontend
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          # GoReleaser builds the changelog from history since the previous tag.
+          fetch-depth: 0
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: false
+
+      - name: Download frontend assets
+        uses: actions/download-artifact@v8
+        with:
+          name: frontend-assets
+          path: internal
+
+      - name: Check frontend assets
+        # go:embed only fails when dist/ is missing entirely; a missing source
+        # archive would build silently.
+        run: |
+          test -s internal/serveui/static/dist/asset-manifest.json.gz
+          test -s internal/uisource/assets/term-llm-ui-source.tar.gz
+
+      # macOS signing secrets (see notarize in .goreleaser.yml):
+      #   MACOS_SIGN_P12          base64 .p12 of a "Developer ID Application" certificate and key
+      #   MACOS_SIGN_PASSWORD     password for that .p12
+      #   MACOS_NOTARY_ISSUER_ID  App Store Connect API issuer ID
+      #   MACOS_NOTARY_KEY_ID     App Store Connect team API key ID
+      #   MACOS_NOTARY_KEY        base64 AuthKey_<key id>.p8
+      # Configure all of them or none: a partial set would sign without
+      # notarizing. This step only receives whether each secret is set.
+      - name: Check macOS signing secrets
+        env:
+          MACOS_SIGN_P12: ${{ secrets.MACOS_SIGN_P12 != '' }}
+          MACOS_SIGN_PASSWORD: ${{ secrets.MACOS_SIGN_PASSWORD != '' }}
+          MACOS_NOTARY_ISSUER_ID: ${{ secrets.MACOS_NOTARY_ISSUER_ID != '' }}
+          MACOS_NOTARY_KEY_ID: ${{ secrets.MACOS_NOTARY_KEY_ID != '' }}
+          MACOS_NOTARY_KEY: ${{ secrets.MACOS_NOTARY_KEY != '' }}
+        run: |
+          names="MACOS_SIGN_P12 MACOS_SIGN_PASSWORD MACOS_NOTARY_ISSUER_ID MACOS_NOTARY_KEY_ID MACOS_NOTARY_KEY"
+          missing=
+          for name in $names; do
+            [ "$(printenv "$name")" = true ] || missing="$missing $name"
+          done
+          if [ -z "$missing" ]; then
+            echo "macOS binaries will be signed and notarized."
+          elif [ "$missing" = " $names" ]; then
+            echo "::warning::macOS binaries in this release are not signed or notarized: no MACOS_* signing secrets are configured."
+          else
+            echo "::error::Incomplete macOS signing secrets; missing:$missing"
+            exit 1
+          fi
+
       - name: Run GoReleaser
         uses: goreleaser/goreleaser-action@v7
         with:
           distribution: goreleaser
           version: '~> v2'
-          args: release --clean
+          # Notarization waits up to 20 minutes per darwin binary.
+          args: release --clean --timeout 60m
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          MACOS_SIGN_P12: ${{ secrets.MACOS_SIGN_P12 }}
+          MACOS_SIGN_PASSWORD: ${{ secrets.MACOS_SIGN_PASSWORD }}
+          MACOS_NOTARY_ISSUER_ID: ${{ secrets.MACOS_NOTARY_ISSUER_ID }}
+          MACOS_NOTARY_KEY_ID: ${{ secrets.MACOS_NOTARY_KEY_ID }}
+          MACOS_NOTARY_KEY: ${{ secrets.MACOS_NOTARY_KEY }}
 
       - name: Publish readable UI source and checksum
         env:

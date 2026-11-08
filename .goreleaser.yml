@@ -17,6 +17,25 @@ builds:
       - -X github.com/samsaffron/term-llm/cmd.Commit={{.Commit}}
       - -X github.com/samsaffron/term-llm/cmd.Date={{.Date}}
 
+# Sign darwin binaries with a Developer ID certificate and notarize them before
+# archiving, so archives and checksums cover the signed files. The release
+# workflow supplies all five MACOS_* secrets or none; without them (for example
+# local snapshots) darwin binaries are left as the Go linker produced them.
+notarize:
+  macos:
+    - enabled: '{{ isEnvSet "MACOS_SIGN_P12" }}'
+      ids:
+        - term-llm
+      sign:
+        certificate: "{{ .Env.MACOS_SIGN_P12 }}"
+        password: "{{ .Env.MACOS_SIGN_PASSWORD }}"
+      notarize:
+        issuer_id: "{{ .Env.MACOS_NOTARY_ISSUER_ID }}"
+        key_id: "{{ .Env.MACOS_NOTARY_KEY_ID }}"
+        key: "{{ .Env.MACOS_NOTARY_KEY }}"
+        wait: true
+        timeout: 20m
+
 # Archive configuration
 archives:
   - id: default
