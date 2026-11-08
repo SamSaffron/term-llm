@@ -123,7 +123,6 @@ See [Skills](/guides/skills/) for the full guide on creating, sharing, and exten
 | `Ctrl+T` | MCP server picker |
 | `Ctrl+L` | Switch model |
 | `Ctrl+N` | New session |
-| `Ctrl+F` | Attach file |
 | `Ctrl+O` | Conversation inspector |
 | `Esc` | Cancel streaming or a running `!` shell command |
 | `Left click` | Move cursor in chat input |
@@ -147,7 +146,7 @@ Steering right away cancels the current run, and cancellation does not roll back
 
 ### TUI attachments
 
-In `term-llm chat`, `Ctrl+F` or `/file <path>` attaches a local text file to the next message. Globs are supported by `/file`, and `/file clear` removes pending file attachments. The TUI reads file contents into the prompt as text, rejects binary files, and accepts text files up to 20 MB. Embedded file contents are wrapped in explicit begin/end markers so the model can tell where each attachment starts and ends. Very large text files can still exceed a model's context window or cost more tokens.
+In `term-llm chat`, `/file <path>` attaches a local text file to the next message. Globs are supported by `/file`, and `/file clear` removes pending file attachments. The TUI reads file contents into the prompt as text, rejects binary files, and accepts text files up to 20 MB. Embedded file contents are wrapped in explicit begin/end markers so the model can tell where each attachment starts and ends. Very large text files can still exceed a model's context window or cost more tokens.
 
 Pasting an image from the clipboard attaches it as an image when the terminal/clipboard integration exposes image data. Pasted images use the same 20 MB decoded limit as web/API uploads.
 
