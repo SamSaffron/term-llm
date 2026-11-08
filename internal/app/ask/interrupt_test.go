@@ -55,6 +55,7 @@ func TestTerminalRunErrorPrefersProviderFailure(t *testing.T) {
 		{name: "both substantive errors stay visible", displayErr: fmt.Errorf("render failed"), streamErr: providerErr, want: "render failed\nprovider failed"},
 		{name: "renderer interruption yields to provider failure", displayErr: errUserInterrupted, streamErr: providerErr, want: "streaming failed: provider failed"},
 		{name: "joined provider and cancel retains provider", displayErr: errUserInterrupted, streamErr: errors.Join(providerErr, context.Canceled), want: "streaming failed: provider failed\ncontext canceled"},
+		{name: "wrapped joined provider and cancel retains provider", displayErr: errUserInterrupted, streamErr: fmt.Errorf("wrapped: %w", errors.Join(providerErr, context.Canceled)), want: "streaming failed: wrapped: provider failed\ncontext canceled"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {

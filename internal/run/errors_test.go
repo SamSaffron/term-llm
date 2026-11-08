@@ -3,6 +3,7 @@ package run
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 )
 
@@ -19,6 +20,7 @@ func TestJoinErrorsPreservesSubstantiveLeaves(t *testing.T) {
 		{name: "cancel and joined provider", existing: context.Canceled, additional: errors.Join(provider, context.Canceled), want: []error{provider, context.Canceled}},
 		{name: "joined provider and other substantive", existing: errors.Join(provider, context.Canceled), additional: other, want: []error{provider, context.Canceled, other}},
 		{name: "pure cancellation ladders drop", existing: errors.Join(context.Canceled, context.DeadlineExceeded), additional: provider, want: []error{provider}},
+		{name: "wrapped joined provider and cancel", existing: fmt.Errorf("outer: %w", errors.Join(provider, context.Canceled)), want: []error{provider, context.Canceled}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
