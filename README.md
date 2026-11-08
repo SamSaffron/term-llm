@@ -12,7 +12,7 @@ Docs: **https://term-llm.com**
 
 ## Install
 
-With the release installer (recommended):
+With the release installer (Linux/macOS):
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/samsaffron/term-llm/main/install.sh | sh

@@ -40,11 +40,10 @@ $Repo = "samsaffron/term-llm"
 $AssetArch = "amd64"
 
 function Fail([string]$Message) {
-  Write-Error "Error: $Message"
-  exit 1
+  throw "Error: $Message"
 }
 
-[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+[Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
 
 if ($ArchivePath -and -not $ChecksumsPath) {
   Fail "-ArchivePath requires -ChecksumsPath"
@@ -111,8 +110,10 @@ try {
   Write-Host "==> Installed $target"
   $pathEntries = ($env:PATH -split ';') | ForEach-Object { $_.TrimEnd('\') }
   if (-not ($pathEntries | Where-Object { $_ -ieq $InstallDir.TrimEnd('\') })) {
+    $quotedInstallDir = $InstallDir.Replace("'", "''")
     Write-Host "Add it to PATH for this user:"
-    Write-Host "  [Environment]::SetEnvironmentVariable('PATH', '$InstallDir;' + [Environment]::GetEnvironmentVariable('PATH','User'), 'User')"
+    Write-Host "  [Environment]::SetEnvironmentVariable('PATH', '$quotedInstallDir;' + [Environment]::GetEnvironmentVariable('PATH','User'), 'User')"
+    Write-Host "Open a new terminal after changing PATH."
   }
   Write-Host "Run: term-llm version"
 } finally {
