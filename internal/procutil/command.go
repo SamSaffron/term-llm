@@ -26,19 +26,16 @@ type platformCommand interface {
 	close(*Command) error
 }
 
-// Command wraps exec.Cmd with an explicit platform ownership lifetime. Construct
-// one after setting fields such as Dir/Env/Stdout/Stderr, then use
-// Start/Run/Wait and always Close it to release the platform tree.
-// The raw Cmd remains available for field setup and ProcessState inspection.
-// Start may be called at most once; Wait is the single direct-process reap
-// point. Callers cannot restart a Command after Start or Close.
-
 // ErrCommandClosed is returned by Start after Close has been called. Close
 // before Start never creates an OS process.
 var ErrCommandClosed = errors.New("procutil: command is closed")
 
 var errCommandAlreadyStarted = errors.New("procutil: command already started")
 
+// Command owns an exec.Cmd and its process tree. Set the command's I/O and
+// environment before starting it, then call Close to release owned resources.
+// Start and Wait may each be called once; Close is idempotent. A closed Command
+// cannot be restarted.
 type Command struct {
 	cmd       *exec.Cmd
 	platform  platformCommand
