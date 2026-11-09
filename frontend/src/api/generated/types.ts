@@ -4,6 +4,10 @@ export type ActivityJobDetail = ActivityJobRun & { "response"?: string; "stdout"
 
 export type ActivityJobRun = { "job_id": string; "run_id": string; "title": string; "status": string; "model"?: string; "started_at"?: number; "ended_at"?: number; "session_id"?: string; };
 
+export type AgentCatalogEntry = { "name": string; "description"?: string; "source": string; "provider"?: string; "model"?: string; };
+
+export type AgentCatalogResponse = { "agents": (AgentCatalogEntry)[] | null; };
+
 export type ChildRunProjection = SessionActivityMetrics & { "model"?: string; "session_id": string; "parent_session_id": string; "parent_spawn_item_id"?: number; "parent_spawn_call_id"?: string; "title": string; "kind"?: string; "agent"?: string; "task_summary"?: string; "state": SessionSessionStatus; "attention": boolean; "response_id"?: string; "run_epoch"?: number; "live"?: boolean; "steerable"?: boolean; "child_run_id"?: string; "pending_asks"?: number; "revision": number; "started_at"?: number; "ended_at"?: number; "approximate_times"?: boolean; "cost_usd"?: number; "cost_partial"?: boolean; };
 
 export type CreateWebSessionRequest = { "provider"?: string; "model"?: string; "reasoning_effort"?: string; "reasoning_mode"?: string; "agent"?: string; "project_id"?: string; "worktree_dir"?: string; "no_project"?: boolean; "use_default_workspace"?: boolean; };

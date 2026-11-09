@@ -9,6 +9,7 @@ import type {
 
 export type Modal =
   | ''
+  | 'agents'
   | 'settings'
   | 'stats'
   | 'inspect'

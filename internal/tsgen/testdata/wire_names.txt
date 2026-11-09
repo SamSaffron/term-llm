@@ -1,5 +1,7 @@
 ActivityJobDetail
 ActivityJobRun
+AgentCatalogEntry
+AgentCatalogResponse
 ChildRunProjection
 CreateWebSessionRequest
 HubNodeDiagnostic
