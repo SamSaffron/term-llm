@@ -24,8 +24,8 @@ func TestChatGPTListModelsFetchesAndCachesServiceTiers(t *testing.T) {
 		if req.URL.Path != "/backend-api/codex/models" {
 			t.Fatalf("path = %q", req.URL.Path)
 		}
-		if got := req.URL.Query().Get("client_version"); got != "0.159.0" {
-			t.Fatalf("client_version = %q, want version that advertises gpt-6.1-sol", got)
+		if got := req.URL.Query().Get("client_version"); got != "0.167.0" {
+			t.Fatalf("client_version = %q, want current stable Codex catalog version 0.167.0", got)
 		}
 		if got := req.Header.Get("Authorization"); got != "Bearer test-token" {
 			t.Fatalf("Authorization = %q", got)

@@ -26,9 +26,10 @@ const (
 	chatGPTOriginator = "term-llm"
 	// /codex/models requires this semver query parameter to select the catalog
 	// protocol. It is not our application identity and is never sent as a header.
-	// Keep this aligned with a Codex release that advertises gpt-6.1-sol:
-	// older client versions receive an older catalog even with a forced refresh.
-	chatGPTModelsClientVersion = "0.159.0"
+	// Keep this aligned with the latest stable OpenAI Codex release:
+	// https://github.com/openai/codex/releases/latest
+	// Older client versions receive an older catalog even with a forced refresh.
+	chatGPTModelsClientVersion = "0.167.0"
 	chatGPTModelsCacheFile     = "chatgpt_models_cache_v2.json"
 	chatGPTModelsCacheTTL      = 5 * time.Minute
 	chatGPTModelsTimeout       = 5 * time.Second
