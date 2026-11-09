@@ -6,6 +6,7 @@ import (
 	appmemory "github.com/samsaffron/term-llm/internal/app/memory"
 	"github.com/samsaffron/term-llm/internal/app/runtime"
 	runapproval "github.com/samsaffron/term-llm/internal/app/runtime/approval"
+	"github.com/samsaffron/term-llm/internal/app/runtime/mcpstart"
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/session"
 	"github.com/samsaffron/term-llm/internal/tools"
@@ -29,6 +30,7 @@ type cmdRunnerOptions struct {
 	WriteDirs          []string
 	ShellAllow         []string
 	MCP                string
+	LoadMCPConfig      mcpstart.ConfigLoader
 	SystemMessage      string
 	MaxTurns           int
 	DefaultMaxTurns    int

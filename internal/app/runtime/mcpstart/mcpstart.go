@@ -21,32 +21,40 @@ import (
 
 // MCPOptions contains options for enabling MCP servers.
 type MCPOptions struct {
-	Provider      core.Provider
-	Model         string
-	YoloMode      bool
-	ToolDiscovery config.ToolDiscoveryConfig
+	ImplicitSelection bool // Defaults/restores are repaired; explicit per-request selections fail closed.
+	PolicyIdentity    string
+	LoadConfig        ConfigLoader // Optional config-loading dependency; nil uses Manager.LoadConfig.
+	Provider          core.Provider
+	Model             string
+	YoloMode          bool
+	ToolDiscovery     config.ToolDiscoveryConfig
 }
 
 // EnableMCPServersWithFeedback initializes MCP servers with user feedback.
 // Returns the manager (caller must call StopAll) or error if setup failed.
 func EnableMCPServersWithFeedback(ctx context.Context, mcpFlag string, engine *engine.Engine, errWriter io.Writer, opts *MCPOptions) (*mcp.Manager, error) {
-	serverNames := ParseServerList(mcpFlag)
-	if len(serverNames) == 0 {
-		return nil, nil
+	identity, explicit := "", true
+	var load ConfigLoader
+	if opts != nil {
+		identity, explicit, load = opts.PolicyIdentity, !opts.ImplicitSelection, opts.LoadConfig
 	}
-
-	mcpManager := mcp.NewManager()
-	if err := mcpManager.LoadConfig(); err != nil {
-		return nil, fmt.Errorf("failed to load MCP config: %w", err)
+	prepared, err := PrepareSelection(identity, mcpFlag, explicit, errWriter, load)
+	if err != nil {
+		return nil, err
 	}
+	return prepared.Enable(ctx, engine, errWriter, opts)
+}
 
+// enableLoadedServers starts a selection using its already-loaded manager.
+func enableLoadedServers(ctx context.Context, mcpManager *mcp.Manager, selection string, engine *engine.Engine, errWriter io.Writer, opts *MCPOptions) (*mcp.Manager, error) {
+	serverNames := ParseServerList(selection)
 	// Set up sampling handler if provider is available
 	if opts != nil && opts.Provider != nil {
 		mcpManager.SetSamplingProvider(opts.Provider, opts.Model, opts.YoloMode)
 	}
 
 	// Validate all servers exist before starting any
-	available := mcpManager.AvailableServers()
+	available := mcpManager.Config().ServerNames()
 	availableSet := make(map[string]bool)
 	for _, s := range available {
 		availableSet[s] = true
@@ -64,6 +72,10 @@ func EnableMCPServersWithFeedback(ctx context.Context, mcpFlag string, engine *e
 			return nil, fmt.Errorf("MCP server '%s' not configured. Add it with: term-llm mcp add %s", missing[0], missing[0])
 		}
 		return nil, fmt.Errorf("MCP servers not configured: %s. Add them with: term-llm mcp add <name>", strings.Join(missing, ", "))
+	}
+
+	if err := mcpManager.ValidateSelection(serverNames); err != nil {
+		return nil, err
 	}
 
 	// Only repaint startup progress when feedback is an interactive terminal.

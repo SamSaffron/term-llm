@@ -7,6 +7,7 @@ import (
 	appmemory "github.com/samsaffron/term-llm/internal/app/memory"
 	"github.com/samsaffron/term-llm/internal/app/runtime"
 	"github.com/samsaffron/term-llm/internal/app/runtime/approval"
+	"github.com/samsaffron/term-llm/internal/app/runtime/mcpstart"
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/llm/debug"
 	"github.com/samsaffron/term-llm/internal/session"
@@ -43,7 +44,7 @@ type Options struct {
 }
 
 // FlagState includes the historical system lookup, not system-message.
-type FlagState struct{ User, Resume, Tools, System, MaxTurns, Search bool }
+type FlagState struct{ User, Resume, Tools, System, MaxTurns, Search, MCP bool }
 
 // Dependencies captures terminal/reload authority and deferred startup operations.
 // ResolveApproval is called after config, session and settings resolution, with
@@ -57,6 +58,7 @@ type Dependencies struct {
 	SessionStore                                     runtime.SessionStoreOverrides
 	MemoryPaths                                      appmemory.Paths
 	LoadConfig                                       func() (*config.Config, error)
+	LoadMCPConfig                                    mcpstart.ConfigLoader
 	ResolveApproval                                  func(*config.Config, *session.SessionApprovalMode, *tools.ApprovalMode, string) (approval.ResolvedMode, error)
 	CreateDebugLogger                                func(*config.Config) (*debug.Logger, error)
 	StartDiagnostics                                 func(io.Writer) (func(), error)

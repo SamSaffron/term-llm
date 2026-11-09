@@ -50,6 +50,7 @@ func (r *chatInvocation) run(ctx context.Context, args []string) error {
 		if restored.Provider != "" && restored.Model != "" {
 			r.opts.Provider = restored.Provider + ":" + restored.Model
 		}
+		r.opts.Changed.MCP = false
 		relaunchHandoff.reloadState = &restored
 	}
 	mainRuns := chat.NewMainRunManager(ctx)
@@ -72,7 +73,8 @@ func (r *chatInvocation) run(ctx context.Context, args []string) error {
 	r.handoverApproval = nil
 	for {
 		nextResumeID, nextAutoSend, err := r.runChatOnce(ctx, initialText, cliAgent, resumeRequested, resumeID, handoverAutoSend, &relaunchHandoff, mainRuns, lifecycleReporter, launchConfig)
-		launchConfig = nil // Later relaunches intentionally reload configuration.
+		launchConfig = nil         // Later relaunches intentionally reload configuration.
+		r.opts.Changed.MCP = false // CLI MCP overrides apply only to the initial launch.
 		if err != nil {
 			return err
 		}

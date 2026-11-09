@@ -45,7 +45,11 @@ func getBuiltinAgent(name string) (*Agent, error) {
 
 	systemMD, _ := builtinFS.ReadFile(fmt.Sprintf("builtin/%s/system.md", name))
 
-	return LoadFromEmbedded(name, agentYAML, systemMD)
+	agent, err := LoadFromEmbedded(name, agentYAML, systemMD)
+	if err == nil {
+		bindRegistryIdentity(agent, name)
+	}
+	return agent, err
 }
 
 // getBuiltinAgents returns all built-in agents.

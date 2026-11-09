@@ -267,6 +267,7 @@ The index below follows the canonical config schema. A dash means no default or 
 | `tool_discovery.max_active_tools` | integer | `300` | — |
 | `agents.use_builtin` | boolean | `true` | — |
 | `agents.search_paths` | list of string | `[]` | — |
+| `mcp.servers` | map | — | Per-server MCP policy: agents lists trusted user-dir/builtin lookup names; absent is unrestricted, [] denies all. Server names are case-sensitive. |
 | `agents.preferences` | map | — | — |
 | `skills.enabled` | boolean | `true` | — |
 | `skills.auto_invoke` | boolean | `true` | — |
@@ -947,6 +948,17 @@ The existing `term-llm serve web --enable-file-tracking` flag can still force tr
 Observations and materializations contain bounded counts, roots, sampled paths, coverage, and closed diagnostic details only—never blobs, command text, environment values, headers, credentials, URL userinfo, or unsanitized URLs. They live in the physically separate `file_observations.db` sidecar and have independent row, byte, per-session, and age limits. Observation pressure therefore cannot evict attributed blobs.
 
 `affected_paths` bounds shell inspection only and does not attribute transitions. Use pre-execution `output_claims` for task transforms/generators and `materialize` claims for imported content. Without claims, bounded Git/session-path discovery may produce observations, but never agent changes. Incomplete coverage and tracker failures are surfaced as diagnostics.
+
+## MCP server access policy
+
+| Key | Meaning |
+|---|---|
+| `mcp.servers.<server>.agents` | Trusted user-global/builtin agent registry lookup names allowed to use this server. Missing is unrestricted; null is an error; `[]` denies everyone. |
+
+This top-level `config.yaml` policy is separate from `mcp.json` connections and
+`serve.mcp.approval_mode`. Server names are exact and case-sensitive; edit dotted
+names directly in YAML. See [MCP server restrictions](/guides/mcp-servers/#restrict-servers-to-trusted-agents)
+for trusted identity rules, reload behavior and the application-guardrail limits.
 
 ## MCP tool discovery config
 

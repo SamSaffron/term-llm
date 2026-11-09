@@ -45,6 +45,13 @@ func collectUnknownKeys(root *yaml.Node) []unknownKey {
 		if mapping.Kind != yaml.MappingNode {
 			return
 		}
+		if config.VisitMCPPolicyKeys(mapping, prefix, func(path string, known bool, line int) {
+			if !known {
+				out = append(out, unknownKey{path: path, line: line})
+			}
+		}) {
+			return
+		}
 		for i := 0; i+1 < len(mapping.Content); i += 2 {
 			keyNode := mapping.Content[i]
 			valueNode := mapping.Content[i+1]

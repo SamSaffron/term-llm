@@ -79,12 +79,13 @@ type Request struct {
 	ParentModel ParentModel        // frozen live parent selection
 	Cwd         string
 
-	Tools      string
-	ReadDirs   []string
-	WriteDirs  []string
-	ShellAllow []string
-	MCP        string
-	Skills     string
+	Tools       string
+	ReadDirs    []string
+	WriteDirs   []string
+	ShellAllow  []string
+	MCP         string
+	MCPExplicit bool // True only for a user-typed selection, never settings/job-derived MCP.
+	Skills      string
 
 	SystemMessage               string
 	MaxTurns                    int

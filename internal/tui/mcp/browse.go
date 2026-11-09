@@ -596,25 +596,7 @@ func (m *Model) installServer(idx int) tea.Cmd {
 			}
 		}
 
-		// Determine local name - prefer the server Name if it's clean (no @ or /)
-		// Bundled servers have nice names like "discourse", "brave-search"
-		localName := server.Name
-		if localName == "" || strings.ContainsAny(localName, "@/") {
-			// Fall back to deriving from package identifier
-			localName = server.DisplayName()
-			if strings.HasPrefix(localName, "@") {
-				parts := strings.Split(localName, "/")
-				if len(parts) > 1 {
-					pkgName := parts[1]
-					if pkgName == "mcp" {
-						localName = strings.TrimPrefix(parts[0], "@")
-					} else {
-						localName = strings.TrimSuffix(pkgName, "-mcp")
-						localName = strings.TrimPrefix(localName, "mcp-")
-					}
-				}
-			}
-		}
+		localName := registryLocalName(&server)
 
 		// Load and update config
 		cfg, err := mcp.LoadConfig()
@@ -651,8 +633,13 @@ func (m *Model) testServer(idx int) tea.Cmd {
 			}
 		}
 
+		// A manual connection test has no trusted agent identity.
+		if err := mcp.NewManager().CheckAccess(registryLocalName(&server)); err != nil {
+			return testResultMsg{name: displayName, err: err}
+		}
+
 		// Create client and test
-		client := mcp.NewClient(displayName, serverConfig)
+		client := mcp.NewClient(registryLocalName(&server), serverConfig)
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
 
@@ -674,23 +661,7 @@ func (m *Model) testServer(idx int) tea.Cmd {
 // isInstalled checks if a server is already installed
 // Takes the full RegistryServer to access both Name and DisplayName
 func (m *Model) isServerInstalled(server *mcp.RegistryServer) bool {
-	// This must match the logic in installServer
-	localName := server.Name
-	if localName == "" || strings.ContainsAny(localName, "@/") {
-		localName = server.DisplayName()
-		if strings.HasPrefix(localName, "@") {
-			parts := strings.Split(localName, "/")
-			if len(parts) > 1 {
-				pkgName := parts[1]
-				if pkgName == "mcp" {
-					localName = strings.TrimPrefix(parts[0], "@")
-				} else {
-					localName = strings.TrimSuffix(pkgName, "-mcp")
-					localName = strings.TrimPrefix(localName, "mcp-")
-				}
-			}
-		}
-	}
+	localName := registryLocalName(server)
 
 	return m.installed[localName]
 }

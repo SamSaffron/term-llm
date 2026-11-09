@@ -16,6 +16,8 @@ import (
 	"time"
 
 	"github.com/creack/pty"
+	"github.com/samsaffron/term-llm/internal/mcp"
+	"github.com/samsaffron/term-llm/internal/testutil/mcptest"
 )
 
 // Run the real Cobra capture and application in a separate terminal process.
@@ -93,7 +95,11 @@ agents:
 			if err != nil {
 				t.Fatal(err)
 			}
-			args := []string{"-test.run=^TestChatApprovalHandoverProcess$", "--", "--text", "--no-search", "--debug", "--agent=source"}
+			connections := &mcp.Config{Servers: map[string]mcp.ServerConfig{"source-only": {Command: executable, Env: map[string]string{mcptest.ChildEnv: "1"}}}}
+			if err := connections.SaveToPath(filepath.Join(state, "config/term-llm/mcp.json")); err != nil {
+				t.Fatal(err)
+			}
+			args := []string{"-test.run=^TestChatApprovalHandoverProcess$", "--", "--text", "--no-search", "--debug", "--agent=source", "--mcp=source-only"}
 			if tt.explicit != "" {
 				args = append(args, "--approval="+tt.explicit)
 			}
@@ -179,6 +185,9 @@ agents:
 				}
 			}()
 			policy := func(agent string, completed bool) string {
+				// Configured search-path agents persist filesystem references, never
+				// bare lookup names that could acquire user-global trust on resume.
+				agent = filepath.Join(state, "agents", agent)
 				if db == nil {
 					if _, err := os.Stat(dbPath); err != nil {
 						return ""
@@ -188,15 +197,24 @@ agents:
 						t.Fatal(err)
 					}
 				}
-				var mode string
+				var mode, selection string
 				var users, llms int
-				if err := db.QueryRow("SELECT approval_mode, user_turns, llm_turns FROM sessions WHERE agent = ?", agent).Scan(&mode, &users, &llms); err != nil {
+				if err := db.QueryRow("SELECT approval_mode, user_turns, llm_turns, COALESCE(mcp, '') FROM sessions WHERE agent = ?", agent).Scan(&mode, &users, &llms, &selection); err != nil {
 					lastQuery = err.Error()
 					return ""
 				}
 				lastQuery = fmt.Sprintf("%s %s %d %d", agent, mode, users, llms)
 				if completed && (users < 1 || llms < 1) {
 					return ""
+				}
+				if completed {
+					wantMCP := ""
+					if filepath.Base(agent) == "source" {
+						wantMCP = "source-only"
+					}
+					if selection != wantMCP {
+						t.Fatalf("session %s MCP selection=%q want=%q; initial --mcp leaked across relaunch", agent, selection, wantMCP)
+					}
 				}
 				return mode
 			}

@@ -140,8 +140,10 @@ type Agent struct {
 	SystemPrompt string `yaml:"-"`
 
 	// Source info
-	Source     AgentSource `yaml:"-"`
-	SourcePath string      `yaml:"-"`
+	Source         AgentSource `yaml:"-"`
+	SourcePath     string      `yaml:"-"`
+	policyIdentity string
+	lookupName     string
 }
 
 // TimeGroundingEnabled reports whether new conversations should receive the
@@ -154,9 +156,10 @@ func (a *Agent) TimeGroundingEnabled() bool {
 type AgentSource int
 
 const (
-	SourceLocal   AgentSource = iota // Explicit filesystem path (not auto-discovered)
-	SourceUser                       // User-global (~/.config/term-llm/agents/)
-	SourceBuiltin                    // Embedded built-in
+	SourceLocal      AgentSource = iota // Explicit filesystem path (not auto-discovered)
+	SourceUser                          // User-global (~/.config/term-llm/agents/)
+	SourceBuiltin                       // Embedded built-in
+	SourceSearchPath                    // Explicitly configured search directory (untrusted for MCP policy)
 )
 
 // SourceName returns a human-readable name for the agent source.
@@ -168,6 +171,8 @@ func (s AgentSource) SourceName() string {
 		return "user"
 	case SourceBuiltin:
 		return "builtin"
+	case SourceSearchPath:
+		return "search-path"
 	default:
 		return "unknown"
 	}

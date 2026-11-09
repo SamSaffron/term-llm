@@ -75,6 +75,19 @@ func ListAgentNames(cfg *config.Config) ([]string, error) {
 func LoadPersistedAgent(name string, cfg *config.Config) (*agents.Agent, error) {
 	agent, err := LoadAgent(name, cfg)
 	if err == nil {
+		// Legacy rows stored YAML names rather than provenance references. They
+		// still run, but a mismatched or ambiguous lookup cannot confer trust.
+		ambiguous := agents.Reference(agent) != name
+		if name != "" && !agents.IsAgentPath(name) {
+			shadowed, err := legacySearchIdentityAmbiguous(name, cfg.Agents.SearchPaths)
+			if err != nil {
+				return nil, err
+			}
+			ambiguous = ambiguous || shadowed
+		}
+		if ambiguous {
+			agent = agents.WithoutPolicyIdentity(agent)
+		}
 		return agent, nil
 	}
 	if errors.Is(err, agents.ErrNotFound) {

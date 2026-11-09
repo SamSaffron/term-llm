@@ -14,6 +14,7 @@ import (
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/llm/core"
 	"github.com/samsaffron/term-llm/internal/llm/mockprovider"
+	"github.com/samsaffron/term-llm/internal/mcp"
 	runpkg "github.com/samsaffron/term-llm/internal/run"
 	"github.com/samsaffron/term-llm/internal/session"
 )
@@ -320,14 +321,21 @@ func TestCmdRunnerBorrowedEngineDiscovery(t *testing.T) {
 	for _, tc := range []struct {
 		name              string
 		configuredTools   bool
+		configuredServer  bool
 		explicitDiscovery bool
 		wantTool          bool
 	}{
 		{name: "ask handoff", explicitDiscovery: true, wantTool: true},
 		{name: "auxiliary request stays tool free"},
-		{name: "configured MCP still enables discovery", configuredTools: true, wantTool: true},
+		{name: "configured MCP still enables discovery", configuredTools: true, configuredServer: true, wantTool: true},
+		{name: "borrowed selection enables discovery without reading config", configuredTools: true, wantTool: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			connections := map[string]mcp.ServerConfig{}
+			if tc.configuredServer {
+				connections["already-connected"] = mcp.ServerConfig{Command: "must-not-start"}
+			}
+			writeServeMCPConfig(t, connections)
 			cfg := &config.Config{DefaultProvider: "mock", Providers: map[string]config.ProviderConfig{"mock": {Model: "mock-model"}}}
 			provider := mockprovider.NewMockProvider("mock").AddTextResponse("ok")
 			engine := appruntime.NewEngine(provider, cfg)

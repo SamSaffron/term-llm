@@ -13,6 +13,7 @@ import (
 	runapproval "github.com/samsaffron/term-llm/internal/app/runtime/approval"
 	"github.com/samsaffron/term-llm/internal/app/runtime/bootstrap"
 	runtimeguardian "github.com/samsaffron/term-llm/internal/app/runtime/guardian"
+	"github.com/samsaffron/term-llm/internal/app/runtime/mcpstart"
 	appserve "github.com/samsaffron/term-llm/internal/app/serve"
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/llm"
@@ -112,6 +113,35 @@ func (r *chatInvocation) buildChatSessionRuntime(ctx context.Context, launch cha
 		if err != nil {
 			return nil, err
 		}
+
+	}
+
+	// Saved session agent wins on resume and is re-resolved from its reference.
+	effectiveAgent := strings.TrimSpace(cliAgent)
+	if sess != nil {
+		effectiveAgent = strings.TrimSpace(sess.Agent)
+	}
+
+	var agent *agents.Agent
+	if sess != nil {
+		agent, err = runtime.LoadPersistedAgent(effectiveAgent, cfg)
+		if err == nil && agent == nil && effectiveAgent != "" {
+			err = fmt.Errorf("agent not found: %s", effectiveAgent)
+		}
+	} else {
+		agent, err = runtime.LoadAgent(effectiveAgent, cfg)
+	}
+	if err != nil {
+		return nil, err
+	}
+	var preparedMCP *mcpstart.PreparedSelection
+	if r.opts.Changed.MCP {
+		preparedMCP, err = mcpstart.PrepareSelection(agents.PolicyIdentity(agent), r.opts.MCP, true, warnings, r.deps.LoadMCPConfig)
+		if err != nil {
+			return nil, err
+		}
+	}
+	if sess != nil {
 		if err := store.SetCurrent(context.Background(), sess.ID); err != nil {
 			return nil, fmt.Errorf("select resumed session: %w", err)
 		}
@@ -123,17 +153,6 @@ func (r *chatInvocation) buildChatSessionRuntime(ctx context.Context, launch cha
 		}
 	}
 	runtimeDir := runtime.EffectiveSessionDirectory(sess)
-
-	// Saved session agent wins on resume.
-	effectiveAgent := strings.TrimSpace(cliAgent)
-	if sess != nil {
-		effectiveAgent = strings.TrimSpace(sess.Agent)
-	}
-
-	agent, err := runtime.LoadAgent(effectiveAgent, cfg)
-	if err != nil {
-		return nil, err
-	}
 
 	var inputTicket *appserve.SessionInputTicket
 	var selectedInputs *appserve.SessionInputSelection
@@ -178,7 +197,9 @@ func (r *chatInvocation) buildChatSessionRuntime(ctx context.Context, launch cha
 		if inputTicket == nil {
 			settings.Tools = sess.Tools
 		}
-		settings.MCP = sess.MCP
+		if !r.opts.Changed.MCP {
+			settings.MCP = sess.MCP
+		}
 		settings.SessionID = sess.ID
 	}
 
@@ -397,25 +418,43 @@ func (r *chatInvocation) buildChatSessionRuntime(ctx context.Context, launch cha
 	// Normalize resumed session metadata to canonical provider key + active model.
 	agentName := ""
 	if agent != nil {
-		agentName = agent.Name
+		agentName = agents.Reference(agent)
 	}
 	if sess != nil {
 		sess.Provider = provider.Name()
 		sess.ProviderKey = providerKey
 		sess.Model = modelName
-		sess.Agent = agentName
+		if agent != nil {
+			sess.Agent = agentName
+		}
 		sess.ApprovalMode = runapproval.ToSession(desiredApprovalMode)
 		_ = store.Update(context.Background(), sess)
 	}
 
-	// Create MCP manager
-	mcpManager := mcp.NewManager()
-	failureCleanup = append(failureCleanup, mcpManager.StopAll)
-	if err := mcpManager.LoadConfig(); err != nil {
-		// Non-fatal: continue without MCP
-		fmt.Fprintf(warnings, "Warning: failed to load MCP config: %v\n", err)
+	if preparedMCP == nil {
+		preparedMCP, err = mcpstart.PrepareSelection(agents.PolicyIdentity(agent), settings.MCP, r.opts.Changed.MCP, warnings, r.deps.LoadMCPConfig)
+		if err != nil {
+			return nil, err
+		}
 	}
-
+	mcpManager := preparedMCP.Manager
+	if mcpManager == nil {
+		// Even with no selected servers, commands, completions and the status
+		// indicator need the configured catalogue before the first UI event.
+		mcpManager = mcp.NewUnloadedManager(mcp.WithPolicyIdentity(agents.PolicyIdentity(agent)))
+		load := r.deps.LoadMCPConfig
+		if load == nil {
+			load = (*mcp.Manager).LoadConfig
+		}
+		if err := load(mcpManager); err != nil {
+			fmt.Fprintf(warnings, "warning: failed to load MCP config: %v\n", err)
+		}
+	}
+	failureCleanup = append(failureCleanup, mcpManager.StopAll)
+	settings.MCP, err = prepareChatMCP(ctx, preparedMCP, store, sess)
+	if err != nil {
+		return nil, err
+	}
 	configureChatMCPServers(ctx, mcpManager, provider, modelName, resolvedYolo, settings.MCP, warnings)
 
 	// Resolve force external search setting
@@ -493,7 +532,6 @@ func (r *chatInvocation) buildChatSessionRuntime(ctx context.Context, launch cha
 		ReadDirs:           append([]string(nil), r.opts.ReadDirs...),
 		WriteDirs:          append([]string(nil), r.opts.WriteDirs...),
 		ShellAllow:         append([]string(nil), r.opts.ShellAllow...),
-		MCP:                settings.MCP,
 		MaxTurns:           settings.MaxTurns,
 		DefaultMaxTurns:    200,
 		Search:             settings.Search,

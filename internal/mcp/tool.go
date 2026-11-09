@@ -51,6 +51,9 @@ func (t *MCPTool) Preview(args json.RawMessage) string {
 // Execute invokes the tool on the MCP server.
 func (t *MCPTool) Execute(ctx context.Context, args json.RawMessage) (core.ToolOutput, error) {
 	if t.server != "" && t.originalName != "" {
+		if err := t.manager.policyError(t.server); err != nil {
+			return core.ToolOutput{}, err
+		}
 		return t.manager.CallCatalogTool(ctx, t.server, t.originalName, t.toolSpec.Name, args)
 	}
 	return t.manager.CallTool(ctx, t.toolSpec.Name, args)

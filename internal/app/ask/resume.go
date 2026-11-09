@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"strings"
 
 	"github.com/samsaffron/term-llm/internal/agents"
 	appruntime "github.com/samsaffron/term-llm/internal/app/runtime"
@@ -31,26 +30,13 @@ func finalizeAskSessionSettings(settings *appserve.SessionSettings, sess *sessio
 	return sessionID, baseInputPrompt
 }
 
-func prepareAskResume(ctx context.Context, opts Options, stderr io.Writer, cfg *config.Config, agent *agents.Agent, store session.Store, settings *appserve.SessionSettings) (*session.Session, *appserve.SessionInputTicket, *appserve.SessionInputSelection, bool, error) {
+func prepareAskResume(ctx context.Context, opts Options, stderr io.Writer, cfg *config.Config, agent *agents.Agent, store session.Store, settings *appserve.SessionSettings, sess *session.Session) (*session.Session, *appserve.SessionInputTicket, *appserve.SessionInputSelection, bool, error) {
 	resuming := opts.Changed.Resume
 	if !resuming {
 		return nil, nil, nil, false, nil
 	}
 	if store == nil {
 		return nil, nil, nil, true, fmt.Errorf("session storage is disabled; cannot resume")
-	}
-	var sess *session.Session
-	resumeID := strings.TrimSpace(opts.Resume)
-	if resumeID == "" {
-		sess, _ = store.GetCurrent(ctx)
-		if sess == nil {
-			summaries, _ := store.List(ctx, session.ListOptions{Limit: 1})
-			if len(summaries) > 0 {
-				sess, _ = store.Get(ctx, summaries[0].ID)
-			}
-		}
-	} else {
-		sess, _ = store.GetByPrefix(ctx, resumeID)
 	}
 	if sess == nil {
 		return nil, nil, nil, true, fmt.Errorf("no session to resume")
@@ -79,12 +65,6 @@ func prepareAskResume(ctx context.Context, opts Options, stderr io.Writer, cfg *
 	if !opts.Changed.MCP {
 		settings.MCP = sess.MCP
 	}
-	if agent == nil && strings.TrimSpace(sess.Agent) != "" {
-		if resumedAgent, err := appruntime.LoadAgent(sess.Agent, cfg); err == nil && resumedAgent != nil {
-			settings.PlanGuidance = resumedAgent.Name == "developer" && resumedAgent.Source == agents.SourceBuiltin
-			settings.Workspace = resumedAgent.Workspace
-		}
-	}
 	if err := appserve.RestoreWorktreeBinding(ctx, store, sess, nil); err != nil {
 		fmt.Fprintf(stderr, "warning: failed to restore session directory: %v\n", err)
 	}
@@ -108,12 +88,7 @@ func prepareAskResume(ctx context.Context, opts Options, stderr io.Writer, cfg *
 		if selected != nil {
 			settings.SystemPrompt, settings.Tools = selected.BasePrompt, selected.Tools
 		} else {
-			resumedAgent, err := appruntime.LoadAgent(sess.Agent, cfg)
-			if err != nil {
-				ticket.Fail()
-				return nil, ticket, nil, true, err
-			}
-			settings.SystemPrompt, settings.Tools, err = appserve.ResolveSessionPromptTools(cfg, resumedAgent, appserve.CLIFlags{
+			settings.SystemPrompt, settings.Tools, err = appserve.ResolveSessionPromptTools(cfg, agent, appserve.CLIFlags{
 				Provider: opts.Provider, ActiveProvider: promptProvider, ActiveModel: promptModel, Tools: opts.Tools, ToolsSet: opts.Changed.Tools,
 				SystemMessage: opts.SystemMessage, SystemMessageSet: opts.Changed.System, Files: opts.Files, Platform: "console", MemoryPaths: settings.MemoryPaths,
 			}, cfg.Ask.Instructions, settings.BaseDir, cfg.Ask.Provider, cfg.Ask.Model)

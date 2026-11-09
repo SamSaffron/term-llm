@@ -183,6 +183,14 @@ func extractConfigKeys(node *yaml.Node, prefix string, rawKeys, unknownKeys map[
 		return
 	}
 
+	if config.VisitMCPPolicyKeys(node, prefix, func(path string, known bool, _ int) {
+		rawKeys[path] = true
+		if !known {
+			unknownKeys[path] = true
+		}
+	}) {
+		return
+	}
 	switch node.Kind {
 	case yaml.DocumentNode:
 		for _, child := range node.Content {
@@ -903,78 +911,6 @@ func installShellCompletion(shell string) error {
 		fmt.Fprintf(os.Stderr, "  . %s\n", path)
 	}
 
-	return nil
-}
-
-// configSet sets a configuration value while preserving comments
-func configSet(cmd *cobra.Command, args []string) error {
-	key := args[0]
-	value := args[1]
-	if key == "live.control_plane" {
-		controlPlane, err := config.ParseLiveControlPlane(value)
-		if err != nil {
-			return err
-		}
-		value = string(controlPlane)
-	}
-	if isApprovalConfigKey(key) {
-		if _, err := parseConfiguredApprovalMode(key, value); err != nil {
-			return err
-		}
-	}
-
-	configPath, err := config.GetConfigPath()
-	if err != nil {
-		return fmt.Errorf("failed to get config path: %w", err)
-	}
-
-	// Ensure config directory exists
-	configDir := filepath.Dir(configPath)
-	if err := os.MkdirAll(configDir, 0755); err != nil {
-		return fmt.Errorf("failed to create config directory: %w", err)
-	}
-
-	// Read existing file or create empty document
-	var root yaml.Node
-	data, err := os.ReadFile(configPath)
-	if err != nil {
-		if os.IsNotExist(err) {
-			// Create new document with empty mapping
-			root = yaml.Node{
-				Kind: yaml.DocumentNode,
-				Content: []*yaml.Node{{
-					Kind: yaml.MappingNode,
-				}},
-			}
-		} else {
-			return fmt.Errorf("failed to read config: %w", err)
-		}
-	} else {
-		if err := yaml.Unmarshal(data, &root); err != nil {
-			return fmt.Errorf("failed to parse config: %w", err)
-		}
-	}
-
-	// Navigate/create path and set value
-	keyParts := strings.Split(key, ".")
-	if err := setYAMLValue(&root, keyParts, value); err != nil {
-		return fmt.Errorf("failed to set value: %w", err)
-	}
-
-	// Write back
-	var buf bytes.Buffer
-	encoder := yaml.NewEncoder(&buf)
-	encoder.SetIndent(2)
-	if err := encoder.Encode(&root); err != nil {
-		return fmt.Errorf("failed to encode config: %w", err)
-	}
-	encoder.Close()
-
-	if err := config.WritePrivateConfigFile(configPath, buf.Bytes()); err != nil {
-		return fmt.Errorf("failed to write config: %w", err)
-	}
-
-	fmt.Printf("%s = %s\n", key, value)
 	return nil
 }
 

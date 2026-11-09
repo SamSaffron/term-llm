@@ -153,7 +153,7 @@ func mcpStatus(cmd *cobra.Command, args []string) error {
 		return err
 	}
 	statuses := manager.AuthStatuses()
-	names := manager.AvailableServers()
+	names := manager.Config().ServerNames()
 	if len(args) == 1 {
 		if _, ok := statuses[args[0]]; !ok {
 			return fmt.Errorf("unknown MCP server: %s", args[0])

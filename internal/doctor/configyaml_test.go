@@ -181,3 +181,14 @@ func TestLevenshtein(t *testing.T) {
 		}
 	}
 }
+
+func TestMCPPolicyDoctorTreatsServerNamesAsOpaque(t *testing.T) {
+	root := parseYAMLFixture(t, "mcp:\n  servers:\n    Prod.DB: {agents: [trusted]}\n    prod.db: {agents: []}\n    another.dot: {agent: [typo]}\n")
+	unknown := collectUnknownKeys(root)
+	if len(unknown) != 1 || unknown[0].path != "mcp.servers.another.dot.agent" {
+		t.Fatalf("opaque MCP names treated as paths: %+v", unknown)
+	}
+	if unknown[0].line != 5 {
+		t.Fatalf("unknown field line=%d want=5", unknown[0].line)
+	}
+}

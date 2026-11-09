@@ -188,7 +188,7 @@ func prepareRunnerAgent(agent *agents.Agent, req runpkg.Request) (*agents.Agent,
 		agentCopy.Model = model
 		agent = &agentCopy
 	}
-	return agent, agent.Provider, agent.Model, agent.Skills, agent.Name
+	return agent, agent.Provider, agent.Model, agent.Skills, agents.Reference(agent)
 }
 
 func includeConfiguredRunnerTools(req runpkg.Request) bool {
@@ -203,26 +203,9 @@ type runModelPolicies struct{ Effective, Inherited modelpolicy.Policy }
 
 func (r *cmdRunner) resolveRunModel(ctx context.Context, req runpkg.Request) (*config.Config, *agents.Agent, appruntime.ModelSelection, runModelPolicies, error) {
 	cfg := cloneConfigForServeJob(r.baseCfg)
-	agent, err := appruntime.LoadAgent(req.AgentName, cfg)
+	agent, inherited, resume, err := appruntime.ResolveRunAgent(ctx, req, cfg, r.defaults.Store)
 	if err != nil {
 		return nil, nil, appruntime.ModelSelection{}, runModelPolicies{}, err
-	}
-	if strings.TrimSpace(req.AgentName) != "" && agent == nil {
-		return nil, nil, appruntime.ModelSelection{}, runModelPolicies{}, fmt.Errorf("agent %q not found", req.AgentName)
-	}
-	inherited := req.ModelPolicy
-	resume := runpkg.ParentModel{}
-	if req.SessionID != "" && r.defaults.Store != nil {
-		sess, err := r.defaults.Store.Get(ctx, req.SessionID)
-		if err != nil {
-			return nil, nil, appruntime.ModelSelection{}, runModelPolicies{}, fmt.Errorf("load resumed session policy: %w", err)
-		}
-		if sess != nil {
-			inherited = sess.ModelPolicy.Append(inherited)
-			if req.Resume {
-				resume = runpkg.ParentModel{Provider: appruntime.ResolveSessionProviderKey(cfg, sess), Model: sess.Model}
-			}
-		}
 	}
 	providerFlag := strings.TrimSpace(req.Provider)
 	if providerFlag == "" && req.ParentModel.Provider == "" && !req.IsSubagent {
@@ -282,6 +265,14 @@ func (r *cmdRunner) prepare(ctx context.Context, req runpkg.Request, sink runpkg
 	}
 	if r.defaults.RestoreAgentSkills != nil {
 		agentSkills = *r.defaults.RestoreAgentSkills
+	}
+	var preparedMCP *mcpstart.PreparedSelection
+	if req.Engine == nil {
+		preparedMCP, err = mcpstart.PrepareSelection(agents.PolicyIdentity(agent), settings.MCP, req.MCPExplicit, r.errWriter(), r.defaults.LoadMCPConfig)
+		if err != nil {
+			return nil, err
+		}
+		settings.MCP = preparedMCP.Durable
 	}
 	settings.SessionID = req.SessionID
 	if suffix := strings.TrimSpace(req.SystemSuffix); suffix != "" {
@@ -441,6 +432,7 @@ func (r *cmdRunner) prepare(ctx context.Context, req runpkg.Request, sink runpkg
 		toolsSetting:        settings.Tools,
 		mcpSetting:          settings.MCP,
 		agentName:           agentName,
+		mcpIdentity:         agents.PolicyIdentity(agent),
 		extensionBuilder:    agent != nil && agent.Name == "extension-builder" && agent.Source == agents.SourceBuiltin,
 		platform:            templatePlatform(req.Platform),
 	}
@@ -486,13 +478,16 @@ func (r *cmdRunner) prepare(ctx context.Context, req runpkg.Request, sink runpkg
 		}
 	}
 
-	if settings.MCP != "" && !borrowedEngine {
-		mcpOpts := &mcpstart.MCPOptions{Provider: provider, Model: modelName, YoloMode: yoloMode, ToolDiscovery: cfg.ToolDiscovery}
-		mgr, err := mcpstart.EnableMCPServersWithFeedback(ctx, settings.MCP, engine, r.errWriter(), mcpOpts)
+	if !borrowedEngine && preparedMCP.Active != "" {
+		mgr, err := preparedMCP.Enable(ctx, engine, r.errWriter(), &mcpstart.MCPOptions{
+			PolicyIdentity: agents.PolicyIdentity(agent), ImplicitSelection: !req.MCPExplicit,
+			Provider: provider, Model: modelName, YoloMode: yoloMode, ToolDiscovery: cfg.ToolDiscovery,
+		})
 		if err != nil {
 			return nil, err
 		}
 		runtime.setMCPManager(mgr)
+		settings.MCP, runtime.mcpSetting = preparedMCP.Durable, preparedMCP.Durable
 	}
 
 	configuredTools := includeConfiguredRunnerTools(req)
@@ -519,6 +514,7 @@ func (r *cmdRunner) prepare(ctx context.Context, req runpkg.Request, sink runpkg
 		lastTurnToolChoice = &choice
 	}
 
+	mcpDiscovery := (borrowedEngine && strings.TrimSpace(settings.MCP) != "") || (preparedMCP != nil && preparedMCP.Active != "")
 	llmReq := core.Request{
 		Model:                    modelName,
 		SessionID:                req.SessionID,
@@ -526,7 +522,7 @@ func (r *cmdRunner) prepare(ctx context.Context, req runpkg.Request, sink runpkg
 		Tools:                    toolSpecs,
 		ToolChoice:               toolChoice,
 		LastTurnToolChoice:       lastTurnToolChoice,
-		EnableToolDiscovery:      req.EnableToolDiscovery || strings.TrimSpace(settings.MCP) != "",
+		EnableToolDiscovery:      req.EnableToolDiscovery || mcpDiscovery,
 		ParallelToolCalls:        true,
 		Search:                   settings.Search,
 		ForceExternalSearch:      forceExternalSearch,

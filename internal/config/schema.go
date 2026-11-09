@@ -453,6 +453,7 @@ var keySpecs = []KeySpec{
 
 	def("agents.use_builtin", true),
 	def("agents.search_paths", []string{}),
+	optional("mcp.servers", withPlaceholder(map[string]any{}), withoutResetTemplate(), described("Per-server MCP policy: agents lists trusted user-dir/builtin lookup names; absent is unrestricted, [] denies all. Server names are case-sensitive.")),
 	optional("agents.preferences", withPlaceholder(map[string]any{})),
 
 	def("skills.enabled", true),

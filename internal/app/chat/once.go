@@ -118,6 +118,7 @@ func (r *chatInvocation) runChatOnce(ctx context.Context, initialText, cliAgent 
 	// of the alternate screen. /handover and /reload keep quit-and-relaunch.
 	var switcher chat.SessionSwitcher
 	switcher = func(request chat.SessionSwitchRequest) (*chat.Model, error) {
+		r.opts.Changed.MCP = false // A session switch restores the target selection.
 		next, buildErr := r.buildChatSessionRuntime(ctx, chatSessionLaunch{
 			cliAgent:        cliAgent,
 			resumeRequested: true,
