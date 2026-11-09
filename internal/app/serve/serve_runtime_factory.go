@@ -35,7 +35,7 @@ func withServeSessionLogging(store session.Store) session.Store {
 
 func resolveServeAgentMetadata(cfg *config.Config, agent *agents.Agent, hasWeb bool) (string, []string, agents.PlatformMessagesConfig, error) {
 	if agent != nil {
-		return agent.Name, nil, agent.PlatformMessages, nil
+		return agents.Reference(agent), nil, agent.PlatformMessages, nil
 	}
 	if hasWeb {
 		names, err := runtime.ListAgentNames(cfg)

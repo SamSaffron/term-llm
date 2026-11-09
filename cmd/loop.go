@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/samsaffron/term-llm/internal/agents"
 	appruntime "github.com/samsaffron/term-llm/internal/app/runtime"
 	appserve "github.com/samsaffron/term-llm/internal/app/serve"
 	"github.com/samsaffron/term-llm/internal/llm"
@@ -355,9 +356,11 @@ func runLoop(cmd *cobra.Command, args []string) error {
 	var mcpManager *mcp.Manager
 	if settings.MCP != "" {
 		mcpOpts := &MCPOptions{
-			Provider:      provider,
-			YoloMode:      resolvedYolo,
-			ToolDiscovery: cfg.ToolDiscovery,
+			PolicyIdentity:    agents.PolicyIdentity(agent),
+			ImplicitSelection: !cmd.Flags().Changed("mcp"),
+			Provider:          provider,
+			YoloMode:          resolvedYolo,
+			ToolDiscovery:     cfg.ToolDiscovery,
 		}
 		if providerCfg := cfg.GetActiveProviderConfig(); providerCfg != nil {
 			mcpOpts.Model = providerCfg.Model

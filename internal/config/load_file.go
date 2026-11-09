@@ -1,6 +1,7 @@
 package config
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -22,7 +23,14 @@ func FindConfigFile() (string, error) {
 	}
 	for _, name := range configFileNames {
 		path := filepath.Join(dir, name)
-		if info, err := os.Stat(path); err == nil && !info.IsDir() {
+		info, err := os.Stat(path)
+		if err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				continue
+			}
+			return "", fmt.Errorf("stat config %s: %w", path, err)
+		}
+		if !info.IsDir() {
 			return path, nil
 		}
 	}
@@ -32,7 +40,8 @@ func FindConfigFile() (string, error) {
 // fileSettings is the parsed config file before defaults are applied.
 type fileSettings struct {
 	// path is the file that was read; empty when no config file exists.
-	path string
+	path  string
+	empty bool // The document had no root mapping (unlike an explicit {}).
 	// values holds the file contents with every map key lowercased, because
 	// config keys are case-insensitive.
 	values map[string]any
@@ -43,7 +52,7 @@ type fileSettings struct {
 }
 
 func readFileSettings(path string) (*fileSettings, error) {
-	settings := &fileSettings{path: path}
+	settings := &fileSettings{path: path, empty: true}
 	if path == "" {
 		return settings, nil
 	}
@@ -55,8 +64,28 @@ func readFileSettings(path string) (*fileSettings, error) {
 	if err := yaml.Unmarshal(data, &values); err != nil {
 		return nil, fmt.Errorf("parse %s: %w", path, err)
 	}
+	settings.empty = values == nil
+	// Reject duplicate case variants before lowercasing can discard one by map order.
+	policyKeys := 0
+	for key := range values {
+		if strings.EqualFold(key, "mcp") {
+			policyKeys++
+		}
+	}
+	if policyKeys > 1 {
+		return nil, fmt.Errorf("decode %s: duplicate case-variant mcp keys", path)
+	}
 	if lowered, ok := lowercaseKeys(values).(map[string]any); ok {
 		settings.values = lowered
+		// MCP connection names are opaque keys, not case-insensitive settings.
+		for key, value := range values {
+			if strings.EqualFold(key, "mcp") {
+				settings.values["mcp"] = value
+			}
+		}
+		if _, err := decodeMCPSettings(settings.values, path); err != nil {
+			return nil, err
+		}
 	}
 
 	var envs struct {
@@ -141,6 +170,9 @@ func (s *fileSettings) mergedSettings() map[string]any {
 		provider := setNestedMap(merged, "providers", name)
 		provider["env"] = env
 	}
+	if policy, ok := s.values["mcp"]; ok {
+		merged["mcp"] = policy
+	}
 	return merged
 }
 
@@ -189,7 +221,7 @@ func mergeSettings(dst, src map[string]any) {
 
 // decodeSettings decodes merged settings into cfg. Inputs are weakly typed so
 // that, for example, a quoted "5" fills an int field.
-func decodeSettings(settings map[string]any, cfg *Config) error {
+func decodeSettings(settings map[string]any, cfg *Config, path string) error {
 	decoder, err := mapstructure.NewDecoder(&mapstructure.DecoderConfig{
 		WeaklyTypedInput: true,
 		DecodeHook:       mapstructure.ComposeDecodeHookFunc(liveControlPlaneDecodeHook(), providerModelsDecodeHook()),
@@ -198,5 +230,15 @@ func decodeSettings(settings map[string]any, cfg *Config) error {
 	if err != nil {
 		return err
 	}
-	return decoder.Decode(settings)
+	// Preserve explicit empty lists and opaque names outside mapstructure's
+	// weak coercions and recursive default merging.
+	policy, err := decodeMCPSettings(settings, path)
+	if err != nil {
+		return err
+	}
+	if err := decoder.Decode(settings); err != nil {
+		return err
+	}
+	cfg.MCP = policy
+	return nil
 }

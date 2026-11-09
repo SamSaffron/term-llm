@@ -65,7 +65,7 @@ func NewRegistry(cfg RegistryConfig) (*Registry, error) {
 	for _, p := range cfg.SearchPaths {
 		r.searchPaths = append(r.searchPaths, searchPath{
 			path:   p,
-			source: SourceUser, // Treat custom paths as user-level
+			source: SourceSearchPath,
 		})
 	}
 
@@ -143,6 +143,8 @@ func (r *Registry) Get(name string) (*Agent, error) {
 		return nil, fmt.Errorf("%w: %s", ErrNotFound, name)
 	}
 
+	bindRegistryIdentity(agent, name)
+
 	// Apply preferences on top of agent config
 	if r.preferences != nil {
 		if pref, ok := r.preferences[name]; ok {
@@ -189,13 +191,16 @@ func (r *Registry) List() ([]*Agent, error) {
 		}
 	}
 
-	// Sort by source first (builtin first), then by name
+	// Keep source groups contiguous, including separate configured directories.
 	sort.Slice(agents, func(i, j int) bool {
-		if agents[i].Source != agents[j].Source {
-			// Display builtins before user-installed agents (reverse enum order).
-			return agents[i].Source > agents[j].Source
+		left, right := agents[i], agents[j]
+		if left.Source != right.Source {
+			return sourceRank(left.Source) < sourceRank(right.Source)
 		}
-		return agents[i].Name < agents[j].Name
+		if left.Source == SourceSearchPath && filepath.Dir(left.SourcePath) != filepath.Dir(right.SourcePath) {
+			return filepath.Dir(left.SourcePath) < filepath.Dir(right.SourcePath)
+		}
+		return left.Name < right.Name
 	})
 
 	return agents, nil
@@ -263,7 +268,7 @@ func (r *Registry) ListBySource(source AgentSource) ([]*Agent, error) {
 
 	var filtered []*Agent
 	for _, agent := range all {
-		if agent.Source == source {
+		if agent.Source == source || (source == SourceUser && agent.Source == SourceSearchPath) {
 			filtered = append(filtered, agent)
 		}
 	}
@@ -293,6 +298,7 @@ func (r *Registry) scanDir(dir string, source AgentSource) ([]*Agent, error) {
 			// Skip invalid agents
 			continue
 		}
+		bindRegistryIdentity(agent, entry.Name())
 		agents = append(agents, agent)
 	}
 

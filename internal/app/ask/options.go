@@ -7,6 +7,7 @@ import (
 	appmemory "github.com/samsaffron/term-llm/internal/app/memory"
 	appruntime "github.com/samsaffron/term-llm/internal/app/runtime"
 	"github.com/samsaffron/term-llm/internal/app/runtime/approval"
+	"github.com/samsaffron/term-llm/internal/app/runtime/mcpstart"
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/llm/core"
 	"github.com/samsaffron/term-llm/internal/llm/debug"
@@ -65,6 +66,7 @@ type Dependencies struct {
 	SessionStore         appruntime.SessionStoreOverrides
 	MemoryPaths          appmemory.Paths
 	LoadConfig           func() (*config.Config, error)
+	LoadMCPConfig        mcpstart.ConfigLoader
 	ResolveApproval      func(*config.Config) (approval.ResolvedMode, error)
 	NewProvider          func(*config.Config, bool) (core.Provider, error)
 	CreateDebugLogger    func(*config.Config) (*debug.Logger, error)

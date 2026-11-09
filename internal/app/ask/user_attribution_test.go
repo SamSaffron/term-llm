@@ -65,7 +65,7 @@ func TestAskUserPersistsAcrossAgentAndContinuation(t *testing.T) {
 			id := listed[0].ID
 			if agent {
 				sess, err := store.Get(ctx, id)
-				if err != nil || sess.Agent != "attribution-agent" {
+				if err != nil || sess.Agent != opts.Agent {
 					t.Fatalf("agent lost: %+v %v", sess, err)
 				}
 			}

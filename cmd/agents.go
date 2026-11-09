@@ -260,21 +260,17 @@ func runAgentsList(cmd *cobra.Command, args []string) error {
 
 	// Track which sources we've seen
 	var lastSource agents.AgentSource = -1
+	lastDirectory := ""
 
 	for _, agent := range agentList {
 		// Print source header if changed
-		if agent.Source != lastSource {
+		directory := agentSourceDirectory(agent)
+		if agent.Source != lastSource || directory != lastDirectory {
 			if lastSource != -1 {
 				fmt.Println()
 			}
-			switch agent.Source {
-			case agents.SourceUser:
-				userDir, _ := agents.GetUserAgentsDir()
-				fmt.Printf("  [user] %s/\n", userDir)
-			case agents.SourceBuiltin:
-				fmt.Println("  [builtin]")
-			}
-			lastSource = agent.Source
+			printAgentSourceHeader(agent)
+			lastSource, lastDirectory = agent.Source, directory
 		}
 
 		// Print agent info

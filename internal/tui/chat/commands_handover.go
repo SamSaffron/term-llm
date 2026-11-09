@@ -319,7 +319,7 @@ var runHandoverScriptForCmd = runHandoverScript
 func handoverScriptCmd(ctx context.Context, approvalMgr *tools.ApprovalManager, scriptAgent *agents.Agent, sourceAgent string, targetAgent *agents.Agent, provider string, confirmed bool, instructions string) tea.Cmd {
 	agentName := ""
 	if targetAgent != nil {
-		agentName = targetAgent.Name
+		agentName = agents.Reference(targetAgent)
 	}
 	return func() tea.Msg {
 		result, err := buildScriptBackedHandover(ctx, approvalMgr, scriptAgent, sourceAgent, targetAgent, provider, instructions)
@@ -721,8 +721,8 @@ func (m *Model) handoverModelSwapMarker(target *session.Session, sourceAgent str
 
 func (m *Model) buildHandoverSession(pending *handoverDoneMsg, targetAgent *agents.Agent) *session.Session {
 	agentName := strings.TrimSpace(pending.agentName)
-	if agentName == "" && targetAgent != nil {
-		agentName = targetAgent.Name
+	if targetAgent != nil {
+		agentName = agents.Reference(targetAgent)
 	}
 
 	providerKey := m.providerKey

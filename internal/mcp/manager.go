@@ -60,6 +60,8 @@ type serverStartup struct {
 
 // Manager handles MCP server lifecycle and provides tools to LLM.
 type Manager struct {
+	policy            managerPolicy
+	stopping          map[*Client]chan struct{}
 	reloadMu          sync.Mutex
 	reloadUnregister  func()
 	config            *Config
@@ -83,22 +85,17 @@ type Manager struct {
 }
 
 // NewManager creates a new MCP manager.
-func NewManager() *Manager {
-	manager := &Manager{
-		clients:    make(map[string]*Client),
-		statuses:   make(map[string]*ServerState),
-		startups:   make(map[string]*serverStartup),
-		catalogues: make(map[string]*ToolSnapshot),
-	}
-	manager.aggregate.Store(&CatalogueSnapshot{})
+func NewManager(options ...ManagerOption) *Manager {
+	manager := NewUnloadedManager(options...)
+	_ = manager.RefreshPolicy()
 	return manager
 }
 
 // NewManagerWithConfig creates a manager from an explicit configuration. It is
 // useful for isolated runtimes and deterministic evaluation without touching
 // the user's global mcp.json.
-func NewManagerWithConfig(cfg *Config) *Manager {
-	manager := NewManager()
+func NewManagerWithConfig(cfg *Config, options ...ManagerOption) *Manager {
+	manager := NewManager(options...)
 	if cfg == nil {
 		cfg = &Config{Servers: make(map[string]ServerConfig)}
 	}
@@ -108,6 +105,9 @@ func NewManagerWithConfig(cfg *Config) *Manager {
 
 // LoadConfig loads the MCP configuration.
 func (m *Manager) LoadConfig() error {
+	if err := m.RefreshPolicy(); err != nil {
+		return err
+	}
 	cfg, err := LoadConfig()
 	if err != nil {
 		return err
@@ -295,11 +295,22 @@ func (m *Manager) AvailableServers() []string {
 	if m.config == nil {
 		return nil
 	}
-	return m.config.ServerNames()
+	names := m.config.ServerNames()
+	allowed := names[:0]
+	for _, name := range names {
+		if m.policyError(name) == nil {
+			allowed = append(allowed, name)
+		}
+	}
+	return allowed
 }
 
 // EnabledServers returns the names of currently enabled (running or starting) servers.
 func (m *Manager) EnabledServers() []string {
+	return m.enabledServerNames()
+}
+
+func (m *Manager) enabledServerNames() []string {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	var names []string
@@ -325,6 +336,9 @@ func (m *Manager) ServerStatus(name string) (ServerStatus, error) {
 
 // Enable starts an MCP server in the background (non-blocking).
 func (m *Manager) Enable(ctx context.Context, name string) error {
+	if err := m.CheckAccess(name); err != nil {
+		return err
+	}
 	ctx, release, reloadErr := restart.Default.Activity(ctx)
 	if reloadErr != nil {
 		return reloadErr
@@ -335,6 +349,10 @@ func (m *Manager) Enable(ctx context.Context, name string) error {
 	if m.config == nil {
 		m.mu.Unlock()
 		return fmt.Errorf("no MCP configuration loaded")
+	}
+	if err := m.policyError(name); err != nil {
+		m.mu.Unlock()
+		return err
 	}
 	serverCfg, ok := m.config.Servers[name]
 	if !ok {
@@ -497,45 +515,6 @@ func (m *Manager) watchSession(name string, client *Client, session *sdkmcp.Clie
 	if handler != nil {
 		handler(CatalogueEvent{Server: name, Snapshot: copyCatalogueSnapshot(snapshot)})
 	}
-}
-
-// Disable stops an MCP server.
-func (m *Manager) Disable(name string) error {
-	m.mu.Lock()
-	if startup, ok := m.startups[name]; ok {
-		delete(m.startups, name)
-		startup.startupCancel()
-		startup.processCancel()
-	}
-	client, ok := m.clients[name]
-	if !ok {
-		m.mu.Unlock()
-		return nil
-	}
-	delete(m.clients, name)
-	_, hadCatalogue := m.catalogues[name]
-	delete(m.catalogues, name)
-	var aggregate *CatalogueSnapshot
-	var catalogueHandler func(CatalogueEvent)
-	if hadCatalogue {
-		aggregate = m.publishAggregateLocked()
-		catalogueHandler = m.catalogueHandler
-	}
-	if state, ok := m.statuses[name]; ok {
-		state.Status = StatusStopped
-		state.Error = nil
-		state.RefreshError = nil
-		state.ToolCount = 0
-		state.Client = nil
-	}
-	m.mu.Unlock()
-
-	m.sendStatus(name, StatusStopped, nil)
-	if aggregate != nil && catalogueHandler != nil {
-		catalogueHandler(CatalogueEvent{Server: name, Snapshot: copyCatalogueSnapshot(aggregate)})
-	}
-
-	return client.Stop()
 }
 
 // Restart stops and restarts an MCP server.
@@ -733,6 +712,10 @@ func (m *Manager) StopAll() {
 
 func (m *Manager) stopAll() error {
 	m.mu.Lock()
+	pending := make([]chan struct{}, 0, len(m.stopping))
+	for _, done := range m.stopping {
+		pending = append(pending, done)
+	}
 	clients := make([]*Client, 0, len(m.clients))
 	for _, c := range m.clients {
 		clients = append(clients, c)
@@ -750,6 +733,9 @@ func (m *Manager) stopAll() error {
 	m.mu.Unlock()
 
 	var stopErr error
+	for _, done := range pending {
+		<-done
+	}
 	for _, c := range clients {
 		stopErr = errors.Join(stopErr, c.Stop())
 	}
@@ -761,7 +747,7 @@ func (m *Manager) stopAll() error {
 
 // AllTools returns a copy-safe legacy projection of the complete namespaced catalogue.
 func (m *Manager) AllTools() []ToolSpec {
-	snapshot := m.aggregate.Load()
+	snapshot := m.CatalogueSnapshot()
 	if snapshot == nil {
 		return nil
 	}
@@ -805,6 +791,9 @@ func (m *Manager) CallCatalogTool(ctx context.Context, serverName, toolName, exe
 }
 
 func (m *Manager) callCatalogTool(ctx context.Context, serverName, toolName, displayName string, args json.RawMessage) (core.ToolOutput, error) {
+	if err := m.CheckAccess(serverName); err != nil {
+		return core.ToolOutput{}, err
+	}
 	ctx, release, reloadErr := restart.Default.Activity(ctx)
 	if reloadErr != nil {
 		return core.ToolOutput{}, reloadErr

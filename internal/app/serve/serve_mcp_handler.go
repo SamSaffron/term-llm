@@ -83,36 +83,7 @@ func newServeMCPError(status int, errorType, message string) *serveMCPError {
 	return &serveMCPError{status: status, errorType: errorType, message: message}
 }
 
-func normalizeMCPSelection(names []string) []string {
-	seen := make(map[string]bool, len(names))
-	out := make([]string, 0, len(names))
-	for _, raw := range names {
-		name := strings.TrimSpace(raw)
-		if name == "" || seen[name] {
-			continue
-		}
-		seen[name] = true
-		out = append(out, name)
-	}
-	sort.Strings(out)
-	return out
-}
-
-func mcpSelectionString(names []string) string {
-	return strings.Join(normalizeMCPSelection(names), ",")
-}
-
-func sameStringSlice(a, b []string) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	for i := range a {
-		if a[i] != b[i] {
-			return false
-		}
-	}
-	return true
-}
+func normalizeMCPSelection(names []string) []string { return mcpstart.NormalizeSelection(names) }
 
 func stringSet(values []string) map[string]bool {
 	set := make(map[string]bool, len(values))
@@ -137,7 +108,7 @@ func (rt *serveRuntime) ensureMCPManagerLocked() error {
 		return fmt.Errorf("runtime is unavailable")
 	}
 	if rt.mcpManager == nil {
-		mgr := mcp.NewManager()
+		mgr := mcp.NewManager(mcp.WithPolicyIdentity(rt.mcpIdentity))
 		if err := mgr.LoadConfig(); err != nil {
 			return fmt.Errorf("failed to load MCP config: %w", err)
 		}
@@ -167,6 +138,7 @@ func buildServeMCPState(manager *mcp.Manager, engine *engine.Engine, mcpSetting,
 
 	available := manager.AvailableServers()
 	availableSet := stringSet(available)
+	mcpSetting = strings.Join(manager.FilterSelection(mcpstart.ParseServerList(mcpSetting)), ",")
 	enabled := normalizeMCPSelection(append(manager.EnabledServers(), mcpstart.ParseServerList(mcpSetting)...))
 	enabledSet := stringSet(enabled)
 	states := make(map[string]mcp.ServerState)
@@ -420,6 +392,9 @@ func (rt *serveRuntime) applyMCPSelectionLocked(ctx context.Context, requestedNa
 		return newServeMCPError(http.StatusInternalServerError, "server_error", err.Error())
 	}
 
+	if err := rt.validateMCPAccess(requested); err != nil {
+		return err
+	}
 	requestedSet := stringSet(requested)
 
 	available := rt.mcpManager.AvailableServers()
@@ -443,9 +418,7 @@ func (rt *serveRuntime) applyMCPSelectionLocked(ctx context.Context, requestedNa
 	// registry entries from a server that has since failed/stopped are removed
 	// when the user disables that server.
 	for _, name := range mcpstart.ParseServerList(rt.mcpSetting) {
-		if availableSet[name] {
-			currentSet[name] = true
-		}
+		currentSet[name] = true
 	}
 
 	var disableNames []string
@@ -515,30 +488,8 @@ func (rt *serveRuntime) mcpSelectionReadyLocked(names []string) bool {
 	return true
 }
 
-func (s *serveServer) applyPersistedMCPSelectionLocked(ctx context.Context, sessionID string, rt *serveRuntime) error {
-	if s == nil || s.store == nil || rt == nil || strings.TrimSpace(sessionID) == "" {
-		return nil
-	}
-	sess, err := s.store.Get(ctx, sessionID)
-	if err != nil || sess == nil {
-		return nil
-	}
-	desired := normalizeMCPSelection(mcpstart.ParseServerList(sess.MCP))
-	current := normalizeMCPSelection(mcpstart.ParseServerList(rt.mcpSetting))
-	if sameStringSlice(desired, current) && rt.mcpSelectionReadyLocked(desired) {
-		return nil
-	}
-	if err := rt.applyMCPSelectionLocked(ctx, desired); err != nil {
-		// Keep the persisted/session selection visible even when restoration fails
-		// so the UI can show the requested server and let the user turn it off.
-		rt.mcpSetting = strings.Join(desired, ",")
-		return err
-	}
-	return nil
-}
-
 func (s *serveServer) ensureRuntimeMCPForSession(ctx context.Context, sessionID string, rt *serveRuntime) error {
-	if s == nil || s.store == nil || rt == nil || strings.TrimSpace(sessionID) == "" {
+	if s == nil || rt == nil {
 		return nil
 	}
 	if rt.hasActiveRun() || !rt.mu.TryLock() {
@@ -588,7 +539,7 @@ func (s *serveServer) persistSessionMCPSelectionLocked(ctx context.Context, sess
 	if s == nil || s.store == nil || rt == nil || strings.TrimSpace(sessionID) == "" {
 		return nil
 	}
-	mcpSetting := mcpSelectionString(enabled)
+	mcpSetting := strings.Join(normalizeMCPSelection(enabled), ",")
 	now := time.Now()
 	updateRuntimeMeta := func(sess *session.Session) {
 		// Do not hydrate sessionMeta for an existing, unloaded session here. Run()
@@ -678,20 +629,6 @@ func (s *serveServer) promoteDraftMCPSelection(ctx context.Context, draftID, ses
 	return nil
 }
 
-func (s *serveServer) configuredMCPState(ctx context.Context, sessionID string) (serveMCPSessionResponse, error) {
-	cfg, err := mcp.LoadConfig()
-	if err != nil {
-		return serveMCPSessionResponse{}, fmt.Errorf("failed to load MCP config: %w", err)
-	}
-	mcpSetting := ""
-	if s != nil && s.store != nil && strings.TrimSpace(sessionID) != "" {
-		if sess, err := s.store.Get(ctx, sessionID); err == nil && sess != nil {
-			mcpSetting = sess.MCP
-		}
-	}
-	return buildServeMCPState(mcp.NewManagerWithConfig(cfg), nil, mcpSetting, sessionID), nil
-}
-
 func (s *serveServer) writeConfiguredMCPState(w http.ResponseWriter, r *http.Request, sessionID string) {
 	state, err := s.configuredMCPState(r.Context(), sessionID)
 	if err != nil {
@@ -732,13 +669,7 @@ func (s *serveServer) handleSessionMCP(w http.ResponseWriter, r *http.Request, s
 			s.writeConfiguredMCPState(w, r, sessionID)
 			return
 		}
-		status := http.StatusInternalServerError
-		errorType := "server_error"
-		if errors.Is(err, errServeSessionBusy) {
-			status = http.StatusConflict
-			errorType = "conflict_error"
-		}
-		writeOpenAIError(w, status, errorType, err.Error())
+		writeServeMCPFailure(w, err)
 		return
 	}
 	if rt == nil {
@@ -787,11 +718,7 @@ func (s *serveServer) handleSessionMCP(w http.ResponseWriter, r *http.Request, s
 		return
 	}
 	if err := rt.applyMCPSelectionLocked(r.Context(), req.Enabled); err != nil {
-		if apiErr, ok := err.(*serveMCPError); ok {
-			writeOpenAIError(w, apiErr.status, apiErr.errorType, apiErr.message)
-			return
-		}
-		writeOpenAIError(w, http.StatusInternalServerError, "server_error", err.Error())
+		writeServeMCPFailure(w, err)
 		return
 	}
 	if err := s.persistSessionMCPSelectionLocked(r.Context(), sessionID, rt, mcpstart.ParseServerList(rt.mcpSetting)); err != nil {

@@ -597,6 +597,9 @@ func mcpInfo(cmd *cobra.Command, args []string) error {
 	}
 	fmt.Println()
 
+	if err := mcp.NewManagerWithConfig(cfg).CheckAccess(name); err != nil {
+		return err
+	}
 	client := mcp.NewClient(name, serverCfg)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -742,6 +745,9 @@ func mcpRun(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("server '%s' not found in config", serverName)
 	}
 
+	if err := mcp.NewManagerWithConfig(cfg).CheckAccess(serverName); err != nil {
+		return err
+	}
 	client := mcp.NewClient(serverName, serverCfg)
 
 	ctx, cancel := context.WithTimeout(context.Background(), mcpRunTimeout)

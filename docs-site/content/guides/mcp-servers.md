@@ -71,6 +71,82 @@ This adds Exa's free remote MCP endpoint. To use your own Exa key with this manu
 
 `mcp.json` is written atomically with private (`0600`) permissions. If it is a symlink, the file it points to is updated.
 
+### Restrict servers to trusted agents
+
+Keep connection details in `mcp.json`, and put term-llm access policy in
+`$XDG_CONFIG_HOME/term-llm/config.yaml` (or `~/.config/term-llm/config.yaml`):
+
+```yaml
+mcp:
+  servers:
+    source-db:
+      agents: [migration-data]
+    disabled-server:
+      agents: []
+```
+
+`source-db` can only be started or used by the `migration-data` agent. The server
+name must exactly match its key in `mcp.json`, including case. No server entry,
+or no `agents` key, means unrestricted; an explicit `agents: []` denies everyone.
+`agents:` with a null value is an error: use `agents: []` to deny everyone or
+remove the key to remove the restriction. Blank/non-string agent entries and
+unknown fields such as `agent:` are config errors, not unrestricted policies. An agent's own `mcp:` list selects defaults;
+it does **not** grant access.
+
+Only agents resolved by registry lookup from your user-global agents directory
+(`$XDG_CONFIG_HOME/term-llm/agents`, otherwise `~/.config/term-llm/agents`) or
+built-in agents can match. The identity is the directory/builtin lookup name,
+not the self-declared `name:` in `agent.yaml`. Agents from `agents.search_paths`
+and agents loaded by an explicit filesystem path never match a restriction,
+even if they claim the same name. Plain sessions without a trusted agent are
+also denied. Each child agent and job uses its own identity, not its parent's.
+A run permitted to spawn agents can start a child as a trusted agent and thereby
+reach that agent's MCP servers. Restrict the caller's `spawn_allowed_agents`
+preference (`agents.preferences.<caller>.spawn_allowed_agents`) when that matters;
+a restriction on the parent alone does not limit which child identities it may
+request.
+
+Resumed sessions re-resolve their agent instead of trusting saved identity text.
+Legacy bare-name references do not receive trusted identity when a configured
+search-path agent has that directory name or declares it in YAML. For `ask --resume`, omit `--agent` to use the saved agent; an explicit different
+agent is rejected.
+
+For example:
+
+```bash
+term-llm ask --agent migration-data --mcp source-db "inspect the migration"
+```
+
+`ask` and `chat` validate the complete explicit `--mcp` selection before
+starting any server, including an explicit override on resume. Restored selections and agent defaults drop denied
+or missing servers with a warning, so stale selections do not prevent resume. The session MCP picker omits denied servers; web attempts to enable them
+return HTTP 403 (`permission_error`). Saved selections are filtered and saved
+back cleaned on restore. Policy changes are read at existing MCP access/refresh
+boundaries (config load/refresh, enable, tool calls, and child/job startup) and
+on process reload; catalogue and listing getters only read the cached policy;
+revocation stops the server and removes its tools. An invalid reload logs an
+error and retains the last-known-good policy rather than opening access. A
+missing, empty, comment-only, or null document during an editor save also retains
+existing policy; a
+valid file such as `{}` can explicitly remove restrictions. There is no background
+file watcher.
+
+Policy entries for names not currently in `mcp.json` are retained. Removing a
+server through the web API does not remove its policy: re-adding the same name
+keeps the restriction. Edit names containing dots (such as `Prod.DB`) directly in
+YAML, since `term-llm config set` treats dots as path separators and has no
+escaping syntax. For single-segment server names, you can set a nonempty list
+with `term-llm config set mcp.servers.source-db.agents migration-data,reviewer`.
+Empty values are rejected; edit YAML explicitly for deny-all `agents: []`.
+`sampling` and `always_load` remain connection settings in
+`mcp.json`; `serve.mcp.approval_mode` is unrelated to this policy. Exporting
+term-llm's own tools with `term-llm serve mcp` is unaffected.
+
+**This is an application guardrail, not a security sandbox.** Shell commands,
+editable configuration, older term-llm versions, and other MCP clients can
+bypass it. Other clients do not enforce this `config.yaml` policy. Enforce access
+at the MCP server and its credentials if you need a security boundary.
+
 ### Authentication
 
 How a server authenticates depends on its transport, as the [MCP authorization specification](https://modelcontextprotocol.io/specification/latest/basic/authorization) recommends:

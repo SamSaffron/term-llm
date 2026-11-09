@@ -15,6 +15,9 @@ func (m *Manager) registerReload() {
 		return
 	}
 	m.reloadUnregister = restart.Default.Register(&restart.Resource{Prepare: func(ctx context.Context) (func(context.Context), error) {
+		if err := m.RefreshPolicy(); err != nil {
+			return nil, err
+		}
 		names := m.EnabledServers()
 		undo := func(recovery context.Context) {
 			for _, name := range names {

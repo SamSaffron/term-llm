@@ -132,6 +132,7 @@ func catalogue(args []string) {
 	if err != nil {
 		fatalf("load config: %v", err)
 	}
+	// Catalogue evaluation intentionally has no agent identity; restricted servers remain denied.
 	manager := mcp.NewManagerWithConfig(cfg)
 	defer manager.StopAll()
 	ctx, cancel := context.WithTimeout(context.Background(), *timeout)

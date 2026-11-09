@@ -8,6 +8,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/samsaffron/term-llm/internal/agents"
 	appmemory "github.com/samsaffron/term-llm/internal/app/memory"
 	appruntime "github.com/samsaffron/term-llm/internal/app/runtime"
 	runapproval "github.com/samsaffron/term-llm/internal/app/runtime/approval"
@@ -70,10 +71,21 @@ func Run(ctx context.Context, args []string, opts Options, deps Dependencies) er
 	opts.Yolo = resolvedYolo
 	opts.Auto = resolvedApproval.Mode == tools.ModeAuto
 
-	// Load agent if specified
-	agent, err := appruntime.LoadAgent(opts.Agent, cfg)
+	runtimeSessionStore, runtimeMemoryPaths := deps.SessionStore, deps.MemoryPaths
+	store, storeCleanup := appruntime.InitSessionStoreWith(cfg, deps.Stderr, runtimeSessionStore)
+	defer storeCleanup()
+	// Resolve the actual run agent before model, skills, defaults and inputs.
+	agent, resumeSession, err := resolveAskRunAgent(ctx, opts, cfg, store)
 	if err != nil {
 		return err
+	}
+
+	var preparedMCP *mcpstart.PreparedSelection
+	if opts.Changed.MCP {
+		preparedMCP, err = mcpstart.PrepareSelection(agents.PolicyIdentity(agent), opts.MCP, true, deps.Stderr, deps.LoadMCPConfig)
+		if err != nil {
+			return err
+		}
 	}
 
 	// Handle default prompt for agents invoked without a message.
@@ -127,7 +139,6 @@ func Run(ctx context.Context, args []string, opts Options, deps Dependencies) er
 		deferredInputs = &appserve.SessionInputSelection{}
 	}
 	// Resolve all settings: CLI > agent > config
-	runtimeSessionStore, runtimeMemoryPaths := deps.SessionStore, deps.MemoryPaths
 	promptProvider, promptModel := appruntime.ActiveLLMFlags(cfg)
 	settings, err := appserve.ResolveSettings(cfg, agent, appserve.CLIFlags{
 		Inputs:           deferredInputs,
@@ -158,7 +169,6 @@ func Run(ctx context.Context, args []string, opts Options, deps Dependencies) er
 
 	// Initialize session store and handle --resume BEFORE tool/MCP initialization
 	// so that session settings can override settings.Tools, settings.MCP, etc.
-	store, storeCleanup := appruntime.InitSessionStoreWith(cfg, deps.Stderr, runtimeSessionStore)
 	var spawnRunner *appserve.SpawnAgentRunner
 	// userInterrupted is set when the rich renderer handled Ctrl-C itself: the
 	// signal context is not cancelled in that case, but the user still asked
@@ -182,26 +192,19 @@ func Run(ctx context.Context, args []string, opts Options, deps Dependencies) er
 				}
 			}
 		}
-		storeCleanup()
 	}()
 	// Apply persisted settings and refreshable inputs before tool/MCP setup.
-	sess, inputTicket, selectedInputs, resuming, err := prepareAskResume(ctx, opts, deps.Stderr, cfg, agent, store, &settings)
+	sess, inputTicket, selectedInputs, resuming, err := prepareAskResume(ctx, opts, deps.Stderr, cfg, agent, store, &settings, resumeSession)
 	if err != nil {
 		return err
+	}
+	if inputTicket != nil {
+		defer inputTicket.Fail()
 	}
 	if sess != nil {
 		// The model was selected above; a resumed session only adds its persisted
 		// inherited rules and the rule of the agent it was created for.
 		askPolicy = appruntime.ModelPolicyForSession(sess, agent)
-		if sessAgent := strings.TrimSpace(sess.Agent); sessAgent != "" && (agent == nil || sessAgent != agent.Name) {
-			resumedAgent, err := appruntime.LoadPersistedAgent(sessAgent, cfg)
-			if err != nil {
-				return err
-			}
-			if resumedAgent != nil {
-				askPolicy = askPolicy.With(resumedAgent.Name, resumedAgent.AllowedModels)
-			}
-		}
 		agentName := ""
 		if agent != nil {
 			agentName = agent.Name
@@ -210,8 +213,9 @@ func Run(ctx context.Context, args []string, opts Options, deps Dependencies) er
 			return err
 		}
 	}
-	if inputTicket != nil {
-		defer inputTicket.Fail()
+	preparedMCP, err = restoreAskMCP(ctx, opts, agent, store, sess, &settings, deps.Stderr, preparedMCP, deps.LoadMCPConfig)
+	if err != nil {
+		return err
 	}
 
 	defaultQuestion := ""
@@ -265,16 +269,18 @@ func Run(ctx context.Context, args []string, opts Options, deps Dependencies) er
 
 	// Initialize MCP servers if any (after session settings are applied)
 	var mcpManager *mcp.Manager
-	if settings.MCP != "" {
+	if preparedMCP.Active != "" {
 		mcpOpts := &mcpstart.MCPOptions{
-			Provider:      provider,
-			YoloMode:      resolvedYolo,
-			ToolDiscovery: cfg.ToolDiscovery,
+			ImplicitSelection: !opts.Changed.MCP,
+			PolicyIdentity:    agents.PolicyIdentity(agent),
+			Provider:          provider,
+			YoloMode:          resolvedYolo,
+			ToolDiscovery:     cfg.ToolDiscovery,
 		}
 		if providerCfg := cfg.GetActiveProviderConfig(); providerCfg != nil {
 			mcpOpts.Model = providerCfg.Model
 		}
-		mcpManager, err = EnableMCPServersWithFeedback(ctx, settings.MCP, engine, deps.Stderr, mcpOpts)
+		mcpManager, err = preparedMCP.Enable(ctx, engine, deps.Stderr, mcpOpts)
 		if err != nil {
 			return err
 		}
@@ -414,6 +420,7 @@ func Run(ctx context.Context, args []string, opts Options, deps Dependencies) er
 		Provider:           opts.Provider,
 		Fast:               opts.Fast,
 		ConfigSet:          true,
+		LoadMCPConfig:      deps.LoadMCPConfig,
 		ConfigProvider:     cfg.Ask.Provider,
 		ConfigModel:        cfg.Ask.Model,
 		ConfigInstructions: cfg.Ask.Instructions,
@@ -422,7 +429,6 @@ func Run(ctx context.Context, args []string, opts Options, deps Dependencies) er
 		ReadDirs:           append([]string(nil), opts.ReadDirs...),
 		WriteDirs:          append([]string(nil), opts.WriteDirs...),
 		ShellAllow:         append([]string(nil), opts.ShellAllow...),
-		MCP:                settings.MCP,
 		MaxTurns:           settings.MaxTurns,
 		DefaultMaxTurns:    50,
 		Search:             settings.Search,
@@ -450,7 +456,8 @@ func Run(ctx context.Context, args []string, opts Options, deps Dependencies) er
 	}
 	baseRunReq := runpkg.Request{
 		Platform:                    runpkg.PlatformConsole,
-		AgentName:                   opts.Agent,
+		AgentName:                   agents.Reference(agent),
+		Resume:                      resuming,
 		Messages:                    messages,
 		Engine:                      engine,
 		ProviderInstance:            provider,
@@ -464,6 +471,7 @@ func Run(ctx context.Context, args []string, opts Options, deps Dependencies) er
 		WriteDirs:                   append([]string(nil), opts.WriteDirs...),
 		ShellAllow:                  append([]string(nil), opts.ShellAllow...),
 		MCP:                         settings.MCP,
+		MCPExplicit:                 opts.Changed.MCP,
 		Skills:                      opts.Skills,
 		SystemMessage:               instructions,
 		MaxTurns:                    settings.MaxTurns,

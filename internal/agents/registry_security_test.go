@@ -40,6 +40,9 @@ func TestRegistryIgnoresProjectAgents(t *testing.T) {
 				}
 				writeAgent(root, "reviewer", "description: trusted override\n")
 				wantSource = SourceUser
+				if trustedSource == "search-path" {
+					wantSource = SourceSearchPath
+				}
 			}
 			r, err := NewRegistry(cfg)
 			if err != nil {

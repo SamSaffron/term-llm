@@ -2777,6 +2777,7 @@ func TestExecuteHandover_CreatesNewIsolatedSessionAndRequestsResume(t *testing.T
 
 	targetAgent := &agents.Agent{
 		Name:          "target",
+		Source:        agents.SourceBuiltin,
 		SystemPrompt:  "You are target.",
 		Provider:      "gemini",
 		Model:         "gemini-2.5-pro",
@@ -2786,6 +2787,7 @@ func TestExecuteHandover_CreatesNewIsolatedSessionAndRequestsResume(t *testing.T
 		Tools:         agents.ToolsConfig{Enabled: []string{"read_file", "edit_file"}},
 		MCP:           []agents.MCPConfig{{Name: "server-a"}, {Name: "server-b"}},
 	}
+	targetAgent = registeredHandoverTestAgent(t, targetAgent)
 	expectedResult := engine.HandoverFromFile("handover doc", targetAgent.SystemPrompt, "source", targetAgent.Name)
 	m.pendingHandover = &handoverDoneMsg{
 		agentName: "target",

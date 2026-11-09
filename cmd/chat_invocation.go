@@ -44,7 +44,7 @@ func captureChatInvocation(cmd *cobra.Command) (appchat.Options, appchat.Depende
 	}
 	stderr, stdout := io.Writer(io.Discard), io.Writer(io.Discard)
 	if cmd != nil {
-		opts.Changed = appchat.FlagState{User: cmd.Flags().Changed("user"), Resume: cmd.Flags().Changed("resume"), Tools: cmd.Flags().Changed("tools"), System: cmd.Flags().Changed("system"), MaxTurns: cmd.Flags().Changed("max-turns"), Search: cmd.Flags().Changed("search")}
+		opts.Changed = appchat.FlagState{User: cmd.Flags().Changed("user"), Resume: cmd.Flags().Changed("resume"), Tools: cmd.Flags().Changed("tools"), System: cmd.Flags().Changed("system"), MaxTurns: cmd.Flags().Changed("max-turns"), Search: cmd.Flags().Changed("search"), MCP: cmd.Flags().Changed("mcp")}
 		stderr, stdout = cmd.ErrOrStderr(), cmd.OutOrStdout()
 	}
 	cli, cliErr := approvalModeFromCommand(cmd, opts.Approval, opts.AutoApproval, opts.Yolo)
