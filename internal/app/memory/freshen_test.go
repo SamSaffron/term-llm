@@ -464,6 +464,68 @@ func TestCollectMemoryUpdateRecentInputIncludesActiveSessions(t *testing.T) {
 	}
 }
 
+func TestCollectMemoryUpdateRecentInputDefersRecentlyUpdatedActiveSessions(t *testing.T) {
+	ctx := context.Background()
+	checkpoint := time.Now().Add(-time.Hour)
+	writingAt := time.Now().Add(-time.Minute)
+	quietAt := time.Now().Add(-activeSessionQuietPeriod - time.Minute)
+
+	// A turn may still be rewriting the newest assistant row of "writing".
+	sessStore := &updateRecentCountingStore{
+		summaries: []session.SessionSummary{
+			{ID: "writing", Number: 1, Agent: "jarvis", Status: session.StatusActive, UpdatedAt: writingAt},
+			{ID: "quiet", Number: 2, Agent: "jarvis", Status: session.StatusActive, UpdatedAt: quietAt},
+			{ID: "done", Number: 3, Agent: "jarvis", Status: session.StatusComplete, UpdatedAt: writingAt},
+		},
+		messages: map[string][]session.Message{
+			"writing": {{Role: core.RoleAssistant, TextContent: "partial reply", Sequence: 0}},
+			"quiet":   {{Role: core.RoleUser, TextContent: "quiet activity", Sequence: 0}},
+			"done":    {{Role: core.RoleUser, TextContent: "done activity", Sequence: 0}},
+		},
+		messageCalls: map[string]int{},
+	}
+	memStore, err := memorydb.NewStore(memorydb.Config{Path: filepath.Join(t.TempDir(), "memory.db")})
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	defer memStore.Close()
+
+	input, err := collectMemoryUpdateRecentInput(ctx, memStore, sessStore, "jarvis", checkpoint, DefaultUpdateRecentMaxInputChars)
+	if err != nil {
+		t.Fatalf("collectMemoryUpdateRecentInput: %v", err)
+	}
+	if strings.Contains(input.Text, "partial reply") {
+		t.Fatalf("input text = %q, want recently updated active session deferred", input.Text)
+	}
+	if _, ok := input.Offsets["writing"]; ok {
+		t.Fatalf("offsets = %#v, want no offset for deferred session", input.Offsets)
+	}
+	if !strings.Contains(input.Text, "quiet activity") || !strings.Contains(input.Text, "done activity") {
+		t.Fatalf("input text = %q, want quiet active and complete sessions", input.Text)
+	}
+	if !input.DeferredFrom.Equal(writingAt) {
+		t.Fatalf("DeferredFrom = %v, want %v", input.DeferredFrom, writingAt)
+	}
+
+	// The next checkpoint must not pass the deferred session, or the next run
+	// would filter it out until its next activity.
+	runStart := time.Now()
+	next := nextUpdateRecentCheckpoint(runStart, input)
+	if !next.Equal(writingAt) {
+		t.Fatalf("next checkpoint = %v, want deferred session time %v", next, writingAt)
+	}
+	persisted, err := time.Parse(time.RFC3339, next.Format(time.RFC3339))
+	if err != nil {
+		t.Fatalf("parse persisted checkpoint: %v", err)
+	}
+	if writingAt.Before(persisted) {
+		t.Fatalf("persisted checkpoint %v is after deferred session %v", persisted, writingAt)
+	}
+	if got := nextUpdateRecentCheckpoint(runStart, memoryUpdateRecentInput{}); !got.Equal(runStart) {
+		t.Fatalf("next checkpoint without deferral = %v, want run start %v", got, runStart)
+	}
+}
+
 func TestListMemorySourceSessionsMergesStatusesNewestFirst(t *testing.T) {
 	ctx := context.Background()
 	summaries := make([]session.SessionSummary, 0, 403)

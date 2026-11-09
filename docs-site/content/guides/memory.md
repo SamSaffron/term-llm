@@ -40,7 +40,7 @@ term-llm memory search "docs tone" --agent assistant
 term-llm memory mine
 ```
 
-This scans completed sessions and ongoing conversations, extracts durable memory, and stores it as fragments in the memory database. Web and chat-platform conversations stay active between turns, so they are included too. Each session is mined from where the last run stopped, so new turns are picked up without rereading earlier ones.
+This scans completed sessions and ongoing conversations, extracts durable memory, and stores it as fragments in the memory database. Web and chat-platform conversations stay active between turns, so they are included too. Each session is mined from where the last run stopped, so new turns are picked up without rereading earlier ones. An ongoing conversation is read only once it has been quiet for 10 minutes, so a reply that is still being written is never mined half-finished.
 
 Useful flags:
 

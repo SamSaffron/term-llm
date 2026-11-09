@@ -331,6 +331,33 @@ func TestWalkMineCandidatesFallbackPreservesLimitSemantics(t *testing.T) {
 	}
 }
 
+func TestWalkMineCandidatesDefersRecentlyUpdatedActiveSessions(t *testing.T) {
+	opts := MineOptions{Env: testEnv("", "")}
+	now := time.Now()
+
+	sessStore := &candidateDiscoveryStore{sessions: map[string]*session.Session{
+		"writing": {ID: "writing", Status: session.StatusActive},
+		"quiet":   {ID: "quiet", Status: session.StatusActive},
+		"done":    {ID: "done", Status: session.StatusComplete},
+	}}
+	sources := []session.SessionSummary{
+		{ID: "writing", Status: session.StatusActive, UpdatedAt: now.Add(-time.Minute)},
+		{ID: "quiet", Status: session.StatusActive, UpdatedAt: now.Add(-activeSessionQuietPeriod - time.Minute)},
+		{ID: "done", Status: session.StatusComplete, UpdatedAt: now.Add(-time.Minute)},
+	}
+	var visited []string
+	_, err := opts.walkMineCandidates(context.Background(), sessStore, &candidateDiscoveryStateStore{}, sources, "", func(_ int, _ int, candidate memoryMineCandidate) (memoryMineCandidateVisitResult, error) {
+		visited = append(visited, candidate.Session.ID)
+		return memoryMineCandidateVisitResult{}, nil
+	})
+	if err != nil {
+		t.Fatalf("walkMineCandidates: %v", err)
+	}
+	if strings.Join(visited, ",") != "quiet,done" {
+		t.Fatalf("visited = %v, want [quiet done] with the recently updated active session deferred", visited)
+	}
+}
+
 func TestWalkMineCandidatesStopsDiscoveryAtAttemptLimit(t *testing.T) {
 	opts := MineOptions{Env: testEnv("", ""), Limit: 2, Since: 0}
 

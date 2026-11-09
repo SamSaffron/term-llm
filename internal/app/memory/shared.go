@@ -6,6 +6,7 @@ import (
 	"slices"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/embedding"
@@ -27,6 +28,20 @@ func openReadOnlySessionStore(env Env, cfg *config.Config) (session.Store, error
 // from a stored message offset, so new turns in an active session are picked up
 // later without rereading earlier messages.
 var memorySourceStatuses = []session.SessionStatus{session.StatusComplete, session.StatusActive}
+
+// activeSessionQuietPeriod is how long an active session must go without
+// updates before memory reads it. While a turn streams, serve stores the
+// assistant reply as one row and rewrites it in place until the response
+// finishes; each rewrite bumps the session's updated_at. Reading that row early
+// would advance the stored offset past it and lose the finished reply, so
+// readers wait until the session has been quiet for this long.
+const activeSessionQuietPeriod = 10 * time.Minute
+
+// activeSessionMayBeWriting reports whether summary is an active session
+// updated too recently to rule out an in-progress turn.
+func activeSessionMayBeWriting(summary session.SessionSummary, now time.Time) bool {
+	return summary.Status == session.StatusActive && summary.UpdatedAt.After(now.Add(-activeSessionQuietPeriod))
+}
 
 func isMemorySourceStatus(status session.SessionStatus) bool {
 	return slices.Contains(memorySourceStatuses, status)

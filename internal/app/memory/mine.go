@@ -623,7 +623,7 @@ func (opts MineOptions) memoryMineCutoff() time.Time {
 }
 
 func (opts MineOptions) buildMemoryMineCandidate(ctx context.Context, store session.Store, summary session.SessionSummary, currentID string, cutoff time.Time) (memoryMineCandidate, bool, error) {
-	if !cutoff.IsZero() && summary.UpdatedAt.Before(cutoff) {
+	if (!cutoff.IsZero() && summary.UpdatedAt.Before(cutoff)) || activeSessionMayBeWriting(summary, time.Now()) {
 		return memoryMineCandidate{}, false, nil
 	}
 
