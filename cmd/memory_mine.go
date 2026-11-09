@@ -31,7 +31,7 @@ var (
 
 var memoryMineCmd = &cobra.Command{
 	Use:   "mine",
-	Short: "Mine completed sessions into memory fragments",
+	Short: "Mine sessions into memory fragments",
 	RunE:  runMemoryMine,
 }
 

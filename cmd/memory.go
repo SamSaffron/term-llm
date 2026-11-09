@@ -20,7 +20,7 @@ var (
 var memoryCmd = &cobra.Command{
 	Use:   "memory",
 	Short: "Mine and query long-term memory fragments",
-	Long: `Manage long-term memory fragments mined from completed sessions.
+	Long: `Manage long-term memory fragments mined from past sessions.
 
 Examples:
   term-llm memory mine

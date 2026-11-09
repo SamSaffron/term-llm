@@ -3,7 +3,10 @@ package memory
 import (
 	"context"
 	"fmt"
+	"slices"
+	"sort"
 	"strings"
+	"time"
 
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/embedding"
@@ -19,35 +22,76 @@ func openReadOnlySessionStore(env Env, cfg *config.Config) (session.Store, error
 	return session.NewStore(storeCfg)
 }
 
-func listCompleteSessions(ctx context.Context, store session.Store) ([]session.SessionSummary, error) {
-	const pageSize = 200
-	var beforeNumber int64
-	all := make([]session.SessionSummary, 0, pageSize)
+// memorySourceStatuses lists the session statuses memory reads from. Web and
+// chat-platform conversations stay active between turns and never complete, so
+// excluding active sessions would hide them from memory entirely. Readers resume
+// from a stored message offset, so new turns in an active session are picked up
+// later without rereading earlier messages.
+var memorySourceStatuses = []session.SessionStatus{session.StatusComplete, session.StatusActive}
 
-	for {
-		page, err := store.List(ctx, session.ListOptions{
-			Status:           session.StatusComplete,
-			Limit:            pageSize,
-			BeforeNumber:     beforeNumber,
-			SortByNumberDesc: true,
-		})
-		if err != nil {
-			return nil, err
+// activeSessionQuietPeriod is how long an active session must go without
+// updates before memory reads it. While a turn streams, serve stores the
+// assistant reply as one row and rewrites it in place until the response
+// finishes; each rewrite bumps the session's updated_at. Reading that row early
+// would advance the stored offset past it and lose the finished reply, so
+// readers wait until the session has been quiet for this long.
+const activeSessionQuietPeriod = 10 * time.Minute
+
+// activeSessionMayBeWriting reports whether summary is an active session
+// updated too recently to rule out an in-progress turn.
+func activeSessionMayBeWriting(summary session.SessionSummary, now time.Time) bool {
+	return summary.Status == session.StatusActive && summary.UpdatedAt.After(now.Add(-activeSessionQuietPeriod))
+}
+
+func isMemorySourceStatus(status session.SessionStatus) bool {
+	return slices.Contains(memorySourceStatuses, status)
+}
+
+// listMemorySourceSessions returns sessions memory may read from, newest
+// session number first. An empty agent lists sessions for every agent.
+func listMemorySourceSessions(ctx context.Context, store session.Store, agent string) ([]session.SessionSummary, error) {
+	const pageSize = 200
+	all := make([]session.SessionSummary, 0, pageSize)
+	seen := map[string]struct{}{}
+
+	for _, status := range memorySourceStatuses {
+		var beforeNumber int64
+		for {
+			page, err := store.List(ctx, session.ListOptions{
+				Agent:            agent,
+				Status:           status,
+				Limit:            pageSize,
+				BeforeNumber:     beforeNumber,
+				SortByNumberDesc: true,
+			})
+			if err != nil {
+				return nil, err
+			}
+			for _, summary := range page {
+				// Custom stores may ignore the status filter.
+				if !isMemorySourceStatus(summary.Status) {
+					continue
+				}
+				if _, dup := seen[summary.ID]; dup {
+					continue
+				}
+				seen[summary.ID] = struct{}{}
+				all = append(all, summary)
+			}
+			if len(page) < pageSize {
+				break
+			}
+			lastNumber := page[len(page)-1].Number
+			if lastNumber <= 0 {
+				return nil, fmt.Errorf("%s session %s is missing a session number", status, page[len(page)-1].ID)
+			}
+			beforeNumber = lastNumber
 		}
-		if len(page) == 0 {
-			break
-		}
-		all = append(all, page...)
-		if len(page) < pageSize {
-			break
-		}
-		lastNumber := page[len(page)-1].Number
-		if lastNumber <= 0 {
-			return nil, fmt.Errorf("complete session %s is missing a session number", page[len(page)-1].ID)
-		}
-		beforeNumber = lastNumber
 	}
 
+	sort.SliceStable(all, func(i, j int) bool {
+		return all[i].Number > all[j].Number
+	})
 	return all, nil
 }
 

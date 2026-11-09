@@ -156,6 +156,7 @@ func UpdateRecent(opts UpdateRecentOptions) error {
 		if err != nil {
 			return err
 		}
+		nextUpdatedRecentAt = nextUpdateRecentCheckpoint(nextUpdatedRecentAt, input)
 		if strings.TrimSpace(input.Text) == "" {
 			if input.Exhausted {
 				if err := store.SetMeta(ctx, memoryUpdateRecentMetaKey(agentName), nextUpdatedRecentAt.Format(time.RFC3339)); err != nil {
@@ -442,50 +443,48 @@ func memoryCompactRecentUserPrompt(candidateRecent string) string {
 	return fmt.Sprintf("CANDIDATE RECENT MEMORY TO COMPACT:\n\n%s", candidateRecent)
 }
 
-func listUpdateRecentSessions(ctx context.Context, sessStore session.Store, agentName string, updatedAtOrAfter time.Time, current *session.Session) ([]memoryUpdateRecentSession, error) {
-	const pageSize = 200
+// nextUpdateRecentCheckpoint keeps the checkpoint at or before any active
+// session deferred by this run, so the next run lists it again.
+func nextUpdateRecentCheckpoint(runStart time.Time, input memoryUpdateRecentInput) time.Time {
+	if !input.DeferredFrom.IsZero() && input.DeferredFrom.Before(runStart) {
+		return input.DeferredFrom.UTC()
+	}
+	return runStart
+}
 
-	var beforeNumber int64
+// listUpdateRecentSessions returns the sessions to read, newest activity first,
+// and the earliest UpdatedAt among active sessions deferred because a turn may
+// still be writing to them (zero when none were deferred).
+func listUpdateRecentSessions(ctx context.Context, sessStore session.Store, agentName string, updatedAtOrAfter time.Time, current *session.Session, now time.Time) ([]memoryUpdateRecentSession, time.Time, error) {
+	summaries, err := listMemorySourceSessions(ctx, sessStore, agentName)
+	if err != nil {
+		return nil, time.Time{}, fmt.Errorf("list memory source sessions: %w", err)
+	}
+
 	seen := map[string]struct{}{}
-	sessions := make([]memoryUpdateRecentSession, 0, pageSize+1)
-
-	for {
-		complete, err := sessStore.List(ctx, session.ListOptions{
-			Agent:            agentName,
-			Status:           session.StatusComplete,
-			Limit:            pageSize,
-			BeforeNumber:     beforeNumber,
-			SortByNumberDesc: true,
-		})
-		if err != nil {
-			return nil, fmt.Errorf("list complete sessions: %w", err)
+	var deferredFrom time.Time
+	sessions := make([]memoryUpdateRecentSession, 0, len(summaries)+1)
+	for _, summary := range summaries {
+		// Keep custom stores that ignore List filters from leaking another
+		// agent or an older session into this update. UpdatedAt is compared in
+		// Go because existing SQLite rows may contain different UTC offsets.
+		if sessionAgentOrDefault(summary.Agent) != agentName || (!updatedAtOrAfter.IsZero() && summary.UpdatedAt.Before(updatedAtOrAfter)) {
+			continue
 		}
-
-		for _, summary := range complete {
-			// Keep custom stores that ignore List filters from leaking another
-			// agent or an older session into this update. UpdatedAt is compared in
-			// Go because existing SQLite rows may contain different UTC offsets.
-			if sessionAgentOrDefault(summary.Agent) != agentName || (!updatedAtOrAfter.IsZero() && summary.UpdatedAt.Before(updatedAtOrAfter)) {
-				continue
+		if activeSessionMayBeWriting(summary, now) {
+			if deferredFrom.IsZero() || summary.UpdatedAt.Before(deferredFrom) {
+				deferredFrom = summary.UpdatedAt
 			}
-
-			sessions = append(sessions, memoryUpdateRecentSession{
-				ID:        summary.ID,
-				Number:    summary.Number,
-				Status:    summary.Status,
-				UpdatedAt: summary.UpdatedAt,
-			})
-			seen[summary.ID] = struct{}{}
+			continue
 		}
 
-		if len(complete) < pageSize {
-			break
-		}
-		lastNumber := complete[len(complete)-1].Number
-		if lastNumber <= 0 {
-			return nil, fmt.Errorf("complete session %s is missing a session number", complete[len(complete)-1].ID)
-		}
-		beforeNumber = lastNumber
+		sessions = append(sessions, memoryUpdateRecentSession{
+			ID:        summary.ID,
+			Number:    summary.Number,
+			Status:    summary.Status,
+			UpdatedAt: summary.UpdatedAt,
+		})
+		seen[summary.ID] = struct{}{}
 	}
 
 	if current != nil {
@@ -509,13 +508,17 @@ func listUpdateRecentSessions(ctx context.Context, sessStore session.Store, agen
 		return sessions[i].UpdatedAt.After(sessions[j].UpdatedAt)
 	})
 
-	return sessions, nil
+	return sessions, deferredFrom, nil
 }
 
 type memoryUpdateRecentInput struct {
 	Text      string
 	Offsets   map[string]int
 	Exhausted bool
+	// DeferredFrom is the earliest UpdatedAt of an active session skipped
+	// because a turn may still be writing to it. The next checkpoint must not
+	// pass it, or the session would be filtered out until its next activity.
+	DeferredFrom time.Time
 }
 
 func collectMemoryUpdateRecentInput(ctx context.Context, store *memorydb.Store, sessStore session.Store, agentName string, updatedAtOrAfter time.Time, maxInputChars int) (memoryUpdateRecentInput, error) {
@@ -524,7 +527,7 @@ func collectMemoryUpdateRecentInput(ctx context.Context, store *memorydb.Store, 
 		return memoryUpdateRecentInput{}, fmt.Errorf("get current session: %w", err)
 	}
 
-	sessions, err := listUpdateRecentSessions(ctx, sessStore, agentName, updatedAtOrAfter, current)
+	sessions, deferredFrom, err := listUpdateRecentSessions(ctx, sessStore, agentName, updatedAtOrAfter, current, time.Now())
 	if err != nil {
 		return memoryUpdateRecentInput{}, err
 	}
@@ -562,7 +565,7 @@ func collectMemoryUpdateRecentInput(ctx context.Context, store *memorydb.Store, 
 				}
 				if stop {
 					// Retry this message in the next batch without advancing its offset.
-					return memoryUpdateRecentInput{Text: inputBuilder.String(), Offsets: trackedOffsets, Exhausted: false}, nil
+					return memoryUpdateRecentInput{Text: inputBuilder.String(), Offsets: trackedOffsets, Exhausted: false, DeferredFrom: deferredFrom}, nil
 				}
 				// Include skipped tool/empty rows, but never unread messages.
 				startOffset = msg.Sequence + 1
@@ -572,7 +575,7 @@ func collectMemoryUpdateRecentInput(ctx context.Context, store *memorydb.Store, 
 				break
 			}
 			if inputBuilder.Len() >= maxInputChars {
-				return memoryUpdateRecentInput{Text: inputBuilder.String(), Offsets: trackedOffsets, Exhausted: false}, nil
+				return memoryUpdateRecentInput{Text: inputBuilder.String(), Offsets: trackedOffsets, Exhausted: false, DeferredFrom: deferredFrom}, nil
 			}
 		}
 		if inputBuilder.Len() >= maxInputChars {
@@ -581,7 +584,7 @@ func collectMemoryUpdateRecentInput(ctx context.Context, store *memorydb.Store, 
 		}
 	}
 
-	return memoryUpdateRecentInput{Text: inputBuilder.String(), Offsets: trackedOffsets, Exhausted: exhausted}, nil
+	return memoryUpdateRecentInput{Text: inputBuilder.String(), Offsets: trackedOffsets, Exhausted: exhausted, DeferredFrom: deferredFrom}, nil
 }
 
 // appendUpdateRecentMessage stops before a message that cannot fit after earlier
