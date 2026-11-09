@@ -154,7 +154,7 @@ type transcriptMessage struct {
 	ToolCalls []string `json:"tool_calls,omitempty"`
 }
 
-// Mine mines completed sessions into memory fragments.
+// Mine mines complete and active sessions into memory fragments.
 func Mine(opts MineOptions) error {
 	env := opts.Env
 	if opts.BatchSize <= 0 {
@@ -233,9 +233,9 @@ func Mine(opts MineOptions) error {
 		currentID = currentSession.ID
 	}
 
-	complete, err := listCompleteSessions(ctx, sessStore)
+	sourceSessions, err := listMemorySourceSessions(ctx, sessStore, "")
 	if err != nil {
-		return fmt.Errorf("list complete sessions: %w", err)
+		return fmt.Errorf("list memory source sessions: %w", err)
 	}
 
 	modelName = strings.TrimSpace(modelName)
@@ -245,13 +245,13 @@ func Mine(opts MineOptions) error {
 	if modelName == "" {
 		modelName = "(default model)"
 	}
-	if len(complete) > 0 {
+	if len(sourceSessions) > 0 {
 		if opts.Limit > 0 {
-			fmt.Printf("Scanning %d completed session(s) for up to %d extraction attempt(s) with %s / %s\n",
-				len(complete), opts.Limit, provider.Name(), modelName)
+			fmt.Printf("Scanning %d session(s) for up to %d extraction attempt(s) with %s / %s\n",
+				len(sourceSessions), opts.Limit, provider.Name(), modelName)
 		} else {
-			fmt.Printf("Scanning %d completed session(s) for extraction with %s / %s\n",
-				len(complete), provider.Name(), modelName)
+			fmt.Printf("Scanning %d session(s) for extraction with %s / %s\n",
+				len(sourceSessions), provider.Name(), modelName)
 		}
 	}
 	if env.DryRun {
@@ -262,7 +262,7 @@ func Mine(opts MineOptions) error {
 	var summaryStats memoryMineSummaryStats
 	fragmentCache := newMemoryAgentFragmentCache(opts.TaxonomyMaxTokens)
 
-	walkResult, err := opts.walkMineCandidates(ctx, sessStore, memStore, complete, currentID, func(position, total int, candidate memoryMineCandidate) (memoryMineCandidateVisitResult, error) {
+	walkResult, err := opts.walkMineCandidates(ctx, sessStore, memStore, sourceSessions, currentID, func(position, total int, candidate memoryMineCandidate) (memoryMineCandidateVisitResult, error) {
 		visitResult := memoryMineCandidateVisitResult{}
 
 		// Discovery uses a snapshot only to prune completed work. Refresh state at
@@ -405,7 +405,7 @@ func Mine(opts MineOptions) error {
 
 	if opts.Insights && !env.DryRun {
 		fmt.Println("\n--- INSIGHT EXTRACTION ---")
-		insightCandidates, err := opts.collectInsightCandidates(ctx, sessStore, memStore, complete, currentID)
+		insightCandidates, err := opts.collectInsightCandidates(ctx, sessStore, memStore, sourceSessions, currentID)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "warning: collect insight candidates failed: %v\n", err)
 		} else {
@@ -501,7 +501,7 @@ func (opts MineOptions) walkMineCandidates(
 	ctx context.Context,
 	store session.Store,
 	stateStore memoryMiningStateStore,
-	complete []session.SessionSummary,
+	sourceSessions []session.SessionSummary,
 	currentID string,
 	visit func(position, total int, candidate memoryMineCandidate) (memoryMineCandidateVisitResult, error),
 ) (memoryMineCandidateWalkResult, error) {
@@ -522,7 +522,7 @@ func (opts MineOptions) walkMineCandidates(
 	maxSequences := map[string]int(nil)
 	if sequenceStore, ok := store.(session.MessageSequenceStore); ok {
 		sessionIDs := make([]string, 0, len(statesBySession))
-		for _, summary := range complete {
+		for _, summary := range sourceSessions {
 			if _, hasState := statesBySession[summary.ID]; !hasState {
 				continue
 			}
@@ -542,7 +542,7 @@ func (opts MineOptions) walkMineCandidates(
 		}
 	}
 
-	for i, summary := range complete {
+	for i, summary := range sourceSessions {
 		if opts.Limit > 0 && result.Attempts >= opts.Limit {
 			break
 		}
@@ -562,7 +562,7 @@ func (opts MineOptions) walkMineCandidates(
 		}
 		result.Eligible++
 
-		visitResult, err := visit(i+1, len(complete), candidate)
+		visitResult, err := visit(i+1, len(sourceSessions), candidate)
 		if err != nil {
 			return result, err
 		}
@@ -578,11 +578,11 @@ func (opts MineOptions) walkMineCandidates(
 	return result, nil
 }
 
-func (opts MineOptions) collectInsightCandidates(ctx context.Context, store session.Store, memStore *memorydb.Store, complete []session.SessionSummary, currentID string) ([]memoryMineCandidate, error) {
-	out := make([]memoryMineCandidate, 0, len(complete))
+func (opts MineOptions) collectInsightCandidates(ctx context.Context, store session.Store, memStore *memorydb.Store, sourceSessions []session.SessionSummary, currentID string) ([]memoryMineCandidate, error) {
+	out := make([]memoryMineCandidate, 0, len(sourceSessions))
 	cutoff := opts.memoryMineCutoff()
 
-	for _, summary := range complete {
+	for _, summary := range sourceSessions {
 		if summary.MessageCount > 0 && summary.MessageCount < 4 {
 			continue
 		}

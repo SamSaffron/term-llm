@@ -980,7 +980,7 @@ Update insight content by ID
 
 ### `term-llm memory mine`
 
-Mine completed sessions into memory fragments
+Mine sessions into memory fragments
 
 | Flag | Type | Description |
 |---|---|---|

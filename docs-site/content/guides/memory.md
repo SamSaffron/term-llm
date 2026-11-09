@@ -2,7 +2,7 @@
 title: "Memory"
 weight: 9
 featured: true
-description: "Mine durable facts from completed sessions, search fragments, manage insights, and understand how memory differs from sessions."
+description: "Mine durable facts from sessions, search fragments, manage insights, and understand how memory differs from sessions."
 kicker: "Long-term memory"
 next:
   label: Agents
@@ -13,7 +13,7 @@ next:
 term-llm has a long-term memory system separate from normal chat sessions.
 
 - **Sessions** store conversation history so you can resume, inspect, export, or search a chat.
-- **Memory** stores durable fragments and behavioral insights mined from completed sessions.
+- **Memory** stores durable fragments and behavioral insights mined from your sessions.
 
 The distinction matters. Most session content is ephemeral. Memory is meant for facts, decisions, preferences, and patterns worth carrying forward.
 
@@ -34,13 +34,13 @@ term-llm memory status --agent assistant
 term-llm memory search "docs tone" --agent assistant
 ```
 
-## Mine completed sessions into fragments
+## Mine sessions into fragments
 
 ```bash
 term-llm memory mine
 ```
 
-This scans completed sessions, extracts durable memory, and stores it as fragments in the memory database.
+This scans completed sessions and ongoing conversations, extracts durable memory, and stores it as fragments in the memory database. Web and chat-platform conversations stay active between turns, so they are included too. Each session is mined from where the last run stopped, so new turns are picked up without rereading earlier ones.
 
 Useful flags:
 
@@ -165,7 +165,7 @@ Use it when you want to compact recent working memory without treating age as pe
 
 A practical schedule is:
 
-- run `memory mine` frequently, such as every 30 minutes, to extract durable candidates from completed sessions
+- run `memory mine` frequently, such as every 30 minutes, to extract durable candidates from recent sessions
 - run `memory consolidate --apply` daily to keep `recent.md` tidy
 - run deep palace cleanup manually, or as a weekly dry-run/report, because it involves moving/deleting source fragments
 
@@ -261,7 +261,7 @@ That gives you, per agent:
 
 - fragment count
 - last mined time
-- how many completed sessions are still pending mining
+- how many sessions still have messages pending mining
 
 ## Storage model
 

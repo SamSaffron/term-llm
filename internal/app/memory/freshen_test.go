@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -407,8 +408,9 @@ func TestCollectMemoryUpdateRecentInputOnlyLoadsUpdatedAgentSessions(t *testing.
 	if !strings.Contains(input.Text, "new activity") || strings.Contains(input.Text, "other activity") {
 		t.Fatalf("input text = %q, want only recent jarvis activity", input.Text)
 	}
-	if sessStore.listCalls != 6 {
-		t.Fatalf("List calls = %d, want 6 paginated scans", sessStore.listCalls)
+	// Six pages of complete sessions, then one page of active sessions.
+	if sessStore.listCalls != 7 {
+		t.Fatalf("List calls = %d, want 7 paginated scans", sessStore.listCalls)
 	}
 	if sessStore.getCalls != 0 {
 		t.Fatalf("Get calls = %d, want 0", sessStore.getCalls)
@@ -416,8 +418,97 @@ func TestCollectMemoryUpdateRecentInputOnlyLoadsUpdatedAgentSessions(t *testing.
 	if len(sessStore.messageCalls) != 1 || sessStore.messageCalls["recent-jarvis"] != 1 {
 		t.Fatalf("GetMessagesFrom calls = %#v, want only recent-jarvis", sessStore.messageCalls)
 	}
-	if sessStore.lastListOptions.Agent != "jarvis" || sessStore.lastListOptions.Status != session.StatusComplete {
-		t.Fatalf("List options = %#v, want agent and status filters", sessStore.lastListOptions)
+	if sessStore.lastListOptions.Agent != "jarvis" {
+		t.Fatalf("List options = %#v, want agent filter", sessStore.lastListOptions)
+	}
+	if !slices.Equal(sessStore.listedStatuses(), memorySourceStatuses) {
+		t.Fatalf("listed statuses = %v, want %v", sessStore.listedStatuses(), memorySourceStatuses)
+	}
+}
+
+func TestCollectMemoryUpdateRecentInputIncludesActiveSessions(t *testing.T) {
+	ctx := context.Background()
+	checkpoint := time.Date(2026, 8, 23, 10, 0, 0, 0, time.UTC)
+	recentUpdatedAt := checkpoint.Add(time.Minute)
+
+	// Web conversations stay active between turns and never complete.
+	sessStore := &updateRecentCountingStore{
+		summaries: []session.SessionSummary{
+			{ID: "web", Number: 1, Agent: "jarvis", Status: session.StatusActive, UpdatedAt: recentUpdatedAt},
+			{ID: "failed", Number: 2, Agent: "jarvis", Status: session.StatusError, UpdatedAt: recentUpdatedAt},
+		},
+		messages: map[string][]session.Message{
+			"web":    {{Role: core.RoleUser, TextContent: "web activity", Sequence: 0}},
+			"failed": {{Role: core.RoleUser, TextContent: "failed activity", Sequence: 0}},
+		},
+		messageCalls: map[string]int{},
+	}
+	memStore, err := memorydb.NewStore(memorydb.Config{Path: filepath.Join(t.TempDir(), "memory.db")})
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	defer memStore.Close()
+
+	input, err := collectMemoryUpdateRecentInput(ctx, memStore, sessStore, "jarvis", checkpoint, DefaultUpdateRecentMaxInputChars)
+	if err != nil {
+		t.Fatalf("collectMemoryUpdateRecentInput: %v", err)
+	}
+	if !strings.Contains(input.Text, "web activity") {
+		t.Fatalf("input text = %q, want active web session activity", input.Text)
+	}
+	if strings.Contains(input.Text, "failed activity") {
+		t.Fatalf("input text = %q, want errored session excluded", input.Text)
+	}
+	if input.Offsets["web"] != 1 {
+		t.Fatalf("offsets = %#v, want web offset 1", input.Offsets)
+	}
+}
+
+func TestListMemorySourceSessionsMergesStatusesNewestFirst(t *testing.T) {
+	ctx := context.Background()
+	summaries := make([]session.SessionSummary, 0, 403)
+	for i := 0; i < 400; i++ {
+		status := session.StatusComplete
+		if i%2 == 1 {
+			status = session.StatusActive
+		}
+		summaries = append(summaries, session.SessionSummary{
+			ID:     "s-" + strconv.Itoa(i),
+			Number: int64(i + 1),
+			Agent:  "jarvis",
+			Status: status,
+		})
+	}
+	summaries = append(summaries,
+		session.SessionSummary{ID: "error", Number: 401, Agent: "jarvis", Status: session.StatusError},
+		session.SessionSummary{ID: "interrupted", Number: 402, Agent: "jarvis", Status: session.StatusInterrupted},
+		session.SessionSummary{ID: "other-agent", Number: 403, Agent: "other", Status: session.StatusActive},
+	)
+	sessStore := &updateRecentCountingStore{summaries: summaries, messageCalls: map[string]int{}}
+
+	got, err := listMemorySourceSessions(ctx, sessStore, "jarvis")
+	if err != nil {
+		t.Fatalf("listMemorySourceSessions: %v", err)
+	}
+	if len(got) != 400 {
+		t.Fatalf("got %d sessions, want 400 complete and active jarvis sessions", len(got))
+	}
+	for i, summary := range got {
+		if want := int64(400 - i); summary.Number != want {
+			t.Fatalf("got[%d].Number = %d, want %d (newest first)", i, summary.Number, want)
+		}
+	}
+	// Each status has 200 sessions: one full page and one empty page.
+	if sessStore.listCalls != 4 {
+		t.Fatalf("List calls = %d, want 4", sessStore.listCalls)
+	}
+
+	all, err := listMemorySourceSessions(ctx, sessStore, "")
+	if err != nil {
+		t.Fatalf("listMemorySourceSessions (all agents): %v", err)
+	}
+	if len(all) != 401 || all[0].ID != "other-agent" {
+		t.Fatalf("all agents = %d sessions starting %q, want 401 starting other-agent", len(all), all[0].ID)
 	}
 }
 
@@ -659,11 +750,24 @@ type updateRecentCountingStore struct {
 	messageCalls    map[string]int
 	messageLimits   []int
 	lastListOptions session.ListOptions
+	listStatuses    []session.SessionStatus
+}
+
+// listedStatuses returns each status filter in the order List first saw it.
+func (s *updateRecentCountingStore) listedStatuses() []session.SessionStatus {
+	out := []session.SessionStatus{}
+	for _, status := range s.listStatuses {
+		if !slices.Contains(out, status) {
+			out = append(out, status)
+		}
+	}
+	return out
 }
 
 func (s *updateRecentCountingStore) List(_ context.Context, opts session.ListOptions) ([]session.SessionSummary, error) {
 	s.listCalls++
 	s.lastListOptions = opts
+	s.listStatuses = append(s.listStatuses, opts.Status)
 	result := make([]session.SessionSummary, 0)
 	for _, summary := range s.summaries {
 		if opts.Status != "" && summary.Status != opts.Status {

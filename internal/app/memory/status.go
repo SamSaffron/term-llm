@@ -82,12 +82,12 @@ func Status(opts StatusOptions) error {
 		row.LastMinedAt = &minedAtCopy
 	}
 
-	complete, err := listCompleteSessions(ctx, sessStore)
+	sourceSessions, err := listMemorySourceSessions(ctx, sessStore, "")
 	if err != nil {
-		return fmt.Errorf("list complete sessions: %w", err)
+		return fmt.Errorf("list memory source sessions: %w", err)
 	}
 
-	for _, summary := range complete {
+	for _, summary := range sourceSessions {
 		sess, err := sessStore.Get(ctx, summary.ID)
 		if err != nil {
 			return fmt.Errorf("get session %s: %w", summary.ID, err)

@@ -443,49 +443,28 @@ func memoryCompactRecentUserPrompt(candidateRecent string) string {
 }
 
 func listUpdateRecentSessions(ctx context.Context, sessStore session.Store, agentName string, updatedAtOrAfter time.Time, current *session.Session) ([]memoryUpdateRecentSession, error) {
-	const pageSize = 200
+	summaries, err := listMemorySourceSessions(ctx, sessStore, agentName)
+	if err != nil {
+		return nil, fmt.Errorf("list memory source sessions: %w", err)
+	}
 
-	var beforeNumber int64
 	seen := map[string]struct{}{}
-	sessions := make([]memoryUpdateRecentSession, 0, pageSize+1)
+	sessions := make([]memoryUpdateRecentSession, 0, len(summaries)+1)
+	for _, summary := range summaries {
+		// Keep custom stores that ignore List filters from leaking another
+		// agent or an older session into this update. UpdatedAt is compared in
+		// Go because existing SQLite rows may contain different UTC offsets.
+		if sessionAgentOrDefault(summary.Agent) != agentName || (!updatedAtOrAfter.IsZero() && summary.UpdatedAt.Before(updatedAtOrAfter)) {
+			continue
+		}
 
-	for {
-		complete, err := sessStore.List(ctx, session.ListOptions{
-			Agent:            agentName,
-			Status:           session.StatusComplete,
-			Limit:            pageSize,
-			BeforeNumber:     beforeNumber,
-			SortByNumberDesc: true,
+		sessions = append(sessions, memoryUpdateRecentSession{
+			ID:        summary.ID,
+			Number:    summary.Number,
+			Status:    summary.Status,
+			UpdatedAt: summary.UpdatedAt,
 		})
-		if err != nil {
-			return nil, fmt.Errorf("list complete sessions: %w", err)
-		}
-
-		for _, summary := range complete {
-			// Keep custom stores that ignore List filters from leaking another
-			// agent or an older session into this update. UpdatedAt is compared in
-			// Go because existing SQLite rows may contain different UTC offsets.
-			if sessionAgentOrDefault(summary.Agent) != agentName || (!updatedAtOrAfter.IsZero() && summary.UpdatedAt.Before(updatedAtOrAfter)) {
-				continue
-			}
-
-			sessions = append(sessions, memoryUpdateRecentSession{
-				ID:        summary.ID,
-				Number:    summary.Number,
-				Status:    summary.Status,
-				UpdatedAt: summary.UpdatedAt,
-			})
-			seen[summary.ID] = struct{}{}
-		}
-
-		if len(complete) < pageSize {
-			break
-		}
-		lastNumber := complete[len(complete)-1].Number
-		if lastNumber <= 0 {
-			return nil, fmt.Errorf("complete session %s is missing a session number", complete[len(complete)-1].ID)
-		}
-		beforeNumber = lastNumber
+		seen[summary.ID] = struct{}{}
 	}
 
 	if current != nil {
