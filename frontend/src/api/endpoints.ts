@@ -10,6 +10,7 @@ import type {
   ActivityJobDetail,
   SharingCapabilitiesResponse as GeneratedSharingCapabilitiesResponse,
   SessionShareResponse as GeneratedSessionShareResponse,
+  AgentCatalogResponse,
   ShareVisibility as GeneratedShareVisibility,
 } from './generated/types';
 export type SessionSearchSort = 'relevance' | 'newest' | 'oldest';
@@ -200,6 +201,7 @@ export const endpoints = (api: APIClient) => ({
   capabilities: () => api.get<Record<string, unknown>>('/v1/capabilities'),
   sharingCapabilities: () => api.get<SharingCapabilitiesResponse>('/v1/sharing/capabilities'),
   providers: () => api.get<Record<string, unknown>>('/v1/providers'),
+  agents: (signal?: AbortSignal) => api.get<AgentCatalogResponse>('/v1/agents', signal),
   verifyToken: (token: string) =>
     api.json<Record<string, unknown>>(
       '/v1/providers',

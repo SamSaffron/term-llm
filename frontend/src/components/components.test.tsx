@@ -5464,6 +5464,7 @@ describe('Preact-owned chat surfaces', () => {
   });
 
   it.each([
+    ['/agents', 'agents'],
     ['/stats', 'stats'],
     ['/inspect', 'inspect'],
     ['/model', 'settings'],

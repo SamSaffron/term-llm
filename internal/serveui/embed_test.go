@@ -209,15 +209,21 @@ func TestProductionBundleSizeBudgets(t *testing.T) {
 		// Display-only multi-user attribution adds conversion, bylines and viewer
 		// controls: measured 538.1/157.85 kB raw/gzip (Go level 6). Keep the raw
 		// cap; add only 300 bytes to the gzip allowance, not a new ~1% cushion.
-		"dist/app.js":           {raw: 538_500, gzip: 158_000},
+		// The /agents command, its catalog endpoint and lazy loader: measured
+		// 538.0/158.13 kB. Keep the raw cap; add 300 bytes of gzip allowance.
+		// The modal and CSS stay separately bounded below.
+		"dist/app.js":           {raw: 538_500, gzip: 158_450},
 		"dist/chunks/Panels.js": {raw: 32_000, gzip: 11_000},
 		// Panel splitting adds a shared-import edge to Lightbox: measured 8.03/3.21 kB.
 		// Pausing transcript media while a video is open brings it to 8.16/3.27 kB.
 		// Sprite icons for its arrow, zoom and download marks: 8.35/3.29 kB.
-		"dist/chunks/Lightbox.js":    {raw: 8_450, gzip: 3_350},
-		"dist/assets/Lightbox.css":   {raw: 4_000, gzip: 1_400},
-		"dist/chunks/StatsModal.js":  {raw: 8_000, gzip: 3_000},
-		"dist/assets/StatsModal.css": {raw: 5_000, gzip: 1_600},
+		"dist/chunks/Lightbox.js":  {raw: 8_450, gzip: 3_350},
+		"dist/assets/Lightbox.css": {raw: 4_000, gzip: 1_400},
+		// The /agents catalog measured 2.69/1.22 kB JS and 2.98/1.04 kB CSS.
+		"dist/chunks/AgentsModal.js":  {raw: 3_200, gzip: 1_450},
+		"dist/assets/AgentsModal.css": {raw: 3_500, gzip: 1_250},
+		"dist/chunks/StatsModal.js":   {raw: 8_000, gzip: 3_000},
+		"dist/assets/StatsModal.css":  {raw: 5_000, gzip: 1_600},
 		// The header context meter's details card measured 3.18/1.33 kB JS and
 		// 2.53/0.95 kB CSS; it loads on the meter's first hover, focus or open.
 		"dist/chunks/ContextCard.js":  {raw: 3_500, gzip: 1_500},

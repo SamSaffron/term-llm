@@ -116,6 +116,7 @@ func (s *serveServer) httpHandler() http.Handler {
 	inner.HandleFunc("/v1/models", s.auth(s.cors(s.handleModels)))
 	inner.HandleFunc("/v1/mentions/search", s.auth(s.cors(s.handleMentionSearch)))
 	inner.HandleFunc("/v1/skills", s.auth(s.cors(s.handleDraftSkills)))
+	inner.HandleFunc("/v1/agents", s.auth(s.cors(s.handleAgentCatalog)))
 	inner.HandleFunc("/v1/responses", s.auth(s.cors(s.handleResponses)))
 	inner.HandleFunc("/v1/responses/", s.auth(s.cors(s.handleResponseByID)))
 	inner.HandleFunc("/v1/chat/completions", s.auth(s.cors(s.handleChatCompletions)))

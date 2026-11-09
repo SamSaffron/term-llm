@@ -32,6 +32,7 @@ export type MentionSearchItem = ServeMentionSearchItem;
 export type MentionSearchResponse = ServeMentionSearchResponse;
 
 export const SLASH_COMMANDS = [
+  { command: '/agents', description: 'Browse available agents', streamingSafe: true },
   { command: '/thinking', description: 'Toggle reasoning display', streamingSafe: true },
   {
     command: '/inspect',

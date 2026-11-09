@@ -28,12 +28,12 @@ func (s *serveServer) handleDraftSkills(w http.ResponseWriter, r *http.Request) 
 	}
 }
 
-// writeSkillCatalog lists setup's skills; archive, pin and rename are Web-only commands.
+// writeSkillCatalog lists setup's skills; agents, archive, pin and rename are Web-only commands.
 func (s *serveServer) writeSkillCatalog(w http.ResponseWriter, setup *skills.Setup, runs any) {
 	items, diagnostics := []skills.UserCatalogEntry{}, []skills.UserCatalogDiagnostic{}
 	if setup != nil && setup.Registry != nil {
 		var err error
-		if items, diagnostics, err = setup.Registry.UserCatalog(chatui.CommandNames("archive", "pin", "rename")); err != nil {
+		if items, diagnostics, err = setup.Registry.UserCatalog(chatui.CommandNames("agents", "archive", "pin", "rename")); err != nil {
 			writeOpenAIError(w, http.StatusInternalServerError, "server_error", err.Error())
 			return
 		}

@@ -568,6 +568,11 @@ function ConversationComposer() {
     if (store.runEngine.compacting.peek() && (!store.canSteer.peek() || value.startsWith('/')))
       return;
     const command = value.toLowerCase();
+    if (command === '/agents') {
+      store.prompt.value = '';
+      store.modal.value = 'agents';
+      return;
+    }
     if (command === '/stats' || command === '/inspect') {
       store.prompt.value = '';
       store.modal.value = command === '/inspect' ? 'inspect' : 'stats';

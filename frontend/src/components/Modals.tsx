@@ -66,6 +66,9 @@ const LazyBranchContext = lazyModal('Start a conversation path', () =>
 const LazyBranchTree = lazyModal('Conversation paths', () =>
   import('./BranchModals').then(({ BranchTree }) => BranchTree),
 );
+const LazyAgents = lazyModal('Agents', () =>
+  import('./AgentsModal').then(({ AgentsModal }) => AgentsModal),
+);
 const LazySkills = lazyModal('Skills', () => import('./SkillsModal').then(({ Skills }) => Skills));
 const LazyProjectPicker = lazyModal('Add project', () =>
   import('./ProjectPicker').then(({ ProjectPicker }) => ProjectPicker),
@@ -89,6 +92,7 @@ export function preloadDeferredModals(): Promise<unknown> {
       LazyBranchContext,
       LazyBranchTree,
       LazySkills,
+      LazyAgents,
       LazyProjectPicker,
       LazyProjectAssignment,
       LazyWorktrees,
@@ -677,6 +681,8 @@ export function Modals() {
       return <LazyWidgets />;
     case 'skills':
       return <LazySkills />;
+    case 'agents':
+      return <LazyAgents />;
     case 'commit':
       return <LazyCommitModal />;
     case 'share':

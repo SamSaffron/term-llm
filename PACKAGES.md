@@ -37,6 +37,7 @@ One line per root-module package, generated from package doc comments by `make d
 - `internal/app/runtime/oncomplete` — runs configured completion hooks.
 - `internal/app/runtime/progressive` — runs the progress-tool loop with work and finalization budgets for ask and serve.
 - `internal/app/serve` — hosts `term-llm serve`: HTTP and Hub routes, the shared runner, children and live runtime.
+- `internal/app/serve/agentcatalog` — lists discoverable agents for the Web UI's /agents catalog.
 - `internal/app/serve/authorship` — handles display-only proxy identity and author directory caching.
 - `internal/app/serve/hub` — holds the Hub server implementation behind explicit options.
 - `internal/app/serve/hubnode` — registers a reverse Web node with its Hub and diagnoses node-to-Hub connectivity failures.

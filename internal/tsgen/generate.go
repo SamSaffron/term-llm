@@ -26,6 +26,7 @@ var Registry = []string{
 	"internal/app/serve.sessionShareRequest", "internal/app/serve.sessionShareResponse", "internal/app/serve.sharingCapabilitiesResponse",
 	"internal/app/serve.serveShellCreateRequest", "internal/app/serve.serveShellInputRequest", "internal/app/serve.sessionInterruptRequest", "internal/app/serve.sessionRuntimeGoalRequest",
 	"internal/app/serve.sessionMessagesResponse",
+	"internal/app/serve/agentcatalog.Response",
 	"internal/app/serve.serveSessionActivity",
 	"internal/linkeddevices.Status",
 }
@@ -117,6 +118,8 @@ var bareNamePackages = map[string]bool{
 // Wire names survive Go declaration moves/renames. Add overrides only when a
 // declaration enters the registered closure; RunEvent is currently the sole jobs DTO.
 var wireNames = map[string]string{
+	"internal/app/serve/agentcatalog.Entry":                      "AgentCatalogEntry",
+	"internal/app/serve/agentcatalog.Response":                   "AgentCatalogResponse",
 	"internal/app/serve/sessionactivity.ActivityJobDetail":       "ActivityJobDetail",
 	"internal/app/serve/sessionactivity.ChildRunProjection":      "ChildRunProjection",
 	"internal/app/serve/sessionactivity.SessionActivityResponse": "SessionActivityResponse",
