@@ -544,6 +544,7 @@ func (rt *serveRuntime) lockForClose(ctx context.Context) bool {
 }
 
 func (rt *serveRuntime) closeLocked(ctx context.Context, drain bool) {
+	rt.engine.CloseCodeModeRuntime(rt.borrowedEngine)
 	if rt.spawnRunner != nil && drain {
 		if err := rt.spawnRunner.Drain(ctx); err != nil {
 			shutdownCtx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
@@ -1906,6 +1907,7 @@ func (rt *serveRuntime) runOnce(ctx context.Context, stateful bool, replaceHisto
 	var activityReservation *tools.SharedShellActivity
 	activityCommitted := false
 	if setup := serveRuntimeSetupFromContext(ctx); setup != nil {
+		defer rt.engine.ScopeCodeModules()()
 		if err := setup(&req); err != nil {
 			return serveRunResult{}, err
 		}

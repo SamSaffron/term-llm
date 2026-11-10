@@ -24,6 +24,13 @@ func (e *Engine) applyToolOutputTruncation(output core.ToolOutput) core.ToolOutp
 	cc := e.compactionConfig
 	e.callbackMu.RUnlock()
 
+	if output.PreserveJSON {
+		limit := maxChars
+		if cc != nil && cc.MaxToolResultChars > 0 && (limit <= 0 || cc.MaxToolResultChars < limit) {
+			limit = cc.MaxToolResultChars
+		}
+		return projectCellOutput(output, limit)
+	}
 	if maxChars > 0 {
 		output = core.TruncateToolOutput(output, maxChars)
 	}

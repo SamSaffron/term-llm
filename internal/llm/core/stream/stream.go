@@ -21,8 +21,9 @@ var ErrClosed = errors.New("stream closed")
 // goroutine hangs when a consumer stops reading.
 // Zero value is a no-op sender (for cases where events == nil).
 type Sender struct {
-	ctx context.Context
-	ch  chan<- core.Event
+	ctx   context.Context
+	ch    chan<- core.Event
+	route func() Sender
 }
 
 // NewSender returns a Sender that delivers events to ch until ctx is done.
@@ -31,15 +32,28 @@ func NewSender(ctx context.Context, ch chan<- core.Event) Sender {
 	return Sender{ctx: ctx, ch: ch}
 }
 
+// NewRoutedSender resolves the destination for each event. The resolver must
+// return a plain Sender and synchronize access to its destination. No relay
+// goroutine is kept alive when an asynchronous producer changes turns.
+func NewRoutedSender(resolve func() Sender) Sender { return Sender{route: resolve} }
+
+func (s Sender) destination() Sender {
+	if s.route != nil {
+		return s.route()
+	}
+	return s
+}
+
 // Context returns the context bounding sends.
-func (s Sender) Context() context.Context { return s.ctx }
+func (s Sender) Context() context.Context { return s.destination().ctx }
 
 // Chan returns the underlying event channel (nil for a no-op sender).
-func (s Sender) Chan() chan<- core.Event { return s.ch }
+func (s Sender) Chan() chan<- core.Event { return s.destination().ch }
 
 // Send sends an event, blocking until delivered, context cancelled, or channel closed.
 // Returns nil on success, context error on cancellation, or a generic error on closed channel.
 func (s Sender) Send(event core.Event) error {
+	s = s.destination()
 	if s.ch == nil {
 		return nil
 	}
@@ -55,6 +69,7 @@ func (s Sender) Send(event core.Event) error {
 // TrySend attempts a non-blocking send. Returns true if the event was delivered.
 // Like Send, it recovers from closed-channel panics.
 func (s Sender) TrySend(event core.Event) (sent bool) {
+	s = s.destination()
 	if s.ch == nil {
 		return false
 	}

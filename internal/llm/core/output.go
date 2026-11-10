@@ -160,6 +160,7 @@ func NormalizeMedia(media []MediaArtifact, images []string) []MediaArtifact {
 // ToolOutput is the structured return type from Tool.Execute().
 // Most tools only populate Content. Edit/media tools also populate Diffs/Media.
 type ToolOutput struct {
+	ChildCalls             []CodeModeCallOutcome          `json:"-"` // Bounded nested audit, not provider content.
 	Content                string                         // Text result (sent to LLM)
 	ContentParts           []ToolContentPart              `json:"content_parts,omitempty"` // Structured multimodal tool content for provider formatting
 	Diffs                  []DiffData                     // Structured diff data (for UI rendering)
@@ -172,6 +173,9 @@ type ToolOutput struct {
 	TrustedUserInput       string                         `json:"-"`                          // Canonical direct first-party human input for Guardian; empty for ordinary tool output
 	TimedOut               bool                           // Set by tools that support timeouts (e.g. shell); drives ToolSuccess=false without content sniffing
 	IsError                bool                           // Set when a tool returned an unsuccessful result (e.g. shell exit code != 0); copied to ToolResult.IsError for UI/history and provider error metadata
+	Programmatic           json.RawMessage                `json:"-"` // Bounded raw MCP programmatic envelope: {"content":[...],"structuredContent":...,"isError":bool}. Non-image bytes capped at 4 MiB; image blocks included (engine replaces them with handles before code_mode projection). Nil when unavailable or oversized.
+	ProgrammaticOversized  bool                           `json:"-"` // Set when the non-image portion of the MCP programmatic envelope exceeded the 4 MiB budget. Programmatic is nil; IsError reflects the server's dispatched outcome.
+	PreserveJSON           bool                           `json:"-"` // Set by code_mode to bypass model-text truncation during LLM projection.
 }
 
 // TextOutput creates a ToolOutput with only text content.
@@ -181,6 +185,8 @@ func TextOutput(s string) ToolOutput {
 
 // ToolResult is the output from executing a tool call.
 type ToolResult struct {
+	ChildCalls      []CodeModeCallOutcome `json:"child_calls,omitempty"`   // Audit/display only.
+	PreserveJSON    bool                  `json:"preserve_json,omitempty"` // Persisted format guard, never an executable grant.
 	ID              string
 	Name            string
 	Content         string            // Clean text sent to LLM
@@ -277,8 +283,10 @@ type Event struct {
 	ToolFileChanges            []FileChange    // Persisted attributed changes
 	ToolFilesystemObservations []FilesystemObservationSummary
 	ToolOutputClaimDiagnostics []OutputClaimDiagnostic
-	ToolImages                 []string        // Legacy image paths from image tools
-	ToolMedia                  []MediaArtifact // Ordered image/video/audio artifacts from presentation tools
+	ToolImages                 []string          // Legacy image paths from image tools
+	ToolMedia                  []MediaArtifact   // Ordered image/video/audio artifacts from presentation tools
+	ToolContentParts           []ToolContentPart `json:"tool_content_parts,omitempty"`  // For EventToolExecEnd: ordered multimodal content parts (e.g. inline screenshots) for serve event surfaces.
+	ParentToolCallID           string            `json:"parent_tool_call_id,omitempty"` // For EventToolExecStart/End: stable ID of the parent tool invocation for nested child call attribution.
 	Use                        *Usage
 	Context                    *ContextUsage // For EventContextUsage
 	Err                        error
@@ -570,6 +578,8 @@ func ToolResultMessageFromOutput(id, name string, output ToolOutput, thoughtSig 
 				ID:              id,
 				Name:            name,
 				Content:         output.Content,
+				PreserveJSON:    output.PreserveJSON,
+				ChildCalls:      append([]CodeModeCallOutcome(nil), output.ChildCalls...),
 				ContentParts:    output.ContentParts,
 				Diffs:           output.Diffs,
 				Images:          output.Images,

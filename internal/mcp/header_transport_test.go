@@ -69,7 +69,9 @@ func TestCreateHTTPTransport_RedirectCredentials(t *testing.T) {
 					t.Fatal(err)
 				}
 				httpClient := transport.(*sdkmcp.StreamableClientTransport).HTTPClient
-				wrapped := httpClient.Transport.(*headerTransport)
+				// Outermost layer is limitedBodyTransport; unwrap to reach headerTransport.
+				lbt := httpClient.Transport.(*limitedBodyTransport)
+				wrapped := lbt.base.(*headerTransport)
 				base := wrapped.base.(*http.Transport)
 				defer base.CloseIdleConnections()
 				if destination == "HTTPS downgrade" {

@@ -11690,3 +11690,225 @@ describe('transcript audio cards', () => {
     store.dispose();
   });
 });
+
+it('expands code-mode JavaScript and ordered results without exposing nested tool cards', async () => {
+  const store = createStore();
+  store.thinking.detailsExpanded.value = true;
+  store.sessions.value = [
+    {
+      ...store.sessions.value[0],
+      messages: [
+        {
+          id: 'cell-output',
+          role: 'tool-group',
+          content: '',
+          created: 1,
+          tools: [
+            {
+              id: 'cell',
+              name: 'code_mode',
+              arguments: JSON.stringify({
+                code: 'const frame = await tools.screenshot({});\nimage(frame);',
+              }),
+              status: 'done',
+              images: ['/ui/images/frame.png'],
+              contentParts: [
+                { type: 'text', text: 'before screenshot' },
+                { type: 'image', url: '/ui/images/frame.png' },
+                { type: 'text', text: 'after screenshot' },
+              ],
+            },
+            { id: 'child', name: 'computer__click', status: 'done', parentToolCallId: 'cell' },
+          ],
+        },
+      ],
+    },
+  ];
+  const { container } = render(
+    <StoreContext.Provider value={store}>
+      <Transcript />
+    </StoreContext.Provider>,
+  );
+  const parts = container.querySelector('.tool-ordered-output')!;
+  expect(parts.children[0]).toHaveTextContent('before screenshot');
+  expect(parts.children[1].querySelector('img')).toHaveAttribute('src', '/ui/images/frame.png');
+  expect(parts.children[2]).toHaveTextContent('after screenshot');
+  expect(container.querySelectorAll('img[src="/ui/images/frame.png"]')).toHaveLength(1);
+  expect(screen.queryByText('from code_mode (cell)')).not.toBeInTheDocument();
+  expect(container.querySelector('[data-tool-id="child"]')).toBeNull();
+  expect(screen.queryByText('computer__click')).not.toBeInTheDocument();
+  expect(await screen.findByText('JavaScript')).toBeInTheDocument();
+  expect(screen.getByText('Result')).toBeInTheDocument();
+  await waitFor(() =>
+    expect(container.querySelector('code.language-javascript .hljs-keyword')).not.toBeNull(),
+  );
+  expect(container.querySelector('code.language-javascript')).toHaveTextContent(
+    'const frame = await tools.screenshot({});',
+  );
+  expect(store.sessions.value[0].messages[0].tools).toHaveLength(2);
+  store.dispose();
+});
+
+it('keeps code-mode source and results behind expansion while genuine direct calls stay visible', async () => {
+  const store = createStore();
+  const source = 'const result = await tools.read_file({ path: "x" });\ntext(result);';
+  store.sessions.value[0].messages = [
+    {
+      id: 'cell-output',
+      role: 'tool-group',
+      content: '',
+      created: 1,
+      tools: [
+        {
+          id: 'cell',
+          name: 'code_mode',
+          arguments: JSON.stringify({ code: source, state: { cursor: 42 } }),
+          status: 'done',
+          result: 'selected result',
+          contentParts: [{ type: 'text', text: 'selected result' }],
+        },
+        { id: 'nested', name: 'read_file', status: 'done', parentToolCallId: 'cell' },
+      ],
+    },
+  ];
+  const { container } = render(
+    <StoreContext.Provider value={store}>
+      <Transcript />
+    </StoreContext.Provider>,
+  );
+  const toggle = screen.getByRole('button', { name: /code_mode/ });
+  expect(toggle).toHaveAttribute('aria-expanded', 'false');
+  expect(toggle).not.toHaveTextContent('cursor');
+  expect(screen.queryByText('selected result')).not.toBeInTheDocument();
+  expect(container.querySelector('code.language-javascript')).toBeNull();
+  fireEvent.click(toggle);
+  await waitFor(() =>
+    expect(container.querySelector('code.language-javascript .hljs-keyword')).not.toBeNull(),
+  );
+  expect(screen.getByText('selected result')).toBeInTheDocument();
+  expect(container.querySelector('[data-tool-id="nested"]')).toBeNull();
+  fireEvent.click(toggle);
+  expect(screen.queryByText('selected result')).not.toBeInTheDocument();
+  act(() => {
+    store.sessions.value = [
+      {
+        ...store.sessions.value[0],
+        messages: [
+          {
+            id: 'direct',
+            role: 'tool-group',
+            content: '',
+            created: 2,
+            tools: [
+              {
+                id: 'direct-read',
+                name: 'read_file',
+                status: 'done',
+                arguments: '{"path":"direct.txt"}',
+              },
+            ],
+          },
+        ],
+      },
+    ];
+  });
+  expect(screen.getByText('read_file')).toBeInTheDocument();
+  expect(container.querySelector('[data-tool-id="direct-read"]')).not.toBeNull();
+  store.dispose();
+});
+
+it('renders code-mode fence and HTML-like source as code rather than executable markup', async () => {
+  const store = createStore();
+  store.thinking.detailsExpanded.value = true;
+  const source = 'const text = `\n```\n<img src="/injected.png" onerror="alert(1)">\n```\n`;';
+  store.sessions.value[0].messages = [
+    {
+      id: 'cell-output',
+      role: 'tool-group',
+      content: '',
+      created: 1,
+      tools: [
+        {
+          id: 'cell',
+          name: 'code_mode',
+          status: 'done',
+          arguments: JSON.stringify({ code: source }),
+        },
+      ],
+    },
+  ];
+  const { container } = render(
+    <StoreContext.Provider value={store}>
+      <Transcript />
+    </StoreContext.Provider>,
+  );
+  await waitFor(() => expect(container.querySelector('code.language-javascript')).not.toBeNull());
+  expect(container.querySelector('code.language-javascript')?.textContent?.trimEnd()).toBe(source);
+  expect(container.querySelector('img')).toBeNull();
+  expect(container.querySelector('[onerror]')).toBeNull();
+  store.dispose();
+});
+
+it.each(['spawn_script', 'wait_script', 'cancel_script'])(
+  'renders %s as a compact code-mode observation without audit JSON',
+  async (name) => {
+    const store = createStore();
+    store.thinking.detailsExpanded.value = true;
+    const result = JSON.stringify({
+      status: 'completed',
+      cell_id: 'original-cell',
+      tool_call_id: 'observation',
+      state_committed: name === 'spawn_script',
+      calls: [{ name: 'hidden_backend_tool' }],
+    });
+    store.sessions.value[0].messages = [
+      {
+        id: 'observation-output',
+        role: 'tool-group',
+        content: '',
+        created: 1,
+        tools: [
+          {
+            id: 'observation',
+            name,
+            status: 'done',
+            result,
+            arguments: JSON.stringify(
+              name === 'spawn_script'
+                ? { code: 'text("visible result");' }
+                : { cell_id: 'original-cell' },
+            ),
+            contentParts: [
+              { type: 'text', text: 'visible result' },
+              { type: 'text', text: result },
+            ],
+          },
+          {
+            id: 'nested',
+            name: 'hidden_backend_tool',
+            status: 'done',
+            parentToolCallId: 'original-cell',
+          },
+        ],
+      },
+    ];
+    const { container } = render(
+      <StoreContext.Provider value={store}>
+        <Transcript />
+      </StoreContext.Provider>,
+    );
+    expect(screen.getByText('visible result')).toBeInTheDocument();
+    expect(screen.queryByText('state_committed', { exact: false })).not.toBeInTheDocument();
+    expect(container.querySelector('[data-tool-id="nested"]')).toBeNull();
+    expect(screen.queryByText('hidden_backend_tool')).not.toBeInTheDocument();
+    if (name === 'spawn_script') {
+      await waitFor(() =>
+        expect(container.querySelector('code.language-javascript')).not.toBeNull(),
+      );
+    } else {
+      expect(container.querySelector('code.language-javascript')).toBeNull();
+      expect(screen.queryByText('original-cell', { exact: false })).not.toBeInTheDocument();
+    }
+    store.dispose();
+  },
+);

@@ -4,9 +4,156 @@ package skills
 
 import (
 	"fmt"
+	"path/filepath"
 	"regexp"
 	"strings"
 )
+
+// maxCodeModeFiles is the maximum number of source files in a code-mode manifest.
+const maxCodeModeFiles = 32
+
+// allowedModuleExts lists the file extensions permitted for code-mode source files.
+var allowedModuleExts = map[string]bool{
+	".mjs": true,
+	".js":  true,
+}
+
+// CodeModeRequires lists exact registered tool identities needed by skill modules.
+// These are dependencies only; they never register, enable, or grant tools.
+type CodeModeRequires struct {
+	Tools []string `yaml:"tools,omitempty"`
+}
+
+// CodeModeManifest describes the ES module sources shipped with a skill.
+// Parsing and validation happen at load time; actual admission, trust decisions,
+// and source snapshotting are handled by the host at activation.
+type CodeModeManifest struct {
+	// Module is the entry-point file, relative to the skill root.
+	// It must appear in Files.
+	Module string `yaml:"module"`
+
+	// Files lists all declared source files, relative to the skill root.
+	// At most 32 entries; each must use a supported extension (.mjs, .js).
+	Files []string `yaml:"files"`
+
+	// Types is an optional TypeScript declaration file (.d.ts), relative to root.
+	Types string `yaml:"types,omitempty"`
+
+	// Requires declares dependencies; it never registers, enables, or grants tools.
+	Requires CodeModeRequires `yaml:"requires,omitempty"`
+}
+
+// Validate checks the manifest fields without reading any files from disk.
+func (m *CodeModeManifest) Validate() error {
+	if m == nil {
+		return nil
+	}
+	if m.Module == "" {
+		return fmt.Errorf("code-mode: module is required")
+	}
+	if err := validateCodeModeSourcePath(m.Module); err != nil {
+		return fmt.Errorf("code-mode: module: %w", err)
+	}
+	if len(m.Files) == 0 {
+		return fmt.Errorf("code-mode: files must not be empty")
+	}
+	if len(m.Files) > maxCodeModeFiles {
+		return fmt.Errorf("code-mode: files: at most %d source files allowed, got %d", maxCodeModeFiles, len(m.Files))
+	}
+	entryInFiles := false
+	seen := make(map[string]bool, len(m.Files))
+	for _, f := range m.Files {
+		if err := validateCodeModeSourcePath(f); err != nil {
+			return fmt.Errorf("code-mode: files %q: %w", f, err)
+		}
+		lower := strings.ToLower(filepath.ToSlash(f))
+		if seen[lower] {
+			return fmt.Errorf("code-mode: files: duplicate or case-alias entry %q", f)
+		}
+		seen[lower] = true
+		if f == m.Module {
+			entryInFiles = true
+		}
+	}
+	if !entryInFiles {
+		return fmt.Errorf("code-mode: module %q must be listed in files", m.Module)
+	}
+	if m.Types != "" {
+		if err := validateCodeModeTypesPath(m.Types); err != nil {
+			return fmt.Errorf("code-mode: types: %w", err)
+		}
+	}
+	for _, tool := range m.Requires.Tools {
+		if !toolNamePattern.MatchString(tool) {
+			return fmt.Errorf("code-mode: requires.tools: invalid tool name %q", tool)
+		}
+	}
+	return nil
+}
+
+// toolNamePattern validates tool names per the registry convention.
+var toolNamePattern = regexp.MustCompile(`^[A-Za-z0-9_][A-Za-z0-9_.:-]*$`)
+
+// validateCodeModeSourcePath checks a file path declared in a code-mode manifest.
+// It rejects absolute paths, parent traversal, backslashes, drive letters,
+// unsupported schemes, empty components, and enforces allowed extensions.
+func validateCodeModeSourcePath(p string) error {
+	if p == "" {
+		return fmt.Errorf("path must not be empty")
+	}
+	if strings.ContainsAny(p, "\\") {
+		return fmt.Errorf("backslashes are not allowed: %q", p)
+	}
+	if filepath.IsAbs(p) {
+		return fmt.Errorf("absolute path not allowed: %q", p)
+	}
+	if strings.Contains(p, ":") {
+		return fmt.Errorf("scheme specifier not allowed: %q", p)
+	}
+	clean := filepath.ToSlash(filepath.Clean(p))
+	if strings.HasPrefix(clean, "..") {
+		return fmt.Errorf("path traversal not allowed: %q", p)
+	}
+	for _, part := range strings.Split(clean, "/") {
+		if part == "" || part == "." || part == ".." {
+			return fmt.Errorf("invalid path component in %q", p)
+		}
+	}
+	ext := strings.ToLower(filepath.Ext(p))
+	if !allowedModuleExts[ext] {
+		return fmt.Errorf("unsupported file extension %q (allowed: .mjs, .js): %q", ext, p)
+	}
+	return nil
+}
+
+// validateCodeModeTypesPath checks a types declaration file path.
+func validateCodeModeTypesPath(p string) error {
+	if p == "" {
+		return fmt.Errorf("path must not be empty")
+	}
+	if strings.ContainsAny(p, "\\") {
+		return fmt.Errorf("backslashes are not allowed: %q", p)
+	}
+	if filepath.IsAbs(p) {
+		return fmt.Errorf("absolute path not allowed: %q", p)
+	}
+	if strings.Contains(p, ":") {
+		return fmt.Errorf("scheme specifier not allowed: %q", p)
+	}
+	clean := filepath.ToSlash(filepath.Clean(p))
+	if strings.HasPrefix(clean, "..") {
+		return fmt.Errorf("path traversal not allowed: %q", p)
+	}
+	for _, part := range strings.Split(clean, "/") {
+		if part == "" || part == "." || part == ".." {
+			return fmt.Errorf("invalid path component in %q", p)
+		}
+	}
+	if !strings.HasSuffix(strings.ToLower(p), ".d.ts") {
+		return fmt.Errorf("types file must have .d.ts extension: %q", p)
+	}
+	return nil
+}
 
 // SkillSource indicates where a skill was loaded from.
 type SkillSource int
@@ -106,6 +253,11 @@ type Skill struct {
 
 	// Tools declares script-backed tools that are registered when this skill is activated.
 	Tools []SkillToolDef `yaml:"-"`
+
+	// CodeMode describes the ES module sources shipped with this skill, if any.
+	// Set from the code-mode: frontmatter block; nil when absent.
+	// Trust and admission are determined by the host at activation time.
+	CodeMode *CodeModeManifest `yaml:"-"`
 
 	// Extras stores vendor-specific/unknown frontmatter fields
 	Extras map[string]any `yaml:"-"`

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	codemodetool "github.com/samsaffron/term-llm/internal/codemode/tool"
 
 	"github.com/samsaffron/term-llm/internal/llm/core"
 	"github.com/samsaffron/term-llm/internal/skills"
@@ -35,6 +36,7 @@ type ActivateSkillTool struct {
 	approval         *ApprovalManager
 	onActivated      SkillActivatedCallback
 	onToolsActivated SkillToolsRegisteredCallback
+	codemodetool.ActivationAdmission
 }
 
 // NewActivateSkillTool creates a new activate_skill tool.
@@ -124,15 +126,17 @@ func (t *ActivateSkillTool) Execute(ctx context.Context, args json.RawMessage) (
 		t.onToolsActivated(activation.ToolDefs, activation.BaseDir)
 	}
 
+	if err := t.AdmitCodeModule(activation); err != nil {
+		return core.ToolOutput{}, err
+	}
+
 	// Notify on every activation so an omitted allowlist clears a restriction
 	// left by the prior model-activated skill. Explicit empty remains restrictive.
 	if t.onActivated != nil {
 		t.onActivated(activation.AllowedTools, activation.AllowedToolsPresent)
 	}
 
-	response := skills.GenerateActivationResponse(activation.Skill, a.Prompt)
-
-	return core.TextOutput(response), nil
+	return core.TextOutput(codemodetool.ActivationInstructions(activation, a.Prompt)), nil
 }
 
 // Preview returns a short description of the tool call.

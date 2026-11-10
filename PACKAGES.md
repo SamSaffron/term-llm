@@ -45,6 +45,7 @@ One line per root-module package, generated from package doc comments by `make d
 - `internal/app/serve/liveprogress` — renders delegated-run events as templated voice progress notes.
 - `internal/app/serve/modelswap` — holds the provider-independent rules for how a mid-conversation model switch attempt ends.
 - `internal/app/serve/protocol` — encodes and parses the OSC 7770 markers that frame serve shell commands and output.
+- `internal/app/serve/servepath` — resolves filesystem paths for served media without HTTP state.
 - `internal/app/serve/server` — owns serve HTTP/platform behavior extracted from the command layer.
 - `internal/app/serve/sessionactivity` — builds bounded conversation-scoped agent and job-run read models.
 - `internal/app/serve/sessionsearch` — handles session-search HTTP validation, querying and projection.
@@ -74,6 +75,9 @@ One line per root-module package, generated from package doc comments by `make d
 - `internal/classify/typesafe` — implements the classify.Backend for TypeSafe System One.
 - `internal/clipboard` — reads and writes system clipboard text and images, with an OSC 52 fallback.
 - `internal/cliwire` — implements the opt-in wire audit proxy for authenticated CLI-backed providers.
+- `internal/codemode` — runs bounded, fresh QuickJS cells without ambient host authority.
+- `internal/codemode/presentation` — converts codemode structured tool content parts into serve-event and persistent-session payload maps.
+- `internal/codemode/tool` — adapts fresh QuickJS cells to the model-facing tool contract.
 - `internal/commitworkflow` — owns the read-only agent phases for native commits.
 - `internal/complexity` — provides the repository's versioned complexity analysis.
 - `internal/config` — defines term-llm's persisted settings and resolves providers, models and credentials.

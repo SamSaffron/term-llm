@@ -21,6 +21,7 @@ const (
 // SkillRunMetadata carries the resolved activation into a child engine without
 // requiring the child model to rediscover or activate the skill.
 type SkillRunMetadata struct {
+	CodeModeSkill       *skills.Skill // Host-resolved activation only; never restored from transcript text.
 	Name                string
 	Source              string
 	SourcePath          string

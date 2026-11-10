@@ -21,6 +21,7 @@ type frontmatterData struct {
 	AllowedTools  any               `yaml:"allowed-tools,omitempty"` // Can be string, list, or nil
 	Metadata      map[string]string `yaml:"metadata,omitempty"`
 	Tools         []SkillToolDef    `yaml:"tools,omitempty"`
+	CodeMode      *CodeModeManifest `yaml:"code-mode,omitempty"`
 }
 
 // ParseSkillMD parses a SKILL.md file and returns a Skill.
@@ -83,6 +84,14 @@ func parseSkillFrontmatter(frontmatter, body string, loadBody bool) (*Skill, err
 		Extras:        extras,
 		loaded:        loadBody,
 		Tools:         fm.Tools,
+		CodeMode:      fm.CodeMode,
+	}
+
+	// Validate code-mode manifest if present.
+	if skill.CodeMode != nil {
+		if err := skill.CodeMode.Validate(); err != nil {
+			return nil, err
+		}
 	}
 
 	// Parse allowed-tools from various formats while preserving whether the field
@@ -264,6 +273,7 @@ var standardFrontmatterKeys = map[string]bool{
 	"allowed-tools": true,
 	"metadata":      true,
 	"tools":         true,
+	"code-mode":     true,
 }
 
 // extractExtrasFromNode returns frontmatter keys that are not standard fields.

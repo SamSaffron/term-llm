@@ -114,6 +114,7 @@ func Run(ctx context.Context, args []string, opts Options, deps Dependencies) er
 		return err
 	}
 	engine := appruntime.NewEngine(provider, cfg)
+	defer engine.CloseCodeMode()
 
 	// Set up debug logger if enabled
 	debugLogger, err := deps.CreateDebugLogger(cfg)

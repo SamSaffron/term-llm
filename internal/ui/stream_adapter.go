@@ -261,11 +261,16 @@ func (a *StreamAdapter) ProcessStream(ctx context.Context, stream core.Stream) {
 				}
 				a.seenToolStarts[event.ToolCallID] = struct{}{}
 			}
-			uiEvent := ToolStartEvent(event.ToolCallID, event.ToolName, event.ToolInfo, event.ToolArgs)
+			toolInfo := childToolInfo(event.ToolName, event.ToolInfo, event.ParentToolCallID)
+			uiEvent := ToolStartEvent(event.ToolCallID, event.ToolName, toolInfo, event.ToolArgs)
 			if !emit(uiEvent) {
 				return
 			}
-			a.updateStats(func(stats *SessionStats) { stats.ToolStart() })
+			// code_mode is a container wrapper; its child calls carry the real
+			// effect count, so exclude the outer wrapper from tool statistics.
+			if !tools.IsCodeModeTool(event.ToolName) {
+				a.updateStats(func(stats *SessionStats) { stats.ToolStart() })
+			}
 
 		case core.EventToolExecEnd:
 			if !a.processToolExecEnd(ctx, event) {
@@ -388,6 +393,7 @@ func (a *StreamAdapter) processToolCall(ctx context.Context, event core.Event) b
 	if toolInfo == "" {
 		toolInfo = engine.ExtractToolInfo(*event.Tool)
 	}
+	toolInfo = childToolInfo(event.Tool.Name, toolInfo, event.ParentToolCallID)
 	toolArgs := event.ToolArgs
 	if len(toolArgs) == 0 {
 		toolArgs = event.Tool.Arguments
@@ -396,7 +402,9 @@ func (a *StreamAdapter) processToolCall(ctx context.Context, event core.Event) b
 	if !a.emit(ctx, uiEvent) {
 		return false
 	}
-	a.updateStats(func(stats *SessionStats) { stats.ToolStart() })
+	if !tools.IsCodeModeTool(event.Tool.Name) {
+		a.updateStats(func(stats *SessionStats) { stats.ToolStart() })
+	}
 	return true
 }
 
@@ -408,11 +416,15 @@ func (a *StreamAdapter) processToolExecEnd(ctx context.Context, event core.Event
 		}
 		a.seenToolEnds[event.ToolCallID] = struct{}{}
 	}
-	uiEvent := ToolEndEvent(event.ToolCallID, event.ToolName, event.ToolInfo, event.ToolSuccess)
+	uiEvent := ToolEndEvent(event.ToolCallID, event.ToolName, childToolInfo(event.ToolName, event.ToolInfo, event.ParentToolCallID), event.ToolSuccess)
 	if !a.emit(ctx, uiEvent) {
 		return false
 	}
-	a.updateStats(func(stats *SessionStats) { stats.ToolEnd() })
+	// code_mode is a container wrapper; don't count it in externally effectful
+	// tool stats. Child calls inside the cell carry the real effect counts.
+	if !tools.IsCodeModeTool(event.ToolName) {
+		a.updateStats(func(stats *SessionStats) { stats.ToolEnd() })
+	}
 	a.resetAttemptUsage()
 
 	// Emit image events from structured data
@@ -487,4 +499,18 @@ func ParseDiffMarkers(output string) []DiffData {
 		}
 	}
 	return diffs
+}
+
+// childToolInfo prefixes tool info with a "[cell: <parentID>] " marker when a tool
+// call is nested inside a code_mode cell (parentToolCallID is non-empty). This gives
+// TUI renderers a text-only breadcrumb without requiring a new StreamEvent field.
+// The name parameter prevents applying the prefix to the code_mode wrapper itself.
+func childToolInfo(name, info, parentToolCallID string) string {
+	if parentToolCallID == "" || tools.IsCodeModeTool(name) {
+		return info
+	}
+	if info == "" {
+		return "[cell: " + parentToolCallID + "]"
+	}
+	return "[cell: " + parentToolCallID + "] " + info
 }

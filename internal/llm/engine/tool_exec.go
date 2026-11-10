@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/samsaffron/term-llm/internal/codemode"
 	"github.com/samsaffron/term-llm/internal/llm/core"
 	corestream "github.com/samsaffron/term-llm/internal/llm/core/stream"
 	"sort"
@@ -140,7 +141,7 @@ func (e *Engine) executeSingleToolCallOutcomeSafe(ctx context.Context, call core
 	defer func() {
 		if r := recover(); r != nil {
 			err := fmt.Errorf("tool panicked: %v", r)
-			sendToolExecEnd(send, core.Event{Type: core.EventToolExecEnd, ToolCallID: call.ID, ToolName: call.Name, ToolSuccess: false})
+			sendToolExecEndFor(ctx, send, core.Event{Type: core.EventToolExecEnd, ParentToolCallID: nestedParent(ctx), ToolCallID: call.ID, ToolName: call.Name, ToolSuccess: false})
 			outcome = toolCallOutcome{call: call, err: err}
 		}
 	}()
@@ -173,8 +174,15 @@ func (e *Engine) executeToolWithCancellation(ctx context.Context, tool core.Tool
 		return core.ToolOutput{}, err, nil
 	}
 
+	lease, _ := ctx.Value(nestedContextKey{}).(*nestedLease)
+	if lease != nil {
+		lease.started = true
+	}
 	results := make(chan toolExecutionResult, 1)
 	go func() {
+		if lease != nil {
+			defer lease.done()
+		}
 		defer release()
 		defer e.actualSteeringToolDone()
 		result := toolExecutionResult{}
@@ -191,6 +199,10 @@ func (e *Engine) executeToolWithCancellation(ctx context.Context, tool core.Tool
 	case result := <-results:
 		return result.output, result.err, result.panicValue
 	case <-ctx.Done():
+		if tool.Spec().Name == "code_mode" {
+			result := <-results
+			return result.output, result.err, result.panicValue
+		}
 		return core.ToolOutput{}, ctx.Err(), nil
 	}
 }
@@ -204,7 +216,7 @@ func startToolHeartbeat(ctx context.Context, callID, toolName string, send cores
 	}
 
 	var stopped atomic.Bool
-	heartbeat := core.Event{Type: core.EventHeartbeat, ToolCallID: callID, ToolName: toolName}
+	heartbeat := core.Event{ParentToolCallID: nestedParent(ctx), Type: core.EventHeartbeat, ToolCallID: callID, ToolName: toolName}
 
 	timer := time.AfterFunc(toolHeartbeatInterval, func() {
 		ticker := time.NewTicker(toolHeartbeatInterval)
@@ -246,7 +258,19 @@ const (
 // dropping either event leaves Web clients with an in-flight placeholder and
 // an unreleased response timer hold. Other tool ends remain best-effort to
 // preserve the existing worker backpressure behavior.
+func sendToolExecEndFor(ctx context.Context, send corestream.Sender, event core.Event) {
+	if nestedBestEffort(ctx) {
+		send.TrySend(event)
+		return
+	}
+	sendToolExecEnd(send, event)
+}
+
 func sendToolExecEnd(send corestream.Sender, event core.Event) {
+	if event.ParentToolCallID != "" {
+		_ = send.Send(event)
+		return
+	}
 	switch event.ToolName {
 	case reliableSpawnAgentTerminalName, reliableWaitForJobsTerminalName:
 		_ = send.Send(event)
@@ -266,13 +290,16 @@ func (e *Engine) executeSingleToolCall(ctx context.Context, call core.ToolCall, 
 // structured output for both transcript and bridge result adapters.
 func (e *Engine) executeSingleToolCallOutcome(ctx context.Context, call core.ToolCall, send corestream.Sender, debug bool, debugRaw bool) toolCallOutcome {
 	tool, ok := e.tools.Get(call.Name)
+	if !ok && nestedExecution(ctx) {
+		return toolCallOutcome{call: call, err: fmt.Errorf("nested tool not registered: %s", call.Name)}
+	}
 	if !ok {
 		// suggest_commands is a structured-output passthrough used by exec mode;
 		// observing the call arguments is the execution, so no registry tool runs.
 		if call.Name == core.SuggestCommandsToolName {
 			output := core.TextOutput("OK")
 			env.debugToolResult(debug, call.ID, call.Name, output.Content)
-			sendToolExecEnd(send, core.Event{Type: core.EventToolExecEnd, ToolCallID: call.ID, ToolName: call.Name, ToolInfo: e.getToolPreview(call), ToolSuccess: true})
+			sendToolExecEndFor(ctx, send, core.Event{Type: core.EventToolExecEnd, ParentToolCallID: nestedParent(ctx), ToolCallID: call.ID, ToolName: call.Name, ToolInfo: e.getToolPreview(call), ToolSuccess: true})
 			return toolCallOutcome{call: call, output: output}
 		}
 		// A declared client tool answered while an inline provider waits (see
@@ -281,20 +308,35 @@ func (e *Engine) executeSingleToolCallOutcome(ctx context.Context, call core.Too
 		if tool = core.ClientTool(ctx, call.Name); tool == nil {
 			errMsg := fmt.Sprintf("Error: tool not registered: %s", call.Name)
 			env.debugToolResult(debug, call.ID, call.Name, errMsg)
-			sendToolExecEnd(send, core.Event{Type: core.EventToolExecEnd, ToolCallID: call.ID, ToolName: call.Name, ToolInfo: e.getToolPreview(call), ToolSuccess: false})
+			sendToolExecEndFor(ctx, send, core.Event{Type: core.EventToolExecEnd, ParentToolCallID: nestedParent(ctx), ToolCallID: call.ID, ToolName: call.Name, ToolInfo: e.getToolPreview(call), ToolSuccess: false})
 			return toolCallOutcome{call: call, err: fmt.Errorf("tool not registered: %s", call.Name)}
 		}
 	}
 
-	if ok && !e.toolCallAllowed(ctx, call.Name) {
+	if ok && ((!nestedExecution(ctx) && !e.toolCallAllowed(ctx, call.Name)) || (nestedExecution(ctx) && !e.IsToolAllowed(call.Name))) {
 		errMsg := fmt.Sprintf("Error: tool '%s' is not in the active skill's allowed-tools list", call.Name)
 		env.debugToolResult(debug, call.ID, call.Name, errMsg)
-		sendToolExecEnd(send, core.Event{Type: core.EventToolExecEnd, ToolCallID: call.ID, ToolName: call.Name, ToolInfo: e.getToolPreview(call), ToolSuccess: false})
+		sendToolExecEndFor(ctx, send, core.Event{Type: core.EventToolExecEnd, ParentToolCallID: nestedParent(ctx), ToolCallID: call.ID, ToolName: call.Name, ToolInfo: e.getToolPreview(call), ToolSuccess: false})
 		return toolCallOutcome{call: call, err: fmt.Errorf("tool '%s' is not in the active skill's allowed-tools list", call.Name)}
 	}
 
 	// Add call ID to context for spawn_agent event bubbling
 	toolCtx := core.ContextWithCallID(ctx, call.ID)
+	if !nestedExecution(ctx) {
+		switch call.Name {
+		case codemode.LegacyToolName:
+			cell, err := e.admitCodeCell(ctx, call.ID, send)
+			if err != nil {
+				sendToolExecEndFor(ctx, send, core.Event{Type: core.EventToolExecEnd, ToolCallID: call.ID, ToolName: call.Name, ToolSuccess: false})
+				return toolCallOutcome{call: call, err: err}
+			}
+			// The tool owns normal closure; this fallback also closes on panic/error.
+			defer cell.Close()
+			toolCtx = core.ContextWithCodeModeCell(toolCtx, cell)
+		case codemode.ExecToolName, codemode.WaitToolName, codemode.CancelToolName:
+			toolCtx = core.ContextWithCodeModeController(toolCtx, &codeModeController{engine: e, send: send})
+		}
+	}
 	toolCtx, guardianReviews := core.ContextWithGuardianReviewCapture(toolCtx)
 
 	stopHeartbeat := startToolHeartbeat(ctx, call.ID, call.Name, send)
@@ -310,35 +352,47 @@ func (e *Engine) executeSingleToolCallOutcome(ctx context.Context, call core.Too
 	}
 	info := e.getToolPreview(call)
 
+	if (call.Name == codemode.LegacyToolName || call.Name == codemode.ExecToolName || call.Name == codemode.WaitToolName || call.Name == codemode.CancelToolName) && err == nil {
+		output = materializeCellImages(output)
+	}
 	// Truncate large tool outputs (global limit, then compaction limit).
-	if err == nil {
+	if err == nil && !nestedExecution(ctx) {
 		output = e.applyToolOutputTruncation(output)
 	}
 
 	if err != nil {
 		errMsg := fmt.Sprintf("Error: %v", err)
 		env.debugToolResult(debug, call.ID, call.Name, errMsg)
-		sendToolExecEnd(send, core.Event{Type: core.EventToolExecEnd, ToolCallID: call.ID, ToolName: call.Name, ToolInfo: info, ToolSuccess: false})
+		sendToolExecEndFor(ctx, send, core.Event{Type: core.EventToolExecEnd, ParentToolCallID: nestedParent(ctx), ToolCallID: call.ID, ToolName: call.Name, ToolInfo: info, ToolSuccess: false})
 		return toolCallOutcome{call: call, output: output, err: err}
 	}
 
 	env.debugToolResult(debug, call.ID, call.Name, output.Content)
 	env.debugRawToolResult(debugRaw, call.ID, call.Name, output.Content)
+	eventOutput := output
+	if nestedExecution(ctx) {
+		eventOutput.Content = ""
+		eventOutput.Images = nil
+		eventOutput.Media = nil
+		eventOutput.ContentParts = nil
+	}
 	// Spawn-agent completion is reliable because its durable parent result may be
 	// delayed behind other parallel tools. Other tool ends remain best-effort.
-	sendToolExecEnd(send, core.Event{
+	sendToolExecEndFor(ctx, send, core.Event{
 		Type:                       core.EventToolExecEnd,
 		ToolCallID:                 call.ID,
+		ParentToolCallID:           nestedParent(ctx),
 		ToolName:                   call.Name,
 		ToolInfo:                   info,
 		ToolSuccess:                !output.TimedOut && !output.IsError,
-		ToolOutput:                 output.Content,
+		ToolOutput:                 eventOutput.Content,
+		ToolContentParts:           eventOutput.ContentParts,
 		ToolDiffs:                  output.Diffs,
 		ToolFileChanges:            output.FileChanges,
 		ToolFilesystemObservations: output.FilesystemObservations,
 		ToolOutputClaimDiagnostics: output.OutputClaimDiagnostics,
-		ToolImages:                 output.Images,
-		ToolMedia:                  append([]core.MediaArtifact(nil), output.Media...),
+		ToolImages:                 eventOutput.Images,
+		ToolMedia:                  append([]core.MediaArtifact(nil), eventOutput.Media...),
 	})
 	return toolCallOutcome{call: call, output: output}
 }

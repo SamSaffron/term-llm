@@ -29,6 +29,7 @@ import (
 	providers "github.com/samsaffron/term-llm/internal/app/providers"
 	appruntime "github.com/samsaffron/term-llm/internal/app/runtime"
 	"github.com/samsaffron/term-llm/internal/app/serve/authorship"
+	"github.com/samsaffron/term-llm/internal/app/serve/servepath"
 	"github.com/samsaffron/term-llm/internal/app/serve/webagents"
 	"github.com/samsaffron/term-llm/internal/app/serve/wire"
 	"github.com/samsaffron/term-llm/internal/app/uploads"
@@ -451,63 +452,15 @@ func resolveServeRequestPath(baseDir, requestPath, routePrefix string) (string, 
 }
 
 func serveRoutePath(baseRoute, baseDir, servedPath string) string {
-	absDir, err := filepath.EvalSymlinks(baseDir)
-	if err != nil {
-		absDir, err = filepath.Abs(baseDir)
-		if err != nil {
-			return baseRoute + filepath.Base(servedPath)
-		}
-	}
-	absServed, err := filepath.EvalSymlinks(servedPath)
-	if err != nil {
-		absServed, err = filepath.Abs(servedPath)
-		if err != nil {
-			return baseRoute + filepath.Base(servedPath)
-		}
-	}
-
-	relPath, err := filepath.Rel(absDir, absServed)
-	if err != nil || relPath == "." || relPath == ".." || strings.HasPrefix(relPath, ".."+string(filepath.Separator)) {
-		return baseRoute + filepath.Base(servedPath)
-	}
-
-	return baseRoute + filepath.ToSlash(relPath)
+	return servepath.RoutePath(baseRoute, baseDir, servedPath)
 }
 
 func canonicalizeServeExistingPath(p string) (string, error) {
-	absPath, err := filepath.Abs(p)
-	if err != nil {
-		return "", err
-	}
-	resolved, err := filepath.EvalSymlinks(absPath)
-	if err != nil {
-		return "", err
-	}
-	return filepath.Clean(resolved), nil
+	return servepath.CanonicalizeExistingPath(p)
 }
 
 func canonicalizeServeDirForWrite(dir string) (string, error) {
-	absDir, err := filepath.Abs(dir)
-	if err != nil {
-		return "", err
-	}
-	resolved, err := filepath.EvalSymlinks(absDir)
-	if err == nil {
-		return filepath.Clean(resolved), nil
-	}
-	if !os.IsNotExist(err) {
-		return "", err
-	}
-
-	parent := filepath.Dir(absDir)
-	resolvedParent, err := filepath.EvalSymlinks(parent)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return filepath.Clean(absDir), nil
-		}
-		return "", err
-	}
-	return filepath.Join(filepath.Clean(resolvedParent), filepath.Base(absDir)), nil
+	return servepath.CanonicalizeDirForWrite(dir)
 }
 
 func pathWithinDirForOS(path, dir, goos string) bool {
@@ -1885,7 +1838,6 @@ func appendSessionMessageToolCallPart(entry *sessionMessageEntry, p core.Part, i
 		entry.Parts = append(entry.Parts, pe)
 	}
 }
-
 func (s *serveServer) appendSessionMessageToolResultPart(entry *sessionMessageEntry, p core.Part, index sessionMessageProjectionIndex) {
 	if p.ToolResult != nil {
 		s.appendSessionMessageToolResult(entry, p.ToolResult, index)
@@ -1902,7 +1854,7 @@ func (s *serveServer) appendSessionMessageToolResult(entry *sessionMessageEntry,
 		spawnResult, spawnToolCalls = s.sessionMessageSpawnResult(index.parentSessionID, result)
 	}
 	agentIDs := s.agentResultSessionIDs(index.parentSessionID, result.Name, result.Content)
-	includeResult := result.IsError || len(result.Images) > 0 || len(result.Media) > 0 || len(result.GuardianReviews) > 0 || isPlanResult || isAskUserResult || spawnResult != nil || len(agentIDs) > 0
+	includeResult := tools.IsCodeModeTool(result.Name) || result.IsError || len(result.Images) > 0 || len(result.Media) > 0 || len(result.GuardianReviews) > 0 || isPlanResult || isAskUserResult || spawnResult != nil || len(agentIDs) > 0
 	if !includeResult {
 		return
 	}
@@ -1913,6 +1865,8 @@ func (s *serveServer) appendSessionMessageToolResult(entry *sessionMessageEntry,
 	pe := sessionMessagePartEntry{
 		Type:                "tool_result",
 		ToolName:            toolName,
+		ContentParts:        s.toolContentPartsPayload(result.ContentParts),
+		ChildCalls:          result.ChildCalls,
 		ToolCallID:          result.ID,
 		ToolError:           result.IsError || (spawnResult != nil && spawnResult.Error != ""),
 		GuardianReviews:     append([]core.GuardianReview(nil), result.GuardianReviews...),
@@ -1931,7 +1885,6 @@ func (s *serveServer) appendSessionMessageToolResult(entry *sessionMessageEntry,
 	}
 	entry.Parts = append(entry.Parts, pe)
 }
-
 func (s *serveServer) agentResultSessionIDs(parentSessionID, name, content string) []string {
 	if name != tools.WaitAgentToolName && name != tools.ContinueAgentToolName {
 		return nil

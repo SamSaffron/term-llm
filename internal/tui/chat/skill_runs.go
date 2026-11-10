@@ -118,6 +118,7 @@ func (m *Model) startIsolatedSkillActivation(activation *skills.Activation, disp
 		ParentSessionID: m.currentSessionID(),
 		BaseDir:         m.effectiveWorkingDir(),
 		Skill: &runpkg.SkillRunMetadata{
+			CodeModeSkill:       activation.Skill,
 			Name:                activation.Skill.Name,
 			Source:              activation.Skill.Source.SourceName(),
 			SourcePath:          activation.BaseDir,

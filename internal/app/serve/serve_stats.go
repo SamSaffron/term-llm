@@ -225,8 +225,8 @@ func (rt *serveRuntime) finishStats() {
 	}
 	a.running = false
 }
-func (a *serveStats) startTool(s *ui.SessionStats, id string) {
-	if a.tools[id] || a.ended[id] {
+func (a *serveStats) startTool(s *ui.SessionStats, id string, name ...string) {
+	if a.tools[id] || a.ended[id] || (len(name) > 0 && tools.IsCodeModeTool(name[0])) {
 		return
 	}
 	if a.tools == nil {
@@ -273,6 +273,9 @@ func (a *serveStats) discardAttempt(s *ui.SessionStats) {
 }
 
 func (rt *serveRuntime) recordStatsEvent(e core.Event) {
+	if e.ParentToolCallID != "" {
+		return
+	}
 	a := &rt.stats
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -291,10 +294,10 @@ func (rt *serveRuntime) recordStatsEvent(e core.Event) {
 		a.attempt = core.Usage{}
 		a.attemptCalls = 0
 		if e.Tool != nil {
-			a.startTool(s, e.Tool.ID)
+			a.startTool(s, e.Tool.ID, e.Tool.Name)
 		}
 	case core.EventToolExecStart:
-		a.startTool(s, e.ToolCallID)
+		a.startTool(s, e.ToolCallID, e.ToolName)
 	case core.EventToolExecEnd:
 		a.endTool(s, e.ToolCallID)
 	case core.EventDiscoveryCall:

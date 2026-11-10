@@ -46,6 +46,9 @@ func ToolResultTextContent(result *ToolResult) string {
 // content parts. Images and part ordering are preserved, while the retained
 // head and tail text use the same marker as plain tool output truncation.
 func TruncateToolOutput(output ToolOutput, maxChars int) ToolOutput {
+	if output.PreserveJSON {
+		return ProjectCodeModeOutput(output, maxChars)
+	}
 	content, parts := TruncateToolResultContent(output.Content, output.ContentParts, maxChars)
 	output.Content = content
 	output.ContentParts = parts
@@ -121,6 +124,13 @@ func TruncateToolResultContent(content string, parts []ToolContentPart, maxChars
 
 // TruncateToolResultValue truncates a ToolResult in place on a copy.
 func TruncateToolResultValue(result ToolResult, maxChars int) ToolResult {
+	if result.PreserveJSON {
+		out := ProjectCodeModeOutput(ToolOutput{Content: result.Content, ContentParts: result.ContentParts, PreserveJSON: true, IsError: result.IsError}, maxChars)
+		result.Content = out.Content
+		result.ContentParts = out.ContentParts
+		result.IsError = out.IsError
+		return result
+	}
 	result.Content, result.ContentParts = TruncateToolResultContent(result.Content, result.ContentParts, maxChars)
 	return result
 }

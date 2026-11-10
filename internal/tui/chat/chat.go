@@ -331,9 +331,7 @@ type Model struct {
 	runtimeSystemContextResolver func(agent *agents.Agent, providerKey, modelName, dir string) (RuntimeSystemContext, error)
 	runtimeSystemContext         RuntimeSystemContext
 	skillsSetup                  *skills.Setup
-	skillFilterRestoreTools      []string
-	skillFilterRestorePresent    bool
-	skillFilterPending           bool
+	skillActivationScope
 	skillDynamicToolNames        []string
 	skillDynamicEnginePrevious   map[string]core.Tool
 	skillDynamicRegistryPrevious map[string]core.Tool

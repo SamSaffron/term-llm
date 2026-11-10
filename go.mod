@@ -46,6 +46,7 @@ require (
 	github.com/shogoki/gotextdiff v1.22.0
 	github.com/spf13/cobra v1.10.2
 	github.com/spf13/pflag v1.1.0
+	github.com/tetratelabs/wazero v1.11.0
 	github.com/yuin/goldmark v1.8.7
 	golang.org/x/crypto v0.58.0
 	golang.org/x/image v0.47.0

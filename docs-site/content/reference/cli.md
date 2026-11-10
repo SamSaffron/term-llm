@@ -134,7 +134,7 @@ Ask a question and stream the answer
 | `--system-message, -m` | string | System message/instructions for the LLM (overrides config) |
 | `--text, -t` | bool | Output plain text instead of rendered markdown |
 | `--timeout` | duration | Set a hard deadline for the run (used by progressive execution for finalization budget) |
-| `--tools` | string | Enable local tools (comma-separated, or 'all'): read_file,write_file,edit_file,shell,grep,glob,view_image,show_media,image_generate,ask_user,spawn_agent (includes wait_agent,continue_agent,cancel_agent,list_agents),queue_agent,wait_for_jobs |
+| `--tools` | string | Enable local tools (comma-separated, or 'all'): spawn_script (includes wait_script,cancel_script),read_file,write_file,edit_file,shell,grep,glob,view_image,show_media,image_generate,ask_user,spawn_agent (includes wait_agent,continue_agent,cancel_agent,list_agents),queue_agent,wait_for_jobs |
 | `--user` | string | Attribute new user turns to this name (display-only; not sent to the model) |
 | `--write-dir` | stringArray | Directories for write_file/edit_file tools (repeatable) |
 | `--yolo` | bool | Auto-approve all tool operations (for CI/container use, bypasses all prompts) |
@@ -247,7 +247,7 @@ Start an interactive chat session
 | `--skills` | string | Skills mode: 'all'/'*' to enable all, 'none' to disable, names (comma-separated), or 'name,+' for explicit + auto |
 | `--system-message, -m` | string | System message/instructions for the LLM (overrides config) |
 | `--text` | bool | Disable markdown rendering (plain text output) |
-| `--tools` | string | Enable local tools (comma-separated, or 'all'): read_file,write_file,edit_file,shell,grep,glob,view_image,show_media,image_generate,ask_user,spawn_agent (includes wait_agent,continue_agent,cancel_agent,list_agents),queue_agent,wait_for_jobs |
+| `--tools` | string | Enable local tools (comma-separated, or 'all'): spawn_script (includes wait_script,cancel_script),read_file,write_file,edit_file,shell,grep,glob,view_image,show_media,image_generate,ask_user,spawn_agent (includes wait_agent,continue_agent,cancel_agent,list_agents),queue_agent,wait_for_jobs |
 | `--user` | string | Attribute new user turns to this name (display-only; not sent to the model) |
 | `--write-dir` | stringArray | Directories for write_file/edit_file tools (repeatable) |
 | `--yolo` | bool | Auto-approve all tool operations (for CI/container use, bypasses all prompts) |
@@ -511,7 +511,7 @@ Edit files using AI assistance
 | `--shell-allow` | stringArray | Shell command patterns to allow (repeatable, glob syntax) |
 | `--skills` | string | Skills mode: 'all'/'*' to enable all, 'none' to disable, names (comma-separated), or 'name,+' for explicit + auto |
 | `--system-message, -m` | string | System message/instructions for the LLM (overrides config) |
-| `--tools` | string | Enable local tools (comma-separated, or 'all'): read_file,write_file,edit_file,shell,grep,glob,view_image,show_media,image_generate,ask_user,spawn_agent (includes wait_agent,continue_agent,cancel_agent,list_agents),queue_agent,wait_for_jobs |
+| `--tools` | string | Enable local tools (comma-separated, or 'all'): spawn_script (includes wait_script,cancel_script),read_file,write_file,edit_file,shell,grep,glob,view_image,show_media,image_generate,ask_user,spawn_agent (includes wait_agent,continue_agent,cancel_agent,list_agents),queue_agent,wait_for_jobs |
 | `--write-dir` | stringArray | Directories for write_file/edit_file tools (repeatable) |
 | `--yolo` | bool | Auto-approve all tool operations (for CI/container use, bypasses all prompts) |
 
@@ -554,7 +554,7 @@ Translate natural language to CLI commands
 | `--shell-allow` | stringArray | Shell command patterns to allow (repeatable, glob syntax) |
 | `--skills` | string | Skills mode: 'all'/'*' to enable all, 'none' to disable, names (comma-separated), or 'name,+' for explicit + auto |
 | `--system-message, -m` | string | System message/instructions for the LLM (overrides config) |
-| `--tools` | string | Enable local tools (comma-separated, or 'all'): read_file,write_file,edit_file,shell,grep,glob,view_image,show_media,image_generate,ask_user,spawn_agent (includes wait_agent,continue_agent,cancel_agent,list_agents),queue_agent,wait_for_jobs |
+| `--tools` | string | Enable local tools (comma-separated, or 'all'): spawn_script (includes wait_script,cancel_script),read_file,write_file,edit_file,shell,grep,glob,view_image,show_media,image_generate,ask_user,spawn_agent (includes wait_agent,continue_agent,cancel_agent,list_agents),queue_agent,wait_for_jobs |
 | `--write-dir` | stringArray | Directories for write_file/edit_file tools (repeatable) |
 | `--yolo` | bool | Auto-approve all tool operations (for CI/container use, bypasses all prompts) |
 
@@ -723,7 +723,7 @@ Run an autonomous agent loop until completion
 | `--search, -s` | bool | Enable web search for current information |
 | `--shell-allow` | stringArray | Shell command patterns to allow (repeatable, glob syntax) |
 | `--system-message, -m` | string | System message/instructions for the LLM (overrides config) |
-| `--tools` | string | Enable local tools (comma-separated, or 'all'): read_file,write_file,edit_file,shell,grep,glob,view_image,show_media,image_generate,ask_user,spawn_agent (includes wait_agent,continue_agent,cancel_agent,list_agents),queue_agent,wait_for_jobs |
+| `--tools` | string | Enable local tools (comma-separated, or 'all'): spawn_script (includes wait_script,cancel_script),read_file,write_file,edit_file,shell,grep,glob,view_image,show_media,image_generate,ask_user,spawn_agent (includes wait_agent,continue_agent,cancel_agent,list_agents),queue_agent,wait_for_jobs |
 | `--write-dir` | stringArray | Directories for write_file/edit_file tools (repeatable) |
 | `--yolo` | bool | Auto-approve all tool operations (for CI/container use, bypasses all prompts) |
 
@@ -1253,7 +1253,7 @@ Run the agent as a server (web, api, jobs, Telegram, or any combination)
 | `--title` | string | Override the web UI sidebar title (defaults to agent name or Chat) |
 | `--token` | string | Bearer token for API auth (defaults to $TERM_LLM_SERVE_TOKEN, else auto-generated) |
 | `--tool-map` | stringArray | Map client tool name to server tool (repeatable, format ClientName:ServerName) |
-| `--tools` | string | Enable local tools (comma-separated, or 'all'): read_file,write_file,edit_file,shell,grep,glob,view_image,show_media,image_generate,ask_user,spawn_agent (includes wait_agent,continue_agent,cancel_agent,list_agents),queue_agent,wait_for_jobs |
+| `--tools` | string | Enable local tools (comma-separated, or 'all'): spawn_script (includes wait_script,cancel_script),read_file,write_file,edit_file,shell,grep,glob,view_image,show_media,image_generate,ask_user,spawn_agent (includes wait_agent,continue_agent,cancel_agent,list_agents),queue_agent,wait_for_jobs |
 | `--verbose` | bool | Log API request/response summaries to stderr |
 | `--widgets-dir` | string | Directory containing widget sub-directories (default: ~/.config/term-llm/widgets) |
 | `--write-dir` | stringArray | Directories for write_file/edit_file tools (repeatable) |

@@ -3,6 +3,7 @@ package tools
 import (
 	"context"
 	"fmt"
+	codemodetool "github.com/samsaffron/term-llm/internal/codemode/tool"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -252,19 +253,14 @@ func (r *LocalToolRegistry) registerTool(specName string) error {
 	if d == nil || d.nonLocal {
 		return NewToolErrorf(ErrInvalidParams, "unknown tool: %s", specName)
 	}
-	if specName == SpawnAgentToolName {
-		spawn := d.construct(r)
-		r.tools[specName] = spawn
-		for _, control := range builtinTools {
-			if control.requiresSpawn {
-				r.tools[control.Name] = control.construct(r)
-			}
+	if d.requiresTool != "" && r.tools[d.requiresTool] == nil {
+		return NewToolErrorf(ErrInvalidParams, "%s requires %s", specName, d.requiresTool)
+	}
+	r.tools[specName] = d.construct(r)
+	for _, control := range builtinTools {
+		if control.requiresTool == specName {
+			r.tools[control.Name] = control.construct(r)
 		}
-	} else {
-		if d.requiresSpawn && r.tools[SpawnAgentToolName] == nil {
-			return NewToolErrorf(ErrInvalidParams, "%s requires spawn_agent", specName)
-		}
-		r.tools[specName] = d.construct(r)
 	}
 	if specName == ShellToolName {
 		r.applyCollaborativeShellLocked()
@@ -324,6 +320,7 @@ func stringSliceContains(values []string, needle string) bool {
 
 // RegisterWithEngine registers all enabled tools with the LLM engine.
 func (r *LocalToolRegistry) RegisterWithEngine(eng *engine.Engine) {
+	eng.SetCodeModeDirectOnly(codeModeDirectOnlyTools())
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 
@@ -771,4 +768,13 @@ func (r *LocalToolRegistry) SetAgentModelAdmission(state func() (modelpolicy.Pol
 	if t, ok := r.tools[HubDelegateToolName].(*HubDelegateTool); ok {
 		t.SetModelPolicySource(func() modelpolicy.Policy { p, _ := state(); return p })
 	}
+}
+
+// AdmitSkillCodeModule applies host-origin trust on every activation route.
+func AdmitSkillCodeModule(eng *engine.Engine, manager *ToolManager, activation *skills.Activation) error {
+	if manager == nil || manager.Registry == nil {
+		return codemodetool.AdmitSkill(eng, activation, nil)
+	}
+	r := manager.Registry
+	return codemodetool.AdmitSkill(eng, activation, codemodetool.OriginTrust(eng, activation, r.appConfig, r.approval))
 }

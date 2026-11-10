@@ -1,6 +1,7 @@
 package tools
 
 import (
+	codemodetool "github.com/samsaffron/term-llm/internal/codemode/tool"
 	"strings"
 
 	"github.com/samsaffron/term-llm/internal/llm/core"
@@ -22,13 +23,17 @@ type builtinDescriptor struct {
 	construct        func(*LocalToolRegistry) core.Tool
 	pathCapable      bool
 	guardianSelector bool
-	requiresSpawn    bool
+	requiresTool     string
 	hubCredentials   bool
 	nonLocal         bool
 	hiddenCompletion bool
 }
 
 var builtinTools = []builtinDescriptor{
+	{ToolDescriptor: ToolDescriptor{Name: CodeModeToolName, Policy: KindExecute, DefaultEnabled: false}, hiddenCompletion: true, construct: func(*LocalToolRegistry) core.Tool { return codemodetool.New() }},
+	{ToolDescriptor: ToolDescriptor{Name: CodeExecToolName, Policy: KindExecute, DefaultEnabled: false, FlagLabel: "spawn_script (includes wait_script,cancel_script)"}, construct: func(*LocalToolRegistry) core.Tool { return codemodetool.NewExec() }},
+	{ToolDescriptor: ToolDescriptor{Name: CodeWaitToolName, Policy: KindExecute, DefaultEnabled: false}, requiresTool: CodeExecToolName, construct: func(*LocalToolRegistry) core.Tool { return codemodetool.NewWait() }},
+	{ToolDescriptor: ToolDescriptor{Name: CodeCancelToolName, Policy: KindExecute, DefaultEnabled: false}, requiresTool: CodeExecToolName, construct: func(*LocalToolRegistry) core.Tool { return codemodetool.NewCancel() }},
 	{ToolDescriptor: ToolDescriptor{Name: ReadFileToolName, Policy: KindRead, DefaultEnabled: true, FlagLabel: ReadFileToolName}, construct: func(r *LocalToolRegistry) core.Tool { return NewReadFileTool(r.approval, r.limits, r.config) }, pathCapable: true},
 	{ToolDescriptor: ToolDescriptor{Name: WriteFileToolName, Policy: KindEdit, DefaultEnabled: true, FlagLabel: WriteFileToolName}, construct: func(r *LocalToolRegistry) core.Tool { return NewWriteFileTool(r.approval, r.config) }, pathCapable: true},
 	{ToolDescriptor: ToolDescriptor{Name: EditFileToolName, Policy: KindEdit, DefaultEnabled: true, FlagLabel: EditFileToolName}, construct: func(r *LocalToolRegistry) core.Tool { return NewEditFileTool(r.approval, r.config) }, pathCapable: true},
@@ -49,10 +54,10 @@ var builtinTools = []builtinDescriptor{
 	}, pathCapable: true},
 	{ToolDescriptor: ToolDescriptor{Name: AskUserToolName, Policy: KindInteractive, DefaultEnabled: true, FlagLabel: AskUserToolName}, construct: func(*LocalToolRegistry) core.Tool { return NewAskUserTool() }},
 	{ToolDescriptor: ToolDescriptor{Name: SpawnAgentToolName, Policy: KindAgent, DefaultEnabled: true, FlagLabel: "spawn_agent (includes wait_agent,continue_agent,cancel_agent,list_agents)"}, construct: func(r *LocalToolRegistry) core.Tool { return NewSpawnAgentTool(r.config.Spawn, 0) }},
-	{ToolDescriptor: ToolDescriptor{Name: WaitAgentToolName, Policy: KindAgent, DefaultEnabled: true}, requiresSpawn: true, construct: agentControlConstructor(WaitAgentToolName)},
-	{ToolDescriptor: ToolDescriptor{Name: ContinueAgentToolName, Policy: KindAgent, DefaultEnabled: true}, requiresSpawn: true, construct: agentControlConstructor(ContinueAgentToolName)},
-	{ToolDescriptor: ToolDescriptor{Name: CancelAgentToolName, Policy: KindAgent, DefaultEnabled: true}, requiresSpawn: true, construct: agentControlConstructor(CancelAgentToolName)},
-	{ToolDescriptor: ToolDescriptor{Name: ListAgentsToolName, Policy: KindAgent, DefaultEnabled: true}, requiresSpawn: true, construct: agentControlConstructor(ListAgentsToolName)},
+	{ToolDescriptor: ToolDescriptor{Name: WaitAgentToolName, Policy: KindAgent, DefaultEnabled: true}, requiresTool: SpawnAgentToolName, construct: agentControlConstructor(WaitAgentToolName)},
+	{ToolDescriptor: ToolDescriptor{Name: ContinueAgentToolName, Policy: KindAgent, DefaultEnabled: true}, requiresTool: SpawnAgentToolName, construct: agentControlConstructor(ContinueAgentToolName)},
+	{ToolDescriptor: ToolDescriptor{Name: CancelAgentToolName, Policy: KindAgent, DefaultEnabled: true}, requiresTool: SpawnAgentToolName, construct: agentControlConstructor(CancelAgentToolName)},
+	{ToolDescriptor: ToolDescriptor{Name: ListAgentsToolName, Policy: KindAgent, DefaultEnabled: true}, requiresTool: SpawnAgentToolName, construct: agentControlConstructor(ListAgentsToolName)},
 	{ToolDescriptor: ToolDescriptor{Name: QueueAgentToolName, Policy: KindAgent, DefaultEnabled: true, FlagLabel: QueueAgentToolName}, construct: func(r *LocalToolRegistry) core.Tool { return NewQueueAgentTool(r.approval, r.config) }},
 	{ToolDescriptor: ToolDescriptor{Name: WaitForJobsToolName, Policy: KindAgent, DefaultEnabled: true, FlagLabel: WaitForJobsToolName}, construct: func(*LocalToolRegistry) core.Tool { return NewWaitForJobsTool() }},
 	{ToolDescriptor: ToolDescriptor{Name: RunAgentScriptToolName, Policy: KindExecute, DefaultEnabled: true}, construct: func(r *LocalToolRegistry) core.Tool { return NewRunAgentScriptTool(r.config, r.limits) }},
@@ -134,4 +139,28 @@ func ToolFlagHelp() string {
 		}
 	}
 	return "Enable local tools (comma-separated, or 'all'): " + strings.Join(labels, ",")
+}
+
+const (
+	// CodeModeToolName is the explicit legacy synchronous compatibility tool.
+	CodeModeToolName   = codemodetool.Name
+	CodeExecToolName   = codemodetool.ExecName
+	CodeWaitToolName   = codemodetool.WaitName
+	CodeCancelToolName = codemodetool.CancelName
+)
+
+// IsCodeModeTool includes execution and observation controls, not nested effects.
+func IsCodeModeTool(name string) bool {
+	return name == CodeModeToolName || codemodetool.IsControl(name)
+}
+
+func codeModeDirectOnlyTools() []string {
+	var names []string
+	for _, d := range builtinTools {
+		switch d.Policy {
+		case KindAgent, KindSessionState, KindInteractive, KindSkill:
+			names = append(names, d.Name)
+		}
+	}
+	return names
 }

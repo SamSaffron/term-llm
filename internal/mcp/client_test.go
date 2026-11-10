@@ -305,9 +305,19 @@ func TestCreateHTTPTransport_UsesTransportLevelTimeouts(t *testing.T) {
 		t.Fatalf("HTTPClient.Timeout = %v, want 0 so context controls long-running calls", st.HTTPClient.Timeout)
 	}
 
-	ht, ok := st.HTTPClient.Transport.(*http.Transport)
+	// The outermost transport is the response-body limiter; unwrap to reach the
+	// underlying network transport.
+	lbt, ok := st.HTTPClient.Transport.(*limitedBodyTransport)
 	if !ok {
-		t.Fatalf("HTTPClient.Transport = %T, want *http.Transport", st.HTTPClient.Transport)
+		t.Fatalf("HTTPClient.Transport = %T, want *limitedBodyTransport", st.HTTPClient.Transport)
+	}
+	if lbt.limit != mcpHTTPBodyMaxBytes {
+		t.Fatalf("limitedBodyTransport.limit = %d, want %d", lbt.limit, mcpHTTPBodyMaxBytes)
+	}
+
+	ht, ok := lbt.base.(*http.Transport)
+	if !ok {
+		t.Fatalf("limitedBodyTransport.base = %T, want *http.Transport", lbt.base)
 	}
 	if ht.DialContext == nil {
 		t.Fatal("expected DialContext timeout transport")
@@ -347,14 +357,22 @@ func TestCreateHTTPTransport_HeadersWrapTimeoutTransport(t *testing.T) {
 		t.Fatalf("HTTPClient.Timeout = %v, want 0 so context controls long-running calls", st.HTTPClient.Timeout)
 	}
 
-	ht, ok := st.HTTPClient.Transport.(*headerTransport)
+	// Outermost layer is the response-body limiter.
+	lbt, ok := st.HTTPClient.Transport.(*limitedBodyTransport)
 	if !ok {
-		t.Fatalf("HTTPClient.Transport = %T, want *headerTransport", st.HTTPClient.Transport)
+		t.Fatalf("HTTPClient.Transport = %T, want *limitedBodyTransport", st.HTTPClient.Transport)
+	}
+
+	// Inner layer is the header transport that injects auth credentials.
+	ht, ok := lbt.base.(*headerTransport)
+	if !ok {
+		t.Fatalf("limitedBodyTransport.base = %T, want *headerTransport", lbt.base)
 	}
 	if got := ht.headers["Authorization"]; got != "Bearer token" {
 		t.Fatalf("Authorization header = %q, want %q", got, "Bearer token")
 	}
 
+	// Innermost is the base network transport.
 	base, ok := ht.base.(*http.Transport)
 	if !ok {
 		t.Fatalf("headerTransport.base = %T, want *http.Transport", ht.base)
@@ -963,5 +981,115 @@ func TestBackgroundInsufficientScopePreservesOtherToolCalls(t *testing.T) {
 	}
 	if normalCalls.Load() != 1 {
 		t.Error("subsequent request did not send the valid stored bearer")
+	}
+}
+
+// --- buildProgrammatic regression tests ---
+
+func TestBuildProgrammatic_TextOnly(t *testing.T) {
+	result := &sdkmcp.CallToolResult{
+		Content: []sdkmcp.Content{&sdkmcp.TextContent{Text: "hello world"}},
+	}
+	raw, oversized := buildProgrammatic(result)
+	if oversized {
+		t.Fatal("expected not oversized for small text result")
+	}
+	if raw == nil {
+		t.Fatal("expected non-nil Programmatic for small text result")
+	}
+	var env struct {
+		Content []json.RawMessage `json:"content"`
+		IsError bool              `json:"isError"`
+	}
+	if err := json.Unmarshal(raw, &env); err != nil {
+		t.Fatalf("Programmatic is not valid JSON: %v", err)
+	}
+	if len(env.Content) != 1 {
+		t.Fatalf("content blocks = %d, want 1", len(env.Content))
+	}
+}
+
+func TestBuildProgrammatic_IsErrorPreserved(t *testing.T) {
+	result := &sdkmcp.CallToolResult{
+		Content: []sdkmcp.Content{&sdkmcp.TextContent{Text: "fail"}},
+		IsError: true,
+	}
+	raw, oversized := buildProgrammatic(result)
+	if oversized {
+		t.Fatal("unexpected oversized for tiny error result")
+	}
+	var env struct {
+		IsError bool `json:"isError"`
+	}
+	if err := json.Unmarshal(raw, &env); err != nil {
+		t.Fatalf("envelope JSON: %v", err)
+	}
+	if !env.IsError {
+		t.Error("isError not preserved in programmatic envelope")
+	}
+}
+
+func TestBuildProgrammatic_StructuredContent(t *testing.T) {
+	result := &sdkmcp.CallToolResult{
+		Content:           []sdkmcp.Content{&sdkmcp.TextContent{Text: "result"}},
+		StructuredContent: map[string]any{"answer": 42},
+	}
+	raw, oversized := buildProgrammatic(result)
+	if oversized {
+		t.Fatal("unexpected oversized")
+	}
+	var env struct {
+		StructuredContent json.RawMessage `json:"structuredContent"`
+	}
+	if err := json.Unmarshal(raw, &env); err != nil {
+		t.Fatalf("envelope JSON: %v", err)
+	}
+	if string(env.StructuredContent) == "" || string(env.StructuredContent) == "null" {
+		t.Errorf("structuredContent not preserved: %s", env.StructuredContent)
+	}
+}
+
+func TestBuildProgrammatic_OversizedNonImageRejectsWithNil(t *testing.T) {
+	// Build a result whose non-image text exceeds 4 MiB.
+	bigText := strings.Repeat("x", programmaticMaxBytes+1)
+	result := &sdkmcp.CallToolResult{
+		Content: []sdkmcp.Content{&sdkmcp.TextContent{Text: bigText}},
+	}
+	raw, oversized := buildProgrammatic(result)
+	if !oversized {
+		t.Fatal("expected oversized=true for >4 MiB text content")
+	}
+	if raw != nil {
+		t.Error("expected nil Programmatic when oversized")
+	}
+}
+
+func TestBuildProgrammatic_LargeImageDoesNotConsumeTextBudget(t *testing.T) {
+	// A result whose total bytes exceed 4 MiB due to image data alone should not
+	// be rejected: image bytes are excluded from the non-image budget.
+	imageBytes := make([]byte, programmaticMaxBytes) // 4 MiB raw image
+	result := &sdkmcp.CallToolResult{
+		Content: []sdkmcp.Content{
+			&sdkmcp.TextContent{Text: "small text"},
+			&sdkmcp.ImageContent{MIMEType: "image/png", Data: imageBytes},
+		},
+	}
+	raw, oversized := buildProgrammatic(result)
+	if oversized {
+		t.Fatal("large image should not exhaust non-image budget")
+	}
+	if raw == nil {
+		t.Fatal("expected non-nil Programmatic")
+	}
+}
+
+func TestBuildProgrammatic_EmptyResult(t *testing.T) {
+	result := &sdkmcp.CallToolResult{}
+	raw, oversized := buildProgrammatic(result)
+	if oversized {
+		t.Fatal("empty result must not be oversized")
+	}
+	if raw == nil {
+		t.Fatal("expected non-nil Programmatic for empty result")
 	}
 }

@@ -438,6 +438,11 @@ func (s *serveServer) handleResponseByID(w http.ResponseWriter, r *http.Request)
 		// tool, and steering cleanup can wind down without holding the HTTP
 		// acknowledgement open.
 		_ = restart.Default.Go(r.Context(), func(context.Context) {
+			if s.sessionMgr != nil {
+				if rt, ok := s.sessionMgr.Get(run.sessionID); ok && rt != nil {
+					rt.engine.InterruptCodeModeSession(run.sessionID)
+				}
+			}
 			if cancel != nil {
 				cancel()
 			}

@@ -1,7 +1,6 @@
 package serve
 
 import (
-	"fmt"
 	"strings"
 
 	"github.com/samsaffron/term-llm/internal/llm/core"
@@ -33,27 +32,8 @@ func appendChildSkillSystemContext(systemPrompt string, skill *runpkg.SkillRunMe
 	return systemPrompt + "\n\n" + context.String()
 }
 
-func applyChildSkillRuntime(engine *engine.Engine, toolMgr *tools.ToolManager, skill *runpkg.SkillRunMetadata) error {
-	if skill == nil {
-		return nil
-	}
-	if len(skill.ToolDefs) > 0 {
-		if toolMgr == nil {
-			return fmt.Errorf("isolated skill %q declares tools, but child agent has no local tool registry", skill.Name)
-		}
-		if err := toolMgr.Registry.RegisterSkillTools(skill.ToolDefs, skill.SourcePath); err != nil {
-			return fmt.Errorf("register isolated skill %q tools: %w", skill.Name, err)
-		}
-		for _, definition := range skill.ToolDefs {
-			if tool, ok := toolMgr.Registry.Get(definition.Name); ok {
-				engine.AddDynamicTool(tool)
-			}
-		}
-	}
-	if skill.AllowedToolsPresent {
-		engine.SetAllowedToolsFilter(skill.AllowedTools)
-	}
-	return nil
+func applyChildSkillRuntime(eng *engine.Engine, manager *tools.ToolManager, skill *runpkg.SkillRunMetadata) error {
+	return runpkg.ApplySkillRuntime(eng, manager, skill)
 }
 
 func filterEngineAllowedToolSpecs(specs []core.ToolSpec, engine *engine.Engine) []core.ToolSpec {

@@ -3,10 +3,17 @@ package mcp
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 
 	"github.com/samsaffron/term-llm/internal/llm/core"
 	"github.com/samsaffron/term-llm/internal/llm/engine"
 )
+
+// ErrToolRemovedFromCatalogue is returned by CodeModeIdentity when the tool is
+// no longer present in the current server catalogue. Code mode callers must treat
+// this as a schema_changed condition and discard any cached spec or hash.
+var ErrToolRemovedFromCatalogue = errors.New("MCP tool removed from server catalogue")
 
 // MCPTool wraps an MCP server tool as an llm.Tool.
 type MCPTool struct {
@@ -57,6 +64,53 @@ func (t *MCPTool) Execute(ctx context.Context, args json.RawMessage) (core.ToolO
 		return t.manager.CallCatalogTool(ctx, t.server, t.originalName, t.toolSpec.Name, args)
 	}
 	return t.manager.CallTool(ctx, t.toolSpec.Name, args)
+}
+
+// CodeModeIdentity returns the current exact spec and schema hash for this tool
+// from the live server catalogue. It is an optional code-mode admission interface:
+// no concrete interface is defined; the engine and child-call path use a type
+// assertion to detect schema_changed without relying on the stale observed spec
+// that was present at registration time.
+//
+// Returns a [PermissionError] when the server is currently denied by policy, and
+// [ErrToolRemovedFromCatalogue] when the tool has been removed from the live
+// catalogue. ctx is reserved for future async refresh; it is not used today.
+func (t *MCPTool) CodeModeIdentity(_ context.Context) (core.ToolSpec, string, error) {
+	if t.server != "" && t.originalName != "" {
+		// Catalogue tool: direct per-server lookup by original name.
+		if err := t.manager.policyError(t.server); err != nil {
+			return core.ToolSpec{}, "", err
+		}
+		t.manager.mu.RLock()
+		snapshot := t.manager.catalogues[t.server]
+		t.manager.mu.RUnlock()
+		if snapshot == nil {
+			return core.ToolSpec{}, "", fmt.Errorf("MCP server %s catalogue not ready", t.server)
+		}
+		idx, ok := snapshot.ByOriginal[t.originalName]
+		if !ok {
+			return core.ToolSpec{}, "", ErrToolRemovedFromCatalogue
+		}
+		ct := snapshot.Tools[idx]
+		return ct.ToolSpec(), ct.SchemaHash, nil
+	}
+
+	// Legacy tool: resolve by flattened projected name from the aggregate
+	// catalogue without name-splitting. This avoids the parseToolName heuristic
+	// and works for single-server configurations that do not namespace tools.
+	agg := t.manager.CatalogueSnapshot()
+	if agg == nil {
+		return core.ToolSpec{}, "", fmt.Errorf("MCP catalogue not ready")
+	}
+	for _, ct := range agg.Tools {
+		if ct.Name == t.toolSpec.Name {
+			if err := t.manager.policyError(ct.Server); err != nil {
+				return core.ToolSpec{}, "", err
+			}
+			return ct.ToolSpec(), ct.SchemaHash, nil
+		}
+	}
+	return core.ToolSpec{}, "", ErrToolRemovedFromCatalogue
 }
 
 // RegisterMCPTools registers all MCP tools from the manager into the tool registry.
