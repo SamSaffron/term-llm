@@ -16,6 +16,9 @@ func CloneConfig(src *config.Config) *config.Config {
 			// overrides never mutate the shared base config (mirrors the
 			// deep-copy discipline in spawn_runner.go). A shallow copy would
 			// alias Models and UseNativeSearch across runs.
+			if pc.AllowedModels != nil {
+				pc.AllowedModels = append([]string{}, pc.AllowedModels...)
+			}
 			if pc.Models != nil {
 				pc.Models = append([]string(nil), pc.Models...)
 			}

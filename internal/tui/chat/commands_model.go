@@ -159,19 +159,22 @@ func (m *Model) configuredEffortForCycle(provider, model string) (string, bool) 
 }
 
 func (m *Model) reasoningEffortsForModel(provider, model string) []string {
-	if _, _, efforts, ok := m.configuredModelEffort(provider, model); ok {
-		return efforts
+	allowed := func(efforts []string) []string {
+		return llm.ProviderReasoningEffortsForDiscovery(m.config, provider, model, efforts)
 	}
-	if _, _, efforts, ok := m.cachedOllamaModelEffort(provider, model); ok {
-		return normalizedModelReasoningEfforts(efforts)
+	if _, _, configuredEfforts, ok := m.configuredModelEffort(provider, model); ok {
+		return allowed(configuredEfforts)
+	}
+	if _, _, cachedEfforts, ok := m.cachedOllamaModelEffort(provider, model); ok {
+		return allowed(normalizedModelReasoningEfforts(cachedEfforts))
 	}
 	base, _ := m.baseModelAndEffort(provider, model)
 	for _, metadata := range m.modelMetadata {
 		if strings.EqualFold(strings.TrimSpace(metadata.ID), strings.TrimSpace(base)) && len(metadata.ReasoningEfforts) > 0 {
-			return normalizedModelReasoningEfforts(metadata.ReasoningEfforts)
+			return allowed(normalizedModelReasoningEfforts(metadata.ReasoningEfforts))
 		}
 	}
-	return llm.ReasoningEffortsForProviderModel(provider, model)
+	return allowed(llm.ReasoningEffortsForProviderModel(provider, model))
 }
 
 func (m *Model) configuredModelEffort(provider, model string) (base, effort string, efforts []string, ok bool) {

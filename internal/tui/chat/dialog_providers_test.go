@@ -5,7 +5,36 @@ import (
 	"testing"
 
 	"github.com/samsaffron/term-llm/internal/config"
+	"github.com/samsaffron/term-llm/internal/llm"
 )
+
+func TestGetAvailableProviders_FiltersProviderAllowedModels(t *testing.T) {
+	previous := providerHasLocalCredentials
+	providerHasLocalCredentials = func(string) bool { return false }
+	t.Cleanup(func() { providerHasLocalCredentials = previous })
+	llm.RegisterConfigReasoningEfforts([]llm.ConfigModelReasoningEfforts{
+		{Provider: "corp", Model: "upstream/model", Efforts: []string{"low", "high"}},
+		{Provider: "corp", Model: "friendly", Efforts: []string{"low", "high"}},
+	})
+	t.Cleanup(func() { llm.RegisterConfigReasoningEfforts(nil) })
+
+	cfg := &config.Config{Providers: map[string]config.ProviderConfig{"corp": {
+		Type:          config.ProviderTypeOpenAICompat,
+		Model:         "friendly",
+		Models:        []string{"friendly", "blocked"},
+		AllowedModels: []string{"upstream/model-high"},
+		ModelConfigs: []config.ProviderModelConfig{{
+			ID: "upstream/model", Alias: "friendly", ReasoningEfforts: []string{"low", "high"},
+		}},
+	}}}
+	providers := GetAvailableProviders(cfg)
+	if len(providers) != 1 || providers[0].Name != "corp" {
+		t.Fatalf("GetAvailableProviders() = %+v, want only corp", providers)
+	}
+	if want := []string{"friendly-high"}; !slices.Equal(providers[0].Models, want) {
+		t.Fatalf("corp models = %v, want %v", providers[0].Models, want)
+	}
+}
 
 func TestGetAvailableProviders_ListsOnlyConfiguredProviders(t *testing.T) {
 	t.Setenv("XAI_API_KEY", "xai-test")

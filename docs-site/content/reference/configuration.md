@@ -372,6 +372,20 @@ tools:
 
 An unknown `provider` name does not fail config loading; it leaves reranking unavailable. Out-of-range numeric values are rejected.
 
+## Provider model restrictions
+
+All text inference providers accept `providers.<name>.allowed_models`, a list of model names without provider prefixes. An empty or omitted list is unrestricted. This is an enforcement setting, unlike `providers.<name>.models`, which supplies model discovery and metadata.
+
+```yaml
+providers:
+  claude-bin:
+    model: claude-opus-5-5
+    fast_model: claude-sonnet-5-5
+    allowed_models: [claude-opus-5-5, claude-sonnet-5-5]
+```
+
+Base model entries also allow their supported reasoning-effort variants (for example `claude-opus-5-5-max`); an entry naming a specific variant allows only that variant. Provider restrictions cannot be loosened by agent preferences or CLI overrides. See [provider model restrictions](/reference/providers-and-models/#restrict-models-per-provider) for aliases, custom providers, discovery, fast-model routing and scope.
+
 ## Example
 
 ```yaml

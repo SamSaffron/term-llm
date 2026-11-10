@@ -3,6 +3,7 @@ package providers
 import (
 	"bytes"
 	"os"
+	"slices"
 	"strings"
 	"testing"
 
@@ -122,6 +123,27 @@ func clearProviderCredentialEnv(t *testing.T) {
 			t.Setenv(v, "")
 		}
 	}
+}
+
+func TestBuildListFiltersProviderAllowedModels(t *testing.T) {
+	cfg := &config.Config{
+		ProviderDiscovery: config.ProviderDiscoveryConfig,
+		Providers: map[string]config.ProviderConfig{"corp": {
+			Type:          config.ProviderTypeOpenAICompat,
+			Models:        []string{"allowed", "blocked"},
+			AllowedModels: []string{"allowed", "pinned"},
+		}},
+	}
+	for _, provider := range BuildListWith(cfg, func(string) bool { return false }) {
+		if provider.Name != "corp" {
+			continue
+		}
+		if want := []string{"allowed", "pinned"}; !slices.Equal(provider.Models, want) {
+			t.Fatalf("corp models = %v, want %v", provider.Models, want)
+		}
+		return
+	}
+	t.Fatal("corp missing from provider list")
 }
 
 func TestOptionsDefaultsAreZero(t *testing.T) {

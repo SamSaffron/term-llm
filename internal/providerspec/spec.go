@@ -409,6 +409,7 @@ var fields = []FieldSpec{
 	{Path: "fast_provider"},
 	{Path: "service_tier"},
 	{Path: "models", Placeholder: []string{}},
+	{Path: "allowed_models", Placeholder: []string{}, Description: "Enforced model allowlist; base models include supported reasoning-effort variants; empty means unrestricted"},
 	{Path: "reasoning"},
 	{Path: "credentials"},
 	{Path: "env", Placeholder: map[string]any{}},
