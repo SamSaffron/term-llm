@@ -16,6 +16,7 @@ func AuxProviderForPolicy(cfg *config.Config, policy modelpolicy.Policy, main Mo
 	if cfg == nil {
 		return nil, nil
 	}
+	restricted := policy.Restricted() || len(cfg.Providers[main.Provider].AllowedModels) > 0
 	var lastErr error
 	for _, key := range keys {
 		key = strings.TrimSpace(key)
@@ -33,11 +34,11 @@ func AuxProviderForPolicy(cfg *config.Config, policy modelpolicy.Policy, main Mo
 		if err != nil {
 			lastErr = fmt.Errorf("auxiliary provider %s:%s: %w", provider, model, err)
 		}
-		if policy.Restricted() {
+		if restricted {
 			break
 		}
 	}
-	if policy.Restricted() && main.Provider != "" && main.Model != "" {
+	if restricted && main.Provider != "" && main.Model != "" {
 		return MainProviderForPolicy(cfg, policy, main)
 	}
 	return nil, lastErr

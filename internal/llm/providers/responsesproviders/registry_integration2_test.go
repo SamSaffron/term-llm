@@ -105,7 +105,7 @@ func TestChatGPTModelInfoPrefersExplicitMetadata(t *testing.T) {
 	}
 }
 
-func TestNewChatGPTProviderWithCredsDefaultsToGPT56SolMedium(t *testing.T) {
+func TestNewChatGPTProviderWithCredsDefaultsToGPT61SolMedium(t *testing.T) {
 	t.Parallel()
 
 	provider := rp.NewChatGPTProviderWithCreds(&credentials.ChatGPTCredentials{
@@ -115,8 +115,8 @@ func TestNewChatGPTProviderWithCredsDefaultsToGPT56SolMedium(t *testing.T) {
 	}, "")
 
 	model, effort, _ := rp.ChatGPTModelEffortTierForTest(provider)
-	if model != "gpt-5.6-sol" {
-		t.Fatalf("model = %q, want %q", model, "gpt-5.6-sol")
+	if model != "gpt-6.1-sol" {
+		t.Fatalf("model = %q, want %q", model, "gpt-6.1-sol")
 	}
 	if effort != "medium" {
 		t.Fatalf("effort = %q, want %q", effort, "medium")

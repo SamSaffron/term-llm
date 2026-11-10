@@ -1148,7 +1148,10 @@ func isApprovalConfigKey(key string) bool {
 
 // configValueCompletions returns completions for config values based on key
 func configValueCompletions(key, toComplete string) []string {
-	cfg, _ := config.Load()
+	cfg, err := config.Load()
+	if err != nil {
+		return nil
+	}
 
 	switch key {
 	case "live.control_plane":
@@ -1225,6 +1228,7 @@ func configValueCompletions(key, toComplete string) []string {
 			if len(models) == 0 {
 				models = llm.ResolveProviderModelIDs(provider)
 			}
+			models = llm.ProviderModelIDsForDiscovery(cfg, provider, models)
 			var completions []string
 			for _, m := range models {
 				if strings.HasPrefix(m, toComplete) {
@@ -1240,10 +1244,14 @@ func configValueCompletions(key, toComplete string) []string {
 		parts := strings.Split(key, ".")
 		if len(parts) == 3 {
 			provider := parts[1]
+			if target := strings.TrimSpace(cfg.Providers[provider].FastProvider); target != "" {
+				provider = target
+			}
 			models := ollamaModelCompletions(provider, cfg)
 			if len(models) == 0 {
 				models = llm.ResolveProviderModelIDs(provider)
 			}
+			models = llm.ProviderModelIDsForDiscovery(cfg, provider, models)
 			var completions []string
 			for _, m := range models {
 				if strings.HasPrefix(m, toComplete) {

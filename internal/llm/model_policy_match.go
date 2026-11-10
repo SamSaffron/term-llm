@@ -107,8 +107,7 @@ func configuredEffortVariant(cfg *config.Config, provider, selected, base string
 		}
 		return false
 	}
-	if IsKnownProviderModel(provider, base) {
-		return IsModelOrEffortVariant(provider, selected, base)
-	}
-	return false
+	// A plain models: string is discovery, not a capability declaration.
+	// Only an object entry above can explicitly declare no effort support.
+	return IsModelOrEffortVariant(provider, selected, base)
 }

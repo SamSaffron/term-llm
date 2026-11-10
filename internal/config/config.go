@@ -145,6 +145,7 @@ type ProviderConfig struct {
 	FastModel                 string                `mapstructure:"fast_model"`                  // Lightweight model for control-plane tasks
 	FastProvider              string                `mapstructure:"fast_provider"`               // Optional provider key override for FastModel
 	ServiceTier               string                `mapstructure:"service_tier"`                // Optional model service tier (e.g. "fast"/"priority" for ChatGPT)
+	AllowedModels             []string              `mapstructure:"allowed_models"`              // Enforced model allowlist; empty means unrestricted
 	Models                    []string              `mapstructure:"models"`                      // Available model names/aliases for autocomplete
 	ModelConfigs              []ProviderModelConfig `mapstructure:"-"`                           // Metadata for object entries in models
 	Reasoning                 string                `mapstructure:"reasoning"`                   // "auto"/empty, "enabled", or "disabled" for suffix-based reasoning efforts
@@ -1296,7 +1297,7 @@ func loadUnresolved() (*Config, error) {
 		return nil, fmt.Errorf("failed to unmarshal config: %w", err)
 	}
 	applyProviderModelConfigs(&cfg, providerModelConfigsFromFile(file))
-	if err := validateProviderModelReasoning(&cfg); err != nil {
+	if err := validateProviderModels(&cfg); err != nil {
 		return nil, err
 	}
 	markReasoningConfigPresence(&cfg.Reasoning, file)
@@ -1589,31 +1590,6 @@ func providerModelConfigMatchedEffort(entry ProviderModelConfig, modelName strin
 		}
 	}
 	return ""
-}
-
-func validateProviderModelReasoning(cfg *Config) error {
-	if cfg == nil {
-		return nil
-	}
-	for provider, pc := range cfg.Providers {
-		for _, entry := range pc.ModelConfigs {
-			defaultEffort := strings.ToLower(strings.TrimSpace(entry.DefaultReasoningEffort))
-			if defaultEffort == "" {
-				continue
-			}
-			supported := false
-			for _, effort := range entry.ReasoningEfforts {
-				if strings.EqualFold(strings.TrimSpace(effort), defaultEffort) {
-					supported = true
-					break
-				}
-			}
-			if !supported {
-				return fmt.Errorf("providers.%s model %q default_reasoning_effort %q is not listed in reasoning_efforts", provider, entry.DisplayName(), entry.DefaultReasoningEffort)
-			}
-		}
-	}
-	return nil
 }
 
 func applyProviderModelConfigs(cfg *Config, modelConfigs map[string][]ProviderModelConfig) {

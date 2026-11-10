@@ -380,7 +380,7 @@ func resolveBenchmarkTargets(ctx context.Context, cfg *config.Config, providerFl
 		return nil, nil, fmt.Errorf("provider %q manages its own context; use --include-managed-provider to opt into subprocess-inclusive timing", providerKey)
 	}
 	if providerType == config.ProviderTypeChatGPT && strings.EqualFold(model, "luna") {
-		model = "gpt-5.6-luna"
+		model = config.DefaultProviderFastModel("chatgpt")
 	}
 
 	models, modelInfoByID, skipped, err := resolveBenchmarkModels(ctx, cfg, providerKey, providerCfg, configured, providerType, model, localOllama)

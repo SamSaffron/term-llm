@@ -100,14 +100,14 @@ func TestProviderModelsIncludeLatestOpenAIModels(t *testing.T) {
 	}
 }
 
-func TestProviderFastModelsUseGPT56Luna(t *testing.T) {
+func TestProviderFastModelsUseCurrentLuna(t *testing.T) {
 	t.Parallel()
 
-	if got := ProviderFastModels["openai"]; got != "gpt-5.6-luna" {
-		t.Fatalf("ProviderFastModels[openai] = %q, want gpt-5.6-luna", got)
+	if got := ProviderFastModels["openai"]; got != "gpt-6-luna" {
+		t.Fatalf("ProviderFastModels[openai] = %q, want gpt-6-luna", got)
 	}
-	if got := ProviderFastModels["chatgpt"]; got != "gpt-5.6-luna" {
-		t.Fatalf("ProviderFastModels[chatgpt] = %q, want gpt-5.6-luna", got)
+	if got := ProviderFastModels["chatgpt"]; got != "gpt-6-luna" {
+		t.Fatalf("ProviderFastModels[chatgpt] = %q, want gpt-6-luna", got)
 	}
 }
 

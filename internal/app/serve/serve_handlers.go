@@ -2876,6 +2876,9 @@ func (s *serveServer) handleProviders(w http.ResponseWriter, r *http.Request) {
 			defaultModel = strings.TrimSpace(pc.Model)
 			serviceTier = llm.NormalizeServiceTier(pc.ServiceTier)
 		}
+		if llm.CheckProviderModelAllowed(s.cfgRef, p.Name, defaultModel) != nil {
+			defaultModel = ""
+		}
 		items = append(items, map[string]any{
 			"name":          p.Name,
 			"type":          p.Type,
@@ -2951,6 +2954,7 @@ func (s *serveServer) handleModels(w http.ResponseWriter, r *http.Request) {
 	if len(models) == 0 {
 		models = s.getLocalModelsForProvider(effectiveName, queryProvider)
 	}
+	models = llm.ProviderModelsForDiscovery(s.cfgRef, effectiveName, models)
 
 	ids := make([]string, 0, len(models))
 	byID := make(map[string]core.ModelInfo, len(models))
@@ -3014,13 +3018,16 @@ func (s *serveServer) handleModels(w http.ResponseWriter, r *http.Request) {
 			item["input_price"] = m.InputPrice
 			item["output_price"] = m.OutputPrice
 		}
-		if len(m.ReasoningEfforts) > 0 {
-			item["reasoning_efforts"] = append([]string(nil), m.ReasoningEfforts...)
-		} else if efforts := llm.ReasoningEffortsForProviderModel(effectiveName, id); len(efforts) > 0 {
-			item["reasoning_efforts"] = efforts
+		efforts := m.ReasoningEfforts
+		if len(efforts) == 0 {
+			efforts = llm.ReasoningEffortsForProviderModel(effectiveName, id)
 		}
-		if m.DefaultReasoningEffort != "" {
-			item["default_reasoning_effort"] = m.DefaultReasoningEffort
+		efforts = llm.ProviderReasoningEffortsForDiscovery(s.cfgRef, effectiveName, id, efforts)
+		if len(efforts) > 0 {
+			item["reasoning_efforts"] = append([]string(nil), efforts...)
+		}
+		if defaultEffort := strings.TrimSpace(m.DefaultReasoningEffort); defaultEffort != "" && len(llm.ProviderReasoningEffortsForDiscovery(s.cfgRef, effectiveName, id, []string{defaultEffort})) > 0 {
+			item["default_reasoning_effort"] = defaultEffort
 		}
 		if len(m.ServiceTiers) > 0 {
 			item["service_tiers"] = append([]core.ModelServiceTier(nil), m.ServiceTiers...)
@@ -3129,13 +3136,23 @@ func (s *serveServer) getModelsProvider(name string) (core.Provider, string, err
 		return p, cacheKey, nil
 	}
 
+	// Listing models is discovery, not inference: when the configured default
+	// is outside the allowlist, build the listing provider with a permitted
+	// model so a fresh account catalog can still be inspected and filtered.
+	effectiveName := name
+	if effectiveName == "" {
+		effectiveName = s.cfgRef.DefaultProvider
+	}
+	listingModel := ""
+	if err := llm.CheckProviderModelAllowed(s.cfgRef, effectiveName, ""); err != nil {
+		if allowed := llm.ProviderAllowedModelIDs(s.cfgRef, effectiveName); len(allowed) > 0 {
+			listingModel = allowed[0]
+		}
+	}
+
 	var provider core.Provider
 	var err error
-	if name == "" || name == s.cfgRef.DefaultProvider {
-		provider, err = llm.NewProvider(s.cfgRef)
-	} else {
-		provider, err = llm.NewProviderByName(s.cfgRef, name, "")
-	}
+	provider, err = llm.NewProviderByName(s.cfgRef, effectiveName, listingModel)
 	if err != nil {
 		return nil, "", err
 	}

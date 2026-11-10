@@ -268,6 +268,31 @@ func TestOllamaConfigModelCompletionFallsBackWhenEndpointUnavailable(t *testing.
 	}
 }
 
+func TestProviderModelConfigCompletionRespectsAllowedModels(t *testing.T) {
+	home := t.TempDir()
+	configHome := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", configHome)
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+	configDir := filepath.Join(configHome, "term-llm")
+	if err := os.MkdirAll(configDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	raw := []byte("providers:\n  corp:\n    type: openai_compatible\n    base_url: http://127.0.0.1:1\n    models: [allowed, blocked]\n    allowed_models: [allowed, pinned]\n  primary:\n    type: openai_compatible\n    models: [primary-model]\n    allowed_models: [primary-model]\n    fast_provider: corp\n")
+	if err := os.WriteFile(filepath.Join(configDir, "config.yaml"), raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	got := configValueCompletions("providers.corp.model", "")
+	if want := []string{"allowed", "pinned"}; !slices.Equal(got, want) {
+		t.Fatalf("provider model completions = %v, want %v", got, want)
+	}
+	got = configValueCompletions("providers.primary.fast_model", "")
+	if want := []string{"allowed", "pinned"}; !slices.Equal(got, want) {
+		t.Fatalf("redirected fast-model completions = %v, want %v", got, want)
+	}
+}
+
 func TestSearchProviderConfigValueCompletionsIncludeParallel(t *testing.T) {
 	got := configValueCompletions("search.provider", "par")
 	if !reflect.DeepEqual(got, []string{"parallel"}) {

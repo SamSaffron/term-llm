@@ -269,13 +269,13 @@ var specs = []Spec{
 	},
 	{
 		Name: "openai", Type: TypeOpenAI, ModelListing: ModelListingAPIKey, Wizard: WizardSpec{Order: 9, Label: "OpenAI - OPENAI_API_KEY", Hint: "set OPENAI_API_KEY"}, ConfigDefault: true, ShowInConfig: true, ResetTemplate: true,
-		Defaults:    []DefaultField{{"model", "gpt-5.6-sol"}, {"fast_model", "gpt-5.6-luna"}, {"use_websocket", false}},
+		Defaults:    []DefaultField{{"model", "gpt-6.1-sol"}, {"fast_model", "gpt-6-luna"}, {"use_websocket", false}},
 		Description: "OpenAI Responses API",
 		Credential:  CredentialAPIKey, APIKeyEnv: "OPENAI_API_KEY",
 	},
 	{
 		Name: "chatgpt", ModelListTimeoutSeconds: 30, CredentialLabel: "ChatGPT OAuth (interactive)", Type: TypeChatGPT, ModelListing: ModelListingChatGPT, Availability: AvailabilityChatGPT, Wizard: WizardSpec{Order: 2, Label: "ChatGPT (Codex) - ChatGPT OAuth", Hint: "run 'term-llm auth login chatgpt' to sign in", Bootstrap: true}, ConfigDefault: true, ShowInConfig: true, ResetTemplate: true,
-		Defaults:    []DefaultField{{"model", "gpt-5.6-sol-medium"}, {"fast_model", "gpt-5.6-luna"}, {"use_websocket", true}},
+		Defaults:    []DefaultField{{"model", "gpt-6.1-sol-medium"}, {"fast_model", "gpt-6-luna"}, {"use_websocket", true}},
 		Description: "ChatGPT via native OAuth (ChatGPT Plus/Pro subscription)",
 		Credential:  CredentialOAuth, Setup: "run term-llm auth login chatgpt",
 	},
@@ -409,6 +409,7 @@ var fields = []FieldSpec{
 	{Path: "fast_provider"},
 	{Path: "service_tier"},
 	{Path: "models", Placeholder: []string{}},
+	{Path: "allowed_models", Placeholder: []string{}, Description: "Enforced model allowlist; base models include supported reasoning-effort variants; empty means unrestricted"},
 	{Path: "reasoning"},
 	{Path: "credentials"},
 	{Path: "env", Placeholder: map[string]any{}},

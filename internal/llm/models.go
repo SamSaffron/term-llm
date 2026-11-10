@@ -70,7 +70,7 @@ var ProviderModels = map[string][]ModelEntry{
 		{ID: "claude-haiku-4-5-20251001", InputLimit: 180_000, OutputLimit: 64_000},
 		{ID: "claude-sonnet-4-5-20250929", InputLimit: 180_000, OutputLimit: 64_000},
 	},
-	"openai": {
+	"openai": concatModelEntries(currentOpenAIModelEntries(), []ModelEntry{
 		{ID: "gpt-5.6-sol", InputLimit: 922_000, OutputLimit: 128_000, ReasoningEfforts: gpt56OpenAIEffortVariants},
 		{ID: "gpt-5.6-terra", InputLimit: 922_000, OutputLimit: 128_000, ReasoningEfforts: gpt56OpenAIEffortVariants},
 		{ID: "gpt-5.6-luna", InputLimit: 922_000, OutputLimit: 128_000, ReasoningEfforts: gpt56OpenAIEffortVariants},
@@ -86,7 +86,7 @@ var ProviderModels = map[string][]ModelEntry{
 		{ID: "gpt-5-mini", InputLimit: 272_000, OutputLimit: 128_000},
 		{ID: "gpt-5-nano", InputLimit: 272_000, OutputLimit: 128_000},
 		{ID: "o3-mini", InputLimit: 100_000, OutputLimit: 100_000},
-	},
+	}),
 	"chatgpt": {
 		// Uses ChatGPT backend API with native OAuth. These are static fallback
 		// capabilities; live /codex/models metadata takes precedence in clients.
@@ -896,7 +896,7 @@ func IsConfiguredProviderEffortPrefix(cfg *config.Config, value string) bool {
 		}
 		partialEffort := strings.TrimPrefix(value, prefix)
 		for _, effort := range ConfiguredProviderReasoningEfforts(cfg, provider) {
-			if strings.HasPrefix(effort, strings.ToLower(partialEffort)) {
+			if strings.HasPrefix(effort, strings.ToLower(partialEffort)) && configuredProviderEffortProfileAllowed(cfg, provider, effort) {
 				return true
 			}
 		}
@@ -957,25 +957,25 @@ func GetProviderCompletions(toComplete string, isImage bool, cfg *config.Config)
 
 func completeProviderModels(provider, modelPrefix string, isImage bool, cfg *config.Config, getModelIDs func(string) []string) []string {
 	providerCfg := providerConfigForCompletion(provider, isImage, cfg)
-	// OpenCode Go efforts and limits come from its credential-scoped disk
-	// cache, which the provider-aware helpers only see once the scope is
-	// primed. Prime once up front so candidate lookup, configured model
-	// lists, and effort expansion below all share the same metadata.
+	// Prime OpenCode Go's credential-scoped catalog once so candidate lookup,
+	// configured model lists, and effort expansion share its metadata.
 	if !isImage && config.InferProviderType(provider, providerCfg.Type) == config.ProviderTypeOpenCodeGo {
 		rp.PrimeOpenCodeGoCatalogScope(resolvedProviderAPIKey(cfg, provider), providerCfg.BaseURL)
 	}
 	models, configured := configuredCompletionModels(provider, isImage, providerCfg)
 	if !configured {
-		var continueCompletion bool
-		models, continueCompletion = completionModelCandidates(provider, isImage, providerCfg, cfg, getModelIDs)
-		if !continueCompletion {
+		models, _ = completionModelCandidates(provider, isImage, providerCfg, cfg, getModelIDs)
+		if !isImage && len(models) == 0 {
+			models = ProviderAllowedModelIDs(cfg, provider)
+		}
+		if len(models) == 0 {
 			return nil
 		}
 	}
 
 	// Expand provider-specific effort variants for tab-completion.
 	if !isImage {
-		models = ExpandWithEffortVariantsForProvider(provider, models)
+		models = ExpandProviderModelIDsForDiscovery(cfg, provider, models)
 	}
 
 	// Reveal suffixes only after their parent model name is fully typed.
@@ -993,7 +993,7 @@ func completeProviderModels(provider, modelPrefix string, isImage bool, cfg *con
 		if !isImage && config.InferProviderType(provider, providerCfg.Type) == config.ProviderTypeChatGPT && strings.HasPrefix(modelPrefix, model) {
 			fast := model + "-fast"
 			if strings.HasPrefix(fast, modelPrefix) && !slices.Contains(models, fast) {
-				if _, tier := rp.ChatGPTModelServiceTier(fast); tier != "" {
+				if _, tier := rp.ChatGPTModelServiceTier(fast); tier != "" && CheckProviderModelAllowed(cfg, provider, fast) == nil {
 					completions = append(completions, provider+":"+fast)
 				}
 			}
@@ -1138,7 +1138,7 @@ func completeProviderNames(toComplete string, isImage bool, cfg *config.Config, 
 			}
 			for _, effort := range ConfiguredProviderReasoningEfforts(cfg, provider) {
 				candidate := provider + "-" + effort
-				if strings.HasPrefix(candidate, toComplete) {
+				if strings.HasPrefix(candidate, toComplete) && configuredProviderEffortProfileAllowed(cfg, provider, effort) {
 					completions = append(completions, candidate)
 				}
 			}

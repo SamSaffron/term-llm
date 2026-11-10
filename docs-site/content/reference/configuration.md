@@ -373,6 +373,20 @@ tools:
 
 An unknown `provider` name does not fail config loading; it leaves reranking unavailable. Out-of-range numeric values are rejected.
 
+## Provider model restrictions
+
+All text inference providers accept `providers.<name>.allowed_models`, a list of model names without provider prefixes. An empty or omitted list is unrestricted. This is an enforcement setting, unlike `providers.<name>.models`, which supplies model discovery and metadata.
+
+```yaml
+providers:
+  claude-bin:
+    model: claude-opus-5-5
+    fast_model: claude-sonnet-5-5
+    allowed_models: [claude-opus-5-5, claude-sonnet-5-5]
+```
+
+Base model entries also allow their supported reasoning-effort variants (for example `claude-opus-5-5-max`); an entry naming a specific variant allows only that variant. Provider restrictions cannot be loosened by agent preferences or CLI overrides. See [provider model restrictions](/reference/providers-and-models/#restrict-models-per-provider) for aliases, custom providers, discovery, fast-model routing and scope.
+
 ## Example
 
 ```yaml
@@ -383,15 +397,15 @@ providers:
     model: claude-sonnet-4-6
 
   openai:
-    model: gpt-5.6-sol
-    fast_model: gpt-5.6-luna
+    model: gpt-6.1-sol
+    fast_model: gpt-6-luna
     # Uses OPENAI_API_KEY (or an explicit api_key).
     # HTTP/SSE is the default; set true to opt into WebSockets.
     use_websocket: false
 
   chatgpt:
     # Separate subscription OAuth: term-llm auth login chatgpt
-    model: gpt-5.6-sol-medium
+    model: gpt-6.1-sol-medium
     use_websocket: true
 
   ollama:
@@ -610,7 +624,7 @@ guardian:
     min_confidence: 0.15          # inclusive range [0, 1]; distribution spread, not certainty
   fallback:                       # optional LLM reviewer for classifier denials/failures
     provider: chatgpt             # optional; same rules as guardian.provider
-    model: gpt-5.6-luna-low       # optional; same rules as guardian.model
+    model: gpt-6-luna-low           # optional; same rules as guardian.model
     log_path: ~/.local/share/term-llm/guardian/escalations.jsonl # optional; `off` disables
 ```
 
@@ -643,8 +657,8 @@ providers:
   anthropic:
     model: claude-sonnet-4-6
   openai:
-    model: gpt-5.6-sol
-    fast_model: gpt-5.6-luna
+    model: gpt-6.1-sol
+    fast_model: gpt-6-luna
   openrouter:
     model: openrouter/free
 
@@ -1166,11 +1180,11 @@ Built-in `openai` and `chatgpt` text providers support the Responses API `servic
 ```yaml
 providers:
   openai:
-    model: gpt-5.6-sol
+    model: gpt-6.1-sol
     service_tier: fast
 
   chatgpt:
-    model: gpt-5.6-sol-medium
+    model: gpt-6.1-sol-medium
     service_tier: priority
 ```
 
@@ -1227,7 +1241,7 @@ Example custom policy:
 ```yaml
 providers:
   openai:
-    model: gpt-5.6-sol
+    model: gpt-6.1-sol
     file_upload:
       native_mime_types:
         - application/pdf

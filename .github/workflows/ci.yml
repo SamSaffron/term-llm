@@ -240,7 +240,7 @@ jobs:
         # Ubuntu mirror downloads can exceed ten minutes before browser tests start.
         # Keep setup bounded without relaxing the separate smoke-test timeouts.
         timeout-minutes: 20
-        run: npx --yes --package @playwright/test@1.64.0 playwright install --with-deps chromium
+        run: npx --yes --package @playwright/test@1.65.0 playwright install --with-deps chromium
 
       - name: Hub passkey browser smoke
         timeout-minutes: 5

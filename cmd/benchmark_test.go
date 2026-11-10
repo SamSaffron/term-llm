@@ -110,7 +110,7 @@ func TestResolveBenchmarkTargetsAliasesAndManagedOptIn(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(plans) != 1 || plans[0].target.RequestedModel != "gpt-5.6-luna" || !plans[0].target.Capabilities.ReportsCacheReads || plans[0].target.Capabilities.SupportsOutputLimit {
+	if len(plans) != 1 || plans[0].target.RequestedModel != "gpt-6-luna" || !plans[0].target.Capabilities.ReportsCacheReads || plans[0].target.Capabilities.SupportsOutputLimit {
 		t.Fatalf("ChatGPT plans = %#v", plans)
 	}
 	if _, _, err := resolveBenchmarkTargets(context.Background(), cfg, "claude-bin:haiku", scenarios, "quick", false, false, 0); err == nil || !strings.Contains(err.Error(), "--include-managed-provider") {

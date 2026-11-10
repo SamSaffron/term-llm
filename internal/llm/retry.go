@@ -42,8 +42,9 @@ func DefaultRetryConfig() RetryConfig {
 
 // RetryProvider wraps a provider with automatic retry on transient errors.
 type RetryProvider struct {
-	inner  core.Provider
-	config RetryConfig
+	inner      core.Provider
+	config     RetryConfig
+	checkModel func(model, effort string) error
 }
 
 // WrapWithRetry wraps a provider with retry logic.
@@ -94,7 +95,7 @@ func (r *RetryProvider) NativeToolDiscoverySupport(model string) core.NativeTool
 }
 
 func (r *RetryProvider) isolateHelperConversation() core.Provider {
-	return &RetryProvider{inner: isolatedConversationProvider(r.inner), config: r.config}
+	return &RetryProvider{inner: isolatedConversationProvider(r.inner), config: r.config, checkModel: r.checkModel}
 }
 
 func (r *RetryProvider) forkHelperConversation() (core.Provider, bool) {
@@ -102,7 +103,7 @@ func (r *RetryProvider) forkHelperConversation() (core.Provider, bool) {
 	if !ok {
 		return nil, false
 	}
-	return &RetryProvider{inner: forked, config: r.config}, true
+	return &RetryProvider{inner: forked, config: r.config, checkModel: r.checkModel}, true
 }
 
 func (r *RetryProvider) ForkConversationAtBoundary(state []byte, requestMessages []core.Message) (core.Provider, bool) {
@@ -110,7 +111,7 @@ func (r *RetryProvider) ForkConversationAtBoundary(state []byte, requestMessages
 	if !ok {
 		return nil, false
 	}
-	return &RetryProvider{inner: forked, config: r.config}, true
+	return &RetryProvider{inner: forked, config: r.config, checkModel: r.checkModel}, true
 }
 
 // ResetConversation forwards to the inner provider if it implements
@@ -125,6 +126,11 @@ func (r *RetryProvider) ResetConversation() {
 // NativeCompact forwards provider-native compaction when the wrapped provider
 // supports it.
 func (r *RetryProvider) NativeCompact(ctx context.Context, req core.NativeCompactRequest) (*core.NativeCompactResult, error) {
+	if r.checkModel != nil {
+		if err := r.checkModel(req.Model, ""); err != nil {
+			return nil, err
+		}
+	}
 	if compactor, ok := r.inner.(core.NativeCompactor); ok {
 		return compactor.NativeCompact(ctx, req)
 	}
@@ -269,6 +275,11 @@ func (r *RetryProvider) RefreshModelMetadata(ctx context.Context) error {
 }
 
 func (r *RetryProvider) Stream(ctx context.Context, req core.Request) (core.Stream, error) {
+	if r.checkModel != nil {
+		if err := r.checkModel(req.Model, req.ReasoningEffort); err != nil {
+			return nil, err
+		}
+	}
 	config := normalizeRetryConfig(r.config)
 	return newEventStream(ctx, func(ctx context.Context, send eventSender) error {
 		_, err := retryCall(ctx, config, func() (struct{}, error) {
