@@ -2478,6 +2478,108 @@ describe('AppStore compatibility behavior', () => {
     expect(store.endpoints.noProjectSessions).toHaveBeenCalledTimes(1);
   });
 
+  it('keeps the deep no-project cursor when a sidebar refresh returns the first page', async () => {
+    const store = new AppStore(config);
+    store.projectsEnabled.value = true;
+    const firstPage = () => ({
+      groups: [
+        {
+          no_project: true,
+          next_cursor: 'cursor-1',
+          sessions: [{ id: 's1', title: 'First', created_at: 3, last_message_at: 3 }],
+        },
+      ],
+    });
+    store.endpoints.sidebar = vi.fn(async () => firstPage());
+    await store.refreshSidebar();
+
+    store.endpoints.noProjectSessions = vi.fn(async () => ({
+      sessions: [{ id: 's2', title: 'Older', created_at: 2, last_message_at: 2 }],
+      next_cursor: 'cursor-2',
+    }));
+    await store.loadMoreNoProject();
+    expect(store.noProjectCursor.value).toBe('cursor-2');
+
+    // A status-driven refresh only ever returns the first page; it must not
+    // rewind pagination, or the visible sentinel re-walks every loaded page.
+    await store.refreshSidebar(false);
+    expect(store.noProjectCursor.value).toBe('cursor-2');
+    expect(store.sessions.value.map((session) => session.id)).toEqual(['s1', 's2']);
+
+    store.endpoints.noProjectSessions = vi.fn(async () => ({ sessions: [] }));
+    await store.loadMoreNoProject();
+    expect(store.endpoints.noProjectSessions).toHaveBeenCalledWith('cursor-2', false, '');
+    expect(store.noProjectCursor.value).toBe('');
+
+    // An exhausted tail stays exhausted across refreshes.
+    await store.refreshSidebar(false);
+    expect(store.noProjectCursor.value).toBe('');
+
+    // A complete snapshot ends pagination; a later partial one starts afresh.
+    store.endpoints.sidebar = vi.fn(async () => ({
+      groups: [{ no_project: true, sessions: [{ id: 's1', title: 'First' }] }],
+    }));
+    await store.refreshSidebar();
+    expect(store.noProjectCursor.value).toBe('');
+    store.endpoints.sidebar = vi.fn(async () => firstPage());
+    await store.refreshSidebar();
+    expect(store.noProjectCursor.value).toBe('cursor-1');
+  });
+
+  it('restarts loaded sidebar pagination when archived visibility changes', async () => {
+    const store = new AppStore(config);
+    store.projectsEnabled.value = true;
+    store.endpoints.sidebar = vi.fn(async () => ({
+      groups: [
+        {
+          no_project: true,
+          next_cursor: 'cursor-1',
+          sessions: [{ id: 's1', title: 'First', created_at: 3, last_message_at: 3 }],
+        },
+      ],
+    }));
+    await store.refreshSidebar();
+    store.endpoints.noProjectSessions = vi.fn(async () => ({
+      sessions: [{ id: 's2', title: 'Older', created_at: 2, last_message_at: 2 }],
+      next_cursor: 'cursor-2',
+    }));
+    await store.loadMoreNoProject();
+    expect(store.noProjectCursor.value).toBe('cursor-2');
+
+    // A deep cursor from the unarchived listing would skip archived rows.
+    store.showArchived.value = true;
+    await store.refreshSidebar();
+    expect(store.noProjectCursor.value).toBe('cursor-1');
+  });
+
+  it('keeps deep project cursors when a sidebar refresh returns the first page', async () => {
+    const store = new AppStore(config);
+    store.projectsEnabled.value = true;
+    store.endpoints.sidebar = vi.fn(async () => ({
+      groups: [
+        {
+          project: { id: 'p1', name: 'Alpha' },
+          next_cursor: 'p1-cursor-1',
+          sessions: [{ id: 's1', title: 'First', created_at: 3, last_message_at: 3 }],
+        },
+      ],
+    }));
+    await store.refreshSidebar();
+    expect(store.projects.value[0].next_cursor).toBe('p1-cursor-1');
+
+    store.endpoints.projectSessions = vi.fn(async () => ({
+      sessions: [{ id: 's2', title: 'Older', created_at: 2, last_message_at: 2 }],
+      next_cursor: 'p1-cursor-2',
+    }));
+    await store.loadMoreProject('p1');
+    expect(store.projects.value[0].next_cursor).toBe('p1-cursor-2');
+
+    await store.refreshSidebar(false);
+    expect(store.projects.value[0].next_cursor).toBe('p1-cursor-2');
+    expect(store.projects.value[0].has_more).toBe(true);
+    expect(store.projects.value[0].sessions?.map((session) => session.id)).toEqual(['s1', 's2']);
+  });
+
   it('archives locally without discarding loaded no-project pages', async () => {
     const store = new AppStore(config);
     const loaded = Array.from({ length: 48 }, (_, index) => ({
