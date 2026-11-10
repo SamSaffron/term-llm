@@ -3,11 +3,15 @@ package tools
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	codemodetool "github.com/samsaffron/term-llm/internal/codemode/tool"
+	"github.com/samsaffron/term-llm/internal/llm/engine"
+	"github.com/samsaffron/term-llm/internal/llm/mockprovider"
 	"github.com/samsaffron/term-llm/internal/skills"
 )
 
@@ -134,4 +138,38 @@ func toolTestSkillRegistry(t *testing.T, manifests map[string]string) *skills.Re
 		t.Fatal(err)
 	}
 	return registry
+}
+
+// A skill whose module needs code mode still activates for an agent without
+// spawn_script, says the module is unavailable, and admits nothing. Other
+// admission failures still reject activation.
+func TestActivateSkillWithoutCodeModeActivatesWithoutModule(t *testing.T) {
+	registry := toolTestSkillRegistry(t, map[string]string{"computer": `---
+name: computer
+description: Prose plus an optional module
+code-mode:
+  module: js/index.mjs
+  files: [js/index.mjs]
+---
+Use the command line.
+`})
+	tool := NewActivateSkillTool(registry, nil)
+	eng := engine.NewEngine(mockprovider.NewMockProvider("mock"), nil)
+	tool.SetOnCodeModuleActivated(func(a *skills.Activation) error {
+		return codemodetool.AdmitSkill(eng, a, func() bool { return true })
+	})
+	output, err := tool.Execute(context.Background(), json.RawMessage(`{"name":"computer"}`))
+	if err != nil {
+		t.Fatalf("Execute without code mode error = %v", err)
+	}
+	if !strings.Contains(output.Content, "Use the command line.") ||
+		!strings.Contains(output.Content, "not available here because spawn_script is not enabled") ||
+		strings.Contains(output.Content, "Code mode module admitted") {
+		t.Fatalf("activation output = %q, want instructions with an unavailable-module note", output.Content)
+	}
+
+	tool.SetOnCodeModuleActivated(func(*skills.Activation) error { return errors.New("untrusted project module") })
+	if _, err := tool.Execute(context.Background(), json.RawMessage(`{"name":"computer"}`)); err == nil {
+		t.Fatal("a trust failure activated the skill")
+	}
 }

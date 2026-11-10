@@ -100,6 +100,7 @@ One line per root-module package, generated from package doc comments by `make d
 - `internal/gitcommit` — provides the host-owned Git transaction used by native commit workflows.
 - `internal/gitdiff` — exposes structured staged and working-tree changes for the web Changes panel.
 - `internal/greprerank` — scores grep match blocks against a search intent with a classify backend and returns them in relevance order.
+- `internal/greprerank/configured` — builds the grep reranker from term-llm configuration, keeping config and backend resolution out of the pure greprerank package.
 - `internal/grepsearch` — provides cancellation-aware file scanning for grep's Go fallback.
 - `internal/grokprotocol` — defines wire metadata shared by Grok OAuth and subscription proxy clients.
 - `internal/guardian` — reviews tool and shell actions against the approval policy before they run.

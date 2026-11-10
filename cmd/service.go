@@ -27,7 +27,7 @@ Examples:
 
 func init() {
 	rootCmd.AddCommand(serviceCmd)
-	var noStart, dryRun, yes bool
+	var noStart, dryRun, yes, refreshEnv bool
 	var binary, directory, secretsFile string
 	var secretNames []string
 	install := &cobra.Command{Use: "install [web|hub] [-- serve flags]", Short: "Install or reconcile a service (defaults to web)", RunE: func(cmd *cobra.Command, args []string) error {
@@ -47,12 +47,13 @@ func init() {
 		if !userservice.ValidKind(kind) {
 			return fmt.Errorf("choose web or hub")
 		}
-		return serviceApp.Install(cmd, kind, launch, service.InstallOptions{Binary: binary, Directory: directory, SecretsFile: secretsFile, SecretNames: secretNames, NoStart: noStart, DryRun: dryRun, Yes: yes, Custom: cmd.ArgsLenAtDash() >= 0})
+		return serviceApp.Install(cmd, kind, launch, service.InstallOptions{Binary: binary, Directory: directory, SecretsFile: secretsFile, SecretNames: secretNames, NoStart: noStart, DryRun: dryRun, Yes: yes, RefreshEnv: refreshEnv, Custom: cmd.ArgsLenAtDash() >= 0})
 	}}
 	install.Flags().BoolVar(&noStart, "no-start", false, "Write managed files without enabling or starting the service")
 	install.Flags().BoolVar(&dryRun, "dry-run", false, "Print the launch plan and native definition without writing files or secrets")
 	install.Flags().BoolVarP(&yes, "yes", "y", false, "Do not prompt to open the browser")
 	install.Flags().StringVar(&binary, "binary", "", "Executable to supervise (default: this executable)")
+	install.Flags().BoolVar(&refreshEnv, "refresh-env", false, "Replace the saved PATH/SHELL/LANG/XDG environment with this shell's on reinstall")
 	install.Flags().StringVar(&directory, "working-directory", "", "Working directory (default: home; preserved on reinstall)")
 	install.Flags().StringVar(&secretsFile, "secrets-file", "", "Import literal KEY=value credentials from a private file")
 	install.Flags().StringArrayVar(&secretNames, "secret", nil, "Securely prompt for a named credential (repeatable; never a value on argv)")

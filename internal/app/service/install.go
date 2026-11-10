@@ -46,6 +46,9 @@ type InstallOptions struct {
 	Binary, Directory, SecretsFile string
 	SecretNames                    []string
 	NoStart, DryRun, Yes, Custom   bool
+	// RefreshEnv replaces the recorded account environment (PATH, SHELL,
+	// LANG, XDG locations) with the invoking shell's on reinstall.
+	RefreshEnv bool
 }
 
 // App implements the per-user service commands; Cobra wiring stays in cmd.
@@ -267,7 +270,9 @@ func (a App) buildServiceInstallSpec(e serviceEnvironment, kind string, args []s
 	if old != nil {
 		spec.Directory = old.Directory
 		spec.Secrets = append([]string(nil), old.Secrets...)
-		spec.Environment = old.Environment
+		if !opts.RefreshEnv {
+			spec.Environment = old.Environment
+		}
 		spec.Binary = old.Binary
 	}
 	if opts.Directory != "" {

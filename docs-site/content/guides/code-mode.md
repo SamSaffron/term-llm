@@ -177,7 +177,11 @@ tool. All modules in a VM share that cell's admitted authority, **not** per-modu
 isolation. Actual user-installed/builtin sources are eligible; project/unclassified
 sources require `skills.allow_project_code_modules: true` (defaultfalse) or current
 yolo. This is separate from `allow_project_script_tools`. Frontmatter cannot claim
-host installation trust. Current trust and tool policy are rechecked at import/call
+host installation trust. An agent without a permitted `spawn_script` (or legacy
+`code_mode`) still activates such a skill: its instructions load, nothing is
+admitted, and the activation says the module is unavailable. A skill can therefore
+ship a module as an optional convenience next to instructions that work without
+it. Trust and dependency failures still reject activation. Current trust and tool policy are rechecked at import/call
 boundaries. New/resumed engines require reactivation; transcript strings never
 restore executable grants. Turn-scoped admission is restored with temporary skill
 policy restrictions.

@@ -2,6 +2,7 @@ package tool
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -95,8 +96,12 @@ func TestAdmitSkillLegacyCompatibilityPathStillAdmitted(t *testing.T) {
 func TestAdmitSkillWithoutExecOrLegacyFailsClosed(t *testing.T) {
 	activation := probeActivation(t)
 	eng := engine.NewEngine(mockprovider.NewMockProvider("mock"), nil)
-	if err := AdmitSkill(eng, activation, func() bool { return true }); err == nil || !strings.Contains(err.Error(), "spawn_script") {
-		t.Fatalf("missing code mode tool admitted: %v", err)
+	err := AdmitSkill(eng, activation, func() bool { return true })
+	if err == nil || !strings.Contains(err.Error(), "spawn_script") || !errors.Is(err, ErrUnavailable) {
+		t.Fatalf("missing code mode tool admitted or misreported: %v", err)
+	}
+	if admitted, rest := Admitted(err); admitted || rest != nil {
+		t.Fatalf("Admitted(unavailable) = %v, %v; want false, nil so activation goes on", admitted, rest)
 	}
 	if trust := OriginTrust(eng, activation, nil, nil); trust == nil || trust() {
 		t.Fatal("trust enabled without a code mode tool")
@@ -108,18 +113,36 @@ func TestAdmitSkillRejectsDeniedExec(t *testing.T) {
 	eng := engine.NewEngine(mockprovider.NewMockProvider("mock"), nil)
 	eng.RegisterTool(NewExec())
 	eng.SetAllowedToolsFilter([]string{"read_file"})
-	if err := AdmitSkill(eng, activation, func() bool { return true }); err == nil {
+	err := AdmitSkill(eng, activation, func() bool { return true })
+	if err == nil {
 		t.Fatal("denied spawn_script admitted a module")
+	}
+	// A filtered-out spawn_script is no code mode: the skill's prose may still activate.
+	if !errors.Is(err, ErrUnavailable) {
+		t.Fatalf("denied spawn_script reported as %v, want ErrUnavailable", err)
 	}
 }
 
 func TestActivationInstructionsDistinguishExecAndLegacyState(t *testing.T) {
 	activation := probeActivation(t)
-	instructions := ActivationInstructions(activation, "")
+	if note := ActivationInstructions(activation, "", false); strings.Contains(note, "admitted") || !strings.Contains(note, "not available here") {
+		t.Fatalf("unadmitted module described as admitted: %s", note)
+	}
+	instructions := ActivationInstructions(activation, "", true)
 	if !strings.Contains(instructions, "spawn_script") || !strings.Contains(instructions, "legacy code_mode") {
 		t.Fatalf("activation instructions do not distinguish lifecycle: %s", instructions)
 	}
 	if !strings.Contains(instructions, "committed automatically") || !strings.Contains(instructions, "explicitly") {
 		t.Fatalf("activation instructions do not distinguish state semantics: %s", instructions)
+	}
+}
+
+func TestAdmittedKeepsTrustFailures(t *testing.T) {
+	activation := probeActivation(t)
+	eng := engine.NewEngine(mockprovider.NewMockProvider("mock"), nil)
+	eng.RegisterTool(NewExec())
+	err := AdmitSkill(eng, activation, func() bool { return false })
+	if admitted, rest := Admitted(err); admitted || rest == nil || errors.Is(err, ErrUnavailable) {
+		t.Fatalf("Admitted(untrusted) = %v, %v; want the trust failure to reject activation", admitted, rest)
 	}
 }

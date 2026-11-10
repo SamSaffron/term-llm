@@ -14,6 +14,7 @@ import (
 	"time"
 
 	appruntime "github.com/samsaffron/term-llm/internal/app/runtime"
+	codemodetool "github.com/samsaffron/term-llm/internal/codemode/tool"
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/llm/core"
 	"github.com/samsaffron/term-llm/internal/restart"
@@ -431,7 +432,7 @@ func setupServeMainSkillRequest(runtime *serveRuntime, activation *skills.Activa
 			}
 		}
 	}
-	if err := tools.AdmitSkillCodeModule(runtime.engine, runtime.toolMgr, activation); err != nil {
+	if err := codemodetool.IgnoreUnavailable(tools.AdmitSkillCodeModule(runtime.engine, runtime.toolMgr, activation)); err != nil {
 		return err
 	}
 	req.Tools = runtime.selectTools(nil)

@@ -395,8 +395,11 @@ a.message-file:focus-visible {
   gap: 0.5rem;
   align-self: flex-start;
   min-width: 0;
-  max-width: min(calc(100vw - 3rem), 42rem);
-  padding: 0.35rem 0.2rem;
+
+  /* Size against the transcript column, not the viewport: side panels make the
+     column narrower than 100vw, and nowrap text would then clip unellipsed. */
+  max-width: min(100%, 42rem);
+  padding: 0.35rem 1rem 0.35rem 0.2rem;
   color: var(--text);
   font-size: 0.78rem;
   animation: streaming-status-enter 180ms ease-out both;

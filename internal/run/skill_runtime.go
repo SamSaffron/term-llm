@@ -2,6 +2,7 @@ package run
 
 import (
 	"fmt"
+	codemodetool "github.com/samsaffron/term-llm/internal/codemode/tool"
 	"github.com/samsaffron/term-llm/internal/llm/engine"
 	"github.com/samsaffron/term-llm/internal/skills"
 	"github.com/samsaffron/term-llm/internal/tools"
@@ -30,7 +31,7 @@ func ApplySkillRuntime(eng *engine.Engine, manager *tools.ToolManager, skill *Sk
 		eng.SetAllowedToolsFilter(skill.AllowedTools)
 	}
 	if skill.CodeModeSkill != nil {
-		return tools.AdmitSkillCodeModule(eng, manager, &skills.Activation{Skill: skill.CodeModeSkill, BaseDir: skill.SourcePath})
+		return codemodetool.IgnoreUnavailable(tools.AdmitSkillCodeModule(eng, manager, &skills.Activation{Skill: skill.CodeModeSkill, BaseDir: skill.SourcePath}))
 	}
 	return nil
 }

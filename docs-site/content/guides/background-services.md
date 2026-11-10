@@ -260,7 +260,17 @@ unchanged reinstall does not force a restart; changed settings, credential input
 or enrollment provisioning take effect through a restart. `--binary` selects a
 different executable (the first install uses the running one), and `--working-directory` changes the working directory. Saved PATH
 and XDG settings can be inspected in the private specification; reinstall does
-not silently replace a custom account environment.
+not silently replace a custom account environment. After changing your shell's
+PATH (for example adding a tool with mise or asdf), run the reinstall from a
+fresh terminal with `--refresh-env` to record the current PATH, SHELL, LANG and
+XDG locations; the service restarts when they changed:
+
+```bash
+term-llm service install web --refresh-env
+```
+
+Run it from a normal terminal, not from a shell inside the service, which would
+record the service's existing PATH again.
 
 No updates are downloaded or scheduled. After replacing the binary, restart when
 it is safe to interrupt active work:

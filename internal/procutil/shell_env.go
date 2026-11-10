@@ -8,6 +8,27 @@ import (
 	"strings"
 )
 
+// SessionEnv names the variable that carries the term-llm session ID into
+// commands, so a child process can tell which chat it belongs to when one
+// process serves several.
+const SessionEnv = "TERM_LLM_SESSION_ID"
+
+// WithSession returns env with SessionEnv set to sessionID, replacing any
+// inherited value (a term-llm started from another session's shell) and any
+// model override. An empty sessionID returns env unchanged.
+func WithSession(env []string, sessionID string) []string {
+	if sessionID == "" {
+		return env
+	}
+	out := make([]string, 0, len(env)+1)
+	for _, entry := range env {
+		if !strings.HasPrefix(entry, SessionEnv+"=") {
+			out = append(out, entry)
+		}
+	}
+	return append(out, SessionEnv+"="+sessionID)
+}
+
 // ResolveShellEnvironment snapshots the inherited environment and applies the
 // exact validated overrides that will be shown for approval. No expansion of
 // values (including $PATH) is performed.

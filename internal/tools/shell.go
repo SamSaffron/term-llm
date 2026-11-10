@@ -553,7 +553,7 @@ func (t *ShellTool) executeLocal(ctx context.Context, args json.RawMessage) (cor
 
 	cmd := shellcmd.CommandContextFor(execCtx, shellPath, a.Command)
 	cmd.Dir = workDir
-	cmd.Env = env
+	cmd.Env = procutil.WithSession(env, core.SessionIDFromContext(ctx)) // identity, set after approval
 
 	owned, prepErr := prepareToolCommand(cmd)
 	if prepErr != nil {

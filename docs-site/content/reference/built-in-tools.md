@@ -65,6 +65,8 @@ term-llm exec --tools read_file,write_file,edit_file,shell,grep,glob,view_image
 | `finalize_progress` | Persist the final best-so-far state as a JSON object and finish the run. | `session_state` | false | — |
 <!-- END GENERATED: tools -->
 
+Commands run by the `shell` tool in a session see that session's ID as `TERM_LLM_SESSION_ID`. It replaces an inherited value and an `env` override of the same name.
+
 The `shell` tool's `affected_paths` only bounds file-change inspection; pre-execution `output_claims` declares intended transforms, generated deliverables, or materializations. `view_image` returns image content to a vision-capable model, or text from the routed model configured by `vision_via`. `manage_workspace` is automatically added whenever a local path-capable file, search, or image tool is enabled. See the detailed sections below for permission and routing behavior.
 
 

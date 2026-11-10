@@ -1318,6 +1318,7 @@ Install or reconcile a service (defaults to web)
 | `--dry-run` | bool | Print the launch plan and native definition without writing files or secrets |
 | `--no-start` | bool | Write managed files without enabling or starting the service |
 | `--print-setup-code` | bool | Explicitly print the temporary enrollment code even to redirected output |
+| `--refresh-env` | bool | Replace the saved PATH/SHELL/LANG/XDG environment with this shell's on reinstall |
 | `--secret` | stringArray | Securely prompt for a named credential (repeatable; never a value on argv) |
 | `--secrets-file` | string | Import literal KEY=value credentials from a private file |
 | `--working-directory` | string | Working directory (default: home; preserved on reinstall) |

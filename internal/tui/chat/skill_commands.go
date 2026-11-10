@@ -11,6 +11,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"github.com/muesli/reflow/wordwrap"
 	"github.com/muesli/reflow/wrap"
+	codemodetool "github.com/samsaffron/term-llm/internal/codemode/tool"
 	"github.com/samsaffron/term-llm/internal/llm/core"
 	"github.com/samsaffron/term-llm/internal/session"
 	"github.com/samsaffron/term-llm/internal/skills"
@@ -214,7 +215,7 @@ func (m *Model) executeMainSkillActivation(activation *skills.Activation, displa
 	m.applySkillAllowedTools(activation)
 	if activation.Skill != nil && activation.Skill.CodeMode != nil {
 		m.skillCodeModuleRestore = m.engine.ScopeCodeModules()
-		if err := tools.AdmitSkillCodeModule(m.engine, m.toolMgr, activation); err != nil {
+		if err := codemodetool.IgnoreUnavailable(tools.AdmitSkillCodeModule(m.engine, m.toolMgr, activation)); err != nil {
 			m.restoreSkillAllowedTools()
 			return m.showFooterError(err.Error())
 		}

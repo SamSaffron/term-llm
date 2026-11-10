@@ -1,10 +1,13 @@
 package tools
 
 import (
-	"github.com/samsaffron/term-llm/internal/procutil"
+	"context"
 	"reflect"
 	"strings"
 	"testing"
+
+	"github.com/samsaffron/term-llm/internal/llm/core"
+	"github.com/samsaffron/term-llm/internal/procutil"
 )
 
 func TestShellEnvironmentCommandIsLossless(t *testing.T) {
@@ -70,5 +73,40 @@ func TestBuildShellOptionsEnvironmentIsExactOnly(t *testing.T) {
 		if option.Choice == ApprovalChoicePattern || option.SaveToRepo {
 			t.Fatalf("environment approval offered a persistent/pattern grant: %+v", option)
 		}
+	}
+}
+
+func TestShellExportsSessionIDOverInheritedAndModelValues(t *testing.T) {
+	t.Setenv(procutil.SessionEnv, "outer-session")
+	run := func(ctx context.Context, env EnvMap) string {
+		out, err := NewShellTool(nil, nil, DefaultOutputLimits()).Execute(ctx, mustToolArgs(t, ShellArgs{
+			Command: `printf '[%s]' "$TERM_LLM_SESSION_ID"`, WorkingDir: t.TempDir(), Env: env,
+		}))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return out.Content
+	}
+	ctx := core.ContextWithSessionID(context.Background(), "chat-1")
+	if got := run(ctx, nil); !strings.Contains(got, "[chat-1]") {
+		t.Fatalf("shell output = %q, want the session's own ID", got)
+	}
+	if got := run(ctx, EnvMap{procutil.SessionEnv: "spoofed"}); !strings.Contains(got, "[chat-1]") {
+		t.Fatalf("shell output = %q, want the session ID to win over a model override", got)
+	}
+	if got := run(context.Background(), nil); !strings.Contains(got, "[outer-session]") {
+		t.Fatalf("shell output = %q, want the inherited value without a session", got)
+	}
+}
+
+func TestWithSessionReplacesInheritedValue(t *testing.T) {
+	env := []string{"A=1", procutil.SessionEnv + "=outer", "B=2"}
+	got := procutil.WithSession(env, "inner")
+	want := []string{"A=1", "B=2", procutil.SessionEnv + "=inner"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("WithSession = %v, want %v", got, want)
+	}
+	if got := procutil.WithSession(env, ""); !reflect.DeepEqual(got, env) {
+		t.Fatalf("WithSession with no session = %v, want unchanged", got)
 	}
 }

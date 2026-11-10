@@ -125,8 +125,8 @@ func (t *ActivateSkillTool) Execute(ctx context.Context, args json.RawMessage) (
 	if t.onToolsActivated != nil && len(activation.ToolDefs) > 0 {
 		t.onToolsActivated(activation.ToolDefs, activation.BaseDir)
 	}
-
-	if err := t.AdmitCodeModule(activation); err != nil {
+	admitted, err := codemodetool.Admitted(t.AdmitCodeModule(activation)) // no code mode: activate without it
+	if err != nil {
 		return core.ToolOutput{}, err
 	}
 
@@ -136,7 +136,7 @@ func (t *ActivateSkillTool) Execute(ctx context.Context, args json.RawMessage) (
 		t.onActivated(activation.AllowedTools, activation.AllowedToolsPresent)
 	}
 
-	return core.TextOutput(codemodetool.ActivationInstructions(activation, a.Prompt)), nil
+	return core.TextOutput(codemodetool.ActivationInstructions(activation, a.Prompt, admitted)), nil
 }
 
 // Preview returns a short description of the tool call.

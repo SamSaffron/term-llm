@@ -601,6 +601,11 @@ func TestExtractLeadingCd(t *testing.T) {
 	// Look up current user for tilde tests.
 	currentUser, _ := user.Current()
 	homeDir, _ := os.UserHomeDir()
+	if homeDir != "" {
+		// extractLeadingCd returns cleaned paths; $HOME may contain "//"
+		// (e.g. macOS TMPDIR has a trailing slash under scripts/gotest.sh).
+		homeDir = filepath.Clean(homeDir)
+	}
 
 	tests := []struct {
 		name        string

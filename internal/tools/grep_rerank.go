@@ -7,43 +7,18 @@ import (
 	"fmt"
 	"path/filepath"
 	"strings"
-	"time"
 
-	"github.com/samsaffron/term-llm/internal/classify"
 	"github.com/samsaffron/term-llm/internal/classify/backends"
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/greprerank"
+	"github.com/samsaffron/term-llm/internal/greprerank/configured"
 )
 
 var newGrepRerankBackend backends.Factory = backends.New
 
-// NewGrepReranker advertises only the selected, cheaply configured classifier.
-// Credential commands, endpoint resolution, and backend construction stay lazy.
+// NewGrepReranker builds the configured reranker, or nil when unavailable.
 func NewGrepReranker(cfg *config.Config) *greprerank.Reranker {
-	if cfg == nil || !cfg.Tools.GrepRerank.Enabled || cfg.Tools.GrepRerank.Validate() != nil {
-		return nil
-	}
-	options := cfg.Tools.GrepRerank
-	provider, err := cfg.Classify.ResolveProvider(options.Provider)
-	if err != nil || !provider.Key().Configured() {
-		return nil
-	}
-	if provider.Type == config.ClassifyProviderCloudflare && !provider.AccountIDRef().Configured() {
-		return nil
-	}
-	budget := time.Duration(options.TimeoutMS) * time.Millisecond
-	// Capture the factory now: registry construction never invokes it.
-	factory := newGrepRerankBackend
-	return greprerank.New(func() (classify.Backend, error) {
-		conn, err := backends.Resolve(provider, backends.Overrides{Timeout: budget})
-		if err != nil {
-			return nil, err
-		}
-		if strings.TrimSpace(conn.APIKey) == "" {
-			return nil, greprerank.ErrUnavailable
-		}
-		return factory(conn)
-	}, provider.Model, greprerank.Options{Threshold: options.Threshold, Budget: budget, MaxCandidates: options.MaxCandidates})
+	return configured.New(cfg, newGrepRerankBackend)
 }
 
 // WithReranker binds the registry-owned capability, including after SetLimits.

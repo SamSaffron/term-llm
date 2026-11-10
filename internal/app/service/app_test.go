@@ -216,6 +216,40 @@ func testApp() App {
 	}}
 }
 
+func TestServiceReinstallRefreshEnv(t *testing.T) {
+	home := isolatedServiceHome(t)
+	self, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", "/fresh/mise/shims:/usr/bin")
+	e := serviceEnvironment{root: filepath.Join(home, "config", "term-llm", "services"), home: home}
+	old := &userservice.Spec{Kind: "web", Binary: self, Directory: home, Environment: map[string]string{"HOME": home, "PATH": "/stale/bin"}}
+	a := testApp()
+
+	spec, err := a.buildServiceInstallSpec(e, "web", nil, InstallOptions{}, old)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := spec.Environment["PATH"]; got != "/stale/bin" {
+		t.Fatalf("bare reinstall PATH = %q, want recorded /stale/bin", got)
+	}
+
+	spec, err = a.buildServiceInstallSpec(e, "web", nil, InstallOptions{RefreshEnv: true}, old)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := spec.Environment["PATH"]; got != "/fresh/mise/shims:/usr/bin" {
+		t.Fatalf("--refresh-env PATH = %q, want invoking shell PATH", got)
+	}
+	if got := spec.Environment["HOME"]; got != home {
+		t.Fatalf("--refresh-env HOME = %q, want %q", got, home)
+	}
+	if old.Environment["PATH"] != "/stale/bin" {
+		t.Fatalf("--refresh-env mutated the recorded spec: %v", old.Environment)
+	}
+}
+
 func TestServiceReinstallKeepsRecordedBinary(t *testing.T) {
 	home := isolatedServiceHome(t)
 	recorded := filepath.Join(home, "stable", "term-llm")

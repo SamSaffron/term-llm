@@ -1,12 +1,33 @@
 package tool
 
 import (
+	"errors"
 	"fmt"
 	"github.com/samsaffron/term-llm/internal/codemode"
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/llm/engine"
 	"github.com/samsaffron/term-llm/internal/skills"
 )
+
+// ErrUnavailable reports that the engine has no permitted spawn_script (or
+// legacy code_mode), so a skill's module cannot be admitted. The skill's
+// instructions still work without it; see IgnoreUnavailable.
+var ErrUnavailable = errors.New("code mode is unavailable")
+
+// IgnoreUnavailable lets an activation go ahead without its module when the
+// only problem is that the agent has no code mode. Every other error stays.
+func IgnoreUnavailable(err error) error {
+	if errors.Is(err, ErrUnavailable) {
+		return nil
+	}
+	return err
+}
+
+// Admitted splits an admission result into whether the module was admitted and
+// the error, if any, that must still reject the activation.
+func Admitted(err error) (bool, error) {
+	return err == nil, IgnoreUnavailable(err)
+}
 
 // AdmitSkill snapshots a declared module without executing it or granting tools.
 func AdmitSkill(eng *engine.Engine, activation *skills.Activation, trusted func() bool) error {
@@ -18,7 +39,7 @@ func AdmitSkill(eng *engine.Engine, activation *skills.Activation, trusted func(
 		return fmt.Errorf("skill %s code modules require an engine and local tool manager", skill.Name)
 	}
 	if !codeModeEnabled(eng) {
-		return fmt.Errorf("skill %s requires enabled permitted spawn_script (or legacy code_mode)", skill.Name)
+		return fmt.Errorf("skill %s module requires enabled permitted spawn_script (or legacy code_mode): %w", skill.Name, ErrUnavailable)
 	}
 	if !trusted() {
 		return fmt.Errorf("skill %s: project/unclassified code modules require skills.allow_project_code_modules or current yolo", skill.Name)
@@ -61,9 +82,12 @@ func OriginTrust(eng *engine.Engine, a *skills.Activation, cfg *config.Config, y
 }
 
 // ActivationInstructions describes admission without running module top-level code.
-func ActivationInstructions(a *skills.Activation, prompt string) string {
+// admitted is false when the module was skipped because code mode is unavailable.
+func ActivationInstructions(a *skills.Activation, prompt string, admitted bool) string {
 	response := skills.GenerateActivationResponse(a.Skill, prompt)
-	if module := a.Skill.CodeMode; module != nil {
+	if module := a.Skill.CodeMode; module != nil && !admitted {
+		response += fmt.Sprintf("\n\nThis skill also ships a code mode module (skill:%s), which is not available here because spawn_script is not enabled. Follow the instructions above without it.", a.Skill.Name)
+	} else if module != nil {
 		response += fmt.Sprintf("\n\nCode mode module admitted: import('skill:%s'). Dependencies (not grants): %v. All code shares the cell's admitted authority. Express it with spawn_script when available: load()/store() state is committed automatically after successful cells, and wait_script/cancel_script manage the cell lifecycle. The legacy code_mode compatibility path instead requires passing each successful call's returned state explicitly. Screenshots must be explicitly emitted with image(...).", a.Skill.Name, module.Requires.Tools)
 	}
 	return response
