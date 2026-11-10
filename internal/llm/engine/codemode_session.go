@@ -114,6 +114,7 @@ type codeModeAsyncCell struct {
 	mu              sync.Mutex
 	changed         chan struct{}
 	parts           []core.ToolContentPart
+	textSeparator   bool // Last retained text lacks a newline, even if already observed.
 	pendingBytes    int
 	images          int
 	imageBytes      int
@@ -181,27 +182,7 @@ func (a *codeModeAsyncCell) emit(kind string, value json.RawMessage) error {
 			// prelude's documented behavior.
 			text = string(value)
 		}
-		a.mu.Lock()
-		remaining := codemode.SessionLimits.RetainBytes - a.pendingBytes
-		if remaining <= 0 {
-			a.truncated = true
-			a.omittedBytes += len(text)
-			a.notifyLocked()
-			a.mu.Unlock()
-			return nil
-		}
-		if len(text) > remaining {
-			original := len(text)
-			text = truncateUTF8(text, remaining)
-			a.omittedBytes += original - len(text)
-			a.truncated = true
-		}
-		if text != "" {
-			a.pendingBytes += len(text)
-			a.parts = append(a.parts, core.ToolContentPart{Type: core.ToolContentPartText, Text: text})
-		}
-		a.notifyLocked()
-		a.mu.Unlock()
+		a.emitText(text)
 		return nil
 	case "image":
 		a.mu.Lock()
@@ -235,6 +216,32 @@ func (a *codeModeAsyncCell) emit(kind string, value json.RawMessage) error {
 	default:
 		return fmt.Errorf("unknown emission kind %q", kind)
 	}
+}
+
+// emitText adds the emission separator before retention and observation budgets.
+// Draining may split this part anywhere without creating another separator.
+func (a *codeModeAsyncCell) emitText(text string) {
+	if text == "" {
+		return
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.textSeparator && !strings.HasPrefix(text, "\n") {
+		text = "\n" + text
+	}
+	remaining := max(0, codemode.SessionLimits.RetainBytes-a.pendingBytes)
+	if len(text) > remaining {
+		original := len(text)
+		text = truncateUTF8(text, remaining)
+		a.omittedBytes += original - len(text)
+		a.truncated = true
+	}
+	if text != "" {
+		a.textSeparator = !strings.HasSuffix(text, "\n")
+		a.pendingBytes += len(text)
+		a.parts = append(a.parts, core.ToolContentPart{Type: core.ToolContentPartText, Text: text})
+	}
+	a.notifyLocked()
 }
 
 func (a *codeModeAsyncCell) dropImage() {
@@ -304,6 +311,9 @@ func (a *codeModeAsyncCell) finish(result codemode.Result) {
 }
 
 func codeModeScriptErrorCode(message string) string {
+	if strings.HasPrefix(message, "script_error:") {
+		return "script_error"
+	}
 	switch {
 	case strings.Contains(message, "busy: VM capacity"):
 		return "busy"
@@ -612,7 +622,7 @@ func (s *codeModeSessions) exec(ctx context.Context, code string, yield time.Dur
 	if !codemode.Available() {
 		return core.CodeModeCallResult{Status: "failed", Error: "code_mode unavailable on browser host", ErrorCode: "unavailable", IsError: true}, nil
 	}
-	if yield <= 0 {
+	if yield < 0 {
 		yield = codemode.SessionLimits.Yield
 	}
 	if yield > codemode.SessionLimits.MaxYield {
@@ -695,7 +705,7 @@ func (s *codeModeSessions) exec(ctx context.Context, code string, yield time.Dur
 }
 
 func (s *codeModeSessions) wait(ctx context.Context, cellID string, yield time.Duration, maxOutputTokens int) (core.CodeModeCallResult, error) {
-	if yield <= 0 {
+	if yield < 0 {
 		yield = codemode.SessionLimits.Yield
 	}
 	if yield > codemode.SessionLimits.MaxYield {

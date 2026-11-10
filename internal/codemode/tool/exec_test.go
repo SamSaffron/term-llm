@@ -3,6 +3,7 @@ package tool
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -63,33 +64,36 @@ func TestControlToolSchemasUseExactNames(t *testing.T) {
 			t.Fatalf("%s schema", spec.Name)
 		}
 		if spec.Name == ExecName || spec.Name == WaitName {
-			if _, ok := props["yield_time_ms"]; !ok {
-				t.Fatalf("%s missing yield_time_ms", spec.Name)
+			wait, ok := props["max_wait"].(map[string]interface{})
+			if !ok || wait["type"] != "integer" || wait["minimum"] != 0 || wait["maximum"] != 600 {
+				t.Fatalf("%s max_wait schema: %#v", spec.Name, props["max_wait"])
 			}
 			if _, ok := props["max_output_tokens"]; !ok {
 				t.Fatalf("%s missing max_output_tokens", spec.Name)
 			}
 		}
-		if _, ok := props["yield_ms"]; ok {
-			t.Fatalf("%s advertised private alias", spec.Name)
+		for _, oldName := range []string{"yield_time_ms", "yield_ms"} {
+			if _, ok := props[oldName]; ok || strings.Contains(spec.Description, oldName) {
+				t.Fatalf("%s advertised superseded %s", spec.Name, oldName)
+			}
 		}
 	}
 }
 
 func TestExecRendersOrderedPartsAndMetadataEnvelope(t *testing.T) {
 	fake := &controlFake{execResult: core.CodeModeCallResult{
-		CellID: "cm_1", Status: "running", Yield: 1 * time.Millisecond, Elapsed: 5 * time.Millisecond,
+		CellID: "cm_1", Status: "running", Yield: 1 * time.Second, Elapsed: 5 * time.Millisecond,
 		MaxOutputTokens: 7, StateCommitted: false, HasMoreOutput: true, OutputLimited: true,
 		Parts: []core.ToolContentPart{
 			{Type: core.ToolContentPartText, Text: "hello"},
 			{Type: core.ToolContentPartImageData, ImageData: &core.ToolImageData{MediaType: "image/png", Base64: "abc"}},
 		},
 	}}
-	output, err := NewExec().Execute(controlContext(fake), json.RawMessage(`{"code":"text(1)","yield_time_ms":1,"max_output_tokens":7}`))
+	output, err := NewExec().Execute(controlContext(fake), json.RawMessage(`{"code":"text(1)","max_wait":1,"max_output_tokens":7}`))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if fake.code != "text(1)" || fake.yield != time.Millisecond || fake.output != 7 {
+	if fake.code != "text(1)" || fake.yield != time.Second || fake.output != 7 {
 		t.Fatalf("controller args: %+v", fake)
 	}
 	if len(output.ContentParts) != 3 {
@@ -111,7 +115,7 @@ func TestExecRendersOrderedPartsAndMetadataEnvelope(t *testing.T) {
 		t.Fatalf("output flags: %+v", output)
 	}
 	envelope := decodeEnvelope(t, output)
-	for _, key := range []string{"cell_id", "status", "state_committed", "max_output_tokens", "yield_time_ms", "tool_call_id"} {
+	for _, key := range []string{"cell_id", "status", "state_committed", "max_output_tokens", "max_wait", "tool_call_id"} {
 		if _, ok := envelope[key]; !ok {
 			t.Fatalf("envelope missing %s: %s", key, output.Content)
 		}
@@ -127,13 +131,13 @@ func TestExecRendersOrderedPartsAndMetadataEnvelope(t *testing.T) {
 	}
 }
 
-func TestWaitAndCancelRenderAndAcceptPrivateYieldAlias(t *testing.T) {
-	fake := &controlFake{execResult: core.CodeModeCallResult{CellID: "cm_2", Status: "completed", StateCommitted: true, StateBytes: 12, Yield: 250 * time.Millisecond}}
-	output, err := NewWait().Execute(controlContext(fake), json.RawMessage(`{"cell_id":"cm_2","yield_ms":250,"max_output_tokens":9}`))
+func TestWaitAndCancelRender(t *testing.T) {
+	fake := &controlFake{execResult: core.CodeModeCallResult{CellID: "cm_2", Status: "completed", StateCommitted: true, StateBytes: 12, Yield: 250 * time.Second}}
+	output, err := NewWait().Execute(controlContext(fake), json.RawMessage(`{"cell_id":"cm_2","max_wait":250,"max_output_tokens":9}`))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !fake.waitCalled || fake.cellID != "cm_2" || fake.yield != 250*time.Millisecond || fake.output != 9 {
+	if !fake.waitCalled || fake.cellID != "cm_2" || fake.yield != 250*time.Second || fake.output != 9 {
 		t.Fatalf("wait controller args: %+v", fake)
 	}
 	envelope := decodeEnvelope(t, output)
@@ -151,21 +155,88 @@ func TestWaitAndCancelRenderAndAcceptPrivateYieldAlias(t *testing.T) {
 	}
 }
 
-func TestControlYieldAndOutputValidation(t *testing.T) {
-	for _, tc := range []struct {
-		args string
-		ok   bool
-	}{
-		{`{"code":"","yield_time_ms":1,"max_output_tokens":1}`, true},
-		{`{"code":"","yield_time_ms":60000,"max_output_tokens":100000}`, true},
-		{`{"code":"","yield_time_ms":60001}`, false},
-		{`{"code":"","max_output_tokens":100001}`, false},
-	} {
-		fake := &controlFake{execResult: core.CodeModeCallResult{Status: "yielded"}}
-		_, err := NewExec().Execute(controlContext(fake), json.RawMessage(tc.args))
-		if (err == nil) != tc.ok {
-			t.Fatalf("%s: err=%v", tc.args, err)
-		}
+func TestControlMaxWait(t *testing.T) {
+	for _, tool := range []core.Tool{NewExec(), NewWait()} {
+		t.Run(tool.Spec().Name, func(t *testing.T) {
+			for _, tc := range []struct {
+				name   string
+				fields string
+				want   time.Duration
+			}{
+				{"default", "", 60 * time.Second},
+				{"poll", `,"max_wait":0`, 0},
+				{"one_second", `,"max_wait":1`, time.Second},
+				{"maximum", `,"max_wait":600`, 600 * time.Second},
+				{"removed_yield_time_ms", `,"yield_time_ms":1`, 60 * time.Second},
+				{"removed_yield_ms", `,"yield_ms":1`, 60 * time.Second},
+			} {
+				t.Run(tc.name, func(t *testing.T) {
+					fake := &controlFake{execResult: core.CodeModeCallResult{Status: "yielded"}}
+					args := json.RawMessage(`{"code":"text(1)","cell_id":"cm_1"` + tc.fields + `}`)
+					if _, err := tool.Execute(controlContext(fake), args); err != nil {
+						t.Fatal(err)
+					}
+					if fake.yield != tc.want {
+						t.Fatalf("wait budget = %v, want %v", fake.yield, tc.want)
+					}
+					if fake.code != "text(1)" && !fake.waitCalled {
+						t.Fatal("controller was not called")
+					}
+				})
+			}
+		})
+	}
+}
+
+func TestControlMaxWaitValidation(t *testing.T) {
+	for _, tool := range []core.Tool{NewExec(), NewWait()} {
+		t.Run(tool.Spec().Name, func(t *testing.T) {
+			for _, value := range []string{
+				"-1", "601", "3600", "1.5", `"60"`, "true",
+				"18446744074",          // Duration multiplication can wrap into a valid-looking value.
+				"9223372036854775807",  // Largest int64 must be rejected before multiplication.
+				"18446744073709551616", // Larger than an integer can represent.
+			} {
+				t.Run(value, func(t *testing.T) {
+					fake := &controlFake{}
+					args := json.RawMessage(fmt.Sprintf(`{"code":"text(1)","cell_id":"cm_1","max_wait":%s}`, value))
+					if _, err := tool.Execute(controlContext(fake), args); err == nil || !strings.Contains(err.Error(), "max_wait") {
+						t.Fatalf("max_wait %s: err=%v", value, err)
+					}
+					if fake.code != "" || fake.waitCalled {
+						t.Fatal("invalid max_wait reached controller")
+					}
+				})
+			}
+		})
+	}
+}
+
+func TestControlOutputValidation(t *testing.T) {
+	for _, tool := range []core.Tool{NewExec(), NewWait()} {
+		t.Run(tool.Spec().Name, func(t *testing.T) {
+			for _, tc := range []struct {
+				tokens int
+				want   int
+				ok     bool
+			}{
+				{0, 10000, true},
+				{1, 1, true},
+				{100000, 100000, true},
+				{-1, 0, false},
+				{100001, 0, false},
+			} {
+				fake := &controlFake{execResult: core.CodeModeCallResult{Status: "yielded"}}
+				args := json.RawMessage(fmt.Sprintf(`{"code":"","cell_id":"cm_1","max_output_tokens":%d}`, tc.tokens))
+				_, err := tool.Execute(controlContext(fake), args)
+				if (err == nil) != tc.ok {
+					t.Fatalf("%s: err=%v", args, err)
+				}
+				if tc.ok && fake.output != tc.want {
+					t.Fatalf("output budget = %d, want %d", fake.output, tc.want)
+				}
+			}
+		})
 	}
 	if _, err := NewExec().Execute(context.Background(), json.RawMessage(`{"code":""}`)); err == nil {
 		t.Fatal("tool ran without engine controller")

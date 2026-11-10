@@ -140,7 +140,12 @@ func run(ctx context.Context, in Input, names []string, host Host, modules Modul
 			case "text", "image":
 				m.emit(q)
 			case "failed":
-				m.err = fmt.Errorf("script_error: %s", q.Value)
+				var message string
+				if err := json.Unmarshal(q.Value, &message); err != nil {
+					m.err = fmt.Errorf("script_error: invalid diagnostic: %w", err)
+				} else {
+					m.err = fmt.Errorf("script_error: %s", message)
+				}
 			case "done":
 				if pending != 0 {
 					m.err = errors.New("unawaited_calls: external effects may still be running")
@@ -364,19 +369,73 @@ func (m *machine) exception() error {
 	defer m.call("qjs_free_value", v)
 	s, err := m.stringValue(v, m.policy.text)
 	if err != nil {
-		return err
+		m.discardException()
+		s = "<unprintable exception>"
 	}
-	return fmt.Errorf("javascript: %s", s)
+	stack := m.exceptionStack(v, m.policy.text-len(s)-1)
+	if stack != "" {
+		s += "\n" + stack
+	}
+	return fmt.Errorf("script_error: %s", s)
+}
+
+// Diagnostic property access can itself throw. Clear that secondary exception
+// without formatting it (and potentially recursing into another throwing getter).
+func (m *machine) discardException() {
+	if v, err := m.call("qjs_get_exception"); err == nil {
+		_, _ = m.call("qjs_free_value", v)
+	}
+}
+
+func (m *machine) exceptionStack(v uint64, limit int) string {
+	object, err := m.call("qjs_is_object", v)
+	if err != nil || object == 0 || limit <= 0 {
+		return ""
+	}
+	prop, err := m.alloc("stack")
+	if err != nil {
+		return ""
+	}
+	defer m.free(prop)
+	stack, err := m.call("qjs_get_prop_string", v, prop)
+	if err != nil {
+		return ""
+	}
+	defer m.call("qjs_free_value", stack)
+	ex, err := m.call("qjs_is_exception", stack)
+	if err != nil {
+		return ""
+	}
+	if ex != 0 {
+		m.discardException()
+		return ""
+	}
+	isString, err := m.call("qjs_is_string", stack)
+	if err != nil || isString == 0 {
+		return ""
+	}
+	s, err := m.stringValue(stack, limit)
+	if err != nil {
+		m.discardException()
+		return ""
+	}
+	return s
 }
 func (m *machine) stringValue(v uint64, limit int) (string, error) {
 	n, err := m.call("wasm_malloc", 4)
 	if err != nil {
 		return "", err
 	}
+	if n == 0 {
+		return "", errors.New("memory_limit")
+	}
 	defer m.free(n)
 	p, err := m.call("qjs_get_string_len", v, n)
 	if err != nil {
 		return "", err
+	}
+	if p == 0 {
+		return "", errors.New("invalid_string")
 	}
 	defer m.call("qjs_free_cstring", p)
 	size, ok := m.mod.Memory().ReadUint32Le(uint32(n))

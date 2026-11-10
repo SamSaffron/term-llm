@@ -48,8 +48,8 @@ var SessionLimits = struct {
 	Stack:       512 << 10,
 	RetainBytes: 1 << 20,
 	CPU:         2 * time.Second,
-	Yield:       10 * time.Second,
-	MaxYield:    60 * time.Second,
+	Yield:       60 * time.Second,
+	MaxYield:    600 * time.Second,
 }
 
 // CellSpec starts one fresh QuickJS cell. The engine owns the context and

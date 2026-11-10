@@ -100,10 +100,10 @@ describe('code-mode visible result', () => {
     },
   );
   it.each([
-    ['running', 'Cell is still running.'],
-    ['yielded', 'Cell is still running.'],
-    ['cancelling', 'Cell cancellation is pending.'],
-    ['cancelled', 'Cell was cancelled.'],
+    ['running', 'Script is still running.'],
+    ['yielded', 'Script is still running.'],
+    ['cancelling', 'Script cancellation is pending.'],
+    ['cancelled', 'Script was cancelled.'],
   ])('keeps the %s lifecycle status visible without machine JSON', (status, text) => {
     const raw = JSON.stringify({ ...envelope, tool_call_id: 'observation', status });
     const display = codeModeDisplayTool({

@@ -92,11 +92,11 @@ func (t *GlobTool) Execute(ctx context.Context, args json.RawMessage) (core.Tool
 
 	var a GlobArgs
 	if err := json.Unmarshal(args, &a); err != nil {
-		return textOutput(formatToolError(NewToolError(ErrInvalidParams, err.Error()))), nil
+		return toolErrorOutput(warning, NewToolError(ErrInvalidParams, err.Error())), nil
 	}
 
 	if a.Pattern == "" {
-		return textOutput(formatToolError(NewToolError(ErrInvalidParams, "pattern is required"))), nil
+		return toolErrorOutput(warning, NewToolError(ErrInvalidParams, "pattern is required")), nil
 	}
 
 	// Set defaults
@@ -108,7 +108,7 @@ func (t *GlobTool) Execute(ctx context.Context, args json.RawMessage) (core.Tool
 			var err error
 			basePath, err = os.Getwd()
 			if err != nil {
-				return textOutput(formatToolError(NewToolErrorf(ErrExecutionFailed, "cannot get working directory: %v", err))), nil
+				return toolErrorOutput(warning, NewToolErrorf(ErrExecutionFailed, "cannot get working directory: %v", err)), nil
 			}
 		}
 	}
@@ -116,9 +116,9 @@ func (t *GlobTool) Execute(ctx context.Context, args json.RawMessage) (core.Tool
 	absBasePath, err := resolveToolPathWithConfig(basePath, false, t.config)
 	if err != nil {
 		if toolErr, ok := err.(*ToolError); ok {
-			return textOutput(formatToolError(toolErr)), nil
+			return toolErrorOutput(warning, toolErr), nil
 		}
-		return textOutput(formatToolError(NewToolErrorf(ErrExecutionFailed, "cannot resolve path: %v", err))), nil
+		return toolErrorOutput(warning, NewToolErrorf(ErrExecutionFailed, "cannot resolve path: %v", err)), nil
 	}
 
 	// Check permissions via approval manager
@@ -139,7 +139,7 @@ func (t *GlobTool) Execute(ctx context.Context, args json.RawMessage) (core.Tool
 	truncated := false
 	pattern := filepath.ToSlash(a.Pattern)
 	if err := validateGlobPattern(pattern); err != nil {
-		return textOutput(formatToolError(NewToolErrorf(ErrInvalidParams, "invalid pattern: %v", err))), nil
+		return toolErrorOutput(warning, NewToolErrorf(ErrInvalidParams, "invalid pattern: %v", err)), nil
 	}
 	fsys := globContextFS{ctx: ctx, root: absBasePath, fsys: os.DirFS(absBasePath)}
 
@@ -186,7 +186,7 @@ func (t *GlobTool) Execute(ctx context.Context, args json.RawMessage) (core.Tool
 		err = nil
 	}
 	if err != nil {
-		return textOutput(formatToolError(NewToolErrorf(ErrExecutionFailed, "walk error: %v", err))), nil
+		return toolErrorOutput(warning, NewToolErrorf(ErrExecutionFailed, "walk error: %v", err)), nil
 	}
 
 	// Sort by modification time (newest first)

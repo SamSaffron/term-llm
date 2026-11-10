@@ -14,7 +14,7 @@ import (
 type intentSearchResult struct {
 	ripgrepResult
 	snapshot func() []byte
-	message  string
+	toolErr  *ToolError
 }
 
 // searchIntent preserves an immutable ordinary prefix while expanding once.
@@ -76,11 +76,11 @@ func (t *GrepTool) searchIntent(ctx context.Context, a GrepArgs, root string, co
 func (t *GrepTool) searchIntentGo(ctx context.Context, a GrepArgs, root string, contextLines, maxResults int, attempt *greprerank.Attempt, publish func(intentSearchResult)) (intentSearchResult, error) {
 	re, err := regexp.Compile(a.Pattern)
 	if err != nil {
-		return intentSearchResult{message: formatToolError(NewToolErrorf(ErrInvalidParams, "invalid regex pattern: %v", err))}, nil
+		return intentSearchResult{toolErr: NewToolErrorf(ErrInvalidParams, "invalid regex pattern: %v", err)}, nil
 	}
 	files, err := grepsearch.CollectFiles(root, a.Include, a.Exclude)
 	if err != nil {
-		return intentSearchResult{message: formatToolError(NewToolErrorf(ErrExecutionFailed, "failed to collect files: %v", err))}, nil
+		return intentSearchResult{toolErr: NewToolErrorf(ErrExecutionFailed, "failed to collect files: %v", err)}, nil
 	}
 	grepsearch.SortFilesByMtime(files)
 	scan := t.intentScan

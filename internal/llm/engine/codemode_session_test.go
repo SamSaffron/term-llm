@@ -131,7 +131,7 @@ func TestCodeModeExecYieldWaitResume(t *testing.T) {
 	if final.Status != "completed" || !final.StateCommitted {
 		t.Fatalf("final: %+v", final)
 	}
-	if got := partsText(final); got != "end" {
+	if got := partsText(final); got != "\nend" {
 		t.Fatalf("incremental final text %q", got)
 	}
 	if len(final.UnsettledCalls) != 0 {
@@ -265,7 +265,7 @@ func TestCodeModeStateCommitRollbackAndIsolation(t *testing.T) {
 		t.Fatal(err)
 	}
 	rollback = awaitCodeModeTerminal(t, e, ctxA, rollback)
-	if rollback.Status != "completed" || partsText(rollback) != "true42" {
+	if rollback.Status != "completed" || partsText(rollback) != "true\n42" {
 		t.Fatalf("rollback: %+v text=%q", rollback, partsText(rollback))
 	}
 
@@ -300,7 +300,7 @@ func TestCodeModeStateCommitRollbackAndIsolation(t *testing.T) {
 		t.Fatal(err)
 	}
 	afterPerValue = awaitCodeModeTerminal(t, e, ctxA, afterPerValue)
-	if afterPerValue.Status != "completed" || partsText(afterPerValue) != "true42" {
+	if afterPerValue.Status != "completed" || partsText(afterPerValue) != "true\n42" {
 		t.Fatalf("state after per-value failure: %+v", afterPerValue)
 	}
 
@@ -389,7 +389,7 @@ func TestCodeModeIncrementalImagesAndStateContamination(t *testing.T) {
 func TestCodeModeOutputBudgetSplitsWithoutDuplication(t *testing.T) {
 	e := newCodeEngine()
 	ctx := asyncCodeContext("sess-output", "call-exec")
-	first, err := e.ExecCodeMode(ctx, `text('a'.repeat(100))`, 2*time.Second, 1)
+	first, err := e.ExecCodeMode(ctx, `text('a'.repeat(100)); text('b')`, 2*time.Second, 1)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -406,7 +406,7 @@ func TestCodeModeOutputBudgetSplitsWithoutDuplication(t *testing.T) {
 	if second.Status != "completed" || second.HasMoreOutput || second.OutputLimited {
 		t.Fatalf("second observation: %+v", second)
 	}
-	if got := partsText(first) + partsText(second); got != strings.Repeat("a", 100) {
+	if got := partsText(first) + partsText(second); got != strings.Repeat("a", 100)+"\nb" {
 		t.Fatalf("duplicated or lost output: %d", len(got))
 	}
 }
@@ -700,7 +700,7 @@ func TestCodeModeDeferredTextKeepsImagesBehindIt(t *testing.T) {
 	if second.Parts[1].Type != core.ToolContentPartImageData {
 		t.Fatalf("image overtook deferred text: %+v", second.Parts)
 	}
-	if second.Parts[2].Type != core.ToolContentPartText || second.Parts[2].Text != "b" {
+	if second.Parts[2].Type != core.ToolContentPartText || second.Parts[2].Text != "\nb" {
 		t.Fatalf("trailing text: %+v", second.Parts[2])
 	}
 }
@@ -857,11 +857,33 @@ func TestCodeModeHumanInterruptAndScopedReset(t *testing.T) {
 	}
 }
 
+func TestCodeModeUserErrorClassification(t *testing.T) {
+	for _, message := range []string{"image", "state_limit"} {
+		t.Run(message, func(t *testing.T) {
+			e := newCodeEngine()
+			defer e.CloseCodeMode()
+			ctx := asyncCodeContext("script-error", "exec")
+			result, err := e.ExecCodeMode(ctx, "throw Error("+strconv.Quote(message)+")", 2*time.Second, 0)
+			if err != nil {
+				t.Fatal(err)
+			}
+			result = awaitCodeModeTerminal(t, e, ctx, result)
+			if result.Status != "failed" || result.ErrorCode != "script_error" || !strings.Contains(result.Error, message) {
+				t.Fatalf("user error misclassified: %+v", result)
+			}
+		})
+	}
+}
+
 func TestCodeModeResourceErrorClassification(t *testing.T) {
 	for message, want := range map[string]string{
 		"busy: VM capacity": "busy", "state_limit: result too large": "state_limit",
 		"state_total_limit": "state_limit", "unawaited_calls": "unawaited_calls",
-		"SyntaxError: bad syntax": "script_error",
+		"SyntaxError: bad syntax":                                      "script_error",
+		"script_error: Error: image":                                   "script_error",
+		"script_error: Error: state_limit":                             "script_error",
+		"script_error: Error: busy: VM capacity":                       "script_error",
+		"script_error: Error: output_limit call_limit unawaited_calls": "script_error",
 	} {
 		if got := codeModeScriptErrorCode(message); got != want {
 			t.Fatalf("%s: got %s, want %s", message, got, want)

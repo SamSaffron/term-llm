@@ -102,25 +102,22 @@ func (t *EditFileTool) Preview(args json.RawMessage) string {
 
 func (t *EditFileTool) Execute(ctx context.Context, args json.RawMessage) (core.ToolOutput, error) {
 	warning := WarnUnknownParams(args, []string{"path", "old_text", "new_text", "instructions", "line_range"})
-	textOutput := func(message string) core.ToolOutput {
-		return core.TextOutput(warning + message)
-	}
 
 	var a EditFileArgs
 	if err := json.Unmarshal(args, &a); err != nil {
-		return textOutput(formatToolError(NewToolError(ErrInvalidParams, err.Error()))), nil
+		return toolErrorOutput(warning, NewToolError(ErrInvalidParams, err.Error())), nil
 	}
 
 	if a.Path == "" {
-		return textOutput(formatToolError(NewToolError(ErrInvalidParams, "path is required"))), nil
+		return toolErrorOutput(warning, NewToolError(ErrInvalidParams, "path is required")), nil
 	}
 
 	absPath, err := resolveToolPathWithConfig(a.Path, true, t.config)
 	if err != nil {
 		if toolErr, ok := err.(*ToolError); ok {
-			return textOutput(formatToolError(toolErr)), nil
+			return toolErrorOutput(warning, toolErr), nil
 		}
-		return textOutput(formatToolError(NewToolErrorf(ErrInvalidParams, "cannot resolve path: %v", err))), nil
+		return toolErrorOutput(warning, NewToolErrorf(ErrInvalidParams, "cannot resolve path: %v", err)), nil
 	}
 
 	// Check permissions via approval manager
@@ -139,11 +136,11 @@ func (t *EditFileTool) Execute(ctx context.Context, args json.RawMessage) (core.
 	hasDirectEdit := a.OldText != "" || a.NewText != ""
 
 	if hasInstructions && hasDirectEdit {
-		return textOutput(formatToolError(NewToolError(ErrInvalidParams, "cannot mix instructions with old_text/new_text"))), nil
+		return toolErrorOutput(warning, NewToolError(ErrInvalidParams, "cannot mix instructions with old_text/new_text")), nil
 	}
 
 	if !hasInstructions && !hasDirectEdit {
-		return textOutput(formatToolError(NewToolError(ErrInvalidParams, "provide either instructions or old_text/new_text"))), nil
+		return toolErrorOutput(warning, NewToolError(ErrInvalidParams, "provide either instructions or old_text/new_text")), nil
 	}
 
 	if hasDirectEdit {
@@ -156,7 +153,7 @@ func (t *EditFileTool) Execute(ctx context.Context, args json.RawMessage) (core.
 	}
 
 	// Delegated edit not implemented in this tool - it would require an LLM provider
-	return textOutput(formatToolError(NewToolError(ErrInvalidParams, "instructions mode requires the full edit command"))), nil
+	return toolErrorOutput(warning, NewToolError(ErrInvalidParams, "instructions mode requires the full edit command")), nil
 }
 
 // executeDirectEdit performs a deterministic string replacement using 5-level matching.
@@ -167,9 +164,9 @@ func (t *EditFileTool) executeDirectEdit(ctx context.Context, a EditFileArgs) (c
 	absPath, err := resolveToolPathWithConfig(a.Path, true, t.config)
 	if err != nil {
 		if toolErr, ok := err.(*ToolError); ok {
-			return core.TextOutput(formatToolError(toolErr)), nil
+			return toolErrorOutput("", toolErr), nil
 		}
-		return core.TextOutput(formatToolError(NewToolErrorf(ErrExecutionFailed, "failed to resolve path: %v", err))), nil
+		return toolErrorOutput("", NewToolErrorf(ErrExecutionFailed, "failed to resolve path: %v", err)), nil
 	}
 
 	// Serialize concurrent edits to the same file path.
@@ -179,14 +176,14 @@ func (t *EditFileTool) executeDirectEdit(ctx context.Context, a EditFileArgs) (c
 	info, err := os.Stat(absPath)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return core.TextOutput(formatToolError(NewToolError(ErrFileNotFound, absPath))), nil
+			return toolErrorOutput("", NewToolError(ErrFileNotFound, absPath)), nil
 		}
-		return core.TextOutput(formatToolError(NewToolErrorf(ErrExecutionFailed, "stat error: %v", err))), nil
+		return toolErrorOutput("", NewToolErrorf(ErrExecutionFailed, "stat error: %v", err)), nil
 	}
 	origMode := info.Mode()
 	data, err := os.ReadFile(absPath)
 	if err != nil {
-		return core.TextOutput(formatToolError(NewToolErrorf(ErrExecutionFailed, "read error: %v", err))), nil
+		return toolErrorOutput("", NewToolErrorf(ErrExecutionFailed, "read error: %v", err)), nil
 	}
 
 	content := string(data)
@@ -200,7 +197,7 @@ func (t *EditFileTool) executeDirectEdit(ctx context.Context, a EditFileArgs) (c
 	// Find match using 5-level matching
 	result, err := edit.FindMatch(content, search)
 	if err != nil {
-		return core.TextOutput(formatToolError(NewToolErrorf(ErrExecutionFailed, "could not find old_text: %v", err))), nil
+		return toolErrorOutput("", NewToolErrorf(ErrExecutionFailed, "could not find old_text: %v", err)), nil
 	}
 
 	// Apply the replacement
@@ -213,34 +210,34 @@ func (t *EditFileTool) executeDirectEdit(ctx context.Context, a EditFileArgs) (c
 	base := filepath.Base(writePath)
 	tempFile, err := os.CreateTemp(dir, "."+base+".*.tmp")
 	if err != nil {
-		return core.TextOutput(formatToolError(NewToolErrorf(ErrExecutionFailed, "failed to create temp file: %v", err))), nil
+		return toolErrorOutput("", NewToolErrorf(ErrExecutionFailed, "failed to create temp file: %v", err)), nil
 	}
 	tempPath := tempFile.Name()
 
 	if _, err := tempFile.WriteString(newContent); err != nil {
 		tempFile.Close()
 		os.Remove(tempPath)
-		return core.TextOutput(formatToolError(NewToolErrorf(ErrExecutionFailed, "failed to write temp file: %v", err))), nil
+		return toolErrorOutput("", NewToolErrorf(ErrExecutionFailed, "failed to write temp file: %v", err)), nil
 	}
 	if err := tempFile.Sync(); err != nil {
 		tempFile.Close()
 		os.Remove(tempPath)
-		return core.TextOutput(formatToolError(NewToolErrorf(ErrExecutionFailed, "failed to sync temp file: %v", err))), nil
+		return toolErrorOutput("", NewToolErrorf(ErrExecutionFailed, "failed to sync temp file: %v", err)), nil
 	}
 	if err := tempFile.Close(); err != nil {
 		os.Remove(tempPath)
-		return core.TextOutput(formatToolError(NewToolErrorf(ErrExecutionFailed, "failed to close temp file: %v", err))), nil
+		return toolErrorOutput("", NewToolErrorf(ErrExecutionFailed, "failed to close temp file: %v", err)), nil
 	}
 
 	// Preserve original file permissions (CreateTemp uses 0600)
 	if err := os.Chmod(tempPath, origMode); err != nil {
 		os.Remove(tempPath)
-		return core.TextOutput(formatToolError(NewToolErrorf(ErrExecutionFailed, "failed to set file permissions: %v", err))), nil
+		return toolErrorOutput("", NewToolErrorf(ErrExecutionFailed, "failed to set file permissions: %v", err)), nil
 	}
 
 	if err := os.Rename(tempPath, writePath); err != nil {
 		os.Remove(tempPath)
-		return core.TextOutput(formatToolError(NewToolErrorf(ErrExecutionFailed, "failed to rename temp file: %v", err))), nil
+		return toolErrorOutput("", NewToolErrorf(ErrExecutionFailed, "failed to rename temp file: %v", err)), nil
 	}
 
 	// Build result message

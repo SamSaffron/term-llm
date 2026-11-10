@@ -52,13 +52,10 @@ func (t *Tool) Execute(ctx context.Context, args json.RawMessage) (core.ToolOutp
 	parts := make([]core.ToolContentPart, 0, len(result.Output)+1)
 	images := 0
 	imageBytes := 0
+	textSeparator := false
 	for _, emission := range result.Output {
 		if emission.Kind == "text" {
-			var text string
-			if json.Unmarshal(emission.Value, &text) != nil {
-				text = string(emission.Value)
-			}
-			parts = append(parts, core.ToolContentPart{Type: core.ToolContentPartText, Text: text})
+			parts = appendLegacyText(parts, emission.Value, &textSeparator)
 			continue
 		}
 		part, err := cell.Image(emission.Value)
@@ -97,11 +94,28 @@ func (t *Tool) Execute(ctx context.Context, args json.RawMessage) (core.ToolOutp
 		CellID string                     `json:"cell_id"`
 		Calls  []core.CodeModeCallOutcome `json:"calls,omitempty"`
 	}{result, core.CallIDFromContext(ctx), projected}
-	raw, err := json.Marshal(envelope)
+	raw, err := core.MarshalCodeModeJSON(envelope)
 	if err != nil {
 		return core.ToolOutput{}, fmt.Errorf("code_mode result: %w", err)
 	}
 	parts = append(parts, core.ToolContentPart{Type: core.ToolContentPartText, Text: "\n" + string(raw)})
 	return core.ToolOutput{Content: string(raw), ContentParts: parts, ChildCalls: audit, PreserveJSON: true, IsError: result.Status != "completed"}, nil
 }
+
+// appendLegacyText separates emissions, not arbitrary tool/MCP content parts.
+func appendLegacyText(parts []core.ToolContentPart, value json.RawMessage, separator *bool) []core.ToolContentPart {
+	var text string
+	if json.Unmarshal(value, &text) != nil {
+		text = string(value)
+	}
+	if text == "" {
+		return parts
+	}
+	if *separator && !strings.HasPrefix(text, "\n") {
+		text = "\n" + text
+	}
+	*separator = !strings.HasSuffix(text, "\n")
+	return append(parts, core.ToolContentPart{Type: core.ToolContentPartText, Text: text})
+}
+
 func (t *Tool) Preview(json.RawMessage) string { return "bounded JavaScript cell" }

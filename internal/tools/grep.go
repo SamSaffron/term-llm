@@ -880,17 +880,14 @@ func (t *GrepTool) Execute(ctx context.Context, args json.RawMessage) (core.Tool
 	defer cancel()
 
 	warning := WarnUnknownParams(args, t.knownGrepParams())
-	textOutput := func(message string) core.ToolOutput {
-		return core.TextOutput(warning + message)
-	}
 
 	var a GrepArgs
 	if err := json.Unmarshal(args, &a); err != nil {
-		return textOutput(formatToolError(NewToolError(ErrInvalidParams, err.Error()))), nil
+		return toolErrorOutput(warning, NewToolError(ErrInvalidParams, err.Error())), nil
 	}
 
 	if a.Pattern == "" {
-		return textOutput(formatToolError(NewToolError(ErrInvalidParams, "pattern is required"))), nil
+		return toolErrorOutput(warning, NewToolError(ErrInvalidParams, "pattern is required")), nil
 	}
 
 	// Set defaults
@@ -902,7 +899,7 @@ func (t *GrepTool) Execute(ctx context.Context, args json.RawMessage) (core.Tool
 			var err error
 			searchPath, err = os.Getwd()
 			if err != nil {
-				return textOutput(formatToolError(NewToolErrorf(ErrExecutionFailed, "cannot get working directory: %v", err))), nil
+				return toolErrorOutput(warning, NewToolErrorf(ErrExecutionFailed, "cannot get working directory: %v", err)), nil
 			}
 		}
 	}
@@ -914,7 +911,7 @@ func (t *GrepTool) Execute(ctx context.Context, args json.RawMessage) (core.Tool
 
 	intent, err := t.grepIntent(args, a, maxResults)
 	if err != nil {
-		return textOutput(formatToolError(NewToolError(ErrInvalidParams, err.Error()))), nil
+		return toolErrorOutput(warning, NewToolError(ErrInvalidParams, err.Error())), nil
 	}
 
 	contextLines := a.ContextLines
@@ -925,9 +922,9 @@ func (t *GrepTool) Execute(ctx context.Context, args json.RawMessage) (core.Tool
 	resolvedSearchPath, err := resolveToolPathWithConfig(searchPath, false, t.config)
 	if err != nil {
 		if toolErr, ok := err.(*ToolError); ok {
-			return textOutput(formatToolError(toolErr)), nil
+			return toolErrorOutput(warning, toolErr), nil
 		}
-		return textOutput(formatToolError(NewToolErrorf(ErrExecutionFailed, "cannot resolve path: %v", err))), nil
+		return toolErrorOutput(warning, NewToolErrorf(ErrExecutionFailed, "cannot resolve path: %v", err)), nil
 	}
 
 	// Check permissions via approval manager
@@ -945,10 +942,9 @@ func (t *GrepTool) Execute(ctx context.Context, args json.RawMessage) (core.Tool
 	// the same base, even if the session working directory changes mid-call.
 	ctx = withGrepDisplayBase(ctx, t.grepDisplayBase())
 
-	if intent != "" {
-		return textOutput(t.executeIntentGrep(ctx, a, resolvedSearchPath, intent, contextLines, maxResults)), nil
-	}
-	return textOutput(t.executePlainGrep(ctx, a, resolvedSearchPath, contextLines, maxResults)), nil
+	output := t.executeGrep(ctx, a, resolvedSearchPath, intent, contextLines, maxResults)
+	output.Content = warning + output.Content
+	return output, nil
 }
 
 // sortGrepMatchesByMtime reorders matches so that matches from the

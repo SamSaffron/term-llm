@@ -1,6 +1,11 @@
 package core
 
-import "unicode/utf8"
+import (
+	"bytes"
+	"encoding/json"
+	"time"
+	"unicode/utf8"
+)
 
 // CodeModeEnvelope is model-visible status, separate from full private audit.
 type CodeModeEnvelope struct {
@@ -18,7 +23,7 @@ type CodeModeEnvelope struct {
 	HasMoreOutput   bool                  `json:"has_more_output,omitempty"`
 	OmittedBytes    int                   `json:"output_omitted_bytes,omitempty"`
 	OmittedImages   int                   `json:"output_omitted_images,omitempty"`
-	YieldMS         int64                 `json:"yield_time_ms,omitempty"`
+	MaxWait         int64                 `json:"max_wait"`
 	ElapsedMS       int64                 `json:"elapsed_ms,omitempty"`
 	Calls           []CodeModeCallOutcome `json:"calls,omitempty"`
 	UnsettledCalls  []CodeModeCallOutcome `json:"unsettled_calls,omitempty"`
@@ -53,7 +58,7 @@ func CodeModeEnvelopeFor(result CodeModeCallResult, toolCallID string) CodeModeE
 		HasMoreOutput:   result.HasMoreOutput,
 		OmittedBytes:    result.OmittedBytes,
 		OmittedImages:   result.OmittedImages,
-		YieldMS:         result.Yield.Milliseconds(),
+		MaxWait:         int64(result.Yield / time.Second),
 		ElapsedMS:       result.Elapsed.Milliseconds(),
 		Calls:           CodeModeModelCalls(result.Calls),
 		UnsettledCalls:  CodeModeModelCalls(result.UnsettledCalls),
@@ -67,4 +72,17 @@ func CodeModeEnvelopeFor(result CodeModeCallResult, toolCallID string) CodeModeE
 		envelope.ErrorTruncated = true
 	}
 	return envelope
+}
+
+// MarshalCodeModeJSON encodes model-facing cell status without HTML escaping.
+// These bytes are JSON tool content, not an HTML script element. Keep diagnostic
+// frames such as <anonymous> readable while retaining normal JSON escaping.
+func MarshalCodeModeJSON(value any) ([]byte, error) {
+	var buffer bytes.Buffer
+	encoder := json.NewEncoder(&buffer)
+	encoder.SetEscapeHTML(false)
+	if err := encoder.Encode(value); err != nil {
+		return nil, err
+	}
+	return bytes.TrimSuffix(buffer.Bytes(), []byte("\n")), nil
 }

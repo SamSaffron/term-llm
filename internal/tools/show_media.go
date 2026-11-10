@@ -90,17 +90,17 @@ func (t *ShowMediaTool) Preview(args json.RawMessage) string {
 func (t *ShowMediaTool) Execute(ctx context.Context, args json.RawMessage) (core.ToolOutput, error) {
 	var a ShowMediaArgs
 	if err := json.Unmarshal(args, &a); err != nil {
-		return core.TextOutput(formatToolError(NewToolError(ErrInvalidParams, err.Error()))), nil
+		return toolErrorOutput("", NewToolError(ErrInvalidParams, err.Error())), nil
 	}
 	if strings.TrimSpace(a.Path) == "" {
-		return core.TextOutput(formatToolError(NewToolError(ErrInvalidParams, "path is required"))), nil
+		return toolErrorOutput("", NewToolError(ErrInvalidParams, "path is required")), nil
 	}
 	resolved, err := resolveToolPathWithConfig(a.Path, false, t.config)
 	if err != nil {
 		if toolErr, ok := err.(*ToolError); ok {
-			return core.TextOutput(formatToolError(toolErr)), nil
+			return toolErrorOutput("", toolErr), nil
 		}
-		return core.TextOutput(formatToolError(NewToolErrorf(ErrInvalidParams, "cannot resolve path: %v", err))), nil
+		return toolErrorOutput("", NewToolErrorf(ErrInvalidParams, "cannot resolve path: %v", err)), nil
 	}
 	if t.approval != nil {
 		outcome, approvalErr := t.approval.CheckPathApprovalWithContext(ctx, ShowMediaToolName, resolved, a.Path, false)
@@ -115,17 +115,17 @@ func (t *ShowMediaTool) Execute(ctx context.Context, args json.RawMessage) (core
 	f, err := os.Open(resolved)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return core.TextOutput(formatToolError(NewToolError(ErrFileNotFound, a.Path))), nil
+			return toolErrorOutput("", NewToolError(ErrFileNotFound, a.Path)), nil
 		}
-		return core.TextOutput(formatToolError(NewToolErrorf(ErrExecutionFailed, "cannot open file: %v", err))), nil
+		return toolErrorOutput("", NewToolErrorf(ErrExecutionFailed, "cannot open file: %v", err)), nil
 	}
 	defer f.Close()
 	info, err := f.Stat()
 	if err != nil {
-		return core.TextOutput(formatToolError(NewToolErrorf(ErrExecutionFailed, "cannot stat file: %v", err))), nil
+		return toolErrorOutput("", NewToolErrorf(ErrExecutionFailed, "cannot stat file: %v", err)), nil
 	}
 	if !info.Mode().IsRegular() {
-		return core.TextOutput(formatToolError(NewToolError(ErrInvalidParams, "path must be a regular file"))), nil
+		return toolErrorOutput("", NewToolError(ErrInvalidParams, "path must be a regular file")), nil
 	}
 
 	if err := ctx.Err(); err != nil {
@@ -134,32 +134,32 @@ func (t *ShowMediaTool) Execute(ctx context.Context, args json.RawMessage) (core
 	format, inspectErr := mediatype.Inspect(f, info.Size())
 	if inspectErr != nil {
 		if errors.Is(inspectErr, mediatype.ErrUnsupported) {
-			return core.TextOutput(formatToolError(NewToolError(ErrUnsupportedFormat,
-				"unsupported media format (supported: PNG, JPEG, GIF, WebP, BMP, MP4, WebM, MP3, WAV, Ogg Opus/Vorbis, FLAC, M4A, audio-only WebM)"))), nil
+			return toolErrorOutput("", NewToolError(ErrUnsupportedFormat,
+				"unsupported media format (supported: PNG, JPEG, GIF, WebP, BMP, MP4, WebM, MP3, WAV, Ogg Opus/Vorbis, FLAC, M4A, audio-only WebM)")), nil
 		}
-		return core.TextOutput(formatToolError(NewToolErrorf(ErrExecutionFailed, "cannot inspect file: %v", inspectErr))), nil
+		return toolErrorOutput("", NewToolErrorf(ErrExecutionFailed, "cannot inspect file: %v", inspectErr)), nil
 	}
 	if err := ctx.Err(); err != nil {
 		return core.ToolOutput{}, err
 	}
 	mediaType := format.MIME
 	if info.Size() > format.MaxBytes {
-		return core.TextOutput(formatToolError(NewToolErrorf(ErrInvalidParams,
-			"%s is %.1f MiB; show_media supports %s files up to %d MiB", filepath.Base(a.Path), float64(info.Size())/(1<<20), format.Kind, format.MaxBytes>>20))), nil
+		return toolErrorOutput("", NewToolErrorf(ErrInvalidParams,
+			"%s is %.1f MiB; show_media supports %s files up to %d MiB", filepath.Base(a.Path), float64(info.Size())/(1<<20), format.Kind, format.MaxBytes>>20)), nil
 	}
 
 	reference, err := newMediaReference()
 	if err != nil {
-		return core.TextOutput(formatToolError(NewToolErrorf(ErrExecutionFailed, "cannot create media reference: %v", err))), nil
+		return toolErrorOutput("", NewToolErrorf(ErrExecutionFailed, "cannot create media reference: %v", err)), nil
 	}
 	storedPath := ""
 	if publisher := t.mediaPublisher(); publisher != nil {
 		storedPath, err = publisher.PublishMedia(ctx, resolved, mediaType)
 		if err != nil {
-			return core.TextOutput(formatToolError(NewToolErrorf(ErrExecutionFailed, "cannot publish media: %v", err))), nil
+			return toolErrorOutput("", NewToolErrorf(ErrExecutionFailed, "cannot publish media: %v", err)), nil
 		}
 		if strings.TrimSpace(storedPath) == "" {
-			return core.TextOutput(formatToolError(NewToolError(ErrExecutionFailed, "media publisher returned no stored path"))), nil
+			return toolErrorOutput("", NewToolError(ErrExecutionFailed, "media publisher returned no stored path")), nil
 		}
 	}
 

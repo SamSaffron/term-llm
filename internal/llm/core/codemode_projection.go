@@ -32,7 +32,7 @@ func ProjectCodeModeOutput(output ToolOutput, maxChars int) ToolOutput {
 	}
 	delete(envelope, "output")
 	envelope["omitted_output"] = json.RawMessage(`true`)
-	raw, err := json.Marshal(envelope)
+	raw, err := MarshalCodeModeJSON(envelope)
 	if err != nil || len(raw) > maxChars {
 		return cellProjectionFailure(output)
 	}

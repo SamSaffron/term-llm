@@ -14,7 +14,7 @@ loops, several calls, filtering or an activated skill module are useful.
 ## Cell contract
 
 ```json
-{"code":"const r = await tools['catalogue__detail']({id: 3}); text(r.structuredContent.title); store('lastId', 3);","yield_time_ms":10000,"max_output_tokens":10000}
+{"code":"const r = await tools['catalogue__detail']({id: 3}); text(r.structuredContent.title); store('lastId', 3);","max_wait":60,"max_output_tokens":10000}
 ```
 
 `code` is an async **function body**: await and return work; use dynamic
@@ -24,7 +24,7 @@ loops, several calls, filtering or an activated skill module are useful.
 |---|---|
 | `tools[exactName](args)` | Promise of a permitted registered tool's programmatic result. No prototype-derived callable names. |
 | `describeTools([names])` | Authoritative input/output schemas, exact names, schema hash and envelope description within the admitted capability ceiling. Use model-facing `tool_search` before a cell for lazy discovery. |
-| `text(value)` | Explicit ordered text; strings stay strings, JSON values serialize as JSON. A defined return value emits text after explicit output. |
+| `text(value)` | Explicit ordered text; strings stay strings, JSON values serialize as JSON. Separate nonempty emissions are newline-separated in flattened output; existing newlines are preserved. A defined return value emits text after explicit output. |
 | `image(blockOrHandle)` | Explicit image emission. Accepts an MCP image block or a current-cell host handle; never fetches a URL or reads an arbitrary path. |
 | `load(key)` / `store(key, value)` | Staged session-local JSON state, automatically committed after success. Missing keys return undefined; storing undefined deletes. Cycles, functions, BigInt and nonfinite numbers reject. |
 | `sleep(ms)` | Cancellable host wait, at most1000ms per call; counted in cell resources. No detached timers. |
@@ -48,16 +48,35 @@ A cell freezes its tool/schema ceiling, then rechecks current policy and catalog
 on every call. Activation/import never grants tools. Schema changes reject with
 `schema_changed`, inviting rediscovery in a new cell.
 
+### Script diagnostics
+
+Syntax errors and runtime exceptions include source locations in the error text,
+including stack frames when available. Cell locations use `cell.js`, with line
+numbers matching the submitted function body (its first line is line 1); imported
+skill modules retain their source filenames. Both syntax errors and uncaught
+async throws or rejections are reported consistently with a `script_error:` prefix
+(and `error_code: "script_error"` on lifecycle observations). Exception text that
+happens to mention `image`, `state_limit`, or another resource error name does not
+change that classification. Actual host/runtime resource failures retain their
+own error codes.
+
+Calling an unknown `tools[exactName]` throws a descriptive `unknown_tool` error
+naming the requested tool, rather than an opaque "not a function" error. Use
+`Object.keys(tools)` to list the admitted names and `describeTools([name])` to
+inspect arguments. If uncaught, this is a script failure; it does not dispatch a
+host call or grant access to a missing tool.
+
 ## Execution lifecycle
 
 `spawn_script` returns a `cell_id` and an observation of that cell. If it is still active,
 call `wait_script` with the returned ID to collect **only new output** or completion:
 
 ```json
-{"cell_id":"<actual ID from exec>","yield_time_ms":10000,"max_output_tokens":10000}
+{"cell_id":"<actual ID from exec>","max_wait":60,"max_output_tokens":10000}
 ```
 
-A yield/wait budget is an observation deadline, **not a cell kill timer**. The
+`max_wait` is an observation deadline in seconds: **0–600**, default **60**.
+An explicit `0` checks immediately without waiting. It is **not a cell kill timer**. The
 cell continues when the budget expires or a wait request is cancelled. Use
 `cancel_script` with that same `cell_id` to request termination. Do not fabricate IDs,
 automatically restart cancelled work, or confuse a successful observation with a
@@ -66,11 +85,24 @@ Session/runtime teardown also cancels owned cells. The process has four VM slots
 shared across sessions; a long-running cell holds one until it ends. A full pool
 reports busy rather than starting overlapping work. There is no idle expiry.
 
-Explicit text/images keep their emission order. Output budgets truncate visible
-text with an omission notice; they do not turn successful work into a false tool
-failure. Raw intermediate bodies and the stored state are not automatically
-printed. Nested calls remain auditable effects, not extra model-authored calls.
-Outstanding unawaited host calls still cause failure.
+Explicit text/images keep their emission order. Separate nonempty text emissions
+(including a defined return value) are separated by a newline when neither the
+previous text's trailing edge nor the next text's leading edge already has one.
+Explicit trailing newlines and blank lines are preserved; empty emissions add
+nothing. For example, `text('one'); text('two')` flattens to `one\ntwo`, and
+`text('one\n'); text('two')` produces the same text. This is a code-mode emission
+rule, including legacy synchronous `code_mode`, not a change to arbitrary MCP
+content parts.
+
+Observation budgets may split a single emission across observations: concatenating
+those text chunks reconstructs the emission without an extra separator in the
+middle. Inserted separator bytes count toward the text observation budget and the
+retained-output cap. Undelivered text remains queued for `wait_script`; output
+beyond the retention cap is permanently omitted and reported as truncated. These
+limits do not turn successful work into a false tool failure. Raw intermediate
+bodies and the stored state are not automatically printed. Nested calls remain
+auditable effects, not extra model-authored calls. Outstanding unawaited host
+calls still cause failure.
 
 ### State is session-managed, not durable
 
@@ -106,7 +138,7 @@ defaults. New workflows should use `spawn_script` / `wait_script` / `cancel_scri
 | Active cell per engine / VM instances per process | 1 / 4; busy rejection rather than overlapping uncertain work |
 | QuickJS heap / WASM linear memory / native stack | 256 MiB / 512 MiB / 512 KiB |
 | Cumulative active JS execution | 2 seconds; host-tool and sleep waiting excluded |
-| Yield/wait budget | 10 seconds by default; does not terminate the cell |
+| Observation wait (`max_wait`) | 0–600 seconds, default 60; 0 polls immediately; does not terminate the cell |
 | Image handles / decoded image bytes | 64 handles / 16 MiB over the cell lifetime; start a fresh cell for longer screenshot workflows |
 | Model-visible text | 10,000 estimated tokens per observation by default; separately bounded retention |
 | MCP stdio frame / SSE event / ordinary HTTP response body | 16 MiB each; no lifetime cap on SSE connections |

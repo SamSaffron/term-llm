@@ -64,7 +64,7 @@ func TestShowMediaToolRejectsUnsafeTypeAndPublisherFailure(t *testing.T) {
 	tool := NewShowMediaTool(nil, &ToolConfig{BaseDir: dir})
 	args, _ := json.Marshal(ShowMediaArgs{Path: htmlPath})
 	out, err := tool.Execute(context.Background(), args)
-	if err != nil || !strings.Contains(out.Content, "unsupported media format") {
+	if err != nil || !out.IsError || !strings.Contains(out.Content, "unsupported media format") {
 		t.Fatalf("unsafe type output = %#v, %v", out, err)
 	}
 
@@ -75,7 +75,7 @@ func TestShowMediaToolRejectsUnsafeTypeAndPublisherFailure(t *testing.T) {
 	tool.SetPublisher(testMediaPublisher{err: errors.New("disk full")})
 	args, _ = json.Marshal(ShowMediaArgs{Path: pngPath})
 	out, err = tool.Execute(context.Background(), args)
-	if err != nil || !strings.Contains(out.Content, "cannot publish media") || len(out.Media) != 0 {
+	if err != nil || !out.IsError || !strings.Contains(out.Content, "cannot publish media") || len(out.Media) != 0 {
 		t.Fatalf("publisher failure output = %#v, %v", out, err)
 	}
 }
@@ -148,7 +148,7 @@ func TestShowMediaAudioFormatsAndLimit(t *testing.T) {
 			tool := NewShowMediaTool(nil, &ToolConfig{BaseDir: dir})
 			args, _ := json.Marshal(ShowMediaArgs{Path: path})
 			out, err := tool.Execute(context.Background(), args)
-			if err != nil || (len(out.Media) == 1) != (size <= 100<<20) {
+			if err != nil || out.IsError != (size > 100<<20) || (len(out.Media) == 1) != (size <= 100<<20) {
 				t.Fatalf("size=%d output=%+v,%v", size, out, err)
 			}
 			if size > 100<<20 && !strings.Contains(out.Content, "audio files up to 100 MiB") {
@@ -172,19 +172,19 @@ func TestShowMediaAudioFailurePaths(t *testing.T) {
 	}, nil)
 	denied := NewShowMediaTool(mgr, &ToolConfig{BaseDir: dir})
 	out, err := denied.Execute(context.Background(), args)
-	if err != nil || len(out.Media) != 0 || !strings.Contains(out.Content, "denied") {
+	if err != nil || !out.IsError || len(out.Media) != 0 || !strings.Contains(out.Content, "denied") {
 		t.Fatalf("denial=%+v,%v", out, err)
 	}
 	tool := NewShowMediaTool(nil, &ToolConfig{BaseDir: dir})
 	tool.SetPublisher(testMediaPublisher{})
 	out, err = tool.Execute(context.Background(), args)
-	if err != nil || len(out.Media) != 0 || !strings.Contains(out.Content, "no stored path") {
+	if err != nil || !out.IsError || len(out.Media) != 0 || !strings.Contains(out.Content, "no stored path") {
 		t.Fatalf("empty publication=%+v,%v", out, err)
 	}
 	for _, path := range []string{filepath.Join(dir, "missing.wav"), dir} {
 		args, _ = json.Marshal(ShowMediaArgs{Path: path})
 		out, err = tool.Execute(context.Background(), args)
-		if err != nil || len(out.Media) != 0 {
+		if err != nil || !out.IsError || len(out.Media) != 0 {
 			t.Fatalf("invalid path=%+v,%v", out, err)
 		}
 	}

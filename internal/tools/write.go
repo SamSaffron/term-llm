@@ -65,25 +65,22 @@ func (t *WriteFileTool) Preview(args json.RawMessage) string {
 
 func (t *WriteFileTool) Execute(ctx context.Context, args json.RawMessage) (core.ToolOutput, error) {
 	warning := WarnUnknownParams(args, []string{"path", "content"})
-	textOutput := func(message string) core.ToolOutput {
-		return core.TextOutput(warning + message)
-	}
 
 	var a WriteFileArgs
 	if err := json.Unmarshal(args, &a); err != nil {
-		return textOutput(formatToolError(NewToolError(ErrInvalidParams, err.Error()))), nil
+		return toolErrorOutput(warning, NewToolError(ErrInvalidParams, err.Error())), nil
 	}
 
 	if a.Path == "" {
-		return textOutput(formatToolError(NewToolError(ErrInvalidParams, "path is required"))), nil
+		return toolErrorOutput(warning, NewToolError(ErrInvalidParams, "path is required")), nil
 	}
 
 	absPath, err := resolveToolPathWithConfig(a.Path, true, t.config)
 	if err != nil {
 		if toolErr, ok := err.(*ToolError); ok {
-			return textOutput(formatToolError(toolErr)), nil
+			return toolErrorOutput(warning, toolErr), nil
 		}
-		return textOutput(formatToolError(NewToolErrorf(ErrInvalidParams, "cannot resolve path: %v", err))), nil
+		return toolErrorOutput(warning, NewToolErrorf(ErrInvalidParams, "cannot resolve path: %v", err)), nil
 	}
 
 	// Check permissions via approval manager
@@ -109,19 +106,19 @@ func (t *WriteFileTool) Execute(ctx context.Context, args json.RawMessage) (core
 	switch {
 	case statErr == nil:
 		if !info.Mode().IsRegular() {
-			return textOutput(formatToolError(NewToolErrorf(ErrExecutionFailed, "target is not a regular file: %s", absPath))), nil
+			return toolErrorOutput(warning, NewToolErrorf(ErrExecutionFailed, "target is not a regular file: %s", absPath)), nil
 		}
 		existingMode = info.Mode()
 		data, readErr := os.ReadFile(absPath)
 		if readErr != nil {
-			return textOutput(formatToolError(NewToolErrorf(ErrExecutionFailed, "failed to capture existing file before write: %v", readErr))), nil
+			return toolErrorOutput(warning, NewToolErrorf(ErrExecutionFailed, "failed to capture existing file before write: %v", readErr)), nil
 		}
 		existingContent = string(data)
 		isNew = false
 	case os.IsNotExist(statErr):
 		// Missing is positively established; BeforeMissing is safe.
 	default:
-		return textOutput(formatToolError(NewToolErrorf(ErrExecutionFailed, "failed to inspect target before write: %v", statErr))), nil
+		return toolErrorOutput(warning, NewToolErrorf(ErrExecutionFailed, "failed to inspect target before write: %v", statErr)), nil
 	}
 
 	// Follow symlinks (including dangling ones) so the atomic rename below
@@ -132,7 +129,7 @@ func (t *WriteFileTool) Execute(ctx context.Context, args json.RawMessage) (core
 	// Create parent directories
 	dir := filepath.Dir(writePath)
 	if err := os.MkdirAll(dir, 0755); err != nil {
-		return textOutput(formatToolError(NewToolErrorf(ErrExecutionFailed, "failed to create directory: %v", err))), nil
+		return toolErrorOutput(warning, NewToolErrorf(ErrExecutionFailed, "failed to create directory: %v", err)), nil
 	}
 
 	// Atomic write: write to a uniquely-named temp file, then rename.
@@ -140,23 +137,23 @@ func (t *WriteFileTool) Execute(ctx context.Context, args json.RawMessage) (core
 	base := filepath.Base(writePath)
 	tf, err := os.CreateTemp(dir, "."+base+".*.tmp")
 	if err != nil {
-		return textOutput(formatToolError(NewToolErrorf(ErrExecutionFailed, "failed to create temp file: %v", err))), nil
+		return toolErrorOutput(warning, NewToolErrorf(ErrExecutionFailed, "failed to create temp file: %v", err)), nil
 	}
 	tempPath := tf.Name()
 
 	if _, err := tf.Write([]byte(a.Content)); err != nil {
 		tf.Close()
 		os.Remove(tempPath)
-		return textOutput(formatToolError(NewToolErrorf(ErrExecutionFailed, "failed to write temp file: %v", err))), nil
+		return toolErrorOutput(warning, NewToolErrorf(ErrExecutionFailed, "failed to write temp file: %v", err)), nil
 	}
 	if err := tf.Sync(); err != nil {
 		tf.Close()
 		os.Remove(tempPath)
-		return textOutput(formatToolError(NewToolErrorf(ErrExecutionFailed, "failed to sync temp file: %v", err))), nil
+		return toolErrorOutput(warning, NewToolErrorf(ErrExecutionFailed, "failed to sync temp file: %v", err)), nil
 	}
 	if err := tf.Close(); err != nil {
 		os.Remove(tempPath)
-		return textOutput(formatToolError(NewToolErrorf(ErrExecutionFailed, "failed to close temp file: %v", err))), nil
+		return toolErrorOutput(warning, NewToolErrorf(ErrExecutionFailed, "failed to close temp file: %v", err)), nil
 	}
 
 	// Preserve existing file permissions, or use 0644 for new files.
@@ -167,12 +164,12 @@ func (t *WriteFileTool) Execute(ctx context.Context, args json.RawMessage) (core
 	}
 	if err := os.Chmod(tempPath, mode); err != nil {
 		os.Remove(tempPath)
-		return textOutput(formatToolError(NewToolErrorf(ErrExecutionFailed, "failed to set file permissions: %v", err))), nil
+		return toolErrorOutput(warning, NewToolErrorf(ErrExecutionFailed, "failed to set file permissions: %v", err)), nil
 	}
 
 	if err := os.Rename(tempPath, writePath); err != nil {
 		os.Remove(tempPath)
-		return textOutput(formatToolError(NewToolErrorf(ErrExecutionFailed, "failed to rename temp file: %v", err))), nil
+		return toolErrorOutput(warning, NewToolErrorf(ErrExecutionFailed, "failed to rename temp file: %v", err)), nil
 	}
 
 	// Build result message

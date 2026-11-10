@@ -79,19 +79,19 @@ func (t *ShowImageTool) Preview(args json.RawMessage) string {
 func (t *ShowImageTool) Execute(ctx context.Context, args json.RawMessage) (core.ToolOutput, error) {
 	var a ShowImageArgs
 	if err := json.Unmarshal(args, &a); err != nil {
-		return core.TextOutput(formatToolError(NewToolError(ErrInvalidParams, err.Error()))), nil
+		return toolErrorOutput("", NewToolError(ErrInvalidParams, err.Error())), nil
 	}
 
 	if a.FilePath == "" {
-		return core.TextOutput(formatToolError(NewToolError(ErrInvalidParams, "file_path is required"))), nil
+		return toolErrorOutput("", NewToolError(ErrInvalidParams, "file_path is required")), nil
 	}
 
 	resolvedPath, err := resolveToolPathWithConfig(a.FilePath, false, t.config)
 	if err != nil {
 		if toolErr, ok := err.(*ToolError); ok {
-			return core.TextOutput(formatToolError(toolErr)), nil
+			return toolErrorOutput("", toolErr), nil
 		}
-		return core.TextOutput(formatToolError(NewToolErrorf(ErrInvalidParams, "cannot resolve path: %v", err))), nil
+		return toolErrorOutput("", NewToolErrorf(ErrInvalidParams, "cannot resolve path: %v", err)), nil
 	}
 
 	// Check permissions via approval manager
@@ -109,15 +109,15 @@ func (t *ShowImageTool) Execute(ctx context.Context, args json.RawMessage) (core
 	info, err := os.Stat(resolvedPath)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return core.TextOutput(formatToolError(NewToolError(ErrFileNotFound, a.FilePath))), nil
+			return toolErrorOutput("", NewToolError(ErrFileNotFound, a.FilePath)), nil
 		}
-		return core.TextOutput(formatToolError(NewToolErrorf(ErrExecutionFailed, "cannot stat file: %v", err))), nil
+		return toolErrorOutput("", NewToolErrorf(ErrExecutionFailed, "cannot stat file: %v", err)), nil
 	}
 
 	// Check format
 	ext := strings.ToLower(filepath.Ext(resolvedPath))
 	if !showImageSupportedFormats[ext] {
-		return core.TextOutput(formatToolError(NewToolErrorf(ErrUnsupportedFormat, "unsupported format: %s (supported: PNG, JPEG, GIF, WebP, BMP)", ext))), nil
+		return toolErrorOutput("", NewToolErrorf(ErrUnsupportedFormat, "unsupported format: %s (supported: PNG, JPEG, GIF, WebP, BMP)", ext)), nil
 	}
 
 	// Build result

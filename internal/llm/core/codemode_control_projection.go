@@ -13,7 +13,7 @@ import (
 func projectControlOutput(output ToolOutput, envelope map[string]json.RawMessage, maxChars int) ToolOutput {
 	envelope["output_truncated"] = json.RawMessage(`true`)
 	envelope["omitted_output"] = json.RawMessage(`true`)
-	raw, err := json.Marshal(envelope)
+	raw, err := MarshalCodeModeJSON(envelope)
 	if err != nil || len(raw) >= maxChars {
 		minimal := map[string]json.RawMessage{}
 		for _, key := range []string{"cell_id", "tool_call_id", "status", "state_committed", "error_code", "has_more_output", "output_limited"} {
@@ -31,7 +31,7 @@ func projectControlOutput(output ToolOutput, envelope map[string]json.RawMessage
 		}
 		minimal["output_truncated"] = json.RawMessage(`true`)
 		minimal["omitted_output"] = json.RawMessage(`true`)
-		raw, err = json.Marshal(minimal)
+		raw, err = MarshalCodeModeJSON(minimal)
 		if err != nil || len(raw) > maxChars {
 			return cellProjectionFailure(output)
 		}

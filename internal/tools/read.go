@@ -87,19 +87,19 @@ func (t *ReadFileTool) Execute(ctx context.Context, args json.RawMessage) (core.
 
 	var a ReadFileArgs
 	if err := json.Unmarshal(args, &a); err != nil {
-		return textOutput(formatToolError(NewToolError(ErrInvalidParams, err.Error()))), nil
+		return toolErrorOutput(warning, NewToolError(ErrInvalidParams, err.Error())), nil
 	}
 
 	if a.Path == "" {
-		return textOutput(formatToolError(NewToolError(ErrInvalidParams, "path is required"))), nil
+		return toolErrorOutput(warning, NewToolError(ErrInvalidParams, "path is required")), nil
 	}
 
 	resolvedPath, err := resolveToolPathWithConfig(a.Path, false, t.config)
 	if err != nil {
 		if toolErr, ok := err.(*ToolError); ok {
-			return textOutput(formatToolError(toolErr)), nil
+			return toolErrorOutput(warning, toolErr), nil
 		}
-		return textOutput(formatToolError(NewToolErrorf(ErrInvalidParams, "cannot resolve path: %v", err))), nil
+		return toolErrorOutput(warning, NewToolErrorf(ErrInvalidParams, "cannot resolve path: %v", err)), nil
 	}
 
 	// Check permissions via approval manager
@@ -116,9 +116,9 @@ func (t *ReadFileTool) Execute(ctx context.Context, args json.RawMessage) (core.
 	output, err := readLineNumberedFile(ctx, resolvedPath, a.Path, a.StartLine, a.EndLine, t.limits)
 	if err != nil {
 		if toolErr, ok := err.(*ToolError); ok {
-			return textOutput(formatToolError(toolErr)), nil
+			return toolErrorOutput(warning, toolErr), nil
 		}
-		return textOutput(formatToolError(NewToolErrorf(ErrExecutionFailed, "read error: %v", err))), nil
+		return toolErrorOutput(warning, NewToolErrorf(ErrExecutionFailed, "read error: %v", err)), nil
 	}
 
 	return textOutput(output), nil
@@ -382,6 +382,14 @@ func isBinaryContent(data []byte) bool {
 	}
 
 	return false
+}
+
+// toolErrorOutput preserves diagnostic text and warnings while explicitly marking
+// an unsuccessful tool call, independently of the content of its message.
+func toolErrorOutput(prefix string, err *ToolError) core.ToolOutput {
+	output := core.TextOutput(prefix + formatToolError(err))
+	output.IsError = true
+	return output
 }
 
 // formatToolError formats a ToolError for LLM consumption.

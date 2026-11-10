@@ -136,19 +136,19 @@ func (t *ViewImageTool) Preview(args json.RawMessage) string {
 func (t *ViewImageTool) Execute(ctx context.Context, args json.RawMessage) (core.ToolOutput, error) {
 	var a ViewImageArgs
 	if err := json.Unmarshal(args, &a); err != nil {
-		return core.TextOutput(formatToolError(NewToolError(ErrInvalidParams, err.Error()))), nil
+		return toolErrorOutput("", NewToolError(ErrInvalidParams, err.Error())), nil
 	}
 
 	if a.FilePath == "" {
-		return core.TextOutput(formatToolError(NewToolError(ErrInvalidParams, "file_path is required"))), nil
+		return toolErrorOutput("", NewToolError(ErrInvalidParams, "file_path is required")), nil
 	}
 
 	resolvedPath, err := resolveToolPathWithConfig(a.FilePath, false, t.config)
 	if err != nil {
 		if toolErr, ok := err.(*ToolError); ok {
-			return core.TextOutput(formatToolError(toolErr)), nil
+			return toolErrorOutput("", toolErr), nil
 		}
-		return core.TextOutput(formatToolError(NewToolErrorf(ErrInvalidParams, "cannot resolve path: %v", err))), nil
+		return toolErrorOutput("", NewToolErrorf(ErrInvalidParams, "cannot resolve path: %v", err)), nil
 	}
 
 	// Check permissions via approval manager
@@ -165,15 +165,15 @@ func (t *ViewImageTool) Execute(ctx context.Context, args json.RawMessage) (core
 	// Check file exists
 	if _, err := os.Stat(resolvedPath); err != nil {
 		if os.IsNotExist(err) {
-			return core.TextOutput(formatToolError(NewToolError(ErrFileNotFound, a.FilePath))), nil
+			return toolErrorOutput("", NewToolError(ErrFileNotFound, a.FilePath)), nil
 		}
-		return core.TextOutput(formatToolError(NewToolErrorf(ErrExecutionFailed, "cannot stat file: %v", err))), nil
+		return toolErrorOutput("", NewToolErrorf(ErrExecutionFailed, "cannot stat file: %v", err)), nil
 	}
 
 	// Read file
 	data, err := os.ReadFile(resolvedPath)
 	if err != nil {
-		return core.TextOutput(formatToolError(NewToolErrorf(ErrExecutionFailed, "failed to read image: %v", err))), nil
+		return toolErrorOutput("", NewToolErrorf(ErrExecutionFailed, "failed to read image: %v", err)), nil
 	}
 
 	// Detect format from file content
@@ -187,23 +187,23 @@ func (t *ViewImageTool) Execute(ctx context.Context, args json.RawMessage) (core
 		var ok bool
 		mimeType, ok = supportedImageFormats[ext]
 		if !ok {
-			return core.TextOutput(formatToolError(NewToolErrorf(ErrUnsupportedFormat, "unsupported format: %s (supported: PNG, JPEG, GIF, WebP)", ext))), nil
+			return toolErrorOutput("", NewToolErrorf(ErrUnsupportedFormat, "unsupported format: %s (supported: PNG, JPEG, GIF, WebP)", ext)), nil
 		}
 	} else if !isSupportedImageMime(mimeType) {
-		return core.TextOutput(formatToolError(NewToolErrorf(ErrUnsupportedFormat, "unsupported format: %s (supported: PNG, JPEG, GIF, WebP)", mimeType))), nil
+		return toolErrorOutput("", NewToolErrorf(ErrUnsupportedFormat, "unsupported format: %s (supported: PNG, JPEG, GIF, WebP)", mimeType)), nil
 	}
 
 	// Apply optional region/scale before normal provider-size processing.
 	transformDesc := ""
 	data, mimeType, transformDesc, err = transformImageForView(data, mimeType, a)
 	if err != nil {
-		return core.TextOutput(formatToolError(NewToolErrorf(ErrInvalidParams, "%v", err))), nil
+		return toolErrorOutput("", NewToolErrorf(ErrInvalidParams, "%v", err)), nil
 	}
 
 	// Process image: resize if needed, ensure under size limit
 	processedData, processedMime, resized, err := processImage(data, mimeType)
 	if err != nil {
-		return core.TextOutput(formatToolError(NewToolErrorf(ErrExecutionFailed, "failed to process image: %v", err))), nil
+		return toolErrorOutput("", NewToolErrorf(ErrExecutionFailed, "failed to process image: %v", err)), nil
 	}
 
 	// Encode as base64
@@ -233,7 +233,7 @@ Detail: %s`,
 	if t.visionProvider != nil {
 		analysis, err := t.analyzeWithVisionProvider(ctx, processedMime, encoded, textResult, a)
 		if err != nil {
-			return core.TextOutput(formatToolError(NewToolErrorf(ErrExecutionFailed, "vision analysis failed: %v", err))), nil
+			return toolErrorOutput("", NewToolErrorf(ErrExecutionFailed, "vision analysis failed: %v", err)), nil
 		}
 		return core.TextOutput(analysis), nil
 	}

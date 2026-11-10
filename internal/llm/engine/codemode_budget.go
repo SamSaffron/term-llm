@@ -1,8 +1,6 @@
 package engine
 
 import (
-	"encoding/json"
-
 	"github.com/samsaffron/term-llm/internal/llm/core"
 )
 
@@ -34,7 +32,7 @@ func (b codeModeOutputBudget) textBytes(result core.CodeModeCallResult) int {
 	result.OutputLimited = true
 	result.HasMoreOutput = true
 	result.OutputTruncated = true
-	raw, err := json.Marshal(core.CodeModeEnvelopeFor(result, b.callID))
+	raw, err := core.MarshalCodeModeJSON(core.CodeModeEnvelopeFor(result, b.callID))
 	if err != nil {
 		return 0
 	}

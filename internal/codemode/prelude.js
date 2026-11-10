@@ -5,7 +5,8 @@
   const stringify = JSON.stringify.bind(JSON),
     parse = JSON.parse.bind(JSON);
   const SafeSet = Set,
-    SafePromise = Promise;
+    SafePromise = Promise,
+    SafeError = Error;
   const ownKeys = Reflect.ownKeys.bind(Reflect),
     apply = Reflect.apply.bind(Reflect);
   const getPrototypeOf = Object.getPrototypeOf.bind(Object),
@@ -68,13 +69,35 @@
     });
   }
   const state = Object.assign(create(null), parse(initial));
-  const tools = create(null);
+  const registry = create(null);
   for (const name of names)
-    Object.defineProperty(tools, name, {
+    define(registry, name, {
       value: (args) => request("tool", name, args === undefined ? {} : args),
       enumerable: true,
     });
-  Object.freeze(tools);
+  Object.freeze(registry);
+  // Missing names are not registry entries. Only invoking one throws, so
+  // discovery, enumeration, and frozen/null-prototype reflection still work.
+  const prototypeNames = new SafeSet(ownKeys(plainPrototype));
+  const tools = new Proxy(registry, {
+    get(target, name) {
+      if (typeof name !== "string") return undefined;
+      const tool = target[name];
+      if (tool !== undefined) return tool;
+      // Do not introduce inherited callables or promise assimilation.
+      if (name === "then" || apply(setHas, prototypeNames, [name]))
+        return undefined;
+      return () => {
+        const error = SafeError(
+          "unknown_tool: " +
+            name +
+            "; use Object.keys(tools) to list available tools and describeTools to inspect their arguments",
+        );
+        error.code = "unknown_tool";
+        throw error;
+      };
+    },
+  });
   Object.assign(globalThis, {
     tools,
     text: (value) =>
@@ -109,6 +132,22 @@
       p.reject(e);
     }
   };
+  const diagnostic = function (error) {
+    let message = "<unprintable exception>";
+    try {
+      message = toString(error);
+    } catch (_) {}
+    try {
+      if (
+        error !== null &&
+        (typeof error === "object" || typeof error === "function")
+      ) {
+        const stack = error.stack;
+        if (typeof stack === "string" && stack !== "") message += "\n" + stack;
+      }
+    } catch (_) {}
+    return message;
+  };
   const run = function (body) {
     body()
       .then((value) => {
@@ -118,7 +157,7 @@
       .catch((e) =>
         send({
           kind: "failed",
-          value: String(e) + "\n" + String((e && e.stack) || ""),
+          value: diagnostic(e),
         }),
       );
   };

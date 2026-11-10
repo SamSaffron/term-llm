@@ -1284,7 +1284,7 @@ func injectedMatches(root string, specs ...string) []GrepMatch {
 
 func finish(t *testing.T, tool *GrepTool, root string, matches []GrepMatch, maxResults int, useRG bool) string {
 	t.Helper()
-	return tool.finishGrep(context.Background(), GrepArgs{Pattern: "needle", ContextLines: 1}, root, "the intent", ripgrepResult{matches: matches}, 1, maxResults, useRG)
+	return tool.finishGrep(context.Background(), GrepArgs{Pattern: "needle", ContextLines: 1}, root, "the intent", ripgrepResult{matches: matches}, 1, maxResults, useRG).Content
 }
 
 func TestGrepRerankFinishGrepRanking(t *testing.T) {

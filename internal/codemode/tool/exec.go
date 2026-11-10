@@ -40,14 +40,14 @@ func (t *ExecTool) Spec() core.ToolSpec {
 Put an async function body in code (no Markdown fences). Fresh QuickJS per cell: no Node, filesystem or network except admitted tools. Native, skill-script and MCP tools keep normal permissions and approvals. Await every call; use Promise.all only for independent work.
 - Output: text(value), image(handleOrBlock), or return value. Intermediates stay private. Each spawn_script/wait_script observation returns at most max_output_tokens (default 10000, 4 bytes per estimated token); withheld text stays queued for a later wait_script and permanently over-cap output is truncated and reported.
 - State: load(key)/store(key,value) use engine/session memory, committed automatically only when the cell completes successfully. Limits: 1 MiB total JSON, 256 KiB per value. Failed or cancelled cells roll back staged state. This is process-local state, not durable session storage.
-- Lifecycle: returns when the cell finishes, emits output, or the yield_time_ms budget (default 10000) expires. "yielded" or "running" means the cell is still active; call wait_script with the returned cell_id. Yield expiry and request cancellation do not stop the cell; use cancel_script explicitly.
+- Lifecycle: returns when the cell finishes, emits output, or the max_wait budget in seconds (default 60, maximum 600) expires. Set max_wait to 0 to poll without waiting. "yielded" or "running" means the cell is still active; call wait_script with the returned cell_id. Wait expiry and request cancellation do not stop the cell; use cancel_script explicitly.
 - Limits: 256 MiB JS heap; 2 s active JS per cell (waiting for tools or sleep is excluded); 64 host calls, 4 concurrent; await sleep(ms) with ms<=1000.
 Image handles are limited to 64 and 16 MiB per cell; use fresh cells for long screenshot workflows. Global output/compaction limits may lower an observation budget. No external-effect rollback or automatic replay; reconcile outcome_unknown actions.`,
 		Schema: map[string]interface{}{
 			"type": "object",
 			"properties": map[string]interface{}{
 				"code":              map[string]interface{}{"type": "string", "description": "Async function body; use dynamic import('skill:activated-name')"},
-				"yield_time_ms":     map[string]interface{}{"type": "integer", "minimum": 1, "maximum": 60000, "description": "Maximum time to wait before returning a yielded cell; default 10000"},
+				"max_wait":          map[string]interface{}{"type": "integer", "minimum": 0, "maximum": 600, "description": "Wait budget in seconds; default 60; 0 polls without waiting"},
 				"max_output_tokens": map[string]interface{}{"type": "integer", "minimum": 1, "maximum": codemode.MaxOutputTokens, "description": "Visible text budget for this observation; default 10000"},
 			},
 			"required":             []string{"code"},
@@ -63,14 +63,13 @@ func (t *ExecTool) Execute(ctx context.Context, args json.RawMessage) (core.Tool
 	}
 	var input struct {
 		Code            string `json:"code"`
-		YieldTimeMS     *int   `json:"yield_time_ms"`
-		YieldMS         *int   `json:"yield_ms"`
+		MaxWait         *int   `json:"max_wait"`
 		MaxOutputTokens int    `json:"max_output_tokens"`
 	}
 	if err := json.Unmarshal(args, &input); err != nil {
 		return core.ToolOutput{}, fmt.Errorf("%s arguments: %w", ExecName, err)
 	}
-	yield, err := resolveYield(firstNonNil(input.YieldTimeMS, input.YieldMS))
+	yield, err := resolveYield(input.MaxWait)
 	if err != nil {
 		return core.ToolOutput{}, err
 	}
@@ -96,13 +95,13 @@ func (t *WaitTool) Spec() core.ToolSpec {
 	return core.ToolSpec{
 		Name: WaitName,
 		Description: `Wait for a code cell created by spawn_script and return output not yet observed by a previous spawn_script/wait_script/cancel_script response.
-A wait_script timeout (default 10000 ms, maximum 60000 ms) is not cancellation: status "yielded" means the cell is still running and may be waited on again. Use cancel_script to stop it.
+A wait_script timeout (max_wait in seconds, default 60, maximum 600; 0 polls without waiting) is not cancellation: status "yielded" means the cell is still running and may be waited on again. Use cancel_script to stop it.
 max_output_tokens caps only this observation's visible text (default 10000); withheld text stays queued for another wait_script. cell_id is the ID from the spawn_script receipt. A completed, failed or cancelled cell keeps its terminal status; an unknown or expired cell_id returns status "unknown".`,
 		Schema: map[string]interface{}{
 			"type": "object",
 			"properties": map[string]interface{}{
 				"cell_id":           map[string]interface{}{"type": "string", "description": "cell_id from a spawn_script receipt"},
-				"yield_time_ms":     map[string]interface{}{"type": "integer", "minimum": 1, "maximum": 60000, "description": "Maximum wait before returning yielded; default 10000"},
+				"max_wait":          map[string]interface{}{"type": "integer", "minimum": 0, "maximum": 600, "description": "Wait budget in seconds; default 60; 0 polls without waiting"},
 				"max_output_tokens": map[string]interface{}{"type": "integer", "minimum": 1, "maximum": codemode.MaxOutputTokens, "description": "Visible text budget for this observation; default 10000"},
 			},
 			"required":             []string{"cell_id"},
@@ -118,8 +117,7 @@ func (t *WaitTool) Execute(ctx context.Context, args json.RawMessage) (core.Tool
 	}
 	var input struct {
 		CellID          string `json:"cell_id"`
-		YieldTimeMS     *int   `json:"yield_time_ms"`
-		YieldMS         *int   `json:"yield_ms"`
+		MaxWait         *int   `json:"max_wait"`
 		MaxOutputTokens int    `json:"max_output_tokens"`
 	}
 	if err := json.Unmarshal(args, &input); err != nil {
@@ -128,7 +126,7 @@ func (t *WaitTool) Execute(ctx context.Context, args json.RawMessage) (core.Tool
 	if strings.TrimSpace(input.CellID) == "" {
 		return core.ToolOutput{}, fmt.Errorf("%s: cell_id is required", WaitName)
 	}
-	yield, err := resolveYield(firstNonNil(input.YieldTimeMS, input.YieldMS))
+	yield, err := resolveYield(input.MaxWait)
 	if err != nil {
 		return core.ToolOutput{}, err
 	}
@@ -201,24 +199,15 @@ func controlController(ctx context.Context, name string) (core.CodeModeControlle
 	return controller, nil
 }
 
-func firstNonNil(primary, legacy *int) int {
-	if primary != nil {
-		return *primary
+func resolveYield(maxWait *int) (time.Duration, error) {
+	seconds := 60
+	if maxWait != nil {
+		seconds = *maxWait
 	}
-	if legacy != nil {
-		return *legacy
+	if seconds < 0 || seconds > 600 {
+		return 0, fmt.Errorf("max_wait must be between 0 and 600")
 	}
-	return 0
-}
-
-func resolveYield(ms int) (time.Duration, error) {
-	if ms < 0 || time.Duration(ms)*time.Millisecond > codemode.SessionLimits.MaxYield {
-		return 0, fmt.Errorf("yield_time_ms must be between 1 and %d", codemode.SessionLimits.MaxYield/time.Millisecond)
-	}
-	if ms == 0 {
-		return codemode.SessionLimits.Yield, nil
-	}
-	return time.Duration(ms) * time.Millisecond, nil
+	return time.Duration(seconds) * time.Second, nil
 }
 
 func resolveOutputTokens(tokens int) (int, error) {
@@ -238,7 +227,7 @@ func resolveOutputTokens(tokens int) (int, error) {
 func renderControl(ctx context.Context, result core.CodeModeCallResult) core.ToolOutput {
 	parts := append([]core.ToolContentPart(nil), result.Parts...)
 	envelope := core.CodeModeEnvelopeFor(result, core.CallIDFromContext(ctx))
-	raw, err := json.Marshal(envelope)
+	raw, err := core.MarshalCodeModeJSON(envelope)
 	if err != nil {
 		raw = []byte(`{"status":"failed","error":"result_encoding","state_committed":false}`)
 	}

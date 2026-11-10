@@ -12,6 +12,7 @@ import (
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/greprerank"
 	"github.com/samsaffron/term-llm/internal/greprerank/configured"
+	"github.com/samsaffron/term-llm/internal/llm/core"
 )
 
 var newGrepRerankBackend backends.Factory = backends.New
@@ -55,7 +56,7 @@ func (t *GrepTool) grepIntent(args json.RawMessage, a GrepArgs, maxResults int) 
 
 // finishGrep keeps ordinary enrichment and ordering unchanged. Intent results
 // use the same bounded pipeline as a streamed search, including direct fixtures.
-func (t *GrepTool) finishGrep(ctx context.Context, a GrepArgs, root, intent string, result ripgrepResult, contextLines, maxResults int, useRG bool) string {
+func (t *GrepTool) finishGrep(ctx context.Context, a GrepArgs, root, intent string, result ripgrepResult, contextLines, maxResults int, useRG bool) core.ToolOutput {
 	if intent != "" {
 		return t.intentPipeline(ctx, a, root, intent, maxResults, func(_ context.Context, publish func(intentSearchResult), _ *greprerank.Attempt) (intentSearchResult, error) {
 			value := intentSearchResult{ripgrepResult: result}
@@ -69,7 +70,7 @@ func (t *GrepTool) finishGrep(ctx context.Context, a GrepArgs, root, intent stri
 		matches = sortGrepMatchesByMtime(matches)
 	}
 	truncated := result.truncated || len(matches) >= maxResults
-	return formatGrepDisplay(grepDisplayBaseFrom(ctx), matches, func(m []GrepMatch, budget int) string { return formatGrepResultsWithBudget(m, truncated, budget) })
+	return core.TextOutput(formatGrepDisplay(grepDisplayBaseFrom(ctx), matches, func(m []GrepMatch, budget int) string { return formatGrepResultsWithBudget(m, truncated, budget) }))
 }
 
 func (t *GrepTool) autoEnrichGrep(ctx context.Context, a GrepArgs, root string, matches []GrepMatch, contextLines, maxResults int, truncated bool) ([]GrepMatch, bool) {
@@ -87,20 +88,25 @@ func (t *GrepTool) autoEnrichGrep(ctx context.Context, a GrepArgs, root string, 
 	return matches, truncated
 }
 
-func (t *GrepTool) executeIntentGrep(ctx context.Context, a GrepArgs, root, intent string, contextLines, maxResults int) string {
+func (t *GrepTool) executeIntentGrep(ctx context.Context, a GrepArgs, root, intent string, contextLines, maxResults int) core.ToolOutput {
 	return t.intentPipeline(ctx, a, root, intent, maxResults, func(ctx context.Context, publish func(intentSearchResult), attempt *greprerank.Attempt) (intentSearchResult, error) {
 		return t.searchIntent(ctx, a, root, contextLines, maxResults, attempt, publish)
 	})
 }
 
-func (t *GrepTool) intentPipeline(ctx context.Context, a GrepArgs, root, intent string, maxResults int, search func(context.Context, func(intentSearchResult), *greprerank.Attempt) (intentSearchResult, error)) string {
+func (t *GrepTool) intentPipeline(ctx context.Context, a GrepArgs, root, intent string, maxResults int, search func(context.Context, func(intentSearchResult), *greprerank.Attempt) (intentSearchResult, error)) core.ToolOutput {
 	attempt, err := t.reranker.Begin(ctx)
 	if err != nil {
 		if ctx.Err() != nil {
-			return "grep timed out after 1 minute; try a more specific pattern or path"
+			return grepTimeoutOutput()
 		}
-		return grepRerankSkipped(err) + t.executePlainGrep(ctx, a, root, grepContextLines(a.ContextLines), maxResults)
+		output := t.executePlainGrep(ctx, a, root, grepContextLines(a.ContextLines), maxResults)
+		output.Content = grepRerankSkipped(err) + output.Content
+		return output
 	}
+	// RunAttempt formats the ordinary prefix on this caller, not its worker.
+	// Carry its typed search failure separately from classifier fallback notes.
+	isError := false
 	text, err := greprerank.RunAttempt(ctx, attempt, func(ctx context.Context, publish func(intentSearchResult)) (intentSearchResult, error) {
 		return search(ctx, publish, attempt)
 	}, func(ctx context.Context, value intentSearchResult) (string, error) {
@@ -130,25 +136,27 @@ func (t *GrepTool) intentPipeline(ctx context.Context, a GrepArgs, root, intent 
 		}
 		return formatGrepDisplay(grepDisplayBaseFrom(ctx), matches, func(m []GrepMatch, budget int) string { return formatRankedGrepResultsWithBudget(m, note, budget) }), ctx.Err()
 	}, func(value intentSearchResult) string {
+		isError = value.toolErr != nil
 		return formatIntentPrefix(value, maxResults, a.ContextLines, grepDisplayBaseFrom(ctx))
 	})
 	if errors.Is(err, greprerank.ErrBusy) {
 		// Saturation never starts another detached search; use the untouched
 		// ordinary path synchronously, with its normal cap and enrichment.
-		text = t.executePlainGrep(ctx, a, root, grepContextLines(a.ContextLines), maxResults)
+		output := t.executePlainGrep(ctx, a, root, grepContextLines(a.ContextLines), maxResults)
+		text, isError = output.Content, output.IsError
 	}
 	if ctx.Err() != nil {
-		return "grep timed out after 1 minute; try a more specific pattern or path"
+		return grepTimeoutOutput()
 	}
 	if err != nil && !errors.Is(err, greprerank.ErrSkipped) {
-		return grepRerankSkipped(err) + text
+		text = grepRerankSkipped(err) + text
 	}
-	return text
+	return core.ToolOutput{Content: text, IsError: isError}
 }
 
 func formatIntentPrefix(value intentSearchResult, maxResults, contextLines int, displayBase string) string {
-	if value.message != "" {
-		return value.message
+	if value.toolErr != nil {
+		return formatToolError(value.toolErr)
 	}
 	matches := value.matches
 	if value.snapshot != nil {

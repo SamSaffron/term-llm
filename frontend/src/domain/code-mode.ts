@@ -60,11 +60,11 @@ export function codeModeDisplayTool(tool: ToolCall): ToolCall {
     const status = envelope.status;
     const notice =
       status === 'running' || status === 'yielded'
-        ? 'Cell is still running.'
+        ? 'Script is still running.'
         : status === 'cancelling'
-          ? 'Cell cancellation is pending.'
+          ? 'Script cancellation is pending.'
           : status === 'cancelled'
-            ? 'Cell was cancelled.'
+            ? 'Script was cancelled.'
             : '';
     if (notice) notices.push(notice);
     if (envelope.has_more_output === true) notices.push('More output is available.');

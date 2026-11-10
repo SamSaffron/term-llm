@@ -1707,9 +1707,7 @@ func pathApprovalErrorOutput(prefix string, err error) core.ToolOutput {
 	if !errors.As(err, &toolErr) {
 		toolErr = NewToolError(ErrPermissionDenied, err.Error())
 	}
-	output := core.TextOutput(prefix + formatToolError(toolErr))
-	output.IsError = toolErr.Type == ErrPermissionDenied
-	return output
+	return toolErrorOutput(prefix, toolErr)
 }
 
 // GuardianDenialReason extracts a concise human-facing reason from a Guardian
