@@ -431,6 +431,9 @@ func setupServeMainSkillRequest(runtime *serveRuntime, activation *skills.Activa
 			}
 		}
 	}
+	if err := tools.AdmitSkillCodeModule(runtime.engine, runtime.toolMgr, activation); err != nil {
+		return err
+	}
 	req.Tools = runtime.selectTools(nil)
 	if len(req.Tools) > 0 {
 		req.ToolChoice = core.ToolChoice{Mode: core.ToolChoiceAuto}
@@ -682,6 +685,7 @@ func (s *serveServer) startServeIsolatedSkill(w http.ResponseWriter, r *http.Req
 		ParentSessionID: sess.ID,
 		BaseDir:         baseDir,
 		Skill: &runpkg.SkillRunMetadata{
+			CodeModeSkill:       activation.Skill,
 			Name:                activation.Skill.Name,
 			Source:              activation.Skill.Source.SourceName(),
 			SourcePath:          activation.BaseDir,

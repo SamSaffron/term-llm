@@ -11,6 +11,7 @@ import type { Attachment, Message, ToolCall } from '../domain/types';
 import { windowTranscript } from '../domain/transcript';
 import { useStore } from '../app/context';
 import { Markdown } from './Markdown';
+import { codeModeDisplayTool, isCodeModeTool } from '../domain/code-mode';
 import { AudioMedia } from './AudioMedia';
 import { useAttachmentPreview } from './useAttachmentPreview';
 import { trustedPublishedMediaURL } from '../domain/audio-media';
@@ -41,6 +42,10 @@ export const NewChatControls = lazyComponent(() =>
         </button>
       </div>
     )),
+);
+
+const CodeModeScript = lazyComponent(() =>
+  import('./CodeModeScript').then((module) => module.CodeModeScript),
 );
 
 function publishedMediaURL(store: AppStore, value: string): string {
@@ -328,6 +333,23 @@ function ElapsedDuration({
   );
 }
 
+function OrderedToolOutput({ tool }: { tool: ToolCall }) {
+  if (!tool.contentParts?.length) return <LegacyToolImages tool={tool} />;
+  return (
+    <div class="tool-ordered-output">
+      {tool.contentParts.map((part, index) =>
+        part.type === 'image' && part.url ? (
+          <LegacyToolImages key={index} tool={{ ...tool, images: [part.url] }} />
+        ) : part.type === 'text' ? (
+          <pre class="tool-result" key={index}>
+            <code>{part.text}</code>
+          </pre>
+        ) : null,
+      )}
+    </div>
+  );
+}
+
 function LegacyToolImages({ tool }: { tool: ToolCall }) {
   const store = useStore();
   if (!tool.images?.length) return null;
@@ -604,8 +626,12 @@ const Tool = memo(function Tool({
   const detailsEpoch = store.thinking.detailsEpoch.value;
   useEffect(() => setLocalExpanded(store.thinking.detailsExpanded.peek()), [store, detailsEpoch]);
   const expanded = controlledExpanded ?? localExpanded;
-  const summary = toolSummary(tool);
-  const failureReason = failed ? String(tool.result || tool.subagent?.error || '').trim() : '';
+  const codeMode = isCodeModeTool(tool.name);
+  const summary = codeMode ? '' : toolSummary(tool);
+  const displayTool = codeModeDisplayTool(tool);
+  const failureReason = failed
+    ? String(displayTool.result || tool.subagent?.error || '').trim()
+    : '';
   const spawnAgent = tool.name.toLowerCase() === 'spawn_agent';
   const shell = tool.name.toLowerCase() === 'shell';
   const finalDurationMs =
@@ -689,14 +715,25 @@ const Tool = memo(function Tool({
           </span>
         </button>
         <SubagentProgressLine tool={tool} tickElapsed={tickElapsed} />
-        <LegacyToolImages tool={tool} />
+        {!codeMode && <OrderedToolOutput tool={tool} />}
         {expanded && (
           <div class="tool-details open">
-            {tool.name === 'ask_user' ? (
+            {codeMode ? (
+              <CodeModeScript raw={tool.arguments || ''} />
+            ) : tool.name === 'ask_user' ? (
               <AskUserArguments tool={tool} />
             ) : (
               <ToolArguments raw={tool.arguments || ''} />
             )}
+            {codeMode &&
+              (displayTool.result ||
+                displayTool.contentParts?.length ||
+                displayTool.images?.length) && (
+                <>
+                  <div class="tool-details-label">Result</div>
+                  <OrderedToolOutput tool={displayTool} />
+                </>
+              )}
             <AskUserAnswer answer={tool.askUserAnswer || ''} />
             {tool.guardianReviews?.map((review, index) => {
               const outcome = String(review.outcome || 'notice').toLowerCase();
@@ -714,11 +751,14 @@ const Tool = memo(function Tool({
                 </div>
               );
             })}
-            {tool.result && !failed && (tool.name !== 'ask_user' || !tool.askUserAnswer) && (
-              <pre class="tool-result">
-                <code>{tool.result}</code>
-              </pre>
-            )}
+            {displayTool.result &&
+              !displayTool.contentParts?.length &&
+              !failed &&
+              (tool.name !== 'ask_user' || !tool.askUserAnswer) && (
+                <pre class="tool-result">
+                  <code>{displayTool.result}</code>
+                </pre>
+              )}
             {tool.subagent?.output && (
               <Markdown
                 value={String(tool.subagent.output)}
@@ -750,6 +790,7 @@ function ToolGroup({
   const store = useStore();
   const visible = tools.filter(
     (tool) =>
+      !tool.parentToolCallId &&
       !(tool.name === 'update_plan' && tool.status === 'done' && tool.resultStatus !== 'error'),
   );
   const running = visible.some((tool) => tool.status === 'running');

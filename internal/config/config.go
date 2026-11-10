@@ -403,6 +403,7 @@ type SkillsConfig struct {
 	MetadataBudgetTokens    int  `mapstructure:"metadata_budget_tokens"`     // Max tokens for skill metadata
 	MaxVisibleSkills        int  `mapstructure:"max_visible_skills"`         // Max skills shown in system prompt
 	AllowProjectScriptTools bool `mapstructure:"allow_project_script_tools"` // Execute project skill-declared scripts without approval
+	AllowProjectCodeModules bool `mapstructure:"allow_project_code_modules"` // Admit project skill-declared ES module code-mode sources without approval
 	IncludeProjectSkills    bool `mapstructure:"include_project_skills"`     // Discover from project-local paths
 	IncludeEcosystemPaths   bool `mapstructure:"include_ecosystem_paths"`    // Include ~/.agents/skills, ~/.codex/skills, ~/.claude/skills, ~/.gemini/skills, etc.
 

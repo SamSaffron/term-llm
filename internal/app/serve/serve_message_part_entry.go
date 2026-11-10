@@ -8,6 +8,7 @@ import (
 // sessionMessagePartEntry is one part of a session message as returned by the
 // web messages API.
 type sessionMessagePartEntry struct {
+	ChildCalls          []core.CodeModeCallOutcome      `json:"child_calls,omitempty"`
 	ReasoningKind       string                          `json:"reasoning_kind,omitempty"`
 	ReasoningTitle      string                          `json:"reasoning_title,omitempty"`
 	CreatedAt           int64                           `json:"created_at,omitempty"`
@@ -38,4 +39,6 @@ type sessionMessagePartEntry struct {
 	Kind                string                          `json:"kind,omitempty"`
 	Width               int                             `json:"width,omitempty"`
 	Height              int                             `json:"height,omitempty"`
+	ContentParts        []map[string]any                `json:"content_parts,omitempty"`       // ordered text+image parts; frontend prefers this over legacy images
+	ParentToolCallID    string                          `json:"parent_tool_call_id,omitempty"` // enclosing code_mode call ID for child tool entries
 }

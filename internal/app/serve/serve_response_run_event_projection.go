@@ -141,13 +141,17 @@ func (s *serveServer) appendResponseToolExecStart(runtime *serveRuntime, run *re
 	} else {
 		state.toolStartedAt[ev.ToolCallID] = startedAt
 	}
-	return run.appendEvent("response.tool_exec.start", map[string]any{
+	startPayload := map[string]any{
 		"call_id":        ev.ToolCallID,
 		"tool_name":      ev.ToolName,
 		"tool_info":      ev.ToolInfo,
 		"tool_arguments": string(ev.ToolArgs),
 		"started_at":     startedAt,
-	})
+	}
+	if ev.ParentToolCallID != "" {
+		startPayload["parent_tool_call_id"] = ev.ParentToolCallID
+	}
+	return run.appendEvent("response.tool_exec.start", startPayload)
 }
 
 func (s *serveServer) appendResponseToolExecEnd(runtime *serveRuntime, run *responseRun, state *responseRunStreamState, ev core.Event) error {
@@ -182,7 +186,15 @@ func (s *serveServer) appendResponseToolExecEnd(runtime *serveRuntime, run *resp
 			payload["ask_user_summary"] = summary
 		}
 	}
-	if !suppressed && len(ev.ToolImages) > 0 {
+	if ev.ParentToolCallID != "" {
+		payload["parent_tool_call_id"] = ev.ParentToolCallID
+	}
+	if !suppressed && len(ev.ToolContentParts) > 0 {
+		if parts := s.toolContentPartsPayload(ev.ToolContentParts); len(parts) > 0 {
+			payload["content_parts"] = parts
+		}
+	}
+	if !suppressed && payload["content_parts"] == nil && len(ev.ToolImages) > 0 {
 		if imageURLs := s.toolImageURLs(ev.ToolImages); len(imageURLs) > 0 {
 			payload["images"] = imageURLs
 		}

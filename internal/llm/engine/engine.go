@@ -106,10 +106,15 @@ type FileTrackingRunLifecycle interface {
 }
 
 type Engine struct {
-	provider         core.Provider
-	tools            *ToolRegistry
-	debugLogger      DebugLogger
-	fileTrackingRuns FileTrackingRunLifecycle
+	codeModeMu         sync.Mutex
+	codeModeCell       *nestedCell
+	codeModules        map[string]codeModule
+	codeModeDirectOnly map[string]bool
+	codeModeSessions   *codeModeSessions
+	provider           core.Provider
+	tools              *ToolRegistry
+	debugLogger        DebugLogger
+	fileTrackingRuns   FileTrackingRunLifecycle
 
 	// indirectVision routes user image parts through textual path references so
 	// text-only models can call view_image instead of receiving image bytes.
@@ -326,6 +331,7 @@ func NewEngine(provider core.Provider, tools *ToolRegistry) *Engine {
 		pendingToolSpecs: make(map[string]map[string]core.ToolSpec),
 		toolRunPrefix:    newEngineToolRunPrefix(),
 	}
+	e.codeModeSessions = newCodeModeSessions(e)
 
 	// Wire up tool executors for providers that expose term-llm tools over an external bridge.
 	if setter, ok := provider.(ToolExecutorSetter); ok {
@@ -609,6 +615,11 @@ func resetProviderConversation(provider core.Provider) {
 // compaction tracking, context notices, and provider-side conversation state
 // (e.g., OpenAI Responses API previous_response_id).
 func (e *Engine) ResetConversation() {
+	e.resetConversationState()
+	e.CancelCodeModeCells()
+}
+
+func (e *Engine) resetConversationState() {
 	e.callbackMu.Lock()
 	e.lastTotalTokens = 0
 	e.lastMessageCount = 0
@@ -638,7 +649,8 @@ func (e *Engine) ResetSessionState(sessionID string) {
 	if e == nil {
 		return
 	}
-	e.ResetConversation()
+	e.resetConversationState()
+	e.ResetCodeModeSession(sessionID)
 	if planner := e.currentToolPlanner(); planner != nil {
 		planner.ResetSession(sessionID)
 	}

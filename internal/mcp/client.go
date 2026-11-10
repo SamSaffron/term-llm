@@ -279,7 +279,9 @@ func (c *Client) createHTTPTransport() (mcp.Transport, error) {
 	baseTransport.ResponseHeaderTimeout = 2 * time.Minute
 	baseTransport.IdleConnTimeout = 90 * time.Second
 
-	httpClient := &http.Client{Transport: baseTransport}
+	// innerTransport is the credential/header layer. It starts as baseTransport
+	// and is replaced by headerTransport when configured headers are present.
+	var innerTransport http.RoundTripper = baseTransport
 
 	// If headers are specified, wrap the transport with a custom round tripper.
 	// Header values support deferred resolution (op://, file://, $(), ${VAR})
@@ -289,11 +291,19 @@ func (c *Client) createHTTPTransport() (mcp.Transport, error) {
 		if err != nil {
 			return nil, fmt.Errorf("mcp server %s: headers: %w", c.name, err)
 		}
-		httpClient.Transport, err = newHeaderTransport(baseTransport, headers, c.config.URL)
+		innerTransport, err = newHeaderTransport(baseTransport, headers, c.config.URL)
 		if err != nil {
 			return nil, fmt.Errorf("mcp server %s: headers: %w", c.name, err)
 		}
 	}
+
+	// Wrap with a response-body limiter as the outermost transport layer.
+	// Ordinary (non-SSE) response bodies are capped at 16 MiB; bodies that
+	// exceed the limit return an error rather than a silently truncated result.
+	// SSE connections pass through without a connection-lifetime cap.
+	// innerTransport (which may inject auth headers) is called first, then this
+	// wrapper observes the response body.
+	httpClient := &http.Client{Transport: newLimitedBodyTransport(innerTransport)}
 
 	// Use StreamableClientTransport (the modern MCP transport)
 	transport := &mcp.StreamableClientTransport{
@@ -598,6 +608,15 @@ func (c *Client) CallTool(ctx context.Context, name string, args json.RawMessage
 
 	output := formatContent(result.Content)
 	output.IsError = result.IsError
+
+	// Preserve the bounded raw MCP envelope for code_mode callers that need
+	// exact discriminators and structuredContent without text reformatting.
+	// Image blocks are included; the engine replaces them with handles before
+	// projection. Non-image bytes capped at programmaticMaxBytes.
+	prog, oversized := buildProgrammatic(result)
+	output.Programmatic = prog
+	output.ProgrammaticOversized = oversized
+
 	return output, nil
 }
 
@@ -675,4 +694,68 @@ func fallbackContent(content mcp.Content) string {
 		return string(data)
 	}
 	return fmt.Sprintf("[unsupported MCP content %T; JSON encoding failed: %v]", content, err)
+}
+
+// programmaticMaxBytes is the non-image byte budget for a preserved MCP
+// programmatic envelope. Image blocks are measured separately; their base64
+// byte count is excluded from this limit so that large but legitimate binary
+// results do not exhaust the text budget.
+const programmaticMaxBytes = 4 * 1024 * 1024 // 4 MiB
+
+// programmaticMaxImageBytes is the total raw image byte budget for a preserved
+// MCP programmatic envelope. This matches the mcpHTTPBodyMaxBytes cap so that
+// a large image result that arrives over HTTP is still bounded when preserved.
+// Stdio frames carry the same 16 MiB default from the SDK's IOTransport scanner.
+const programmaticMaxImageBytes = 16 * 1024 * 1024 // 16 MiB
+
+// mcpProgrammaticEnvelope is the JSON shape written to ToolOutput.Programmatic.
+// It preserves the exact MCP discriminators and metadata without reformatting.
+type mcpProgrammaticEnvelope struct {
+	Content           []mcp.Content `json:"content"`
+	StructuredContent any           `json:"structuredContent,omitempty"`
+	IsError           bool          `json:"isError,omitempty"`
+}
+
+// buildProgrammatic serialises the full MCP result into a bounded raw envelope.
+// It returns (data, false) when the non-image bytes fit within the 4 MiB budget
+// and (nil, true) when they exceed it, leaving ToolOutput.Programmatic nil and
+// setting ProgrammaticOversized so callers can distinguish absent-by-design from
+// absent-due-to-budget.
+func buildProgrammatic(result *mcp.CallToolResult) (json.RawMessage, bool) {
+	content := result.Content
+	if content == nil {
+		content = []mcp.Content{}
+	}
+	env := mcpProgrammaticEnvelope{
+		Content:           content,
+		StructuredContent: result.StructuredContent,
+		IsError:           result.IsError,
+	}
+	data, err := json.Marshal(env)
+	if err != nil {
+		// Encoding failure: treat as oversized so callers degrade gracefully.
+		return nil, true
+	}
+
+	// Compute the non-image byte count. Each ImageContent block is encoded as a
+	// base64 string inside the JSON; subtract those bytes so that large binary
+	// results do not consume the text budget.
+	//
+	// Also enforce a separate ceiling on total raw image bytes: a single
+	// response can carry at most programmaticMaxImageBytes of image data.
+	// This aligns with both the HTTP body cap (mcpHTTPBodyMaxBytes) and the SDK
+	// stdio frame limit so that image content is consistently bounded regardless
+	// of transport.
+	nonImageBytes := len(data)
+	var totalImageBytes int
+	for _, c := range result.Content {
+		if img, ok := c.(*mcp.ImageContent); ok && len(img.Data) > 0 {
+			nonImageBytes -= base64.StdEncoding.EncodedLen(len(img.Data))
+			totalImageBytes += len(img.Data)
+		}
+	}
+	if nonImageBytes > programmaticMaxBytes || totalImageBytes > programmaticMaxImageBytes {
+		return nil, true
+	}
+	return data, false
 }

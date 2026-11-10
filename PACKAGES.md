@@ -74,6 +74,9 @@ One line per root-module package, generated from package doc comments by `make d
 - `internal/classify/typesafe` — implements the classify.Backend for TypeSafe System One.
 - `internal/clipboard` — reads and writes system clipboard text and images, with an OSC 52 fallback.
 - `internal/cliwire` — implements the opt-in wire audit proxy for authenticated CLI-backed providers.
+- `internal/codemode` — runs bounded, fresh QuickJS cells without ambient host authority.
+- `internal/codemode/presentation` — converts codemode structured tool content parts into serve-event and persistent-session payload maps.
+- `internal/codemode/tool` — adapts fresh QuickJS cells to the model-facing tool contract.
 - `internal/commitworkflow` — owns the read-only agent phases for native commits.
 - `internal/complexity` — provides the repository's versioned complexity analysis.
 - `internal/config` — defines term-llm's persisted settings and resolves providers, models and credentials.

@@ -1885,7 +1885,6 @@ func appendSessionMessageToolCallPart(entry *sessionMessageEntry, p core.Part, i
 		entry.Parts = append(entry.Parts, pe)
 	}
 }
-
 func (s *serveServer) appendSessionMessageToolResultPart(entry *sessionMessageEntry, p core.Part, index sessionMessageProjectionIndex) {
 	if p.ToolResult != nil {
 		s.appendSessionMessageToolResult(entry, p.ToolResult, index)
@@ -1902,7 +1901,7 @@ func (s *serveServer) appendSessionMessageToolResult(entry *sessionMessageEntry,
 		spawnResult, spawnToolCalls = s.sessionMessageSpawnResult(index.parentSessionID, result)
 	}
 	agentIDs := s.agentResultSessionIDs(index.parentSessionID, result.Name, result.Content)
-	includeResult := result.IsError || len(result.Images) > 0 || len(result.Media) > 0 || len(result.GuardianReviews) > 0 || isPlanResult || isAskUserResult || spawnResult != nil || len(agentIDs) > 0
+	includeResult := tools.IsCodeModeTool(result.Name) || result.IsError || len(result.Images) > 0 || len(result.Media) > 0 || len(result.GuardianReviews) > 0 || isPlanResult || isAskUserResult || spawnResult != nil || len(agentIDs) > 0
 	if !includeResult {
 		return
 	}
@@ -1913,6 +1912,8 @@ func (s *serveServer) appendSessionMessageToolResult(entry *sessionMessageEntry,
 	pe := sessionMessagePartEntry{
 		Type:                "tool_result",
 		ToolName:            toolName,
+		ContentParts:        s.toolContentPartsPayload(result.ContentParts),
+		ChildCalls:          result.ChildCalls,
 		ToolCallID:          result.ID,
 		ToolError:           result.IsError || (spawnResult != nil && spawnResult.Error != ""),
 		GuardianReviews:     append([]core.GuardianReview(nil), result.GuardianReviews...),
@@ -1931,7 +1932,6 @@ func (s *serveServer) appendSessionMessageToolResult(entry *sessionMessageEntry,
 	}
 	entry.Parts = append(entry.Parts, pe)
 }
-
 func (s *serveServer) agentResultSessionIDs(parentSessionID, name, content string) []string {
 	if name != tools.WaitAgentToolName && name != tools.ContinueAgentToolName {
 		return nil

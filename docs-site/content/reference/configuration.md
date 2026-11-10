@@ -275,6 +275,7 @@ The index below follows the canonical config schema. A dash means no default or 
 | `skills.max_visible_skills` | integer | `50` | — |
 | `skills.include_project_skills` | boolean | `true` | — |
 | `skills.allow_project_script_tools` | boolean | `false` | — |
+| `skills.allow_project_code_modules` | boolean | `false` | — |
 | `skills.include_ecosystem_paths` | boolean | `true` | — |
 | `skills.always_enabled` | list of string | `[]` | — |
 | `skills.never_auto` | list of string | `[]` | — |

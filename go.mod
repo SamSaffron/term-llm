@@ -42,6 +42,7 @@ require (
 	github.com/muesli/reflow v0.3.0
 	github.com/pion/turn/v5 v5.1.3
 	github.com/pion/webrtc/v4 v4.2.26
+	github.com/tetratelabs/wazero v1.11.0
 	github.com/sahilm/fuzzy v0.1.3
 	github.com/shogoki/gotextdiff v1.22.0
 	github.com/spf13/cobra v1.10.2

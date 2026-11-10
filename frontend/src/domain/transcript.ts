@@ -1,9 +1,10 @@
 import { authorFrom } from './authors';
-import { responseSubagentProgress } from './response';
+import { responseContentParts, responseSubagentProgress } from './response';
 import { parseSeenRev } from './attention-seen';
 import type {
   ApprovalMode,
   Attachment,
+  ContentPart,
   ContextUsage,
   DiffComment,
   GuardianReview,
@@ -688,6 +689,8 @@ export function convertServerMessages(
           const progress = responseSubagentProgress(
             part.subagentProgress ?? part.subagent_progress,
           );
+          const newToolContentParts = responseContentParts(part.content_parts);
+          const newParentId = text(part.parent_tool_call_id);
           tool = {
             id: callID,
             name,
@@ -699,12 +702,16 @@ export function convertServerMessages(
               : {}),
             ...(endedAt ? { endedAt } : {}),
             ...(durationMs !== undefined && Number.isFinite(durationMs) ? { durationMs } : {}),
+            ...(newToolContentParts ? { contentParts: newToolContentParts } : {}),
+            ...(newParentId ? { parentToolCallId: newParentId } : {}),
           };
           current.tools!.push(tool);
         } else {
           const progress = responseSubagentProgress(
             part.subagentProgress ?? part.subagent_progress,
           );
+          const updatedContentParts = responseContentParts(part.content_parts);
+          const updatedParentId = text(part.parent_tool_call_id);
           Object.assign(tool, {
             name: text(part.tool_name || part.name) || tool.name,
             arguments: text(part.tool_arguments || part.arguments) || tool.arguments,
@@ -712,6 +719,8 @@ export function convertServerMessages(
             ...(progress && progress.seq > (tool.subagentProgress?.seq || 0)
               ? { subagentProgress: progress }
               : {}),
+            ...(updatedContentParts ? { contentParts: updatedContentParts } : {}),
+            ...(updatedParentId ? { parentToolCallId: updatedParentId } : {}),
           });
         }
         const location = { group: current, tool };
@@ -727,10 +736,14 @@ export function convertServerMessages(
             ? 'success'
             : tool.resultStatus;
         tool.guardianReviews = guardianReviews(part.guardian_reviews) || tool.guardianReviews;
-        const images = Array.isArray(part.images)
-          ? part.images.map((url) => rebase(text(url))).filter(Boolean)
-          : [];
-        if (images.length) tool.images = [...new Set([...(tool.images || []), ...images])];
+        // Use legacy images only when no content_parts with images are present (avoids duplication).
+        const toolImages: string[] =
+          tool.contentParts && tool.contentParts.some((p: ContentPart) => p.type === 'image')
+            ? []
+            : Array.isArray(part.images)
+              ? part.images.map((url) => rebase(text(url))).filter(Boolean)
+              : [];
+        if (toolImages.length) tool.images = [...new Set([...(tool.images || []), ...toolImages])];
         const media = mediaArtifacts(part.media, rebase);
         if (media.length) {
           const byKey = new Map(
@@ -758,6 +771,9 @@ export function convertServerMessages(
           : undefined;
         const current = location?.group || (!callID ? group : null);
         const name = text(part.tool_name || part.name);
+        const contentParts = responseContentParts(part.content_parts)?.map((p) =>
+          p.type === 'image' && p.url ? { ...p, url: rebase(p.url) } : p,
+        );
         const images = Array.isArray(part.images)
           ? part.images.map((url) => rebase(text(url))).filter(Boolean)
           : [];
@@ -768,7 +784,15 @@ export function convertServerMessages(
           callID && !part.tool_error && name === 'ask_user'
             ? text(part.ask_user_summary).trim()
             : '';
-        if (!tool && !images.length && !media.length && !reviews?.length && !askAnswer) continue;
+        if (
+          !tool &&
+          !images.length &&
+          !media.length &&
+          !reviews?.length &&
+          !askAnswer &&
+          !contentParts?.length
+        )
+          continue;
         const target = current || ensureGroup(message, index);
         // Result rows can attach to a group before the final answer. Preserve
         // their DB head without changing that group's continuation anchor.
@@ -788,9 +812,27 @@ export function convertServerMessages(
         tool.status = part.tool_error || part.is_error ? 'error' : 'done';
         tool.resultStatus = tool.status === 'error' ? 'error' : 'success';
         tool.result = text(part.output || part.result || part.tool_info || part.text);
+        if (contentParts?.length) tool.contentParts = contentParts;
+        if (part.parent_tool_call_id) tool.parentToolCallId = text(part.parent_tool_call_id);
+        if (Array.isArray(part.child_calls))
+          for (const raw of part.child_calls) {
+            const c = record(raw);
+            if (!c || !text(c.call_id) || target.tools!.some((t) => t.id === text(c.call_id)))
+              continue;
+            target.tools!.push({
+              id: text(c.call_id),
+              name: text(c.name),
+              parentToolCallId: tool.id,
+              arguments: c.arguments ? JSON.stringify(c.arguments) : undefined,
+              status: c.status === 'completed' ? (c.isError ? 'error' : 'done') : 'cancelled',
+              result: text(c.error || c.outcome),
+              guardianReviews: guardianReviews(c.guardian_reviews),
+            });
+          }
         tool.guardianReviews = reviews || tool.guardianReviews;
         if (askAnswer && tool.name === 'ask_user') tool.askUserAnswer = askAnswer;
-        if (images.length) tool.images = [...new Set([...(tool.images || []), ...images])];
+        if (images.length && !tool.contentParts?.some((p) => p.type === 'image'))
+          tool.images = [...new Set([...(tool.images || []), ...images])];
         if (media.length) {
           const byKey = new Map(
             (tool.media || []).map((item) => [

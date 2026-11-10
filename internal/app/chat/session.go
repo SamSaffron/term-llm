@@ -608,6 +608,7 @@ func (r *chatInvocation) buildChatSessionRuntime(ctx context.Context, launch cha
 	var cleanupOnce sync.Once
 	cleanupResources := func() {
 		cleanupOnce.Do(func() {
+			engine.CloseCodeMode()
 			if spawnRunner != nil {
 				appserve.ShutdownSpawnAgentRunner(spawnRunner)
 			}

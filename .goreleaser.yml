@@ -54,6 +54,8 @@ archives:
       - internal/terminal/runtime/LICENSE
       - internal/terminal/renderer/LICENSE
       - internal/reflow/LICENSE
+      - internal/codemode/LICENSE.quickjs-wasi
+      - internal/codemode/LICENSE.quickjs-ng
 
 # Release configuration
 release:

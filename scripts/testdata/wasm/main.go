@@ -18,6 +18,7 @@ import (
 	"os/exec"
 	"strings"
 
+	codemodetool "github.com/samsaffron/term-llm/internal/codemode/tool"
 	"github.com/samsaffron/term-llm/internal/filelock"
 	"github.com/samsaffron/term-llm/internal/llm/core"
 	"github.com/samsaffron/term-llm/internal/llm/engine"
@@ -66,17 +67,19 @@ func (s *smoke) check(ok bool, format string, args ...any) {
 
 func (s *smoke) runEngine() {
 	provider := mockprovider.NewMockProvider("wasm-script")
+	provider.AddToolCall("cell_unsupported", "code_mode", map[string]string{"code": "return 42"})
 	provider.AddToolCall("call_1", "wasm_echo", map[string]string{"text": "ping"})
 	provider.AddTextResponse("wasm-ok")
 
 	registry := engine.NewToolRegistry()
 	registry.Register(echoTool{})
+	registry.Register(codemodetool.New())
 	eng := engine.NewEngine(provider, registry)
 
 	stream, err := eng.Stream(context.Background(), core.Request{
 		Model:    "mock",
 		Messages: []core.Message{core.UserText("exercise the wasm platform")},
-		Tools:    []core.ToolSpec{echoTool{}.Spec()},
+		Tools:    []core.ToolSpec{echoTool{}.Spec(), codemodetool.New().Spec()},
 	})
 	if err != nil {
 		s.check(false, "engine.Stream: %v", err)
@@ -99,24 +102,37 @@ func (s *smoke) runEngine() {
 		case core.EventTextDelta:
 			text.WriteString(event.Text)
 		case core.EventToolExecEnd:
-			s.check(event.ToolSuccess, "tool %s failed", event.ToolName)
-			toolOutput = event.ToolOutput
+			if event.ToolName == "code_mode" {
+				s.check(!event.ToolSuccess, "unsupported code_mode succeeded")
+			} else {
+				s.check(event.ToolSuccess, "tool %s failed", event.ToolName)
+				toolOutput = event.ToolOutput
+			}
 		}
 	}
 
 	s.check(strings.Contains(text.String(), "wasm-ok"), "final text %q does not contain wasm-ok", text.String())
 	s.check(strings.Contains(toolOutput, "echo:ping"), "tool output %q does not contain echo:ping", toolOutput)
 	requests := provider.RecordedRequests()
-	s.check(len(requests) >= 2, "provider saw %d requests, want 2", len(requests))
-	if len(requests) >= 2 {
+	s.check(len(requests) >= 3, "provider saw %d requests, want 3", len(requests))
+	if len(requests) >= 3 {
 		found := false
-		for _, message := range requests[1].Messages {
+		for _, message := range requests[2].Messages {
 			for _, part := range message.Parts {
 				result := part.ToolResult
 				found = found || (part.Type == core.PartToolResult && result != nil && result.ID == "call_1" && result.Name == "wasm_echo" && core.ToolResultTextContent(result) == "echo:ping")
 			}
 		}
-		s.check(found, "second provider request is missing the result for call_1")
+		s.check(found, "third provider request missing echo result")
+		unavailable := false
+		for _, m := range requests[1].Messages {
+			for _, p := range m.Parts {
+				if p.ToolResult != nil && p.ToolResult.Name == "code_mode" {
+					unavailable = p.ToolResult.IsError && strings.Contains(p.ToolResult.Content, "unavailable")
+				}
+			}
+		}
+		s.check(unavailable, "browser code_mode did not fail closed")
 	}
 }
 

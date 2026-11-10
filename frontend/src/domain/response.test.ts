@@ -1150,3 +1150,88 @@ describe('live and recovered audio media', () => {
     },
   );
 });
+
+it('preserves nested parent IDs and ordered explicit screenshot parts', () => {
+  let p = initialProjection(run);
+  p = reduceResponse(
+    p,
+    event('response.tool_exec.start', 1, {
+      call_id: 'child',
+      tool_name: 'computer__click',
+      parent_tool_call_id: 'cell',
+    }),
+  );
+  p = reduceResponse(
+    p,
+    event('response.tool_exec.end', 2, {
+      call_id: 'child',
+      tool_name: 'computer__click',
+      parent_tool_call_id: 'cell',
+      success: true,
+    }),
+  );
+  p = reduceResponse(
+    p,
+    event('response.tool_exec.end', 3, {
+      call_id: 'cell',
+      tool_name: 'code_mode',
+      success: true,
+      content_parts: [
+        { type: 'text', text: 'before' },
+        { type: 'image', url: '/ui/images/frame.png' },
+        { type: 'text', text: 'after' },
+      ],
+    }),
+  );
+  const tools = p.messages.flatMap((m) => m.tools || []);
+  expect(tools.find((t) => t.id === 'child')).toMatchObject({
+    parentToolCallId: 'cell',
+    status: 'done',
+  });
+  expect(tools.find((t) => t.id === 'cell')?.contentParts?.map((p) => p.type)).toEqual([
+    'text',
+    'image',
+    'text',
+  ]);
+});
+
+it('recovers ordered screenshot output and bounded child audit without provider calls', () => {
+  const messages = convertServerMessages([
+    {
+      id: 'audit',
+      role: 'tool',
+      parts: [
+        {
+          type: 'tool_result',
+          tool_name: 'code_mode',
+          tool_call_id: 'cell',
+          content_parts: [
+            { type: 'text', text: 'before' },
+            { type: 'image', url: '/ui/images/frame.png' },
+            { type: 'text', text: 'after' },
+          ],
+          child_calls: [
+            {
+              call_id: 'child',
+              name: 'computer__click',
+              status: 'completed',
+              outcome: 'completed',
+              arguments: { x: 1, y: 2 },
+            },
+          ],
+        },
+      ],
+    },
+  ]);
+  const tools = messages.flatMap((m) => m.tools || []);
+  expect(tools.find((t) => t.id === 'cell')?.contentParts?.map((p) => p.type)).toEqual([
+    'text',
+    'image',
+    'text',
+  ]);
+  expect(tools.find((t) => t.id === 'child')).toMatchObject({
+    parentToolCallId: 'cell',
+    status: 'done',
+    arguments: '{"x":1,"y":2}',
+  });
+});

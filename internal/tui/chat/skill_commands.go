@@ -205,13 +205,20 @@ func (m *Model) executeMainSkillActivation(activation *skills.Activation, displa
 	if err := m.validateMainSkillAgentMentions(activation, displayInvocation); err != nil {
 		return m.showFooterError(err.Error())
 	}
-	if m.skillFilterPending || len(m.skillDynamicToolNames) > 0 {
+	if m.skillFilterPending || len(m.skillDynamicToolNames) > 0 || m.skillCodeModuleRestore != nil {
 		m.restoreSkillAllowedTools()
 	}
 	if err := m.registerSkillActivationTools(activation); err != nil {
 		return m.showFooterError(err.Error())
 	}
 	m.applySkillAllowedTools(activation)
+	if activation.Skill != nil && activation.Skill.CodeMode != nil {
+		m.skillCodeModuleRestore = m.engine.ScopeCodeModules()
+		if err := tools.AdmitSkillCodeModule(m.engine, m.toolMgr, activation); err != nil {
+			m.restoreSkillAllowedTools()
+			return m.showFooterError(err.Error())
+		}
+	}
 	m.pendingSkillActivation = activation
 	updated, cmd := m.sendMessage(displayInvocation)
 	if m.pendingSkillActivation != nil {
@@ -376,6 +383,10 @@ func intersectToolNames(left, right []string) []string {
 func (m *Model) restoreSkillAllowedTools() {
 	if m == nil {
 		return
+	}
+	if m.skillCodeModuleRestore != nil {
+		m.skillCodeModuleRestore()
+		m.skillCodeModuleRestore = nil
 	}
 	if m.skillFilterPending && m.engine != nil {
 		m.engine.RestoreAllowedToolsFilter(m.skillFilterRestoreTools, m.skillFilterRestorePresent)

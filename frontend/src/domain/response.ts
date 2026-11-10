@@ -6,6 +6,7 @@ import type {
   ApprovalPrompt,
   AskUserPrompt,
   Attachment,
+  ContentPart,
   CurrentPlan,
   GuardianReview,
   MediaArtifact,
@@ -193,6 +194,37 @@ function responseMedia(value: unknown): MediaArtifact[] | undefined {
     })
     .filter((entry): entry is MediaArtifact => entry !== null);
   return media.length ? media : undefined;
+}
+
+/** Parse ordered content parts from a serve event or session part. */
+export function responseContentParts(value: unknown): ContentPart[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const parts = value
+    .filter((entry): entry is Record<string, unknown> =>
+      Boolean(entry && typeof entry === 'object'),
+    )
+    .map((entry): ContentPart | null => {
+      const type = text(entry.type);
+      if (type === 'text') {
+        const t = text(entry.text);
+        return t ? { type: 'text', text: t } : null;
+      }
+      if (type === 'image') {
+        const url = text(entry.url);
+        if (!url) return null;
+        const part: ContentPart = { type: 'image', url };
+        const mt = text(entry.media_type);
+        if (mt) part.media_type = mt;
+        const w = Number(entry.width);
+        const h = Number(entry.height);
+        if (w > 0) part.width = w;
+        if (h > 0) part.height = h;
+        return part;
+      }
+      return null;
+    })
+    .filter((p): p is ContentPart => p !== null);
+  return parts.length ? parts : undefined;
 }
 
 export function initialProjection(run: ActiveRun): ResponseProjection {
@@ -591,6 +623,7 @@ export function reduceResponse(
         projection.pendingGuardian,
       );
       const startedAt = number(event.started_at, entry.startedAt || Date.now());
+      const parentId = text(event.parent_tool_call_id);
       return {
         ...next,
         messages: patchTool(messages, id, {
@@ -598,6 +631,7 @@ export function reduceResponse(
           arguments: text(event.tool_arguments) || entry.arguments,
           status: 'running',
           startedAt: entry.startedAt || startedAt,
+          ...(parentId ? { parentToolCallId: parentId } : {}),
         }),
         modelSwap: undefined,
         retry: undefined,
@@ -634,8 +668,16 @@ export function reduceResponse(
         projection.pendingGuardian,
       );
       const failed = event.success === false || event.error != null || event.status === 'error';
-      const images = Array.isArray(event.images) ? event.images.map(String) : entry.images;
+      const contentParts = responseContentParts(event.content_parts) || entry.contentParts;
+      // Only use legacy images when no structured content_parts are present (avoids duplication).
+      const images =
+        contentParts && contentParts.some((p) => p.type === 'image')
+          ? entry.images
+          : Array.isArray(event.images)
+            ? event.images.map(String)
+            : entry.images;
       const media = responseMedia(event.media) || entry.media;
+      const parentId = text(event.parent_tool_call_id) || entry.parentToolCallId;
       const startedAt = number(event.started_at, entry.startedAt || 0) || undefined;
       const endedAt = number(event.ended_at, Date.now());
       const reportedDuration = number(event.duration_ms, -1);
@@ -676,6 +718,8 @@ export function reduceResponse(
             : entry.askUserAnswer,
         images,
         media,
+        ...(contentParts ? { contentParts } : {}),
+        ...(parentId ? { parentToolCallId: parentId } : {}),
       });
       messages = messages.map((message) =>
         message.role === 'tool-group' &&

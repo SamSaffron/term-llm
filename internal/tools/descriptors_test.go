@@ -50,11 +50,11 @@ func TestBuiltinDescriptorLegacyLists(t *testing.T) {
 	if got := StandardToolNames(); !slices.Equal(got, want) {
 		t.Fatalf("implicit tools = %v, want %v", got, want)
 	}
-	valid := append(append([]string(nil), want...), HubDelegateToolName, HubCheckDelegationToolName, ManageWorkspaceToolName, UpdatePlanToolName, LiveSettingsToolName, UIGetSourceToolName, UIExtensionsToolName, UIActivateToolName)
+	valid := append(append([]string(nil), want...), CodeExecToolName, CodeWaitToolName, CodeCancelToolName, HubDelegateToolName, HubCheckDelegationToolName, ManageWorkspaceToolName, UpdatePlanToolName, LiveSettingsToolName, UIGetSourceToolName, UIExtensionsToolName, UIActivateToolName)
 	if got := ValidToolNames(); !slices.Equal(got, valid) {
 		t.Fatalf("completion tools = %v, want %v", got, valid)
 	}
-	const help = "Enable local tools (comma-separated, or 'all'): read_file,write_file,edit_file,shell,grep,glob,view_image,show_media,image_generate,ask_user,spawn_agent (includes wait_agent,continue_agent,cancel_agent,list_agents),queue_agent,wait_for_jobs"
+	const help = "Enable local tools (comma-separated, or 'all'): spawn_script (includes wait_script,cancel_script),read_file,write_file,edit_file,shell,grep,glob,view_image,show_media,image_generate,ask_user,spawn_agent (includes wait_agent,continue_agent,cancel_agent,list_agents),queue_agent,wait_for_jobs"
 	if got := ToolFlagHelp(); got != help {
 		t.Fatalf("tools flag help = %q, want %q", got, help)
 	}

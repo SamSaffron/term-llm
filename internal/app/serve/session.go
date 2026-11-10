@@ -736,6 +736,9 @@ func RegisterSkillToolWithEngine(engine *engine.Engine, toolMgr *tools.ToolManag
 			}
 		})
 	}
+	skillTool.SetOnCodeModuleActivated(func(activation *skills.Activation) error {
+		return tools.AdmitSkillCodeModule(engine, toolMgr, activation)
+	})
 	engine.Tools().Register(skillTool)
 
 	// Register search_skills whenever the skills system is available. This avoids

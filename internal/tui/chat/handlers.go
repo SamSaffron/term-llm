@@ -289,6 +289,13 @@ const ctrlCExitConfirmWindow = 2 * time.Second
 
 func (m *Model) cancelActiveForInterrupt() (bool, tea.Cmd) {
 	cancelled := false
+	if m.engine != nil {
+		sessionID := ""
+		if m.sess != nil {
+			sessionID = m.sess.ID
+		}
+		cancelled = m.engine.InterruptCodeModeSession(sessionID)
+	}
 	var cmds []tea.Cmd
 
 	if m.approvalDoneCh != nil || m.approvalModel != nil {
@@ -394,7 +401,7 @@ func (m *Model) quitFromInterrupt() (tea.Model, tea.Cmd) {
 func (m *Model) handleCtrlC() (tea.Model, tea.Cmd) {
 	if cancelled, cancelCmd := m.cancelActiveForInterrupt(); cancelled {
 		m.ctrlCExitArmedUntil = time.Time{}
-		_, footerCmd := m.showFooterWarning("Interrupted current response/tool/shell/skill.")
+		_, footerCmd := m.showFooterWarning("Interrupted current response/tool/script/shell/skill.")
 		return m, tea.Batch(cancelCmd, footerCmd, m.terminalTitleCmd())
 	}
 

@@ -16,6 +16,16 @@ type ToolRegistry struct {
 	specsDirty bool
 }
 
+func (r *ToolRegistry) executionSnapshot() map[string]core.Tool {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	result := make(map[string]core.Tool, len(r.tools))
+	for n, t := range r.tools {
+		result[n] = t
+	}
+	return result
+}
+
 func NewToolRegistry() *ToolRegistry {
 	return &ToolRegistry{tools: make(map[string]core.Tool), visible: make(map[string]bool), specsDirty: true}
 }

@@ -49,3 +49,8 @@ At the end of work that changed the host, summarize changed paths, packages and 
 # Style
 
 Be direct and specific. Lead with the finding, then evidence, then the fix. Quote only relevant log lines. Include units. Label guesses and state what would confirm them.
+
+
+## Code mode
+
+Use `spawn_script` to compose permitted tools or import activated skill modules with `await import('skill:name')`. Keep direct tools for simple actions, discovery, skill activation and lifecycle controls. `spawn_script` may return a running `cell_id`; use `wait_script` to collect new output without stopping it, and `cancel_script` to request termination. A wait budget expiring does not cancel the cell. Emit observations with `text(...)` and screenshots with `image(...)`; intermediate results stay private. Each cell has fresh JS globals, but successful `store(key,value)` writes carry automatically to later cells through session-local `load(key)`. This store is not durable across session/runtime replacement. Failed or cancelled cells do not commit staged state; external effects are never rolled back. Normal permissions still apply. Reconcile unknown action outcomes before retrying.

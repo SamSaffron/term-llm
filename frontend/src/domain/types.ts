@@ -94,6 +94,17 @@ export interface SubagentProgress {
   jobId?: string;
 }
 
+/** One ordered piece of multimodal tool output (text or materialized image URL). */
+export interface ContentPart {
+  type: 'text' | 'image';
+  text?: string;
+  url?: string;
+  /** MIME type for image parts. */
+  media_type?: string;
+  width?: number;
+  height?: number;
+}
+
 export interface ToolCall {
   id: string;
   /** Response-local output item identity; call id remains the canonical execution identity. */
@@ -117,6 +128,17 @@ export interface ToolCall {
   startedAt?: number;
   endedAt?: number;
   durationMs?: number;
+  /**
+   * Ordered multimodal content parts from structured tool output (e.g. code_mode
+   * with inline screenshots). When present, renderers should use this for ordered
+   * display rather than the legacy `images` array to avoid duplication.
+   */
+  contentParts?: ContentPart[];
+  /**
+   * Call ID of the enclosing code_mode invocation when this tool call is a child
+   * nested inside a cell. Absent for top-level tool calls.
+   */
+  parentToolCallId?: string;
 }
 
 export interface ContextUsage {
