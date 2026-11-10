@@ -229,19 +229,19 @@ export const endpoints = (api: APIClient) => ({
     ),
   sidebar: (includeArchived: boolean, createdBy = '') =>
     api.get<Record<string, unknown>>(
-      `/v1/sidebar?per_project=12&include_archived_projects=1&include_archived_sessions=${includeArchived ? '1' : '0'}${authorQuery(createdBy)}`,
+      `/v1/sidebar?filter=sidebar&per_project=12&include_archived_projects=1&include_archived_sessions=${includeArchived ? '1' : '0'}${authorQuery(createdBy)}`,
     ),
   recentSessions: (cursor: string, includeArchived: boolean, createdBy = '') =>
     api.get<Record<string, unknown>>(
-      `/v1/sessions?scope=all${cursor ? `&cursor=${encoded(cursor)}` : ''}&limit=30&include_archived=${includeArchived ? '1' : '0'}${authorQuery(createdBy)}`,
+      `/v1/sessions?filter=sidebar&scope=all${cursor ? `&cursor=${encoded(cursor)}` : ''}&limit=30&include_archived=${includeArchived ? '1' : '0'}${authorQuery(createdBy)}`,
     ),
   projectSessions: (projectId: string, cursor: string, includeArchived: boolean, createdBy = '') =>
     api.get<Record<string, unknown>>(
-      `/v1/sessions?project_id=${encoded(projectId)}&cursor=${encoded(cursor)}&limit=12&include_archived=${includeArchived ? '1' : '0'}${authorQuery(createdBy)}`,
+      `/v1/sessions?filter=sidebar&project_id=${encoded(projectId)}&cursor=${encoded(cursor)}&limit=12&include_archived=${includeArchived ? '1' : '0'}${authorQuery(createdBy)}`,
     ),
   noProjectSessions: (cursor: string, includeArchived: boolean, createdBy = '') =>
     api.get<Record<string, unknown>>(
-      `/v1/sessions?no_project=1&cursor=${encoded(cursor)}&limit=30&include_archived=${includeArchived ? '1' : '0'}${authorQuery(createdBy)}`,
+      `/v1/sessions?filter=sidebar&no_project=1&cursor=${encoded(cursor)}&limit=30&include_archived=${includeArchived ? '1' : '0'}${authorQuery(createdBy)}`,
     ),
   sessionStatus: async (
     selected = '',

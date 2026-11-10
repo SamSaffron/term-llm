@@ -1506,6 +1506,9 @@ func (s *serveServer) handleSessions(w http.ResponseWriter, r *http.Request) {
 			NoProject:        noProject,
 			ProjectCursor:    projectCursor,
 			ExcludeSubagents: true,
+			// Opt-in: full pages of rows the sidebar renders. Unknown values are
+			// ignored so newer clients degrade gracefully against older nodes.
+			SidebarVisible: r.URL.Query().Get("filter") == "sidebar",
 		})
 		if err != nil {
 			writeOpenAIError(w, http.StatusInternalServerError, "server_error", "failed to list sessions")

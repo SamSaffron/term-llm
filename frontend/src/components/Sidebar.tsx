@@ -1147,7 +1147,9 @@ function isSidebarSessionVisible(session: Session): boolean {
   // Parentless one-shot and background terminal runs (ask, jobs, goals) stay
   // hidden so a sidebar shared with the terminal does not become an agent
   // process monitor. Interactive terminal chats are first-class sessions and
-  // may be continued from the web whenever their turn is free.
+  // may be continued from the web whenever their turn is free. Listings request
+  // the same rule server-side (filter=sidebar) so pages arrive full; this check
+  // stays for live updates and servers that predate the filter.
   return session.origin !== 'tui' || !session.mode || session.mode === 'chat';
 }
 

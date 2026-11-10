@@ -118,6 +118,7 @@ type SidebarOptions struct {
 	PerProject              int
 	IncludeArchivedProjects bool
 	IncludeArchivedSessions bool
+	SidebarVisible          bool // Hide parentless terminal runs (ask/plan/exec) the web sidebar never shows
 }
 
 // ProjectReader is the read-only capability used to restore immutable project

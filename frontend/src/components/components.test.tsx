@@ -9740,7 +9740,9 @@ describe('Preact-owned chat surfaces', () => {
     fireEvent.click(archivedToggle);
     expect(store.showArchived.value).toBe(true);
     expect(localStorage.getItem(store.keys.showArchivedSessions)).toBe('1');
-    expect(store.endpoints.sessions).toHaveBeenCalledWith('limit=30&include_archived=1');
+    expect(store.endpoints.sessions).toHaveBeenCalledWith(
+      'filter=sidebar&limit=30&include_archived=1',
+    );
     expect(screen.queryByRole('combobox', { name: 'Effort' })).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole('tab', { name: 'Extensions' }));
     const cat = await screen.findByRole('checkbox', { name: /Composer Cat/ });

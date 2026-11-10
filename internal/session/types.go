@@ -216,6 +216,7 @@ type ListOptions struct {
 	ProjectCursor    *ProjectSessionCursor // Group-bound keyset cursor for project sidebar paging
 	ParentID         string                // Restrict to direct child sessions of this parent
 	ExcludeSubagents bool                  // Hide machine-generated child-agent sessions
+	SidebarVisible   bool                  // Hide parentless terminal runs (ask/plan/exec) the web sidebar never shows
 }
 
 // SearchSort selects the ordering of distinct session search results.
