@@ -2701,6 +2701,11 @@ describe('Preact-owned chat surfaces', () => {
     } finally {
       if (descriptor) Object.defineProperty(navigator, 'clipboard', descriptor);
       else Object.defineProperty(navigator, 'clipboard', { configurable: true, value: undefined });
+      // jsdom starts its rendering-update interval lazily (focus fixup runs when
+      // the focused fullscreen button unmounts). Under fake timers that interval
+      // is fake; dropping it would leave jsdom believing the loop still runs, so
+      // later requestAnimationFrame callbacks never fire. Let it stop itself.
+      vi.runOnlyPendingTimers();
       vi.useRealTimers();
     }
   });
@@ -10712,6 +10717,10 @@ describe('Preact-owned chat surfaces', () => {
   });
 
   describe('lightbox gestures', () => {
+    // CSSOM serializers may drop a zero y component (`translate(Xpx)`); compare
+    // the two-argument form the component writes.
+    const transformOf = (element: HTMLElement) =>
+      element.style.transform.replace(/translate\(([^,)]+)\)/, 'translate($1, 0px)');
     const setup = () => {
       const frames = new Map<number, FrameRequestCallback>();
       let frameID = 0;
@@ -10771,15 +10780,15 @@ describe('Preact-owned chat surfaces', () => {
       pointer('pointermove', 2, 300);
       flush();
       // The image point at x=150 remains under the midpoint, now at x=200.
-      expect(image.style.transform).toBe('translate(100px, 0px) scale(2)');
+      expect(transformOf(image)).toBe('translate(100px, 0px) scale(2)');
       pointer('pointerup', 2, 300);
       pointer('pointermove', 1, 120);
       flush();
-      expect(image.style.transform).toBe('translate(120px, 0px) scale(2)');
+      expect(transformOf(image)).toBe('translate(120px, 0px) scale(2)');
       pointer('pointercancel', 1, 120);
       pointer('pointermove', 1, 150);
       flush();
-      expect(image.style.transform).toBe('translate(120px, 0px) scale(2)');
+      expect(transformOf(image)).toBe('translate(120px, 0px) scale(2)');
     });
 
     it('rebases from the latest pinch even when move and finger lift precede a render', () => {
@@ -10795,7 +10804,7 @@ describe('Preact-owned chat surfaces', () => {
       });
       expect(frames.size).toBe(1);
       flush();
-      expect(image.style.transform).toBe('translate(130px, 65px) scale(2)');
+      expect(transformOf(image)).toBe('translate(130px, 65px) scale(2)');
     });
 
     it('supports repeated pinches through 32×, bounds pan to each image axis, and clamps back to 1×', () => {
@@ -10812,21 +10821,21 @@ describe('Preact-owned chat surfaces', () => {
       pointer('pointerdown', 1, 100);
       pointer('pointermove', 1, 100000, 100000);
       flush();
-      expect(image.style.transform).toBe('translate(6200px, 3100px) scale(32)');
+      expect(transformOf(image)).toBe('translate(6200px, 3100px) scale(32)');
       pointer('pointermove', 1, -100000, -100000);
       flush();
-      expect(image.style.transform).toBe('translate(-6200px, -3100px) scale(32)');
+      expect(transformOf(image)).toBe('translate(-6200px, -3100px) scale(32)');
       pointer('pointerup', 1, -100000);
       pointer('pointerdown', 1, 0);
       pointer('pointerdown', 2, 1000);
       pointer('pointermove', 2, 0);
       flush();
-      expect(image.style.transform).toBe('translate(0px, 0px) scale(1)');
+      expect(transformOf(image)).toBe('translate(0px, 0px) scale(1)');
       expect(screen.getByRole('button', { name: 'Zoom out' })).toBeDisabled();
       pointer('lostpointercapture', 2, 0);
       pointer('pointermove', 2, 900);
       flush();
-      expect(image.style.transform).toBe('translate(0px, 0px) scale(1)');
+      expect(transformOf(image)).toBe('translate(0px, 0px) scale(1)');
     });
 
     it('ignores tiny pinch-span noise and cancels pending renders on reset and unmount', () => {
@@ -10835,7 +10844,7 @@ describe('Preact-owned chat surfaces', () => {
       pointer('pointerdown', 2, 101);
       pointer('pointermove', 2, 102);
       flush();
-      expect(image.style.transform).toBe('translate(0px, 0px) scale(1)');
+      expect(transformOf(image)).toBe('translate(0px, 0px) scale(1)');
       pointer('pointermove', 2, 132);
       flush();
       expect(image.style.transform).toContain('scale(2)');
@@ -10845,7 +10854,7 @@ describe('Preact-owned chat surfaces', () => {
       expect(frames.size).toBe(0);
       flush();
       pointer('pointermove', 2, 200);
-      expect(image.style.transform).toBe('translate(0px, 0px) scale(1)');
+      expect(transformOf(image)).toBe('translate(0px, 0px) scale(1)');
       pointer('pointerdown', 1, 100);
       pointer('pointerdown', 2, 200);
       pointer('pointermove', 2, 300);
@@ -10861,7 +10870,7 @@ describe('Preact-owned chat surfaces', () => {
       Object.defineProperty(image, 'offsetWidth', { value: 400, configurable: true });
       pointer('pointermove', 2, 300);
       flush();
-      expect(image.style.transform).toBe('translate(0px, 0px) scale(1)');
+      expect(transformOf(image)).toBe('translate(0px, 0px) scale(1)');
       pointer('pointerdown', 1, 100);
       pointer('pointerdown', 2, 200);
       pointer('pointermove', 2, 300);
@@ -10875,13 +10884,13 @@ describe('Preact-owned chat surfaces', () => {
       pointer('pointerdown', 1, 100);
       pointer('pointermove', 1, 1000, 1000);
       flush();
-      expect(image.style.transform).toBe('translate(200px, 100px) scale(2)');
+      expect(transformOf(image)).toBe('translate(200px, 100px) scale(2)');
       Object.defineProperties(image, { offsetWidth: { value: 200 }, offsetHeight: { value: 100 } });
       fireEvent(window, new Event('resize'));
-      expect(image.style.transform).toBe('translate(100px, 50px) scale(2)');
+      expect(transformOf(image)).toBe('translate(100px, 50px) scale(2)');
       pointer('pointermove', 1, 990, 990);
       flush();
-      expect(image.style.transform).toBe('translate(90px, 40px) scale(2)');
+      expect(transformOf(image)).toBe('translate(90px, 40px) scale(2)');
     });
 
     it('only shows gallery navigation for multiple images, in the bottom controls', () => {
@@ -11065,18 +11074,18 @@ describe('Preact-owned chat surfaces', () => {
         expect(first.defaultPrevented).toBe(true);
         expect(frames.size).toBe(1);
         flush();
-        expect(image.style.transform).toBe('translate(150px, 75px) scale(4)');
+        expect(transformOf(image)).toBe('translate(150px, 75px) scale(4)');
         expect(screen.getByRole('button', { name: 'Reset zoom' })).toHaveTextContent('400%');
         fireEvent.wheel(surface, { deltaY: 300, clientX: 150, clientY: 75 });
         flush();
-        expect(image.style.transform).toBe('translate(50px, 25px) scale(2)');
+        expect(transformOf(image)).toBe('translate(50px, 25px) scale(2)');
         fireEvent.wheel(surface, { deltaY: -10000, clientX: 150, clientY: 75 });
         flush();
         expect(image.style.transform).toContain('scale(32)');
         expect(screen.getByRole('button', { name: 'Reset zoom' })).toHaveTextContent('3200%');
         fireEvent.wheel(surface, { deltaY: 10000, clientX: 150, clientY: 75 });
         flush();
-        expect(image.style.transform).toBe('translate(0px, 0px) scale(1)');
+        expect(transformOf(image)).toBe('translate(0px, 0px) scale(1)');
       },
     );
 
@@ -11090,7 +11099,7 @@ describe('Preact-owned chat surfaces', () => {
       fireEvent(surface, horizontal);
       expect(horizontal.defaultPrevented).toBe(false);
       flush();
-      expect(image.style.transform).toBe('translate(0px, 0px) scale(1)');
+      expect(transformOf(image)).toBe('translate(0px, 0px) scale(1)');
       fireEvent.error(image);
       const failed = wheel();
       fireEvent(surface, failed);
@@ -11106,11 +11115,11 @@ describe('Preact-owned chat surfaces', () => {
     it('reaches 32× with five zoom-button presses and resets with double-click', () => {
       const { image } = setup();
       for (let i = 0; i < 5; i++) fireEvent.click(screen.getByRole('button', { name: 'Zoom in' }));
-      expect(image.style.transform).toBe('translate(0px, 0px) scale(32)');
+      expect(transformOf(image)).toBe('translate(0px, 0px) scale(32)');
       fireEvent.click(screen.getByRole('button', { name: 'Zoom out' }));
-      expect(image.style.transform).toBe('translate(0px, 0px) scale(16)');
+      expect(transformOf(image)).toBe('translate(0px, 0px) scale(16)');
       fireEvent.dblClick(image);
-      expect(image.style.transform).toBe('translate(0px, 0px) scale(1)');
+      expect(transformOf(image)).toBe('translate(0px, 0px) scale(1)');
     });
   });
 
