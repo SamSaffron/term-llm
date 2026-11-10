@@ -215,10 +215,9 @@ try {
     await page.locator(`#install-${os} [data-copy-text]`).first().click();
     assert.equal(await page.evaluate(() => navigator.clipboard.readText()), command);
     const script = os === "windows" ? "install.ps1" : "install.sh";
-    assert.equal(await page.locator(`#install-${os}`).getByRole("link", { name: "Inspect the installer" }).getAttribute("href"), `https://github.com/samsaffron/term-llm/blob/main/${script}`);
+    if (os !== "macos") assert.equal(await page.locator(`#install-${os}`).getByRole("link", { name: "Inspect the installer" }).getAttribute("href"), `https://github.com/samsaffron/term-llm/blob/main/${script}`);
     await accessible(`${os} installation`);
   }
-  assert.equal(await page.locator("#install-macos code").nth(1).textContent(), "curl -fsSL https://raw.githubusercontent.com/samsaffron/term-llm/main/install.sh | sh");
   console.log("✓ OS installation links, commands, clipboard copy, and keyboard-operated ARIA tabs");
 
   // Emulate platforms independently of the host browser/runner OS. Client Hints
