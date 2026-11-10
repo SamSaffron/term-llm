@@ -14,7 +14,7 @@ next:
 
 ```bash
 # Expose all tools on localhost
-term-llm serve mcp --tools all
+term-llm serve mcp --tools all --shell-allow "echo hello"
 
 # Expose just file reading and search
 term-llm serve mcp --tools read_file,grep,glob
@@ -22,6 +22,7 @@ term-llm serve mcp --tools read_file,grep,glob
 # Full power on a cloud dev box
 term-llm serve mcp --tools all --host 0.0.0.0 --port 8080 \
   --write-dir /home/sam/project \
+  --shell-allow "echo hello" \
   --shell-allow "go *" --shell-allow "git *" --shell-allow "make *"
 ```
 
@@ -43,7 +44,7 @@ From another terminal (or machine), add the server as an MCP endpoint:
 term-llm mcp add http://devbox:8080/mcp
 ```
 
-This registers the URL without prompting for a token. Edit the file printed by `term-llm mcp path` and set `servers.devbox.headers` to `{"Authorization":"Bearer <server-token>"}`, replacing `<server-token>` with the auth token printed by the server. Then verify and use the tools:
+This registers the URL without prompting for a token. Edit the file printed by `term-llm mcp path` and set `servers.devbox.headers` to `{"Authorization":"Bearer <server-token>"}`, replacing `<server-token>` with the auth token printed by the server. Then verify and use the tools. For the shell smoke test below, start the server with `--shell-allow "echo hello"` as in the quick-start examples; `--tools all` exposes tools but does not approve their execution:
 
 ```bash
 term-llm mcp info devbox                    # verify tools
