@@ -1281,14 +1281,14 @@ func TestGetDefaultsEnableWebSocketForChatGPTOnly(t *testing.T) {
 	}
 }
 
-func TestGetDefaultsIncludeGPT56ProviderModels(t *testing.T) {
+func TestGetDefaultsIncludeCurrentGPTProviderModels(t *testing.T) {
 	defaults := GetDefaults()
 
 	checks := map[string]string{
-		"providers.openai.model":       "gpt-5.6-sol",
-		"providers.openai.fast_model":  "gpt-5.6-luna",
-		"providers.chatgpt.model":      "gpt-5.6-sol-medium",
-		"providers.chatgpt.fast_model": "gpt-5.6-luna",
+		"providers.openai.model":       "gpt-6.1-sol",
+		"providers.openai.fast_model":  "gpt-6-luna",
+		"providers.chatgpt.model":      "gpt-6.1-sol-medium",
+		"providers.chatgpt.fast_model": "gpt-6-luna",
 	}
 	for key, want := range checks {
 		got, ok := defaults[key].(string)
@@ -1381,8 +1381,8 @@ providers:
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	if got := cfg.Providers["chatgpt"].Model; got != "gpt-5.6-sol-medium" {
-		t.Fatalf("providers.chatgpt.model = %q, want %q", got, "gpt-5.6-sol-medium")
+	if got := cfg.Providers["chatgpt"].Model; got != "gpt-6.1-sol-medium" {
+		t.Fatalf("providers.chatgpt.model = %q, want %q", got, "gpt-6.1-sol-medium")
 	}
 }
 

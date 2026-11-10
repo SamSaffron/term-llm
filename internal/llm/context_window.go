@@ -614,6 +614,10 @@ var inputLimitTable = []limitEntry{
 	{"anthropic.claude-opus-4-5", 180_000},
 	{"anthropic.claude-sonnet-4", 180_000},
 
+	// Current OpenAI API defaults; ChatGPT uses separate provider-scoped limits.
+	{"gpt-6.1-sol", 922_000},
+	{"gpt-6-luna", 922_000},
+
 	// OpenAI GPT-5 family
 	{"gpt-5.6-sol", 922_000},         // 1,050,000 ctx - 128,000 out
 	{"gpt-5.6-terra", 922_000},       // 1,050,000 ctx - 128,000 out
@@ -782,6 +786,10 @@ var outputLimitTable = []limitEntry{
 	{"anthropic.claude-sonnet-4-5", 64_000},
 	{"anthropic.claude-opus-4-5", 64_000},
 	{"anthropic.claude-sonnet-4", 64_000},
+
+	// Current OpenAI API defaults
+	{"gpt-6.1-sol", 128_000},
+	{"gpt-6-luna", 128_000},
 
 	// OpenAI GPT-5 family
 	{"gpt-5.6-sol", 128_000},

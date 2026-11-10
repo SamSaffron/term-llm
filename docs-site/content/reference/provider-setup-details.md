@@ -21,8 +21,8 @@ Defaults and setup hints below come from the provider registry; credentials, pro
 | Provider | Setup | Default model | Fast model |
 |---|---|---|---|
 | `anthropic` | set `ANTHROPIC_API_KEY` | `claude-sonnet-4-6` | `claude-haiku-4-5` |
-| `openai` | set `OPENAI_API_KEY` | `gpt-5.6-sol` | `gpt-5.6-luna` |
-| `chatgpt` | run term-llm auth login chatgpt | `gpt-5.6-sol-medium` | `gpt-5.6-luna` |
+| `openai` | set `OPENAI_API_KEY` | `gpt-6.1-sol` | `gpt-6-luna` |
+| `chatgpt` | run term-llm auth login chatgpt | `gpt-6.1-sol-medium` | `gpt-6-luna` |
 | `grok` | run term-llm auth login grok | `grok-4.6` | `grok-4.6` |
 | `gemini` | set `GEMINI_API_KEY` | `gemini-3-flash-preview` | `gemini-2.5-flash-lite` |
 | `openrouter` | set `OPENROUTER_API_KEY` | `openrouter/free` | `openrouter/free` |
@@ -113,17 +113,17 @@ export PERPLEXITY_API_KEY=your-key
 export PARALLEL_API_KEY=your-key
 ```
 
-OpenAI API-key installs default to `gpt-5.6-sol`, with `gpt-5.6-luna` as the lightweight control-plane model:
+OpenAI API-key installs default to `gpt-6.1-sol`, with `gpt-6-luna` as the lightweight control-plane model:
 
 ```yaml
 default_provider: openai
 providers:
   openai:
-    model: gpt-5.6-sol
-    fast_model: gpt-5.6-luna
+    model: gpt-6.1-sol
+    fast_model: gpt-6-luna
 ```
 
-GPT-5.6 has a 922K effective input budget and a 128K output cap through the OpenAI provider. Its API efforts are `none`, `low`, `medium`, `high`, `xhigh`, and `max`. Public-API Pro mode and the advanced Responses controls are documented under [Providers and models](/reference/providers-and-models/#gpt-56-on-openai-and-chatgpt).
+GPT-6.1 Sol has a 922K effective input budget and a 128K output cap through the OpenAI provider. Its API efforts are `low`, `medium` (the upstream default), `high`, `xhigh`, and `max`. GPT-6 Luna additionally supports `none`. The separately model-gated GPT-5.6 Pro mode and advanced Responses controls remain documented under [Providers and models](/reference/providers-and-models/#gpt-56-on-openai-and-chatgpt).
 
 ### Option 3: Use ChatGPT (Plus/Pro subscription)
 
@@ -131,8 +131,8 @@ If you have a ChatGPT Plus or Pro subscription, you can use the `chatgpt` provid
 
 ```bash
 term-llm ask --provider chatgpt "explain this code"
-term-llm ask --provider chatgpt:gpt-5.6-sol-max "hard code question"
-term-llm ask --provider chatgpt:gpt-5.6-luna-medium "quick code question"
+term-llm ask --provider chatgpt:gpt-6.1-sol-max "hard code question"
+term-llm ask --provider chatgpt:gpt-6-luna-medium "quick code question"
 term-llm image --provider chatgpt:gpt-image-2.5-sunburst "storybook fox in the snow"
 ```
 
@@ -144,8 +144,8 @@ default_provider: chatgpt
 
 providers:
   chatgpt:
-    model: gpt-5.6-sol-medium
-    fast_model: gpt-5.6-luna
+    model: gpt-6.1-sol-medium
+    fast_model: gpt-6-luna
     # Request fast/priority service tier for supported ChatGPT models/accounts.
     # Omit this field to send no service_tier.
     service_tier: fast
@@ -153,7 +153,7 @@ providers:
     use_websocket: true
 ```
 
-The ChatGPT default pins Sol to medium effort. Its live model catalog supplies current limits and supported efforts; the static GPT-5.6 fallback is 372K effective input and 128K output. Sol, Terra, and Luna support `low`, `medium`, `high`, `xhigh`, and `max`, with Luna keeping its upstream medium default.
+The ChatGPT default pins Sol to medium effort. Its live model catalog supplies current limits and supported efforts; the static fallback for GPT-6.1 Sol is 500K effective input and 128K output, while GPT-6 Luna uses 272K input and 128K output. These subscription limits are separate from the public API limits. Sol, Terra, and Luna support `low`, `medium`, `high`, `xhigh`, and `max`, with Luna keeping its upstream medium default.
 
 Codex's product-level **Ultra** option combines `max` effort with subagents; it is not an inference API effort and term-llm does not show it in the effort selector. The ChatGPT OAuth backend also does not receive the public API's Pro, hosted multi-agent, programmatic-tool-calling, or prompt-cache control fields. `service_tier: fast` is a user-facing alias for the upstream `priority` tier; omit it to send no tier.
 

@@ -70,7 +70,7 @@ var ProviderModels = map[string][]ModelEntry{
 		{ID: "claude-haiku-4-5-20251001", InputLimit: 180_000, OutputLimit: 64_000},
 		{ID: "claude-sonnet-4-5-20250929", InputLimit: 180_000, OutputLimit: 64_000},
 	},
-	"openai": {
+	"openai": concatModelEntries(currentOpenAIModelEntries(), []ModelEntry{
 		{ID: "gpt-5.6-sol", InputLimit: 922_000, OutputLimit: 128_000, ReasoningEfforts: gpt56OpenAIEffortVariants},
 		{ID: "gpt-5.6-terra", InputLimit: 922_000, OutputLimit: 128_000, ReasoningEfforts: gpt56OpenAIEffortVariants},
 		{ID: "gpt-5.6-luna", InputLimit: 922_000, OutputLimit: 128_000, ReasoningEfforts: gpt56OpenAIEffortVariants},
@@ -86,7 +86,7 @@ var ProviderModels = map[string][]ModelEntry{
 		{ID: "gpt-5-mini", InputLimit: 272_000, OutputLimit: 128_000},
 		{ID: "gpt-5-nano", InputLimit: 272_000, OutputLimit: 128_000},
 		{ID: "o3-mini", InputLimit: 100_000, OutputLimit: 100_000},
-	},
+	}),
 	"chatgpt": {
 		// Uses ChatGPT backend API with native OAuth. These are static fallback
 		// capabilities; live /codex/models metadata takes precedence in clients.
