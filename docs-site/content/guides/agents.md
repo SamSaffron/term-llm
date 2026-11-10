@@ -445,4 +445,4 @@ When no model is known — previews, and any prompt built before the model is se
 Keep in mind:
 
 - Gates resolve when the system prompt is built: session start, resume, handover, and worktree change. Switching models mid-session with `/model` does not re-resolve them, so a long session keeps the blocks chosen for the model it started with.
-- Fresh `ask` and shared-runner launches resolve an agent's `model: fast` alias before matching gates. Use the resolved provider/model, not the alias: if it resolves to `openai:gpt-5.6-luna`, `[[[openai:gpt-5.6-luna]]]` matches, while `[[[fast]]]` does not.
+- Fresh `ask` and shared-runner launches resolve an agent's `model: fast` alias before matching gates. Use the resolved provider/model, not the alias: if it resolves to `openai:gpt-6-luna`, `[[[openai:gpt-6-luna]]]` matches, while `[[[fast]]]` does not.

@@ -396,15 +396,15 @@ providers:
     model: claude-sonnet-4-6
 
   openai:
-    model: gpt-5.6-sol
-    fast_model: gpt-5.6-luna
+    model: gpt-6.1-sol
+    fast_model: gpt-6-luna
     # Uses OPENAI_API_KEY (or an explicit api_key).
     # HTTP/SSE is the default; set true to opt into WebSockets.
     use_websocket: false
 
   chatgpt:
     # Separate subscription OAuth: term-llm auth login chatgpt
-    model: gpt-5.6-sol-medium
+    model: gpt-6.1-sol-medium
     use_websocket: true
 
   ollama:
@@ -623,7 +623,7 @@ guardian:
     min_confidence: 0.15          # inclusive range [0, 1]; distribution spread, not certainty
   fallback:                       # optional LLM reviewer for classifier denials/failures
     provider: chatgpt             # optional; same rules as guardian.provider
-    model: gpt-5.6-luna-low       # optional; same rules as guardian.model
+    model: gpt-6-luna-low           # optional; same rules as guardian.model
     log_path: ~/.local/share/term-llm/guardian/escalations.jsonl # optional; `off` disables
 ```
 
@@ -656,8 +656,8 @@ providers:
   anthropic:
     model: claude-sonnet-4-6
   openai:
-    model: gpt-5.6-sol
-    fast_model: gpt-5.6-luna
+    model: gpt-6.1-sol
+    fast_model: gpt-6-luna
   openrouter:
     model: openrouter/free
 
@@ -1179,11 +1179,11 @@ Built-in `openai` and `chatgpt` text providers support the Responses API `servic
 ```yaml
 providers:
   openai:
-    model: gpt-5.6-sol
+    model: gpt-6.1-sol
     service_tier: fast
 
   chatgpt:
-    model: gpt-5.6-sol-medium
+    model: gpt-6.1-sol-medium
     service_tier: priority
 ```
 
@@ -1240,7 +1240,7 @@ Example custom policy:
 ```yaml
 providers:
   openai:
-    model: gpt-5.6-sol
+    model: gpt-6.1-sol
     file_upload:
       native_mime_types:
         - application/pdf

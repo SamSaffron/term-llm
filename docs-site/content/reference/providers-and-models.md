@@ -346,7 +346,7 @@ OpenAI-compatible providers remain HTTP/SSE by default. WebSocket defaults are n
 
 ## GPT-6 Astra on ChatGPT
 
-`gpt-6-astra` is supported through the ChatGPT OAuth adapter when it is available in your authenticated catalog. It is distinct from the shipped ChatGPT default (`gpt-5.6-sol-medium`).
+`gpt-6-astra` is supported through the ChatGPT OAuth adapter when it is available in your authenticated catalog. It is distinct from the shipped ChatGPT default (`gpt-6.1-sol-medium`).
 
 ```bash
 term-llm models --provider chatgpt
@@ -425,14 +425,20 @@ and `input_limit`. Caches store backend facts, not user settings: changing confi
 does not require clearing the cache. Custom provider keys with `type: chatgpt`
 have independent context settings.
 
+## Current OpenAI and ChatGPT defaults
+
+Fresh configurations use GPT-6.1 Sol for main work and GPT-6 Luna for lightweight control-plane calls. ChatGPT keeps its explicit medium-effort default; the public API leaves the effort unset and uses its upstream medium default. Existing explicit model selections are not migrated.
+
+| Provider | Default model | Fast model | Effective input (Sol) | Max output | Sol efforts |
+|---|---|---|---:|---:|---|
+| `openai` (API key) | `gpt-6.1-sol` | `gpt-6-luna` | 922K | 128K | `low`, `medium`, `high`, `xhigh`, `max` |
+| `chatgpt` (OAuth) | `gpt-6.1-sol-medium` | `gpt-6-luna` | 500K fallback | 128K | `low`, `medium`, `high`, `xhigh`, `max` |
+
+The public API's [Sol 6.1](https://developers.openai.com/api/docs/models/gpt-6.1-sol) and [Luna 6](https://developers.openai.com/api/docs/models/gpt-6-luna) have 1,050K total context minus a 128K output reservation = 922K effective input. API Luna additionally supports `none` effort. ChatGPT uses account-specific Codex metadata instead: Sol 6.1 falls back to 500K input, Luna 6 to 272K, and live limits/efforts take precedence. Do not reuse API limits for subscription routes.
+
 ## GPT-5.6 on OpenAI and ChatGPT
 
-term-llm ships fallback metadata for the GPT-5.6 family:
-
-| Provider | Default model | Fast model | Effective input | Max output | Efforts |
-|---|---|---|---:|---:|---|
-| `openai` (API key) | `gpt-5.6-sol` | `gpt-5.6-luna` | 922K | 128K | `none`, `low`, `medium`, `high`, `xhigh`, `max` |
-| `chatgpt` (OAuth) | `gpt-5.6-sol-medium` | `gpt-5.6-luna` | 372K fallback | 128K | `low`, `medium`, `high`, `xhigh`, `max` |
+GPT-5.6 remains supported for explicit selections and the feature-specific controls below; it is no longer the default.
 
 The OpenAI model IDs are `gpt-5.6-sol`, `gpt-5.6-terra`, and `gpt-5.6-luna`. ChatGPT exposes the same named variants through its live Codex catalog; live input limits and reasoning metadata take precedence over the static fallback. Luna keeps its upstream medium default unless you explicitly select another effort.
 
@@ -784,13 +790,13 @@ Built-in `openai` and `chatgpt` text providers can send the Responses API `servi
 ```yaml
 providers:
   openai:
-    model: gpt-5.6-sol
-    fast_model: gpt-5.6-luna
+    model: gpt-6.1-sol
+    fast_model: gpt-6-luna
     service_tier: fast      # alias for API value "priority"
 
   chatgpt:
-    model: gpt-5.6-sol-medium
-    fast_model: gpt-5.6-luna
+    model: gpt-6.1-sol-medium
+    fast_model: gpt-6-luna
     service_tier: priority  # equivalent to "fast"
 ```
 
@@ -804,17 +810,17 @@ Model/provider suffixes control how much reasoning a provider is asked to do. Di
 
 ### OpenAI reasoning effort
 
-For GPT-5.6 on the OpenAI API, append `-none`, `-low`, `-medium`, `-high`, `-xhigh`, or `-max` to control reasoning effort. An explicit `reasoning_effort` API field wins over a model suffix, and a request suffix wins over a provider-level default.
+For GPT-6.1 Sol on the OpenAI API, append `-low`, `-medium`, `-high`, `-xhigh`, or `-max` to control reasoning effort. GPT-6 Luna additionally accepts `-none`. An explicit `reasoning_effort` API field wins over a model suffix, and a request suffix wins over a provider-level default.
 
 ```bash
-term-llm ask --provider openai:gpt-5.6-sol-xhigh "complex question"
-term-llm exec --provider openai:gpt-5.6-luna-low "quick task"
+term-llm ask --provider openai:gpt-6.1-sol-xhigh "complex question"
+term-llm exec --provider openai:gpt-6-luna-low "quick task"
 ```
 
 ```yaml
 providers:
   openai:
-    model: gpt-5.6-sol-high
+    model: gpt-6.1-sol-high
 ```
 
 | Effort | Meaning |
