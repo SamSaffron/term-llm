@@ -260,6 +260,8 @@ func NewRendererProgram(cfg *config.Config, toolMgr *tools.ToolManager, store se
 		return tools.RunWorkspaceApprovalUI(workspace)
 	}
 
+	bindAskCodeModePrompts(toolMgr, teaProgram)
+
 	start, end := tools.CreateTUIHooks(teaProgram, func() {
 		done := make(chan struct{})
 		teaProgram.Send(askFlushBeforeAskUserMsg{Done: done})

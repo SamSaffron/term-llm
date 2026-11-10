@@ -476,7 +476,7 @@ func (m *MainRunManager) DeliverUI(sessionID string, message tea.Msg) error {
 	run.mu.Lock()
 	sink, sinkID := run.uiSink, run.uiSinkID
 	if sink == nil {
-		run.pendingUI = append(run.pendingUI, message)
+		appendPendingMainRunUI(run, message)
 		run.mu.Unlock()
 		return nil
 	}
@@ -510,7 +510,7 @@ func (m *MainRunManager) RetainUI(sessionID string, sinkID uint64, message tea.M
 	}
 	currentSink, currentSinkID := run.uiSink, run.uiSinkID
 	if currentSink == nil {
-		run.pendingUI = append(run.pendingUI, message)
+		appendPendingMainRunUI(run, message)
 	}
 	run.mu.Unlock()
 	m.mu.Lock()

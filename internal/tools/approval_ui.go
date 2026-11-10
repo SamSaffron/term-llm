@@ -1,6 +1,7 @@
 package tools
 
 import (
+	"context"
 	"fmt"
 	"image/color"
 	"os"
@@ -572,126 +573,62 @@ func getApprovalTTY() (*os.File, error) {
 
 // RunFileApprovalUI displays the approval UI for file access and returns the result.
 func RunFileApprovalUI(path string, isWrite bool) (ApprovalResult, error) {
-	if !terminalpolicy.OutputInteractive(os.Stderr) {
-		return ApprovalResult{Choice: ApprovalChoiceCancelled, Cancelled: true}, fmt.Errorf("interactive approval unavailable")
-	}
-	tty, err := getApprovalTTY()
-	if err != nil {
-		return ApprovalResult{Cancelled: true}, fmt.Errorf("no TTY available: %w", err)
-	}
-	defer tty.Close()
-
-	// Detect git repo
-	repoInfo := DetectGitRepo(path)
-	var repoInfoPtr *GitRepoInfo
-	if repoInfo.IsRepo {
-		repoInfoPtr = &repoInfo
-	}
-
-	// Get terminal width
-	width := 80
-	if w, _, err := term.GetSize(int(tty.Fd())); err == nil && w > 0 {
-		width = w
-	}
-
-	m := newApprovalModel(path, repoInfoPtr, isWrite)
-	m.width = width
-
-	p := tea.NewProgram(m, tea.WithInput(tty), tea.WithOutput(tty))
-
-	finalModel, err := p.Run()
-	if err != nil {
-		return ApprovalResult{Cancelled: true}, err
-	}
-
-	result := finalModel.(*ApprovalModel)
-
-	// Print summary to TTY so it persists
-	if !result.result.Cancelled {
-		fmt.Fprint(tty, result.RenderSummary())
-	}
-
-	return result.result, nil
+	return RunApprovalUIWithContext(context.Background(), path, isWrite, false, false, "")
 }
 
-// RunWorkspaceApprovalUI displays the dedicated proposed-primary confirmation.
-func RunWorkspaceApprovalUI(workspace string) (WorkspaceApprovalResult, error) {
-	if !terminalpolicy.OutputInteractive(os.Stderr) {
-		return WorkspaceApprovalResult{Cancelled: true}, fmt.Errorf("interactive workspace approval unavailable")
-	}
-	tty, err := getApprovalTTY()
-	if err != nil {
-		return WorkspaceApprovalResult{Cancelled: true}, fmt.Errorf("no TTY available for workspace confirmation: %w", err)
-	}
-	defer tty.Close()
-
-	width := 80
-	if w, _, err := term.GetSize(int(tty.Fd())); err == nil && w > 0 {
-		width = w
-	}
-	model := NewEmbeddedWorkspaceApprovalModel(workspace, width)
-	program := tea.NewProgram(model, tea.WithInput(tty), tea.WithOutput(tty))
-	finalModel, err := program.Run()
-	if err != nil {
-		return WorkspaceApprovalResult{Cancelled: true}, err
-	}
-	result := finalModel.(*ApprovalModel)
-	if !result.result.Cancelled {
-		fmt.Fprint(tty, result.RenderSummary())
-	}
-	choice := result.result.Choice
-	return WorkspaceApprovalResult{
-		Approved:  !result.result.Cancelled && (choice == ApprovalChoiceWorkspace || choice == ApprovalChoiceWorkspaceRemember),
-		Remember:  !result.result.Cancelled && choice == ApprovalChoiceWorkspaceRemember,
-		Cancelled: result.result.Cancelled,
-	}, nil
-}
-
-// RunShellApprovalUI displays the approval UI for shell commands and returns the result.
+// RunShellApprovalUI displays the approval UI for shell commands.
 func RunShellApprovalUI(command, workDir string) (ApprovalResult, error) {
+	return RunApprovalUIWithContext(context.Background(), command, false, true, false, workDir)
+}
+
+// RunWorkspaceApprovalUI displays the distinct primary-workspace boundary.
+func RunWorkspaceApprovalUI(path string) (WorkspaceApprovalResult, error) {
+	r, err := RunApprovalUIWithContext(context.Background(), path, true, false, true, "")
+	return WorkspaceResult(r, err)
+}
+
+// WorkspaceResult converts only explicit human workspace choices.
+func WorkspaceResult(r ApprovalResult, err error) (WorkspaceApprovalResult, error) {
+	return WorkspaceApprovalResult{Approved: err == nil && !r.Cancelled && (r.Choice == ApprovalChoiceWorkspace || r.Choice == ApprovalChoiceWorkspaceRemember), Remember: err == nil && !r.Cancelled && r.Choice == ApprovalChoiceWorkspaceRemember, Cancelled: r.Cancelled}, err
+}
+
+// RunApprovalUIWithContext lets a script cell own a native approval program's
+// cancellation instead of inheriting the whole CLI/session lifetime.
+func RunApprovalUIWithContext(ctx context.Context, target string, isWrite, isShell, isWorkspace bool, workDir string) (ApprovalResult, error) {
+	cancelled := ApprovalResult{Choice: ApprovalChoiceCancelled, Cancelled: true}
+	if err := ctx.Err(); err != nil {
+		return cancelled, err
+	}
 	if !terminalpolicy.OutputInteractive(os.Stderr) {
-		return ApprovalResult{Choice: ApprovalChoiceCancelled, Cancelled: true}, fmt.Errorf("interactive approval unavailable")
+		return cancelled, fmt.Errorf("interactive approval unavailable")
 	}
 	tty, err := getApprovalTTY()
 	if err != nil {
-		return ApprovalResult{Cancelled: true}, fmt.Errorf("no TTY available: %w", err)
+		return cancelled, fmt.Errorf("no TTY available: %w", err)
 	}
 	defer tty.Close()
-
-	// Detect git repo from the command's working directory.
-	dir := workDir
-	if dir == "" {
-		dir, _ = os.Getwd()
-	}
-	repoInfo := DetectGitRepo(dir)
-	var repoInfoPtr *GitRepoInfo
-	if repoInfo.IsRepo {
-		repoInfoPtr = &repoInfo
-	}
-
-	// Get terminal width
 	width := 80
 	if w, _, err := term.GetSize(int(tty.Fd())); err == nil && w > 0 {
 		width = w
 	}
-
-	m := newShellApprovalModel(command, workDir, repoInfoPtr)
-	m.width = width
-
-	p := tea.NewProgram(m, tea.WithInput(tty), tea.WithOutput(tty))
-
-	finalModel, err := p.Run()
-	if err != nil {
-		return ApprovalResult{Cancelled: true}, err
+	var model *ApprovalModel
+	switch {
+	case isWorkspace:
+		model = NewEmbeddedWorkspaceApprovalModel(target, width)
+	case isShell:
+		model = NewEmbeddedShellApprovalModel(target, workDir, width)
+	default:
+		model = NewEmbeddedApprovalModel(target, isWrite, width)
 	}
-
-	result := finalModel.(*ApprovalModel)
-
-	// Print summary to TTY so it persists
+	program := tea.NewProgram(model, tea.WithContext(ctx), tea.WithInput(tty), tea.WithOutput(tty))
+	final, err := program.Run()
+	if err != nil {
+		return cancelled, err
+	}
+	result := final.(*ApprovalModel)
 	if !result.result.Cancelled {
 		fmt.Fprint(tty, result.RenderSummary())
 	}
-
 	return result.result, nil
 }
 

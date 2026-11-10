@@ -251,11 +251,9 @@ func (m *Model) toggleYoloMode() (tea.Model, tea.Cmd) {
 	}
 
 	var cmds []tea.Cmd
-	if next == tools.ModeYolo && m.approvalModel != nil && m.approvalDoneCh != nil && !m.approvalIsWorkspace {
-		m.approvalDoneCh <- tools.ApprovalResult{Choice: tools.ApprovalChoiceOnce}
-		m.approvalModel = nil
-		m.approvalDoneCh = nil
-		m.approvalIsWorkspace = false
+	if next == tools.ModeYolo && m.approvalModel != nil && m.approvalDoneCh != nil && !m.approvalIsWorkspace && !m.approvalNoAutoApprove {
+		replyApproval(m.approvalDoneCh, tools.ApprovalResult{Choice: tools.ApprovalChoiceOnce})
+		m.clearApprovalPrompt()
 		m.pausedForExternalUI = false
 		m.bumpContentVersion()
 		cmds = append(cmds, m.spinner.Tick)
@@ -305,9 +303,7 @@ func (m *Model) cancelActiveForInterrupt() (bool, tea.Cmd) {
 			default:
 			}
 		}
-		m.approvalDoneCh = nil
-		m.approvalModel = nil
-		m.approvalIsWorkspace = false
+		m.clearApprovalPrompt()
 		m.pausedForExternalUI = false
 		m.bumpContentVersion()
 		cancelled = true

@@ -52,7 +52,12 @@ tightened approval modes and explicit additional-workspace revocations still app
 Non-local MCP/skill-script tools keep their registered host instances and native
 permission/lifetime rules; the VM does not snapshot external service state.
 Idle approval requests remain visible and wait on the original cell's cancellation
-context. A new response reconnects presentation only, never authority or ownership. Activation/import never grants tools. Schema changes reject with
+context. A new response reconnects presentation only, never authority or ownership.
+Terminal chat serializes its single foreground dialog; cell cancellation dismisses
+only the matching prompt, including queued/detached prompts. Current or newly toggled
+yolo cannot auto-answer a cell that was admitted under prompt mode. One-shot `ask`
+also binds native approval programs and terminal flush/restoration to the cell's
+context; command/runtime teardown still ends its cells. Activation/import never grants tools. Schema changes reject with
 `schema_changed`, inviting rediscovery in a new cell.
 
 ### Script diagnostics

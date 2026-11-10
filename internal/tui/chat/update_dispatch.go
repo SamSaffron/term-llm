@@ -327,6 +327,8 @@ func (m *Model) dispatchConversationUpdate(message tea.Msg, cmds *[]tea.Cmd, flu
 
 	case ResumeFromExternalUIMsg:
 		return handledUpdate(m.handleResumeFromExternalUI(msg))
+	case DismissApprovalMsg:
+		return handledUpdate(m.dismissApproval(msg))
 	case ApprovalRequestMsg:
 		return handledUpdate(m.handleApprovalRequest(msg))
 	case AskUserRequestMsg:

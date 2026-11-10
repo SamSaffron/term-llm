@@ -30,7 +30,7 @@ func TestCodeModeAuthorityKeepsOriginalDirectoryAndMode(t *testing.T) {
 	}
 	root := manager.ApprovalMgr
 	root.SetApprovalMode(ModePrompt)
-	authority, err := manager.Registry.captureCodeModeAuthority(context.Background(), core.CodeModeCellRef{SessionID: "original", CellID: "cell", Ctx: context.Background()}, []string{ReadFileToolName}, nil)
+	authority, err := manager.Registry.captureCodeModeAuthority(context.Background(), core.CodeModeCellRef{SessionID: "original", CellID: "cell", Ctx: context.Background()}, []string{ReadFileToolName}, func(core.CodeModeCellRef) CodeModePrompts { return CodeModePrompts{} })
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -74,5 +74,35 @@ func TestCodeModeRegistryFieldsClassified(t *testing.T) {
 	sort.Strings(want)
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("classify new registry fields: %v", got)
+	}
+}
+
+func TestCodeModeApprovalTransportLockPolicy(t *testing.T) {
+	cfg := DefaultToolConfig()
+	cfg.Enabled = []string{ReadFileToolName}
+	manager, err := NewToolManager(&cfg, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name   string
+		binder func(core.CodeModeCellRef) CodeModePrompts
+		shared bool
+	}{
+		{name: "unbound native transport", shared: true},
+		{name: "terminal", binder: func(core.CodeModeCellRef) CodeModePrompts { return CodeModePrompts{Serial: true} }, shared: true},
+		{name: "web multi-prompt", binder: func(core.CodeModeCellRef) CodeModePrompts { return CodeModePrompts{} }, shared: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			a, err := manager.Registry.captureCodeModeAuthority(context.Background(), core.CodeModeCellRef{SessionID: "serial", Ctx: context.Background()}, []string{ReadFileToolName}, tc.binder)
+			if err != nil {
+				t.Fatal(err)
+			}
+			tool, _ := a.Tool(ReadFileToolName)
+			shared := tool.(*ReadFileTool).approval.PromptLock() == manager.ApprovalMgr.PromptLock()
+			if shared != tc.shared {
+				t.Fatalf("shared lock=%t want%t", shared, tc.shared)
+			}
+		})
 	}
 }

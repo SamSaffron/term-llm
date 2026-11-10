@@ -11,6 +11,7 @@ import (
 
 // CodeModePrompts supplies cell-owned cancellation and presentation, never authority.
 type CodeModePrompts struct {
+	Serial      bool // single-foreground transports share the root prompt lock
 	Prompt      func(string, bool, bool, string) (ApprovalResult, error)
 	Workspace   func(string) (WorkspaceApprovalResult, error)
 	SharedShell func(string) (ApprovalResult, error)
@@ -45,7 +46,7 @@ func (r *LocalToolRegistry) captureCodeModeAuthority(_ context.Context, ref core
 	permissions := r.permissions.clone()
 	approval := r.approval.CloneForAgentRun(ref.SessionID)
 	approval.permissions = permissions
-	approval.promptShared = &sync.Mutex{}
+	approval.promptShared = r.approval.PromptLock()
 	approval.liveRoot = r.approval.root()
 	// A cell's grants are local. A later request may rebind the root store/session.
 	approval.workspaceStore = nil
@@ -60,6 +61,9 @@ func (r *LocalToolRegistry) captureCodeModeAuthority(_ context.Context, ref core
 	root.toolAllowMu.RUnlock()
 	if binder != nil {
 		prompts := binder(ref)
+		if !prompts.Serial {
+			approval.promptShared = &sync.Mutex{}
+		}
 		approval.PromptUIFunc = prompts.Prompt
 		approval.WorkspacePromptFunc = prompts.Workspace
 		approval.SharedShellPromptUIFunc = prompts.SharedShell
