@@ -5,6 +5,7 @@ import { Icon } from './Icon';
 import { Overlay } from './Overlay';
 import { ActivityJobDetailView } from './ActivityJobDetailView';
 import './activity.css';
+import { ScriptCells } from './ScriptCells';
 
 function LifecycleIcon({ name }: { name: string }) {
   return (
@@ -101,6 +102,7 @@ export function ActivitySheet({ onClose }: { onClose: () => void }) {
             {uncertain ? '· May be incomplete or out of date · ' : '· '}This conversation and its
             children
           </p>
+          {Boolean(snapshot?.cells?.length) && <ScriptCells key={scope} sessionId={scope} />}
           <div class="activity-list">
             {(['agent', 'job'] as const).map((kind) => {
               const group = rows.filter((row) => row.kind === kind);

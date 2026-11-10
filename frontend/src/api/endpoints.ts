@@ -6,6 +6,7 @@ import type {
   WebSessionMetrics,
   ChildRunProjection,
   SessionActivityResponse,
+  CoreCodeModeCellSummary,
   ActivityJobRun,
   ActivityJobDetail,
   SharingCapabilitiesResponse as GeneratedSharingCapabilitiesResponse,
@@ -84,6 +85,19 @@ export type ActivitySnapshot = SessionActivityResponse & {
   __etag?: string;
   __notModified?: boolean;
 };
+
+export type ScriptCell = CoreCodeModeCellSummary;
+export interface ScriptApproval {
+  approval_id: string;
+  cell_id: string;
+  title: string;
+  path: string;
+  options: Array<{ label: string; description: string; index: number }>;
+}
+export interface ScriptCellsResponse {
+  cells: ScriptCell[] | null;
+  pending_approvals: ScriptApproval[] | null;
+}
 
 export interface SessionChildrenResponse {
   children: StatsChild[];
@@ -326,6 +340,10 @@ export const endpoints = (api: APIClient) => ({
       __etag: response.headers.get('ETag') || '',
     };
   },
+  scriptCells: (id: string) =>
+    api.get<ScriptCellsResponse>(`/v1/sessions/${encoded(id)}/code-cells`),
+  cancelScripts: (id: string, cellId?: string) =>
+    api.post(`/v1/sessions/${encoded(id)}/code-cells/cancel`, cellId ? { cell_id: cellId } : {}),
   sessionActivity: async (
     id: string,
     signal?: AbortSignal,

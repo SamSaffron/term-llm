@@ -19,6 +19,9 @@ var nestedProcessPermits = make(chan struct{}, 16)
 
 type nestedContextKey struct{}
 type nestedLease struct {
+	permitMu   sync.Mutex
+	held       bool
+	pause      func() (func() error, error)
 	once       sync.Once
 	started    bool
 	background bool
@@ -40,23 +43,28 @@ type codeModule struct {
 	trusted    func() bool
 }
 type nestedCell struct {
-	engine     *Engine
-	parent     string
-	send       corestream.Sender
-	eventMu    sync.RWMutex
-	eventSend  corestream.Sender
-	background bool
-	ceiling    map[string]nestedIdentity
-	modules    map[string]codeModule
-	permits    chan struct{}
-	mu         sync.Mutex
-	closed     bool
-	live       int
-	outcomes   []core.CodeModeCallOutcome
-	images     map[string]core.ToolImageData
-	imageBytes int
-	doneOnce   sync.Once
-	done       chan struct{}
+	engine         *Engine
+	parent         string
+	send           corestream.Sender
+	eventMu        sync.RWMutex
+	eventSend      corestream.Sender
+	background     bool
+	ceiling        map[string]nestedIdentity
+	modules        map[string]codeModule
+	permits        chan struct{}
+	mu             sync.Mutex
+	closed         bool
+	live           int
+	waiting        int
+	awaiting       int
+	outcomes       []core.CodeModeCallOutcome
+	images         map[string]core.ToolImageData
+	imageBytes     int
+	doneOnce       sync.Once
+	done           chan struct{}
+	sessionPermits chan struct{}
+	inflight       chan struct{}
+	authority      core.CodeModeAuthority
 }
 
 // SetCodeModeDirectOnly classifies built-in authority/lifecycle tools using host metadata.
@@ -79,7 +87,7 @@ func (e *Engine) admitCodeCell(ctx context.Context, parent string, send corestre
 func (e *Engine) admitCodeCellFor(ctx context.Context, parent string, send corestream.Sender, required string, background bool) (*nestedCell, error) {
 	e.codeModeMu.Lock()
 	defer e.codeModeMu.Unlock()
-	if e.codeModeCell != nil {
+	if !background && e.codeModeCell != nil {
 		return nil, &codemode.Error{Code: "busy", Message: "cell or unresolved child still active"}
 	}
 	if !e.IsToolAllowed(required) {
@@ -102,7 +110,9 @@ func (e *Engine) admitCodeCellFor(ctx context.Context, parent string, send cores
 	for n, m := range e.codeModules {
 		c.modules[n] = m
 	}
-	e.codeModeCell = c
+	if !background {
+		e.codeModeCell = c
+	}
 	return c, nil
 }
 
@@ -174,6 +184,14 @@ func (c *nestedCell) Describe(ctx context.Context, names []string) (json.RawMess
 	return b, err
 }
 func (c *nestedCell) Call(ctx context.Context, name string, args json.RawMessage) (json.RawMessage, error) {
+	if c.inflight != nil {
+		select {
+		case c.inflight <- struct{}{}:
+			defer func() { <-c.inflight }()
+		default:
+			return nil, &codemode.Error{Code: "call_limit", Message: "session in-flight call limit", Outcome: "not_dispatched"}
+		}
+	}
 	call := core.ToolCall{ID: core.NewSyntheticToolCallID(), Name: name, Arguments: append(json.RawMessage(nil), args...)}
 	if len(args) > codemode.Limits.Arguments || !json.Valid(args) {
 		return nil, c.failure(call, "arguments_limit", "not_dispatched", "invalid or oversized arguments")
@@ -195,6 +213,14 @@ func (c *nestedCell) Call(ctx context.Context, name string, args json.RawMessage
 		return nil, c.failure(call, errorCode(err), "not_dispatched", err.Error())
 	}
 	toolCtx := context.WithValue(ctx, nestedContextKey{}, lease)
+	if c.background {
+		toolCtx = core.ContextWithCodeModeToolPause(toolCtx, lease.pause)
+	}
+	if c.authority != nil {
+		if tool, ok := c.authority.Tool(name); ok {
+			toolCtx = context.WithValue(toolCtx, nestedToolOverrideKey{}, tool)
+		}
+	}
 	startEvent := core.Event{Type: core.EventToolExecStart, ParentToolCallID: c.parent, ToolCallID: call.ID, ToolName: name, ToolArgs: call.Arguments}
 	if c.background {
 		c.send.TrySend(startEvent)
@@ -260,15 +286,30 @@ func (c *nestedCell) Outcomes() []core.CodeModeCallOutcome {
 	return append([]core.CodeModeCallOutcome(nil), c.outcomes...)
 }
 func (c *nestedCell) acquire(ctx context.Context) (*nestedLease, error) {
+	c.mu.Lock()
+	c.waiting++
+	c.mu.Unlock()
+	defer func() { c.mu.Lock(); c.waiting--; c.mu.Unlock() }()
 	select {
 	case c.permits <- struct{}{}:
 	case <-ctx.Done():
 		return nil, ctx.Err()
 	}
+	if c.sessionPermits != nil {
+		select {
+		case c.sessionPermits <- struct{}{}:
+		case <-ctx.Done():
+			<-c.permits
+			return nil, ctx.Err()
+		}
+	}
 	select {
 	case nestedProcessPermits <- struct{}{}:
 	case <-ctx.Done():
 		<-c.permits
+		if c.sessionPermits != nil {
+			<-c.sessionPermits
+		}
 		return nil, ctx.Err()
 	}
 	c.engine.codeModeMu.Lock()
@@ -278,21 +319,80 @@ func (c *nestedCell) acquire(ctx context.Context) (*nestedLease, error) {
 		c.engine.codeModeMu.Unlock()
 		<-c.permits
 		<-nestedProcessPermits
+		if c.sessionPermits != nil {
+			<-c.sessionPermits
+		}
 		return nil, fmt.Errorf("cell closed")
 	}
 	c.live++
 	c.mu.Unlock()
 	c.engine.codeModeMu.Unlock()
-	return &nestedLease{parent: c.parent, background: c.background, finish: func() {
+	lease := &nestedLease{parent: c.parent, background: c.background, held: true}
+	lease.finish = func() {
 		<-c.permits
-		<-nestedProcessPermits
+		lease.permitMu.Lock()
+		if lease.held {
+			<-nestedProcessPermits
+			if c.sessionPermits != nil {
+				<-c.sessionPermits
+			}
+			lease.held = false
+		}
+		lease.permitMu.Unlock()
 		c.engine.codeModeMu.Lock()
 		defer c.engine.codeModeMu.Unlock()
 		c.mu.Lock()
 		defer c.mu.Unlock()
 		c.live--
 		c.finishLocked()
-	}}, nil
+	}
+	lease.pause = func() (func() error, error) {
+		lease.permitMu.Lock()
+		if !lease.held {
+			lease.permitMu.Unlock()
+			return nil, fmt.Errorf("tool permits already parked")
+		}
+		<-nestedProcessPermits
+		if c.sessionPermits != nil {
+			<-c.sessionPermits
+		}
+		lease.held = false
+		lease.permitMu.Unlock()
+		c.mu.Lock()
+		c.awaiting++
+		c.mu.Unlock()
+		var once sync.Once
+		var resumeErr error
+		return func() error {
+			once.Do(func() {
+				c.mu.Lock()
+				c.awaiting--
+				c.mu.Unlock()
+				if c.sessionPermits != nil {
+					select {
+					case c.sessionPermits <- struct{}{}:
+					case <-ctx.Done():
+						resumeErr = ctx.Err()
+						return
+					}
+				}
+				select {
+				case nestedProcessPermits <- struct{}{}:
+				case <-ctx.Done():
+					if c.sessionPermits != nil {
+						<-c.sessionPermits
+					}
+					resumeErr = ctx.Err()
+					return
+				}
+				lease.permitMu.Lock()
+				lease.held = true
+				lease.permitMu.Unlock()
+			})
+			return resumeErr
+		}, nil
+	}
+	return lease, nil
 }
 func (c *nestedCell) Close() {
 	c.engine.codeModeMu.Lock()
@@ -304,12 +404,17 @@ func (c *nestedCell) Close() {
 	c.finishLocked()
 }
 
-// finishLocked releases the engine's single-cell slot only after every actual
-// host call has ended. A cancelled cell with an unresolved external effect
-// therefore remains quarantined even though its machine has exited.
+// finishLocked releases the legacy slot and signals capability settlement only
+// after every actual host call ends. Async cells keep their own admission place
+// until this signal, even after their VM exits.
 func (c *nestedCell) finishLocked() {
 	if c.closed && c.live == 0 {
-		c.doneOnce.Do(func() { close(c.done) })
+		c.doneOnce.Do(func() {
+			if c.authority != nil {
+				c.authority.Close()
+			}
+			close(c.done)
+		})
 		if c.engine.codeModeCell == c {
 			c.engine.codeModeCell = nil
 		}

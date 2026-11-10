@@ -58,7 +58,7 @@ export type ServeSkillRunEvent = { "sequence": number; "type": string; "data"?: 
 
 export type SessionActivityMetrics = { "input_tokens": number; "output_tokens": number; "cached_input_tokens": number; "cache_write_tokens": number; "tool_calls": number; "llm_turns": number; };
 
-export type SessionActivityResponse = { "session_id": string; "agents": (ChildRunProjection)[] | null; "jobs": (ActivityJobRun)[] | null; "agents_availability": string; "jobs_availability": string; "agents_partial": boolean; "jobs_partial": boolean; };
+export type SessionActivityResponse = { "cells"?: (CoreCodeModeCellSummary)[]; "session_id": string; "agents": (ChildRunProjection)[] | null; "jobs": (ActivityJobRun)[] | null; "agents_availability": string; "jobs_availability": string; "agents_partial": boolean; "jobs_partial": boolean; };
 
 export type SessionInterruptRequest = { "message": string; "content": unknown; "steering_id": string; "client_message_id"?: string; "delivery"?: string; "expected_response_id"?: string; "expected_run_epoch"?: number; };
 
@@ -95,6 +95,8 @@ export type AuthorshipSessionFields = { "created_by"?: SessionAuthor; "participa
 export type HubStatus = { "reachable": boolean; "state": string; "latency_ms": number; "version"?: string; "agent"?: string; "capabilities"?: (string)[]; "details"?: Record<string, string>; "error"?: string; };
 
 export type CoreCodeModeCallOutcome = { "arguments"?: unknown; "arguments_omitted"?: boolean; "call_id": string; "name": string; "status": string; "outcome": string; "error"?: string; "isError"?: boolean; "guardian_reviews"?: (CoreGuardianReview)[]; };
+
+export type CoreCodeModeCellSummary = { "cell_id": string; "status": string; "started_at": number; "elapsed_ms": number; "live": boolean; "has_more_output": boolean; "unsettled_calls": number; "waiting_calls"?: number; "error_code"?: string; };
 
 export type CoreDiffComment = { "id": string; "parent_id"?: string; "path": string; "scope"?: string; "side": string; "line": number; "file_change_seq": number; "line_text": string; "context_before"?: (CoreDiffCommentContextLine)[]; "context_after"?: (CoreDiffCommentContextLine)[]; "instruction": string; };
 

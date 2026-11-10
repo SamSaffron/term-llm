@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/samsaffron/term-llm/internal/llm/core"
 	"github.com/samsaffron/term-llm/internal/runtimeoutput"
 )
 
@@ -72,7 +73,7 @@ func (m *ApprovalManager) checkShellApprovalWithContext(ctx context.Context, com
 		if m.DebugApproval {
 			runtimeoutput.Logf("[approval] CheckShellApproval cmd=%q → calling PromptUIFunc", command)
 		}
-		result, err := promptUIFunc(command, false, true, workDir)
+		result, err := core.WithCodeModeApproval(ctx, func() (ApprovalResult, error) { return promptUIFunc(command, false, true, workDir) })
 		if err != nil {
 			return Cancel, err
 		}

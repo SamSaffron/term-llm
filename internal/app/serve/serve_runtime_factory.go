@@ -187,6 +187,7 @@ func configureServeRuntimeTools(runtime *serveRuntime, opts serveAgentRuntimeOpt
 	if runtime.toolMgr == nil {
 		return
 	}
+	runtime.toolMgr.CodeModePromptBinder = runtime.codeModeCellPrompts
 	runtime.toolMgr.ApprovalMgr.GuardianEventFunc = runtime.emitGuardianReview
 	if spawn := runtime.toolMgr.GetSpawnAgentTool(); spawn != nil {
 		spawn.SetEventCallback(runtime.recordSubagentStats)

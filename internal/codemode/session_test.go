@@ -76,7 +76,7 @@ func TestSessionCellYieldResumeAndFreshHeap(t *testing.T) {
 		t.Fatalf("early status %q", status)
 	}
 	result := waitCellDone(t, cell)
-	if result.Status != "completed" || !result.StateCommitted || string(result.State) != `{"x":1}` {
+	if result.Status != "completed" || !result.StateCommitted || string(result.State) != `{"set":{"x":1},"delete":[]}` {
 		t.Fatalf("result: %+v", result)
 	}
 	kinds, texts := sink.snapshot()

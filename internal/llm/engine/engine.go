@@ -108,6 +108,7 @@ type FileTrackingRunLifecycle interface {
 type Engine struct {
 	codeModeMu         sync.Mutex
 	codeModeCell       *nestedCell
+	codeModeCapture    core.CodeModeAuthorityCapture
 	codeModules        map[string]codeModule
 	codeModeDirectOnly map[string]bool
 	codeModeSessions   *codeModeSessions

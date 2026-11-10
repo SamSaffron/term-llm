@@ -251,6 +251,7 @@ func (s *serveServer) bindResponseRunCallbacks(runCtx context.Context, runtime *
 	runtime.subagentProgress = progress
 	progressOwner := runtime.subagentProgressOwner
 	runtime.approvalMu.Unlock()
+	runtime.rebindCellApprovals(func(event string, data map[string]any) error { return run.appendEvent(event, data) })
 	return func() {
 		runtime.approvalMu.Lock()
 		if runtime.subagentProgress == progress && runtime.subagentProgressOwner == progressOwner {

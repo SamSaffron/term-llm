@@ -348,16 +348,6 @@ func (m *ApprovalManager) clearYoloWorkspaceGrants() {
 	root.workspaceMu.Unlock()
 }
 
-func (m *ApprovalManager) primaryWorkspaceConfirmedLocked() bool {
-	root := m.root()
-	provenance := root.primaryWorkspaceGrant.Provenance
-	return root.primaryWorkspace != "" &&
-		root.primaryWorkspaceGrant.ID == primaryWorkspaceID &&
-		root.primaryWorkspaceGrant.Path == root.primaryWorkspace &&
-		root.primaryWorkspaceGrant.Access == session.WorkspaceAccessWrite &&
-		(provenance == primaryWorkspaceProvenanceConfirmed || provenance == primaryWorkspaceProvenanceMainInherited)
-}
-
 // ErrWorkspaceApprovalCancelled reports that a proactive workspace prompt was
 // dismissed without making an authority decision.
 var ErrWorkspaceApprovalCancelled = errors.New("workspace approval cancelled")
@@ -439,7 +429,7 @@ func (m *ApprovalManager) ensurePrimaryWorkspaceAccess(ctx context.Context, cano
 		if prompt == nil {
 			return NewToolErrorf(ErrPermissionDenied, "proposed primary workspace %s requires explicit human read/write confirmation, but no workspace approval transport is available", proposal)
 		}
-		result, err := prompt(proposal)
+		result, err := core.WithCodeModeApproval(ctx, func() (WorkspaceApprovalResult, error) { return prompt(proposal) })
 		if err != nil {
 			return NewToolErrorf(ErrPermissionDenied, "proposed primary workspace %s requires explicit human read/write confirmation: %v", proposal, err)
 		}
@@ -536,11 +526,15 @@ func (m *ApprovalManager) IsWorkspacePathAllowed(path string, isWrite bool) bool
 	primaryConfirmed := root.primaryWorkspaceConfirmedLocked()
 	yoloGrants := make([]session.WorkspaceGrant, 0, len(root.workspaceYoloGrants))
 	for _, grant := range root.workspaceYoloGrants {
-		yoloGrants = append(yoloGrants, grant)
+		if root.codeModeGrantLive(grant) {
+			yoloGrants = append(yoloGrants, grant)
+		}
 	}
 	grants := make([]session.WorkspaceGrant, 0, len(root.workspaceGrants))
 	for _, grant := range root.workspaceGrants {
-		grants = append(grants, grant)
+		if root.codeModeGrantLive(grant) {
+			grants = append(grants, grant)
+		}
 	}
 	root.workspaceMu.RUnlock()
 	if primaryConfirmed && pathWithinWorkspace(canonical, primary) {

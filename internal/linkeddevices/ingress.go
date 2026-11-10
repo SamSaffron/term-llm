@@ -146,7 +146,7 @@ func RouteAllowed(method, path string) bool {
 			return true
 		}
 		if strings.HasPrefix(path, "/v1/sessions/") {
-			return hasAnySuffix(path, "/approval", "/ask_user", "/attention/seen")
+			return hasAnySuffix(path, "/approval", "/ask_user", "/attention/seen", "/code-cells/cancel")
 		}
 	}
 	return false
@@ -175,7 +175,7 @@ func sessionReadAllowed(path string) bool {
 	suffix := parts[1]
 	switch suffix {
 	case "messages", "state", "transcript", "transcript/bodies", "attention/unseen", "children", "activity",
-		"runtime/approvals", "diff-comments", "inspect", "inspect/bodies":
+		"runtime/approvals", "code-cells", "diff-comments", "inspect", "inspect/bodies":
 		return true
 	}
 	return strings.HasPrefix(suffix, "skill-runs/")

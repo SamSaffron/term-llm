@@ -1,5 +1,5 @@
 // This closure keeps the host callback and settlement function out of guest globals.
-(function (bridge, names, initial) {
+(function (bridge, names, initial, deltaMode) {
   "use strict";
   delete globalThis.__bridge;
   const stringify = JSON.stringify.bind(JSON),
@@ -10,7 +10,8 @@
   const ownKeys = Reflect.ownKeys.bind(Reflect),
     apply = Reflect.apply.bind(Reflect);
   const getPrototypeOf = Object.getPrototypeOf.bind(Object),
-    plainPrototype = Object.prototype;
+    plainPrototype = Object.prototype,
+    hasOwn = Object.prototype.hasOwnProperty;
   const create = Object.create.bind(Object),
     define = Object.defineProperty.bind(Object);
   const isArray = Array.isArray.bind(Array),
@@ -69,6 +70,7 @@
     });
   }
   const state = Object.assign(create(null), parse(initial));
+  const written = create(null);
   const registry = create(null);
   for (const name of names)
     define(registry, name, {
@@ -108,6 +110,8 @@
     image: (value) => send({ kind: "image", value }),
     load: (key) => state[toString(key)],
     store: (key, value) => {
+      key = toString(key);
+      written[key] = true;
       if (value === undefined) delete state[toString(key)];
       else
         define(state, toString(key), {
@@ -152,7 +156,14 @@
     body()
       .then((value) => {
         if (value !== undefined) globalThis.text(value);
-        send({ kind: "done", value: state });
+        if (deltaMode) {
+          const set = create(null), deleted = [];
+          for (const key of ownKeys(written)) {
+            if (apply(hasOwn, state, [key])) set[key] = state[key];
+            else deleted.push(key);
+          }
+          send({ kind: "done", value: { set, delete: deleted } });
+        } else send({ kind: "done", value: state });
       })
       .catch((e) =>
         send({

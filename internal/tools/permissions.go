@@ -7,6 +7,7 @@ import (
 	"sync"
 
 	"github.com/samsaffron/term-llm/internal/appdata"
+	"github.com/samsaffron/term-llm/internal/shellcmd"
 )
 
 // ToolPermissions manages allowlists for tool access.
@@ -274,63 +275,5 @@ func resolveParentSymlinks(abs string) (string, error) {
 }
 
 // ExtractCommandPrefix extracts a shell command prefix for policy learning.
-func ExtractCommandPrefix(cmd string) string {
-	tokens := tokenizeCommand(cmd)
-	if len(tokens) == 0 {
-		return ""
-	}
-
-	// Known multi-word commands
-	multiWord := map[string]bool{
-		"git":     true,
-		"npm":     true,
-		"go":      true,
-		"docker":  true,
-		"cargo":   true,
-		"yarn":    true,
-		"pnpm":    true,
-		"make":    true,
-		"kubectl": true,
-	}
-
-	if len(tokens) >= 2 && multiWord[tokens[0]] {
-		return tokens[0] + " " + tokens[1] + " *"
-	}
-	return tokens[0] + " *"
-}
-
-// tokenizeCommand splits a command into tokens, handling quotes.
-func tokenizeCommand(cmd string) []string {
-	var tokens []string
-	var current strings.Builder
-	inQuote := false
-	quoteChar := rune(0)
-
-	for _, r := range cmd {
-		switch {
-		case r == '"' || r == '\'':
-			if inQuote && r == quoteChar {
-				inQuote = false
-				quoteChar = 0
-			} else if !inQuote {
-				inQuote = true
-				quoteChar = r
-			} else {
-				current.WriteRune(r)
-			}
-		case r == ' ' && !inQuote:
-			if current.Len() > 0 {
-				tokens = append(tokens, current.String())
-				current.Reset()
-			}
-		default:
-			current.WriteRune(r)
-		}
-	}
-
-	if current.Len() > 0 {
-		tokens = append(tokens, current.String())
-	}
-
-	return tokens
-}
+func ExtractCommandPrefix(cmd string) string { return shellcmd.ExtractCommandPrefix(cmd) }
+func tokenizeCommand(cmd string) []string    { return shellcmd.TokenizeCommand(cmd) }

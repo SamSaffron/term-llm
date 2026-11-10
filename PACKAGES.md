@@ -38,6 +38,7 @@ One line per root-module package, generated from package doc comments by `make d
 - `internal/app/runtime/progressive` — runs the progress-tool loop with work and finalization budgets for ask and serve.
 - `internal/app/serve` — hosts `term-llm serve`: HTTP and Hub routes, the shared runner, children and live runtime.
 - `internal/app/serve/agentcatalog` — lists discoverable agents for the Web UI's /agents catalog.
+- `internal/app/serve/approvalprompt` — builds the shared file, shell and cell approval presentation.
 - `internal/app/serve/authorship` — handles display-only proxy identity and author directory caching.
 - `internal/app/serve/hub` — holds the Hub server implementation behind explicit options.
 - `internal/app/serve/hubnode` — registers a reverse Web node with its Hub and diagnoses node-to-Hub connectivity failures.
@@ -182,7 +183,7 @@ One line per root-module package, generated from package doc comments by `make d
 - `internal/session/transcriptprefix` — compares persisted transcript prefixes for replacement and compaction.
 - `internal/sessiontitle` — generates and validates short and long LLM session titles.
 - `internal/share` — defines provider-neutral transcript sharing.
-- `internal/shellcmd` — resolves the user's shell and the argv used to run a command or an interactive session on each platform.
+- `internal/shellcmd` — resolves the user's shell and the argv used to run a command or an interactive session on each platform, and quote-aware approval parsing.
 - `internal/sidequestion` — builds and runs private side questions over a conversation snapshot.
 - `internal/signal` — derives contexts cancelled by SIGINT and SIGTERM.
 - `internal/skills` — provides Agent Skills integration for term-llm.

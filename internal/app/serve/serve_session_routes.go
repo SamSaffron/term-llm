@@ -8,6 +8,10 @@ import (
 )
 
 func (s *serveServer) routeSessionCore(w http.ResponseWriter, r *http.Request, sessionID, requestedSessionID, suffix string) bool {
+	if suffix == "code-cells" || suffix == "code-cells/cancel" {
+		s.handleCodeCells(w, r, sessionID, suffix)
+		return true
+	}
 	if suffix == "shell" || strings.HasPrefix(suffix, "shell/") {
 		s.handleSessionShell(w, r, sessionID, suffix)
 		return true

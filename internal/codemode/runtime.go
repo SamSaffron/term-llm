@@ -11,7 +11,7 @@ var Limits = struct {
 	Code, State, Arguments, RawResult, Calls, Children, ProcessChildren, VMs int
 	Heap, Linear, Stack, Text, Items, Images, ImageBytes                     int
 	CPU, Wall, MaxWall                                                       time.Duration
-}{64 << 10, 64 << 10, 256 << 10, 4 << 20, 64, 4, 16, 4, 64 << 20, 128 << 20, 512 << 10, 64 << 10, 128, 4, 16 << 20, 2 * time.Second, 120 * time.Second, 300 * time.Second}
+}{64 << 10, 64 << 10, 256 << 10, 4 << 20, 64, 4, 16, 256, 64 << 20, 128 << 20, 512 << 10, 64 << 10, 128, 4, 16 << 20, 2 * time.Second, 120 * time.Second, 300 * time.Second}
 
 // Host dispatches admitted tools. Implementations own authority and actual-call leases.
 type Host interface {

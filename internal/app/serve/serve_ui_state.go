@@ -17,7 +17,7 @@ func (rt *serveRuntime) hasActiveSideQuestion() bool {
 // request is active. Admission covers setup before runOnce claims rt.mu and
 // the gaps between goal/fallback turns without locking out metadata writes.
 func (rt *serveRuntime) hasActiveActivity() bool {
-	return rt.admittedActivity.Load() > 0 || rt.compacting.Load() || rt.hasActiveRun() || rt.hasActiveSideQuestion()
+	return rt.cellsProtectRuntime() || rt.admittedActivity.Load() > 0 || rt.compacting.Load() || rt.hasActiveRun() || rt.hasActiveSideQuestion()
 }
 
 func (rt *serveRuntime) clearLastUIRunError() {
