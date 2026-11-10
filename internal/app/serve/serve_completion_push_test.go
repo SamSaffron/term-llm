@@ -110,6 +110,12 @@ func TestCompletionPushTimeoutDoesNotStarveOutbox(t *testing.T) {
 				if len(calls) != 1 {
 					t.Fatalf("continued exhausted batch: %v", calls)
 				}
+				// Retry timestamps have whole-second precision. Keep slow ineligible
+				// during healthy catchup even if its first backoff crosses a second
+				// boundary; the explicit retry loop below controls its eligibility.
+				if _, err := db.Exec(`UPDATE completion_push_outbox SET next_attempt_at = datetime('now', '+1 day') WHERE response_id = 'slow'`); err != nil {
+					t.Fatal(err)
+				}
 				s.dispatchCompletionPushesWithSender(context.Background(), time.Millisecond, send)
 			}
 			assertRow("healthy", "delivered", 1)

@@ -846,6 +846,9 @@ func TestCodeModeHumanInterruptAndScopedReset(t *testing.T) {
 	if got := string(e.codeModeSessions.store.State("owner")); got != `{"saved":42}` {
 		t.Fatalf("committed store changed: %s", got)
 	}
+	// A terminal receipt can precede actual-call settlement and asynchronous
+	// admission-place reclamation; interrupt includes those live leases.
+	waitCodeModeSlotIdle(t, e)
 	if e.InterruptCodeModeSession("owner") {
 		t.Fatal("terminal cell reported as active")
 	}
