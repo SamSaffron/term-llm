@@ -423,6 +423,10 @@ export class SessionStore {
     preserveLiveState = false,
   ): Session {
     if (!existing) return incoming;
+    // Persisted settings may still name the outgoing provider during a handover.
+    // While a local response owns the session, events/snapshots own its header.
+    const preserveRuntime =
+      preserveLiveState && existing.activeRun && this.host.hasRun(existing.id);
     const storeReplaced = Boolean(
       existing.attentionStoreInstanceId &&
       incoming.attentionStoreInstanceId &&
@@ -459,6 +463,13 @@ export class SessionStore {
     return {
       ...existing,
       ...incoming,
+      ...(preserveRuntime
+        ? {
+            activeProvider: existing.activeProvider || incoming.activeProvider,
+            activeModel: existing.activeModel || incoming.activeModel,
+            activeEffort: existing.activeEffort ?? incoming.activeEffort,
+          }
+        : {}),
       ...(preserveHistory ? { olderTranscriptAnchors: existing.olderTranscriptAnchors } : {}),
       ...(hasAttention
         ? {

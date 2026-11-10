@@ -5,6 +5,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/samsaffron/term-llm/internal/app/serve/wire"
 	"github.com/samsaffron/term-llm/internal/llm/core"
 	"github.com/samsaffron/term-llm/internal/runboundary"
 	"github.com/samsaffron/term-llm/internal/session"
@@ -60,10 +61,7 @@ type responseRunRecoveryMessage struct {
 	EventSequence           int64
 }
 
-type responseRunRecoveryEvent struct {
-	Event   string
-	Payload map[string]any
-}
+type responseRunRecoveryEvent = wire.RecoveryEvent
 
 type responseRunSubscribeResult struct {
 	id               int
@@ -132,6 +130,7 @@ type responseRun struct {
 	anchorAvailable         bool
 	startAnchorRowID        int64 // boundary published before run output; survives invalidation, callers must confirm the row exists
 	boundary                *runboundary.Tracker
+	provider                string
 	model                   string
 	reasoningEffort         string
 	reasoningEffortSet      bool

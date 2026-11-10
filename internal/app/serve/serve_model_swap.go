@@ -606,13 +606,7 @@ func (s *serveServer) executeResponseRunModelSwap(runCtx context.Context, runtim
 			message = err.Error()
 		}
 		hadSubscribers, failErr := run.fail(map[string]any{
-			"response": map[string]any{
-				"id":      continuationID(),
-				"object":  "response",
-				"created": created,
-				"model":   model,
-				"status":  "failed",
-			},
+			"response": exec.terminalResponse(continuationID(), model, created, "failed"),
 			"error": map[string]any{
 				"message": message,
 				"type":    errType,
@@ -652,7 +646,7 @@ func (s *serveServer) executeResponseRunModelSwap(runCtx context.Context, runtim
 			return true
 		}
 		cancelled, _ := run.finishCancelled(map[string]any{
-			"response": map[string]any{"id": continuationID(), "object": "response", "created": created, "model": model, "status": "cancelled"},
+			"response": exec.terminalResponse(continuationID(), model, created, "cancelled"),
 		})
 		if cancelled && options.uiSession {
 			runtime.clearLastUIRunError()

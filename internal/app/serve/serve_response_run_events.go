@@ -127,28 +127,6 @@ func (r *responseRun) fail(payload map[string]any, errType, errMessage string) (
 	return hadSubscribers, r.appendEventLocked("response.failed", payload, true)
 }
 
-func (r *responseRun) applyRuntimeMetadataLocked(event string, payload map[string]any) {
-	var source map[string]any
-	switch event {
-	case "response.created", "response.completed", "response.cancelled":
-		source = mapValue(payload["response"])
-	case "response.model_switch":
-		source = payload
-	default:
-		return
-	}
-	if len(source) == 0 {
-		return
-	}
-	if model := stringValue(source["model"]); model != "" {
-		r.model = model
-	}
-	if _, ok := source["reasoning_effort"]; ok {
-		r.reasoningEffort = stringValue(source["reasoning_effort"])
-		r.reasoningEffortSet = true
-	}
-}
-
 func (r *responseRun) appendEventLocked(event string, payload map[string]any, terminal bool) error {
 	if payload == nil {
 		payload = map[string]any{}
@@ -218,7 +196,7 @@ func (r *responseRun) appendEventLocked(event string, payload map[string]any, te
 	}
 	r.lastSequenceNumber++
 	payload["sequence_number"] = r.lastSequenceNumber
-	r.applyRuntimeMetadataLocked(event, payload)
+	r.provider, r.model, r.reasoningEffort, r.reasoningEffortSet = wire.ResponseRuntimeMetadata(event, payload, r.provider, r.model, r.reasoningEffort, r.reasoningEffortSet)
 
 	data, err := json.Marshal(payload)
 	if err != nil {

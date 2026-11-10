@@ -6,6 +6,7 @@ import { batch, computed, effect, signal, untracked, type ReadonlySignal } from 
 import { APIError, decodeSSE, responseError } from '../api/client';
 import {
   initialProjection,
+  projectModelSwapProgress,
   reduceResponse,
   responseSubagentProgress,
   ResponseProtocolError,
@@ -1942,9 +1943,15 @@ export class RunEngine {
       const status = String(snapshot.status || 'in_progress');
       let recoveredAskUser: AskUserPrompt | null = null;
       let recoveredApproval: ApprovalPrompt | null = null;
+      let recoveredModelSwap: ResponseProjection['modelSwap'];
       for (const entry of listFrom(recovery, 'events')) {
         const eventType = String(entry.event || entry.type || '');
         const payload = entry.payload ?? entry;
+        if (eventType === 'response.model_swap.progress')
+          recoveredModelSwap = projectModelSwapProgress(
+            recordValue(payload) || {},
+            recoveredModelSwap,
+          );
         if (eventType === 'response.ask_user.prompt')
           recoveredAskUser = askUserPrompt(payload, sessionId) || recoveredAskUser;
         if (eventType === 'response.approval.prompt')
@@ -1976,6 +1983,7 @@ export class RunEngine {
         ...existing,
         askUser: recoveredAskUser,
         approval: recoveredApproval,
+        modelSwap: terminal ? undefined : recoveredModelSwap,
         plan: recoveredPlan,
         pendingGuardian: {},
         // The snapshot is authoritative for response output. Keep the initiating
@@ -2052,6 +2060,13 @@ export class RunEngine {
           : String(snapshot.continuation_response_id || '').trim() || null;
       batch(() => {
         this.runs.value = { ...this.runs.peek(), [sessionId]: next };
+        this.sessionStore.patch(sessionId, {
+          ...(snapshot.provider ? { activeProvider: String(snapshot.provider) } : {}),
+          ...(snapshot.model ? { activeModel: String(snapshot.model) } : {}),
+          ...(Object.hasOwn(snapshot, 'reasoning_effort')
+            ? { activeEffort: String(snapshot.reasoning_effort || '') }
+            : {}),
+        });
         if (terminal)
           this.sessionStore.patch(sessionId, {
             activeResponseId: null,

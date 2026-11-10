@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/samsaffron/term-llm/internal/app/serve/wire"
 	"github.com/samsaffron/term-llm/internal/session"
 )
 
@@ -118,6 +119,9 @@ func (r *responseRun) resolvePendingInteractionsLocked(outcome string) {
 func (r *responseRun) applyRecoveryEventLocked(event string, payload map[string]any) {
 	event = steeringWireEvent(nil, event)
 	payload = normalizeSteeringObject(payload, true).(map[string]any)
+	if wire.ClearsModelSwapProgress(event) {
+		r.recoveryEvents = wire.ClearModelSwapProgress(r.recoveryEvents)
+	}
 	if event == "response.completed" || event == "response.cancelled" || event == "response.failed" {
 		r.flushPendingGuardianReviewsLocked()
 	}
@@ -142,6 +146,8 @@ func (r *responseRun) applyRecoveryEventLocked(event string, payload map[string]
 		r.recoveryActivity = payload["activity"]
 	case "response.compaction":
 		r.applyRecoveryResponseCompaction(event, payload)
+	case "response.model_swap.progress":
+		r.recoveryEvents = wire.WithModelSwapProgress(r.recoveryEvents, event, payload)
 	case "response.model_switch":
 		r.applyRecoveryResponseModelSwitch(event, payload)
 	case "response.output_item.added":
@@ -290,6 +296,7 @@ func (r *responseRun) snapshot() map[string]any {
 		"object":               "response",
 		"created":              r.created,
 		"started_at":           r.created * 1000,
+		"provider":             r.provider,
 		"model":                r.model,
 		"status":               r.status,
 		"session_id":           r.sessionID,

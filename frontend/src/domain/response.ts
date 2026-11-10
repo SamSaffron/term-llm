@@ -449,6 +449,29 @@ function validate(
   return { duplicate: false, sequence, responseId, epoch };
 }
 
+/** Shared by ordered SSE reduction and authoritative snapshot recovery. */
+export function projectModelSwapProgress(
+  event: Record<string, unknown>,
+  previous?: ResponseProjection['modelSwap'],
+): ResponseProjection['modelSwap'] {
+  const stage = text(event.stage);
+  // Completion/failure is represented by the durable inline marker or terminal response.
+  if (['complete', 'failed'].includes(stage)) return undefined;
+  const carry = (value: unknown, prior: string | undefined) => text(value).trim() || prior || '';
+  return {
+    stage,
+    content: text(event.text || event.message || event.content) || 'Switching model…',
+    fromProvider: carry(event.previous_provider, previous?.fromProvider),
+    fromModel: carry(event.previous_model, previous?.fromModel),
+    fromEffort: carry(event.previous_effort, previous?.fromEffort),
+    toProvider: carry(event.target_provider, previous?.toProvider),
+    toModel: carry(event.target_model, previous?.toModel),
+    toEffort: carry(event.target_effort, previous?.toEffort),
+    swapStatus: 'started',
+    swapStrategy: stage.startsWith('handover_') ? 'handover' : previous?.swapStrategy || '',
+  };
+}
+
 export function reduceResponse(
   projection: ResponseProjection,
   event: ResponseEvent,
@@ -852,32 +875,8 @@ export function reduceResponse(
         retry: undefined,
       };
     }
-    case 'response.model_swap.progress': {
-      const stage = text(event.stage);
-      const carry = (value: unknown, previous: string | undefined) =>
-        text(value).trim() || previous || '';
-      return {
-        ...next,
-        // Completion/failure is represented by the durable inline marker or the
-        // terminal response. Do not leave a transient status at the transcript tail.
-        modelSwap: ['complete', 'failed'].includes(stage)
-          ? undefined
-          : {
-              stage,
-              content: text(event.text || event.message || event.content) || 'Switching model…',
-              fromProvider: carry(event.previous_provider, projection.modelSwap?.fromProvider),
-              fromModel: carry(event.previous_model, projection.modelSwap?.fromModel),
-              fromEffort: carry(event.previous_effort, projection.modelSwap?.fromEffort),
-              toProvider: carry(event.target_provider, projection.modelSwap?.toProvider),
-              toModel: carry(event.target_model, projection.modelSwap?.toModel),
-              toEffort: carry(event.target_effort, projection.modelSwap?.toEffort),
-              swapStatus: 'started',
-              swapStrategy: stage.startsWith('handover_')
-                ? 'handover'
-                : projection.modelSwap?.swapStrategy || '',
-            },
-      };
-    }
+    case 'response.model_swap.progress':
+      return { ...next, modelSwap: projectModelSwapProgress(event, projection.modelSwap) };
     case 'response.model_switch': {
       const fromModel = text(event.from_model).trim();
       const toModel = text(event.to_model || event.model).trim();
