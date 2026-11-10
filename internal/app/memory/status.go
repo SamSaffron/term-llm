@@ -96,7 +96,7 @@ func Status(opts StatusOptions) error {
 			continue
 		}
 
-		agent := env.ResolveAgent(sess.Agent)
+		agent := sessionAgentOrDefault(sess.Agent)
 		if filterAgent != "" && agent != filterAgent {
 			continue
 		}
