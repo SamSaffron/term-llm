@@ -89,8 +89,9 @@ try {
       if (!link || /^(mailto:|tel:|data:)/.test(link)) continue;
       const url = new URL(link, base);
       if (url.origin !== "https://term-llm.com") continue;
-      // The interactive learning app is deployed separately, not emitted by Hugo.
-      if (url.href === "https://term-llm.com/learn") continue;
+      // These exact endpoints are deployed separately, not emitted by Hugo.
+      // /mac/download is the stable native app download, not a local docs page.
+      if (["https://term-llm.com/learn", "https://term-llm.com/mac/download"].includes(url.href)) continue;
       let target = path.join(site, decodeURIComponent(url.pathname));
       if (url.pathname.endsWith("/")) target = path.join(target, "index.html");
       try { await stat(target); } catch (_) { broken.push(`${path.relative(site, filename)} → ${link}`); continue; }
@@ -174,13 +175,82 @@ try {
   const firstCopy = page.locator("[data-copy-text]").first();
   await firstCopy.click();
   assert.equal(await page.evaluate(() => navigator.clipboard.readText()), "term-llm serve web");
-  await page.getByRole("tab", { name: "Homebrew · macOS" }).focus();
+  const install = page.locator("[data-install-options]");
+  const macDownload = page.getByRole("link", { name: "Download term-llm for Mac", exact: true });
+  async function selectedOS(os, focused = false) {
+    const tab = install.locator(`[data-install-os="${os}"]`);
+    assert.equal(await install.locator('[role="tab"][aria-selected="true"]').count(), 1);
+    assert.equal(await install.locator('[role="tab"][tabindex="0"]').count(), 1);
+    assert.equal(await tab.getAttribute("aria-selected"), "true");
+    assert.equal(await tab.getAttribute("tabindex"), "0");
+    assert.equal(await install.getByRole("tabpanel").count(), 1);
+    const panel = page.locator(`#install-${os}`);
+    assert.ok(await panel.isVisible());
+    assert.equal(await panel.getAttribute("aria-labelledby"), await tab.getAttribute("id"));
+    if (focused) assert.ok(await tab.evaluate((el) => el === document.activeElement));
+  }
+  await install.getByRole("tab", { name: "macOS", exact: true }).click();
+  await selectedOS("macos", true);
+  assert.equal(await macDownload.getAttribute("href"), "https://term-llm.com/mac/download");
   await page.keyboard.press("ArrowRight");
-  assert.equal(await page.getByRole("tab", { name: "Shell installer" }).getAttribute("aria-selected"), "true");
-  assert.ok(await page.locator("#install-shell").isVisible());
+  await selectedOS("linux", true);
+  await page.keyboard.press("ArrowRight");
+  await selectedOS("windows", true);
+  await page.keyboard.press("ArrowRight");
+  await selectedOS("macos", true);
+  await page.keyboard.press("ArrowLeft");
+  await selectedOS("windows", true);
   await page.keyboard.press("Home");
-  assert.equal(await page.getByRole("tab", { name: "Homebrew · macOS" }).getAttribute("aria-selected"), "true");
-  console.log("✓ Clipboard copy and keyboard-operated installation tabs");
+  await selectedOS("macos", true);
+  await page.keyboard.press("End");
+  await selectedOS("windows", true);
+  await page.keyboard.press("Tab");
+  assert.ok(await page.locator("#install-windows").evaluate((el) => el === document.activeElement));
+  for (const [os, command] of [
+    ["macos", "brew install samsaffron/tap/term-llm"],
+    ["linux", "curl -fsSL https://raw.githubusercontent.com/samsaffron/term-llm/main/install.sh | sh"],
+    ["windows", "irm https://raw.githubusercontent.com/samsaffron/term-llm/main/install.ps1 | iex"],
+  ]) {
+    await install.locator(`[data-install-os="${os}"]`).click();
+    await page.locator(`#install-${os} [data-copy-text]`).first().click();
+    assert.equal(await page.evaluate(() => navigator.clipboard.readText()), command);
+    const script = os === "windows" ? "install.ps1" : "install.sh";
+    assert.equal(await page.locator(`#install-${os}`).getByRole("link", { name: "Inspect the installer" }).getAttribute("href"), `https://github.com/samsaffron/term-llm/blob/main/${script}`);
+    await accessible(`${os} installation`);
+  }
+  assert.equal(await page.locator("#install-macos code").nth(1).textContent(), "curl -fsSL https://raw.githubusercontent.com/samsaffron/term-llm/main/install.sh | sh");
+  console.log("✓ OS installation links, commands, clipboard copy, and keyboard-operated ARIA tabs");
+
+  // Emulate platforms independently of the host browser/runner OS. Client Hints
+  // take precedence; Safari/Firefox-style platform and user-agent fallbacks work.
+  for (const [hint, platform, userAgent, expected] of [
+    ["macOS", "Linux x86_64", "Linux", "macos"],
+    ["Windows", "MacIntel", "Macintosh", "windows"],
+    ["Linux", "Win32", "Windows NT", "linux"],
+    [null, "MacIntel", "Macintosh", "macos"],
+    [null, "Win32", "Windows NT", "windows"],
+    [null, "Linux x86_64", "Linux", "linux"],
+    [null, "", "Mozilla/5.0 (Windows NT 10.0; Win64; x64)", "windows"],
+    [null, "", "Mozilla/5.0 (Macintosh; Intel Mac OS X)", "macos"],
+    [null, "", "Unknown", "linux"],
+  ]) {
+    const osContext = await browser.newContext();
+    await osContext.addInitScript(({ hint, platform, userAgent }) => {
+      Object.defineProperty(navigator, "userAgentData", { value: hint ? { platform: hint } : undefined });
+      Object.defineProperty(navigator, "platform", { value: platform });
+      Object.defineProperty(navigator, "userAgent", { value: userAgent });
+    }, { hint, platform, userAgent });
+    const osPage = await osContext.newPage();
+    osPage.on("pageerror", (error) => errors.push(error.message));
+    await osPage.goto(origin);
+    assert.equal(await osPage.locator('[data-install-options] [aria-selected="true"]').getAttribute("data-install-os"), expected, `Platform detection: ${hint}/${platform}/${userAgent}`);
+    assert.ok(await osPage.locator(`#install-${expected}`).isVisible());
+    const alternate = expected === "macos" ? "linux" : "macos";
+    await osPage.locator(`[data-install-os="${alternate}"]`).click();
+    assert.ok(await osPage.locator(`#install-${alternate}`).isVisible(), "Manual choice should override OS detection");
+    await osContext.close();
+  }
+  console.log("✓ Automatic OS selection, Client Hints priority, platform/UA fallbacks, and manual override");
 
   await page.locator("[data-open-search]").click();
   const search = page.locator("#search-modal-ui input");
@@ -202,7 +272,7 @@ try {
   await accessible("standalone search");
   console.log("✓ Real Pagefind results, shortcuts, dialog focus, and standalone search");
 
-  for (const pathname of ["/getting-started/quickstart/", "/guides/", "/guides/web-ui-and-api/", "/reference/providers-and-models/", "/reference/provider-setup-details/"]) {
+  for (const pathname of ["/getting-started/quickstart/", "/getting-started/installation/", "/getting-started/providers-and-setup/", "/guides/", "/guides/web-ui-and-api/", "/reference/providers-and-models/", "/reference/provider-setup-details/"]) {
     await page.goto(`${origin}${pathname}`);
     await noOverflow();
     await accessible(pathname);
@@ -211,6 +281,12 @@ try {
   assert.ok(await page.locator(".legacy-provider-links").getAttribute("open") !== null);
   await page.goto(`${origin}/getting-started/quickstart/`);
   await page.screenshot({ path: path.join(results, "docs-desktop.png") });
+  await page.screenshot({ path: path.join(results, "quickstart-desktop.png"), fullPage: true });
+  for (const os of ["macos", "linux", "windows"]) {
+    assert.ok(await page.locator(`article h3#${os}`).isVisible(), `Quickstart ${os} section`);
+  }
+  assert.equal(await page.getByRole("link", { name: "Download term-llm for Mac", exact: true }).getAttribute("href"), "https://term-llm.com/mac/download");
+  assert.ok((await page.locator("article").textContent()).includes(`echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.zprofile`));
   await page.emulateMedia({ colorScheme: "dark", reducedMotion: "reduce" });
   assert.equal(await page.locator("html").evaluate((el) => getComputedStyle(el).scrollBehavior), "auto");
   await accessible("dark documentation");
@@ -218,11 +294,22 @@ try {
   console.log("✓ Article layouts, guide navigation, legacy fragments, dark code, reduced motion");
 
   await page.emulateMedia({ colorScheme: "light" });
-  for (const width of [320, 390, 768, 1024]) {
+  for (const width of [320, 390, 768, 1024, 1440]) {
     await page.setViewportSize({ width, height: 844 });
-    for (const pathname of ["/", "/getting-started/quickstart/", "/guides/", "/reference/providers-and-models/", "/reference/provider-setup-details/"]) {
+    for (const pathname of ["/", "/getting-started/quickstart/", "/getting-started/installation/", "/guides/", "/reference/providers-and-models/", "/reference/provider-setup-details/"]) {
       await page.goto(`${origin}${pathname}`);
       await noOverflow();
+      if (pathname === "/") {
+        for (const os of ["macos", "linux", "windows"]) {
+          await install.locator(`[data-install-os="${os}"]`).click();
+          await selectedOS(os);
+          await noOverflow(`${os} installation`);
+          if (width === 390 || width === 1440) {
+            await accessible(`${os} installation at ${width}px`);
+            await page.locator("#install").screenshot({ path: path.join(results, `install-${os}-${width}.png`) });
+          }
+        }
+      }
     }
   }
   // Long tables and examples on less frequently visited pages must not widen
@@ -256,6 +343,8 @@ try {
   }
   console.log("✓ Narrow header with alternate system fonts and open mobile menu");
   await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(`${origin}/getting-started/quickstart/`);
+  await page.screenshot({ path: path.join(results, "quickstart-mobile.png"), fullPage: true });
   await page.goto(origin);
   await accessible("mobile homepage");
   await page.screenshot({ path: path.join(results, "home-mobile.png"), fullPage: true });
@@ -272,8 +361,19 @@ try {
   const fallback = await browser.newContext({ javaScriptEnabled: false, viewport: { width: 390, height: 844 }, colorScheme: "light" });
   const noJS = await fallback.newPage();
   await noJS.goto(origin);
-  assert.ok(await noJS.locator("#install-homebrew").isVisible());
-  assert.ok(await noJS.locator("#install-shell").isVisible());
+  for (const width of [320, 390, 1440]) {
+    await noJS.setViewportSize({ width, height: 844 });
+    assert.equal(await noJS.locator(".install-tabs:visible").count(), 0);
+    for (const os of ["macos", "linux", "windows"]) {
+      assert.ok(await noJS.locator(`#install-${os}`).isVisible());
+      assert.ok(await noJS.locator(`#install-${os} .install-option-label`).isVisible());
+      assert.ok(await noJS.locator(`#install-${os} code`).first().isVisible());
+    }
+    assert.ok(await noJS.getByRole("link", { name: "Download term-llm for Mac", exact: true }).isVisible());
+    assert.equal(await noJS.getByRole("link", { name: "Download term-llm for Mac", exact: true }).getAttribute("href"), "https://term-llm.com/mac/download");
+    assert.ok(await noJS.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1), `No-JS overflow at ${width}px`);
+  }
+  await noJS.setViewportSize({ width: 390, height: 844 });
   assert.equal(await noJS.locator(".copy-button:visible").count(), 0);
   await noJS.goto(`${origin}/getting-started/quickstart/`);
   assert.ok(await noJS.getByRole("navigation", { name: "Documentation", exact: true }).isVisible());

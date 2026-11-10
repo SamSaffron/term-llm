@@ -11,6 +11,13 @@ next:
 
 term-llm runs on your machine; you choose where model inference happens. Start with **one** of the options below. You can add more providers and choose different models for individual agents later.
 
+**Using term-llm for Mac?** The app already manages the local web service.
+Choose a configured provider in the workspace's **Settings → Model**. The
+Terminal examples below require the [Mac app PATH setup](/getting-started/installation/#macos-app-recommended).
+Exported keys apply to commands launched from that shell, not to an already-running
+app-managed service; see the [credential reference](/reference/providers-and-models/#credentials)
+for persistent configuration options.
+
 ## Start with OpenRouter’s free models
 
 Create an [OpenRouter API key](https://openrouter.ai/keys), then run:
@@ -70,7 +77,7 @@ Local inference does not automatically make every feature local. Search, MCP too
 
 ## Save your preferred provider
 
-On an interactive first run, term-llm can guide you through provider setup. You can also set your default in `$XDG_CONFIG_HOME/term-llm/config.yaml` (normally `~/.config/term-llm/config.yaml`). For example:
+On an interactive Terminal first run, term-llm can guide you through provider setup. You can also set your default in `$XDG_CONFIG_HOME/term-llm/config.yaml` (normally `~/.config/term-llm/config.yaml`). For example:
 
 ```yaml {title="config.yaml"}
 default_provider: zen
@@ -85,7 +92,7 @@ term-llm chat
 term-llm serve web
 ```
 
-`chat` starts the terminal interface. `serve web` starts the browser interface and prints its URL and authentication instructions. Start them separately; each remains running until you stop it.
+`chat` starts the terminal interface. `serve web` starts the browser interface and prints its URL and authentication instructions. For CLI installs, start them separately; each remains running until you stop it. With the Mac app, use its workspace window instead of starting a second `serve web` process.
 
 ## Check your setup
 

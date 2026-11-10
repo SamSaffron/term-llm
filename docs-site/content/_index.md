@@ -126,8 +126,10 @@ control:
 install:
   title: "Make it part of your next task."
   description: "Install a self-contained release, connect a model, and choose your interface. No frontend build or separate web app to install."
+  mac_download: "https://term-llm.com/mac/download"
   homebrew: "brew install samsaffron/tap/term-llm"
   shell: "curl -fsSL https://raw.githubusercontent.com/samsaffron/term-llm/main/install.sh | sh"
+  powershell: "irm https://raw.githubusercontent.com/samsaffron/term-llm/main/install.ps1 | iex"
   trial: 'term-llm ask "Explain git rebase in three sentences"'
   caveat: "Set OPENROUTER_API_KEY to start with the free model router (usage limits apply), or choose another provider during setup."
 community:

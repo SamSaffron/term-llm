@@ -120,11 +120,35 @@
     <div class="install-steps">
       <h3><span class="step-number">1</span> Install term-llm</h3>
       <div class="install-options" data-install-options>
-        <div class="install-tabs" role="tablist" aria-label="Installation method" hidden><button id="tab-homebrew" role="tab" aria-controls="install-homebrew" aria-selected="true" type="button">Homebrew · macOS</button><button id="tab-shell" role="tab" aria-controls="install-shell" aria-selected="false" tabindex="-1" type="button">Shell installer</button></div>
-        <div id="install-homebrew" class="install-option"><p class="install-option-label">Homebrew · macOS</p>{{ partial "command.html" (dict "command" .homebrew "label" "Install with Homebrew") }}</div>
-        <div id="install-shell" class="install-option"><p class="install-option-label">Shell installer</p>{{ partial "command.html" (dict "command" .shell "label" "Install with the shell installer") }}<p class="small-note">Downloads and runs a shell script. <a href="https://github.com/samsaffron/term-llm/blob/main/install.sh">Inspect the installer</a> or <a href="https://github.com/samsaffron/term-llm/releases">download a release</a>.</p></div>
+        <div class="install-tabs" role="tablist" aria-label="Operating system" hidden>
+          <button id="tab-macos" role="tab" aria-controls="install-macos" aria-selected="true" data-install-os="macos" type="button">macOS</button>
+          <button id="tab-linux" role="tab" aria-controls="install-linux" aria-selected="false" tabindex="-1" data-install-os="linux" type="button">Linux</button>
+          <button id="tab-windows" role="tab" aria-controls="install-windows" aria-selected="false" tabindex="-1" data-install-os="windows" type="button">Windows</button>
+        </div>
+        <div id="install-macos" class="install-option">
+          <p class="install-option-label">macOS</p>
+          <a class="button primary" href="{{ .mac_download }}">Download term-llm for Mac</a>
+          <p class="small-note">macOS 14+ · Apple silicon &amp; Intel · notarized</p>
+          <p class="small-note">Open the zip, move term-llm.app to Applications, and open it. The app installs and manages the CLI for you.</p>
+          <p class="install-terminal-label">Prefer the terminal?</p>
+          {{ partial "command.html" (dict "command" .homebrew "label" "Install with Homebrew") }}
+          <p class="small-note">Or use the shell installer:</p>
+          {{ partial "command.html" (dict "command" .shell "label" "Install with the macOS shell installer") }}
+          <p class="small-note">Downloads and runs a shell script. <a href="https://github.com/samsaffron/term-llm/blob/main/install.sh">Inspect the installer</a> or <a href="https://github.com/samsaffron/term-llm/releases">download a release</a>.</p>
+        </div>
+        <div id="install-linux" class="install-option">
+          <p class="install-option-label">Linux</p>
+          {{ partial "command.html" (dict "command" .shell "label" "Install with the Linux shell installer") }}
+          <p class="small-note">Downloads and runs a shell script. <a href="https://github.com/samsaffron/term-llm/blob/main/install.sh">Inspect the installer</a> or <a href="https://github.com/samsaffron/term-llm/releases">download a release</a>.</p>
+        </div>
+        <div id="install-windows" class="install-option">
+          <p class="install-option-label">Windows</p>
+          {{ partial "command.html" (dict "command" .powershell "label" "Install with PowerShell") }}
+          <p class="small-note">Downloads and runs a PowerShell script. <a href="https://github.com/samsaffron/term-llm/blob/main/install.ps1">Inspect the installer</a> or <a href="https://github.com/samsaffron/term-llm/releases">download a release</a>.</p>
+        </div>
       </div>
       <h3><span class="step-number">2</span> Try a first question</h3>
+      <p class="small-note install-trial-note">The Mac app also opens the browser workspace. Or try a question in Terminal:</p>
       {{ partial "command.html" (dict "command" .trial "label" "Try a question") }}
       <p class="small-note">{{ .caveat }} <a href="/getting-started/providers-and-setup/">Already have a provider?</a></p>
       <a class="button primary" href="/getting-started/quickstart/">Continue to the quickstart →</a>

@@ -13,7 +13,7 @@ groups:
   - title: Agents and automation
     section: guides
     description: Give repeatable work its own instructions, tools, and schedule.
-    pages: [agents, skills, memory, autonomous-loops, job-runner, notifications]
+    pages: [agents, skills, memory, code-mode, autonomous-loops, job-runner, notifications]
   - title: Models and tools
     section: guides
     description: Connect external tools and build on the runtime.

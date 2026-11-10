@@ -1,7 +1,7 @@
 ---
 title: "Installation"
 weight: 2
-description: "Install term-llm with Homebrew, the one-liner, a release archive, or a local source build."
+description: "Install term-llm for Mac (recommended on macOS), or use Homebrew, the Linux/macOS shell installer, Windows PowerShell, or release archives."
 kicker: "Install"
 source_readme_heading: "Installation"
 featured: true
@@ -9,6 +9,36 @@ next:
   label: Provider setup
   url: /getting-started/providers-and-setup/
 ---
+### macOS app (recommended)
+
+[Download term-llm for Mac](https://term-llm.com/mac/download), the recommended
+macOS install. It is a native app, Developer ID signed and notarized, with a
+universal build for **Apple silicon and Intel**. Requires **macOS 14 or later**.
+
+1. Open the downloaded zip.
+2. Move **term-llm.app** to **Applications**.
+3. Open **term-llm.app**.
+
+On first run, the app installs and manages the term-llm CLI in its own managed
+location, linked into `~/.local/bin` for use in Terminal. It runs the local
+`term-llm serve web` service with start-at-login, and provides a native window
+and menu bar for the browser workspace and chat. The app keeps its managed CLI
+updated from GitHub releases and updates itself automatically via Sparkle.
+
+If a fresh macOS shell cannot find `term-llm`, add `~/.local/bin` to your PATH
+in `~/.zprofile`:
+
+```sh
+echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.zprofile
+```
+
+Open a new Terminal window to pick up the change, or run `source ~/.zprofile`
+in your current Zsh session.
+
+Prefer a terminal-only install, or using an older macOS version? [Homebrew](#homebrew),
+the [shell installer](#linuxmacos-shell-installer), and [release archives](https://github.com/samsaffron/term-llm/releases)
+remain supported on macOS.
+
 ### Supported release platforms
 
 Release archives support **Linux/macOS** on **amd64/arm64** and **Windows** on
