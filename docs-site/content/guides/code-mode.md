@@ -6,7 +6,8 @@ description: "Bounded JavaScript tool composition and activated skill ES modules
 
 `spawn_script` starts a fresh QuickJS/WASM cell. It can finish immediately or return a
 running cell ID; `wait_script` observes new output and `cancel_script` requests termination.
-It is included in the builtin **developer and sysadmin** agents alongside their
+It is included in the builtin **developer and sysadmin** agents and newly bootstrapped
+managed `term-llm contain` agents alongside their
 ordinary direct tools. Other agents remain opt-in. Use direct tools for simple
 actions, discovery, skill activation and lifecycle controls; use a cell when
 loops, several calls, filtering or an activated skill module are useful.
@@ -45,7 +46,18 @@ policy, session identity and ordinary accounting still apply to child tools.
 Recursive code mode, client passthrough, planner exceptions, activation/discovery,
 interactive prompts, spawning/jobs and authority/lifecycle controls are direct-only.
 A cell freezes its tool/schema ceiling, then rechecks current policy and catalogue
-on every call. Activation/import never grants tools. Schema changes reject with
+on every call. Local tools capture their original cwd, permissions and approval
+scope. Later turns cannot retarget that cwd or widen the cell by enabling yolo;
+tightened approval modes and explicit additional-workspace revocations still apply.
+Non-local MCP/skill-script tools keep their registered host instances and native
+permission/lifetime rules; the VM does not snapshot external service state.
+Idle approval requests remain visible and wait on the original cell's cancellation
+context. A new response reconnects presentation only, never authority or ownership.
+Terminal chat serializes its single foreground dialog; cell cancellation dismisses
+only the matching prompt, including queued/detached prompts. Current or newly toggled
+yolo cannot auto-answer a cell that was admitted under prompt mode. One-shot `ask`
+also binds native approval programs and terminal flush/restoration to the cell's
+context; command/runtime teardown still ends its cells. Activation/import never grants tools. Schema changes reject with
 `schema_changed`, inviting rediscovery in a new cell.
 
 ### Script diagnostics
@@ -81,9 +93,47 @@ cell continues when the budget expires or a wait request is cancelled. Use
 `cancel_script` with that same `cell_id` to request termination. Do not fabricate IDs,
 automatically restart cancelled work, or confuse a successful observation with a
 successfully completed cell. Only a completed successful cell commits its store.
-Session/runtime teardown also cancels owned cells. The process has four VM slots
-shared across sessions; a long-running cell holds one until it ends. A full pool
-reports busy rather than starting overlapping work. There is no idle expiry.
+Each session may own **eight live cells**, independently of other web sessions.
+A ninth spawn fails `session_cell_limit` and lists that session's `live_cell_ids`.
+A cancelled cell with an unresolved native/remote operation keeps **one** of those
+places until the operation actually returns; unrelated cells can proceed.
+
+Normal assistant final/end-turn, observation timeout, cancelled wait request and
+browser disconnect **do not stop cells**. The next model request includes a compact,
+regenerated roster of live/recent handles, independent of transcript compaction.
+`cancel_script` stops only its target. Explicit human **Stop / Ctrl-C cancels all
+live cells of that session**, including cells from earlier turns. In the Web UI,
+open **Activity → Scripts** for per-cell Cancel, **Stop all scripts** while idle,
+waiting approvals and recent terminal outcomes. Session reset and runtime/process
+shutdown cancel owned cells; live cells protect an idle runtime from TTL eviction.
+There is no cell idle expiry and no survival/replay across process restart.
+
+Process admission is separate: **256 VM instances**, **2 GiB charged linear-memory
+capacity** and **1 GiB/session** (caps, not reservations of maximum heaps). Each VM
+reserves a 4 MiB admission floor; growth charges actual backing capacity beyond
+that floor. A full pool fails promptly (`vm_capacity` / `memory_capacity`), rather
+than advertising a running cell that is indefinitely queued for a VM. Cold-cache
+compilation is serialized with cancellable waiting to avoid duplicate compiler
+working sets; VM execution remains concurrent. Under aggregate memory pressure,
+growth fails the affected cell (`memory_limit`); admission may fail even below 256.
+The accounted cap excludes native tools, image/output buffers, Go GC lag, and
+transient copies during growth—it is not an operating-system RSS sandbox.
+
+Measured on linux/amd64 with wazero v1.11.0 and this embedded artifact: 32 session
+budgets × 8 real awaiting VMs charged 1 GiB total (4 MiB/cell); additional Go heap
+was 851,855,496 bytes and RSS rose from 47,520 to 760,552 kB. This is a lightweight
+host-wait measurement, not a claim about arbitrary tool workloads. Compared with
+the old four-VM × 512 MiB theoretical maximum, the process charged memory ceiling
+remains 2 GiB while lightweight multi-session capacity increases substantially.
+
+Nested tools share **4 executing slots/session** and **16/process**, regardless of
+cell count. FIFO channel admission and the per-session cap prevent one session
+from taking the entire tool pool; there is no strict round-robin or latency SLA.
+Many sessions can hold waiting VMs, but simultaneous tool throughput remains 16.
+Human approval waits **and prompt-mutex waiters** park the shared executing slots,
+retaining their per-cell slot, and re-acquire cancellably before execution. Long-running actual tools keep
+their slots until they return, even after cancellation. The UI/model roster
+separates `waiting_calls`, `awaiting_approval` and quarantined outcomes.
 
 Explicit text/images keep their emission order. Separate nonempty text emissions
 (including a defined return value) are separated by a newline when neither the
@@ -113,8 +163,15 @@ store('lastId', 3);
 text(load('lastId'));
 ```
 
-The store allows 1 MiB total serialized JSON and 256 KiB per value. Failed or
-cancelled cells discard staged writes. Every new cell still has a fresh JS heap:
+The store allows 1 MiB total serialized JSON and 256 KiB per value. Each cell
+reads an admission-time snapshot and stages an explicit set/delete write set.
+Successful completion merges **only written keys** into the current store under
+one mutex. Disjoint overlapping cells cannot erase each other's keys. For the
+same key the **last successful committer wins**; this is not a serializable
+transaction. `state_overwritten_keys` reports written keys whose current version
+differs from the admission snapshot (not an audit of transient absent-key history).
+Mutating a loaded object without `store(key, value)` is local to the cell. A merged
+size-limit failure applies no keys. Failed, cancelled or reset cells commit nothing. Every new cell still has a fresh JS heap:
 functions, promises and globals do not carry over. Image handles are cell-scoped
 and cannot be stored; reacquire screenshots in a later cell. This is memory owned
 by the live session runtime, not a database: replacing/evicting the runtime or
@@ -124,7 +181,9 @@ cross-session/fork state restoration.
 
 The old `code_mode` name remains an explicit synchronous compatibility tool with
 its original caller-carried state contract; it is not included in the new agent
-defaults. New workflows should use `spawn_script` / `wait_script` / `cancel_script`.
+defaults. Its synchronous lane is mutually exclusive with async cells in the same
+engine, including unresolved effects, so enabling compatibility cannot add a ninth
+cell or double the shared session tool capacity. New workflows should use `spawn_script` / `wait_script` / `cancel_script`.
 
 ## Limits
 
@@ -133,14 +192,18 @@ defaults. New workflows should use `spawn_script` / `wait_script` / `cancel_scri
 | Code | 64 KiB |
 | Session state / value | 1 MiB / 256 KiB JSON |
 | Arguments / raw non-image result per host call | 256 KiB / 4 MiB |
-| Bridge requests / executing tools per cell | 64 / 4 |
+| Bridge requests / executing tools per cell | 64 lifetime / 4 (including approval waits) |
+| Nested requests in flight / executing tools per session | 64 / 4 shared across cells |
 | Executing tools per process | 16 |
-| Active cell per engine / VM instances per process | 1 / 4; busy rejection rather than overlapping uncertain work |
+| Live cells per session / VM backstop per process | 8 / 256; immediate capacity errors |
+| Charged VM memory per session / process / admission floor | 1 GiB / 2 GiB / 4 MiB per VM |
 | QuickJS heap / WASM linear memory / native stack | 256 MiB / 512 MiB / 512 KiB |
 | Cumulative active JS execution | 2 seconds; host-tool and sleep waiting excluded |
 | Observation wait (`max_wait`) | 0–600 seconds, default 60; 0 polls immediately; does not terminate the cell |
 | Image handles / decoded image bytes | 64 handles / 16 MiB over the cell lifetime; start a fresh cell for longer screenshot workflows |
-| Model-visible text | 10,000 estimated tokens per observation by default; separately bounded retention |
+| Model-visible text | 10,000 estimated tokens per observation by default; 1 MiB retained text per cell |
+| Recent terminal receipts | 8/session FIFO; oldest handles expire with their output |
+| Undelivered image retention | 32 MiB/session; excess is permanently omitted and reported |
 | MCP stdio frame / SSE event / ordinary HTTP response body | 16 MiB each; no lifetime cap on SSE connections |
 
 Cancellation stops new admission and interrupts the VM. An uncooperative native

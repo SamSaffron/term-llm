@@ -77,3 +77,25 @@ func validateStateObject(raw json.RawMessage, total, perValue int, rejectImage b
 	}
 	return nil
 }
+
+// StateDelta is the explicit write set from an asynchronous cell. Missing set
+// keys are not writes; a stale snapshot can never erase unrelated keys.
+type StateDelta struct {
+	Set    map[string]json.RawMessage `json:"set"`
+	Delete []string                   `json:"delete"`
+}
+
+func validateMachineState(raw json.RawMessage, policy machinePolicy) error {
+	if !policy.rejectImageState {
+		return validateStateObject(raw, policy.stateTotal, policy.stateValue, false)
+	}
+	var delta StateDelta
+	if err := json.Unmarshal(raw, &delta); err != nil || delta.Set == nil {
+		return errors.New("invalid_state")
+	}
+	set, err := json.Marshal(delta.Set)
+	if err != nil {
+		return err
+	}
+	return validateStateObject(set, policy.stateTotal, policy.stateValue, true)
+}

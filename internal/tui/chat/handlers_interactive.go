@@ -16,10 +16,8 @@ func (m *Model) handleApprovalKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			m.tracker.AddExternalUIResult(m.approvalModel.RenderSummary())
 		}
 		// Send result and clean up
-		m.approvalDoneCh <- result
-		m.approvalModel = nil
-		m.approvalDoneCh = nil
-		m.approvalIsWorkspace = false
+		replyApproval(m.approvalDoneCh, result)
+		m.clearApprovalPrompt()
 		m.pausedForExternalUI = false
 		m.bumpContentVersion()
 		return m, m.withTerminalTitleCmd(m.spinner.Tick)

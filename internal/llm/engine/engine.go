@@ -107,7 +107,8 @@ type FileTrackingRunLifecycle interface {
 
 type Engine struct {
 	codeModeMu         sync.Mutex
-	codeModeCell       *nestedCell
+	codeModeCell       *nestedCell // legacy synchronous lane only; async cells live in codeModeSessions
+	codeModeCapture    core.CodeModeAuthorityCapture
 	codeModules        map[string]codeModule
 	codeModeDirectOnly map[string]bool
 	codeModeSessions   *codeModeSessions

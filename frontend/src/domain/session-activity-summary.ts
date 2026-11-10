@@ -13,6 +13,9 @@ export function activeExecutionCount(snapshot: ActivitySnapshot | null): number 
         job.session_id ? `session:${job.session_id}` : `job:${job.job_id}:${job.run_id}`,
       );
   }
+  for (const cell of snapshot?.cells || []) {
+    if (cell.live) executions.add(`cell:${cell.cell_id}`);
+  }
   return executions.size;
 }
 

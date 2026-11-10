@@ -56,6 +56,9 @@ var SessionLimits = struct {
 // cancels it explicitly; the spec callback runs on the machine goroutine and
 // must only copy data.
 type CellSpec struct {
+	// Context is an optional trusted lifecycle context, already detached from the request.
+	Context context.Context
+	Memory  *Budget
 	Input   Input
 	Names   []string
 	Host    Host

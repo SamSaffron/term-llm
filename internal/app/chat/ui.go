@@ -75,6 +75,7 @@ func wireChatSessionUI(ctx context.Context, rt *chatSessionRuntime, p *tea.Progr
 	// Set up the improved approval UI with git-aware heuristics.
 	// This also powers /handover script approvals even when no shell tool is enabled.
 	if approvalMgr != nil {
+		bindChatCodeModePrompts(toolMgr, sendSessionUI)
 		approvalMgr.GuardianEventFunc = func(event tools.GuardianEvent) {
 			sendSessionUI(chat.GuardianReviewMsg{Event: event})
 		}

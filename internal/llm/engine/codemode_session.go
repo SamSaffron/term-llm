@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -13,103 +14,39 @@ import (
 	"github.com/samsaffron/term-llm/internal/codemode"
 	"github.com/samsaffron/term-llm/internal/llm/core"
 	corestream "github.com/samsaffron/term-llm/internal/llm/core/stream"
+	"github.com/samsaffron/term-llm/internal/restart"
 )
 
 const codeModeCancelGrace = 2 * time.Second
 
-// codeModeStore is engine/session memory, not durable conversation storage.
-// It is keyed by session ID so a reused Engine cannot leak values into another
-// provider request's session.
-type codeModeStore struct {
-	mu       sync.Mutex
-	sessions map[string]map[string]json.RawMessage
-}
-
-func newCodeModeStore() *codeModeStore {
-	return &codeModeStore{sessions: map[string]map[string]json.RawMessage{}}
-}
-
-func (s *codeModeStore) State(sessionID string) json.RawMessage {
-	s.mu.Lock()
-	values := s.sessions[sessionID]
-	next := make(map[string]json.RawMessage, len(values))
-	for key, value := range values {
-		next[key] = append(json.RawMessage(nil), value...)
-	}
-	s.mu.Unlock()
-	raw, err := json.Marshal(next)
-	if err != nil {
-		return json.RawMessage(`{}`)
-	}
-	return raw
-}
-
-func (s *codeModeStore) Commit(sessionID string, raw json.RawMessage) (int, error) {
-	if len(raw) == 0 {
-		raw = json.RawMessage(`{}`)
-	}
-	if len(raw) > codemode.SessionLimits.StateTotal {
-		return 0, fmt.Errorf("state_total_limit: %d bytes exceeds %d", len(raw), codemode.SessionLimits.StateTotal)
-	}
-	var values map[string]json.RawMessage
-	if err := json.Unmarshal(raw, &values); err != nil || values == nil {
-		return 0, fmt.Errorf("invalid_state: expected a JSON object")
-	}
-	if strings.Contains(string(raw), "cell-image:") {
-		return 0, fmt.Errorf("state_image_handle: image handles are cell-scoped and cannot be stored")
-	}
-	next := make(map[string]json.RawMessage, len(values))
-	for key, value := range values {
-		if len(value) > codemode.SessionLimits.StateValue {
-			return 0, fmt.Errorf("state_value_limit: %s is %d bytes, limit %d", key, len(value), codemode.SessionLimits.StateValue)
-		}
-		if !json.Valid(value) {
-			return 0, fmt.Errorf("invalid_state: value for %s is not valid JSON", key)
-		}
-		next[key] = append(json.RawMessage(nil), value...)
-	}
-	s.mu.Lock()
-	s.sessions[sessionID] = next
-	s.mu.Unlock()
-	return len(raw), nil
-}
-
-func (s *codeModeStore) Clear(sessionID string) {
-	s.mu.Lock()
-	delete(s.sessions, sessionID)
-	s.mu.Unlock()
-}
-
-func (s *codeModeStore) ClearAll() {
-	s.mu.Lock()
-	s.sessions = map[string]map[string]json.RawMessage{}
-	s.mu.Unlock()
-}
-
-// codeModeSessions owns at most one running cell and the most recent terminal
-// cell per Engine. A cancelled cell whose host calls still ignore cancellation
-// remains quarantined by nestedCell's actual-lifetime leases, not by this map.
+// codeModeSessions owns bounded per-session live and terminal cells. Actual
+// external effects retain their session place until the native call returns.
 type codeModeSessions struct {
 	engine *Engine
 	store  *codeModeStore
 
-	mu     sync.Mutex
-	active *codeModeAsyncCell
-	last   *codeModeAsyncCell
-	closed bool
+	mu       sync.Mutex // per-engine admission/reset lock, never a process-wide web-session lock
+	sessions map[string]*codeModeSessionCells
+	closed   bool
 }
 
 func newCodeModeSessions(engine *Engine) *codeModeSessions {
-	return &codeModeSessions{engine: engine, store: newCodeModeStore()}
+	return &codeModeSessions{engine: engine, store: newCodeModeStore(), sessions: map[string]*codeModeSessionCells{}}
 }
 
 type codeModeAsyncCell struct {
-	sessions   *codeModeSessions
-	id         string
-	sessionID  string
-	capability *nestedCell
-	machine    *codemode.Cell
-	started    time.Time
+	sessions         *codeModeSessions
+	id               string
+	sessionID        string
+	capability       *nestedCell
+	owner            *codeModeSessionCells
+	versions         map[string]uint64
+	stateOverwritten []string
+	ended            time.Time
+	observed         bool
+	cancel           context.CancelFunc
+	machine          *codemode.Cell
+	started          time.Time
 
 	mu              sync.Mutex
 	changed         chan struct{}
@@ -202,7 +139,10 @@ func (a *codeModeAsyncCell) emit(kind string, value json.RawMessage) error {
 		}
 		a.mu.Lock()
 		defer a.mu.Unlock()
-		if a.images >= codemode.SessionLimits.Images || a.imageBytes+bytes > codemode.SessionLimits.ImageBytes {
+		if a.abandoned {
+			return nil
+		}
+		if a.images >= codemode.SessionLimits.Images || a.imageBytes+bytes > codemode.SessionLimits.ImageBytes || !a.reserveImages(bytes) {
 			a.truncated = true
 			a.omittedImages++
 			a.notifyLocked()
@@ -226,6 +166,9 @@ func (a *codeModeAsyncCell) emitText(text string) {
 	}
 	a.mu.Lock()
 	defer a.mu.Unlock()
+	if a.abandoned {
+		return
+	}
 	if a.textSeparator && !strings.HasPrefix(text, "\n") {
 		text = "\n" + text
 	}
@@ -280,8 +223,12 @@ func (a *codeModeAsyncCell) finish(result codemode.Result) {
 		status = "cancelled"
 		errMsg = "cell abandoned by session teardown"
 		errCode = "cancelled"
+	} else if a.cancelRequested {
+		status = "cancelled"
+		errCode = "cancelled"
 	} else if status == "completed" {
-		n, err := a.sessions.store.Commit(a.sessionID, result.State)
+		n, overwritten, err := a.sessions.store.Apply(a.sessionID, result.State, a.versions)
+		a.stateOverwritten = overwritten
 		if err != nil {
 			status = "failed"
 			errMsg = err.Error()
@@ -292,7 +239,7 @@ func (a *codeModeAsyncCell) finish(result codemode.Result) {
 		}
 	} else if status == "failed" {
 		errCode = codeModeScriptErrorCode(errMsg)
-		if errCode == "busy" {
+		if errCode == "vm_capacity" || errCode == "memory_capacity" {
 			status = "busy"
 		}
 	} else if status == "cancelled" {
@@ -304,9 +251,13 @@ func (a *codeModeAsyncCell) finish(result codemode.Result) {
 	a.stateCommitted = committed
 	a.stateBytes = size
 	a.done = true
+	a.ended = time.Now()
 	a.notifyLocked()
 	a.mu.Unlock()
 	a.capability.Close()
+	if a.cancel != nil {
+		a.cancel()
+	}
 	a.sessions.finished(a)
 }
 
@@ -315,8 +266,12 @@ func codeModeScriptErrorCode(message string) string {
 		return "script_error"
 	}
 	switch {
-	case strings.Contains(message, "busy: VM capacity"):
-		return "busy"
+	case strings.Contains(message, "vm_capacity"):
+		return "vm_capacity"
+	case strings.Contains(message, "memory_capacity"):
+		return "memory_capacity"
+	case strings.Contains(message, "memory_limit"):
+		return "memory_limit"
 	case strings.Contains(message, "state_total_limit"), strings.Contains(message, "state_value_limit"), strings.Contains(message, "state_limit"),
 		strings.Contains(message, "state_image_handle"), strings.Contains(message, "invalid_state"):
 		return "state_limit"
@@ -334,16 +289,25 @@ func codeModeScriptErrorCode(message string) string {
 }
 
 func (s *codeModeSessions) finished(a *codeModeAsyncCell) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.active == a {
-		s.active = nil
-	}
-	if !a.abandonedLocked() {
-		s.last = a
-	}
+	go func() {
+		<-a.capability.Done()
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		owner := s.sessions[a.sessionID]
+		if owner != a.owner {
+			return
+		}
+		delete(owner.live, a.id)
+		if !a.abandonedLocked() {
+			owner.terminal = append(owner.terminal, a)
+			if len(owner.terminal) > codemode.MaxTerminalCells {
+				owner.terminal[0].dropRetained()
+				owner.terminal = owner.terminal[1:]
+			}
+		}
+		s.pruneOwnerLocked(a.sessionID, owner)
+	}()
 }
-
 func (a *codeModeAsyncCell) abandonedLocked() bool {
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -478,6 +442,7 @@ func (a *codeModeAsyncCell) drainPartsLocked(maxBytes int) ([]core.ToolContentPa
 			continue
 		}
 		if part.Type == core.ToolContentPartImageData {
+			a.releaseImages(part)
 			parts = append(parts, part)
 			continue
 		}
@@ -512,15 +477,17 @@ func (a *codeModeAsyncCell) drainPartsLocked(maxBytes int) ([]core.ToolContentPa
 func (a *codeModeAsyncCell) observationLocked(drain bool, yield time.Duration, status string, budget codeModeOutputBudget) core.CodeModeCallResult {
 	var calls, unsettled []core.CodeModeCallOutcome
 	if drain {
+		a.observed = a.done
 		calls, unsettled = a.drainAuditLocked(a.done)
 	}
 	result := core.CodeModeCallResult{
-		CellID:         a.id,
-		Status:         status,
-		Error:          a.err,
-		ErrorCode:      a.errCode,
-		StateCommitted: a.stateCommitted,
-		StateBytes:     a.stateBytes,
+		CellID:               a.id,
+		Status:               status,
+		Error:                a.err,
+		ErrorCode:            a.errCode,
+		StateCommitted:       a.stateCommitted,
+		StateBytes:           a.stateBytes,
+		StateOverwrittenKeys: append([]string(nil), a.stateOverwritten...),
 
 		MaxOutputTokens: budget.tokens,
 		OutputTruncated: a.truncated,
@@ -582,6 +549,9 @@ func (a *codeModeAsyncCell) requestCancel() {
 	a.mu.Lock()
 	a.cancelRequested = true
 	machine := a.machine
+	if a.cancel != nil {
+		a.cancel()
+	}
 	a.mu.Unlock()
 	if machine != nil {
 		machine.Cancel()
@@ -593,66 +563,104 @@ func (a *codeModeAsyncCell) abandon() {
 	a.abandoned = true
 	a.cancelRequested = true
 	machine := a.machine
+	if a.cancel != nil {
+		a.cancel()
+	}
 	a.mu.Unlock()
 	if machine != nil {
 		machine.Cancel()
 	}
 	a.capability.Close()
+	a.dropRetained()
 }
 
+type codeModeSessionCells struct {
+	live       map[string]*codeModeAsyncCell
+	terminal   []*codeModeAsyncCell
+	permits    chan struct{}
+	inflight   chan struct{}
+	memory     *codemode.Budget
+	imageMu    sync.Mutex
+	imageBytes int
+}
+
+func (s *codeModeSessions) ownerLocked(id string) *codeModeSessionCells {
+	o := s.sessions[id]
+	if o == nil {
+		o = &codeModeSessionCells{live: map[string]*codeModeAsyncCell{}, permits: make(chan struct{}, codemode.SessionToolConcurrency), inflight: make(chan struct{}, codemode.SessionInflightCalls), memory: codemode.NewSessionBudget()}
+		s.sessions[id] = o
+	}
+	return o
+}
 func (s *codeModeSessions) lookup(cellID, sessionID string) *codeModeAsyncCell {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	match := func(c *codeModeAsyncCell) bool {
-		if c == nil || c.id != cellID {
-			return false
+	o := s.sessions[sessionID]
+	if o == nil {
+		return nil
+	}
+	if a := o.live[cellID]; a != nil {
+		return a
+	}
+	for _, a := range o.terminal {
+		if a.id == cellID {
+			return a
 		}
-		return c.sessionID == sessionID
-	}
-	if match(s.active) {
-		return s.active
-	}
-	if match(s.last) {
-		return s.last
 	}
 	return nil
 }
-
+func liveIDs(o *codeModeSessionCells) []string {
+	ids := make([]string, 0, len(o.live))
+	for id := range o.live {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	return ids
+}
 func (s *codeModeSessions) exec(ctx context.Context, code string, yield time.Duration, maxOutputTokens int, send corestream.Sender) (core.CodeModeCallResult, error) {
 	if !codemode.Available() {
-		return core.CodeModeCallResult{Status: "failed", Error: "code_mode unavailable on browser host", ErrorCode: "unavailable", IsError: true}, nil
+		return core.CodeModeCallResult{Status: "failed", Error: "code mode unavailable", ErrorCode: "unavailable", IsError: true}, nil
 	}
 	if yield < 0 {
 		yield = codemode.SessionLimits.Yield
 	}
-	if yield > codemode.SessionLimits.MaxYield {
-		yield = codemode.SessionLimits.MaxYield
-	}
+	yield = min(yield, codemode.SessionLimits.MaxYield)
 	if len(code) > codemode.SessionLimits.Code {
-		return core.CodeModeCallResult{Status: "failed", Error: fmt.Sprintf("code_limit: %d bytes exceeds %d", len(code), codemode.SessionLimits.Code), ErrorCode: "code_limit", IsError: true}, nil
+		return core.CodeModeCallResult{Status: "failed", Error: "code_limit", ErrorCode: "code_limit", IsError: true}, nil
 	}
 	sessionID := core.SessionIDFromContext(ctx)
-	parent := core.CallIDFromContext(ctx)
-
+	cellID := "cm_" + core.NewSyntheticToolCallID()
+	owned, release, admissionErr := restart.Detached(context.WithoutCancel(ctx))
+	if admissionErr != nil {
+		return core.CodeModeCallResult{Status: "failed", Error: admissionErr.Error(), ErrorCode: "unavailable", IsError: true}, nil
+	}
+	started := false
+	defer func() {
+		if !started {
+			release()
+		}
+	}()
+	cellCtx, cancel := context.WithCancel(owned)
 	s.mu.Lock()
 	if s.closed {
 		s.mu.Unlock()
+		cancel()
 		return engineClosedResult(), nil
 	}
-	active := s.active
-	s.mu.Unlock()
-	if active != nil {
-		if active.sessionID != sessionID {
-			// Never expose or mutate another session's cell from this call.
-			return core.CodeModeCallResult{Status: "busy", Error: "another session's code cell is active; retry after it settles", ErrorCode: "session_mismatch", IsError: true}, nil
-		}
-		return core.CodeModeCallResult{CellID: active.id, ActiveCellID: active.id, Status: "busy", Error: "a code cell is already running; use wait_script or cancel_script", ErrorCode: "cell_active", IsError: true}, nil
+	owner := s.ownerLocked(sessionID)
+	if len(owner.live) >= codemode.MaxLiveCells {
+		ids := liveIDs(owner)
+		s.mu.Unlock()
+		cancel()
+		return core.CodeModeCallResult{Status: "busy", Error: "eight live cells already admitted; wait or cancel a live cell", ErrorCode: "session_cell_limit", LiveCellIDs: ids, IsError: true}, nil
 	}
-
-	capability, err := s.engine.admitCodeCellFor(ctx, parent, send, codemode.ExecToolName, true)
+	// Serialize admission with teardown; capture contains no external execution.
+	capability, err := s.engine.admitCodeCellFor(cellCtx, core.CallIDFromContext(ctx), send, codemode.ExecToolName, true)
 	if err != nil {
-		code := "code_mode_failed"
+		s.mu.Unlock()
+		cancel()
 		var typed *codemode.Error
+		code := "permission_denied"
 		if errors.As(err, &typed) {
 			code = typed.Code
 		}
@@ -662,46 +670,38 @@ func (s *codeModeSessions) exec(ctx context.Context, code string, yield time.Dur
 		}
 		return core.CodeModeCallResult{Status: status, Error: err.Error(), ErrorCode: code, IsError: true}, nil
 	}
-
-	cellID := "cm_" + core.NewSyntheticToolCallID()
+	capability.sessionPermits = owner.permits
+	capability.inflight = owner.inflight
 	a := newCodeModeAsyncCell(s, cellID, sessionID, capability)
-	state := s.store.State(sessionID)
-	// Hold the manager lock across publication and start so CloseCodeMode
-	// either rejects this exec or observes the active cell and abandons it.
-	// StartCell only spawns the machine goroutine; it cannot call back into the
-	// manager before this function returns.
-	s.mu.Lock()
-	if s.closed {
+	a.owner = owner
+	a.cancel = cancel
+	state, versions := s.store.Snapshot(sessionID)
+	a.versions = versions
+	if err := s.engine.captureCodeModeAuthority(cellCtx, core.CodeModeCellRef{SessionID: sessionID, CellID: cellID, Ctx: cellCtx}, capability); err != nil {
 		s.mu.Unlock()
 		capability.Close()
-		return engineClosedResult(), nil
+		cancel()
+		return core.CodeModeCallResult{Status: "failed", Error: err.Error(), ErrorCode: "permission_denied", IsError: true}, nil
 	}
-	if s.active != nil {
-		other := s.active.id
-		s.mu.Unlock()
-		capability.Close()
-		return core.CodeModeCallResult{CellID: other, ActiveCellID: other, Status: "busy", Error: "a code cell is already running; use wait_script or cancel_script", ErrorCode: "cell_active", IsError: true}, nil
-	}
-	s.active = a
-	machine, err := codemode.StartCell(ctx, codemode.CellSpec{
-		Input:    codemode.Input{Code: code, State: state},
-		Names:    capability.Names(),
-		Host:     capability,
-		Modules:  capability,
-		Sink:     a.emit,
-		OnFinish: a.finish,
-	})
+	owner.live[cellID] = a
+	machine, err := codemode.StartCell(cellCtx, codemode.CellSpec{Context: cellCtx, Input: codemode.Input{Code: code, State: state}, Memory: owner.memory, Names: capability.Names(), Host: capability, Modules: capability, Sink: a.emit, OnFinish: func(result codemode.Result) { defer release(); a.finish(result) }})
 	if err != nil {
-		if s.active == a {
-			s.active = nil
-		}
+		delete(owner.live, cellID)
 		s.mu.Unlock()
 		capability.Close()
+		cancel()
 		return core.CodeModeCallResult{CellID: cellID, Status: "failed", Error: err.Error(), ErrorCode: "start_failed", IsError: true}, nil
 	}
+	started = true
 	s.mu.Unlock()
 	a.attachMachine(machine)
-	return a.observe(ctx, yield, true, maxOutputTokens), nil
+	result := a.observe(ctx, yield, true, maxOutputTokens)
+	if result.Status == "busy" {
+		s.mu.Lock()
+		result.LiveCellIDs = liveIDs(owner)
+		s.mu.Unlock()
+	}
+	return result, nil
 }
 
 func (s *codeModeSessions) wait(ctx context.Context, cellID string, yield time.Duration, maxOutputTokens int) (core.CodeModeCallResult, error) {
@@ -736,47 +736,59 @@ func (s *codeModeSessions) cancel(ctx context.Context, cellID string) (core.Code
 }
 
 func unknownCell(cellID string) core.CodeModeCallResult {
-	return core.CodeModeCallResult{CellID: cellID, Status: "unknown", Error: "unknown or expired cell_id; only the active cell and the most recent terminal cell are retained", ErrorCode: "unknown_cell", IsError: true}
+	return core.CodeModeCallResult{CellID: cellID, Status: "unknown", Error: "unknown or expired cell_id; up to eight live and eight recent terminal cells per session are retained", ErrorCode: "unknown_cell", IsError: true}
 }
 
 func (s *codeModeSessions) cancelActive() {
 	s.mu.Lock()
-	active := s.active
-	s.active = nil
-	s.last = nil
+	var cells []*codeModeAsyncCell
+	for id, o := range s.sessions {
+		for _, a := range o.live {
+			cells = append(cells, a)
+		}
+		for _, a := range o.terminal {
+			a.dropRetained()
+		}
+		o.terminal = nil
+		s.pruneOwnerLocked(id, o)
+	}
 	s.mu.Unlock()
-	if active != nil {
-		active.abandon()
+	for _, a := range cells {
+		a.abandon()
 	}
 }
-
 func (s *codeModeSessions) cancelSession(sessionID string) {
 	s.mu.Lock()
-	var active *codeModeAsyncCell
-	if s.active != nil && s.active.sessionID == sessionID {
-		active = s.active
-		s.active = nil
+	o := s.sessions[sessionID]
+	var cells []*codeModeAsyncCell
+	if o != nil {
+		for _, a := range o.live {
+			cells = append(cells, a)
+		}
+		for _, a := range o.terminal {
+			a.dropRetained()
+		}
+		o.terminal = nil
 	}
-	if s.last != nil && s.last.sessionID == sessionID {
-		s.last = nil
-	}
-	s.mu.Unlock()
-	if active != nil {
-		active.abandon()
+	for _, a := range cells {
+		a.abandon()
 	}
 	s.store.Clear(sessionID)
+	if o != nil {
+		s.pruneOwnerLocked(sessionID, o)
+	}
+	s.mu.Unlock()
 }
-
+func (s *codeModeSessions) pruneOwnerLocked(id string, o *codeModeSessionCells) {
+	if len(o.live) == 0 && len(o.terminal) == 0 {
+		delete(s.sessions, id)
+	}
+}
 func (s *codeModeSessions) closeAll() {
 	s.mu.Lock()
 	s.closed = true
-	active := s.active
-	s.active = nil
-	s.last = nil
 	s.mu.Unlock()
-	if active != nil {
-		active.abandon()
-	}
+	s.cancelActive()
 	s.store.ClearAll()
 }
 
@@ -829,7 +841,7 @@ func (e *Engine) CancelCodeMode(ctx context.Context, cellID string) (core.CodeMo
 	return e.codeModeSessions.cancel(ctx, cellID)
 }
 
-// CloseCodeMode cancels the active cell and discards all engine-owned code
+// CloseCodeMode cancels all owned cells and discards all engine-owned code
 // state. It is safe to call from runtime eviction/shutdown and does not wait
 // for host calls that ignore their context.
 func (e *Engine) CloseCodeMode() {
@@ -861,7 +873,7 @@ func (e *Engine) CancelCodeModeCells() {
 }
 
 // ResetCodeModeSession drops only one session's state and stops that session's
-// active cell. A reused Engine cannot leak cell state into another request.
+// cells. A reused Engine cannot leak cell state into another request.
 func (e *Engine) ResetCodeModeSession(sessionID string) {
 	if e == nil || e.codeModeSessions == nil {
 		return
@@ -885,17 +897,15 @@ func (e *Engine) InterruptCodeModeSession(sessionID string) bool {
 	}
 	s := e.codeModeSessions
 	s.mu.Lock()
-	a := s.active
+	var cells []*codeModeAsyncCell
+	if o := s.sessions[sessionID]; o != nil {
+		for _, a := range o.live {
+			cells = append(cells, a)
+		}
+	}
 	s.mu.Unlock()
-	if a == nil || a.sessionID != sessionID {
-		return false
+	for _, a := range cells {
+		a.requestCancel()
 	}
-	a.mu.Lock()
-	done := a.done
-	a.mu.Unlock()
-	if done {
-		return false
-	}
-	a.requestCancel()
-	return true
+	return len(cells) > 0
 }

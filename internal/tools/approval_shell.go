@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/samsaffron/term-llm/internal/llm/core"
 	"github.com/samsaffron/term-llm/internal/runtimeoutput"
 )
 
@@ -37,7 +38,9 @@ func (m *ApprovalManager) checkShellApprovalWithContext(ctx context.Context, com
 	// Need to prompt - serialize prompts to avoid UI conflicts
 	// Use shared lock (via PromptLock()) to prevent concurrent prompts across parent/child managers
 	promptLock := m.PromptLock()
-	promptLock.Lock()
+	if err := core.LockCodeModeApproval(ctx, promptLock); err != nil {
+		return Cancel, err
+	}
 	defer promptLock.Unlock()
 
 	// Recheck yolo now that we hold the prompt lock; the user may have toggled it
@@ -72,7 +75,7 @@ func (m *ApprovalManager) checkShellApprovalWithContext(ctx context.Context, com
 		if m.DebugApproval {
 			runtimeoutput.Logf("[approval] CheckShellApproval cmd=%q → calling PromptUIFunc", command)
 		}
-		result, err := promptUIFunc(command, false, true, workDir)
+		result, err := core.WithCodeModeApproval(ctx, func() (ApprovalResult, error) { return promptUIFunc(command, false, true, workDir) })
 		if err != nil {
 			return Cancel, err
 		}

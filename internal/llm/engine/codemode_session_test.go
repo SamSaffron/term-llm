@@ -62,9 +62,7 @@ func waitCodeModeSlotIdle(t *testing.T, e *Engine) {
 	t.Helper()
 	deadline := time.Now().Add(3 * time.Second)
 	for {
-		e.codeModeMu.Lock()
-		idle := e.codeModeCell == nil
-		e.codeModeMu.Unlock()
+		idle := !e.HasAnyCodeModeCells()
 		if idle {
 			return
 		}
@@ -198,8 +196,9 @@ func TestCodeModeCancelRetainsUnresolvedLease(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if busy.Status != "busy" {
-		t.Fatalf("unresolved lease must quarantine new exec: %+v", busy)
+	busy = awaitCodeModeTerminal(t, e, ctx, busy)
+	if busy.Status != "completed" {
+		t.Fatalf("unrelated cell must proceed while one place is quarantined: %+v", busy)
 	}
 
 	close(release)
@@ -438,8 +437,9 @@ func TestCodeModeSessionMismatchFailsClosedWithoutLeak(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if busy.Status != "busy" || busy.ErrorCode != "session_mismatch" || busy.CellID != "" || busy.ActiveCellID != "" {
-		t.Fatalf("session change must fail closed without exposing another session's cell: %+v", busy)
+	busy = awaitCodeModeTerminal(t, e, ctxB, busy)
+	if busy.Status != "completed" || busy.CellID == first.CellID {
+		t.Fatalf("separate session admission must be isolated: %+v", busy)
 	}
 	unknownEmpty, err := e.WaitCodeMode(context.Background(), first.CellID, 10*time.Millisecond, 0)
 	if err != nil {
@@ -513,9 +513,7 @@ func TestCodeModeSessionTeardownClearsStateAndRetainsLease(t *testing.T) {
 	if state := string(e.codeModeSessions.store.State("sess-teardown")); state != "{}" {
 		t.Fatalf("teardown retained state: %s", state)
 	}
-	e.codeModeMu.Lock()
-	leaseHeld := e.codeModeCell != nil
-	e.codeModeMu.Unlock()
+	leaseHeld := e.HasAnyCodeModeCells()
 	if !leaseHeld {
 		t.Fatal("teardown released an unresolved external-effect lease")
 	}
@@ -821,7 +819,7 @@ func TestCodeModeLaterWaitRoutesChildEvents(t *testing.T) {
 func TestCodeModeHumanInterruptAndScopedReset(t *testing.T) {
 	e := newCodeEngine()
 	t.Cleanup(e.CloseCodeMode)
-	_, err := e.codeModeSessions.store.Commit("owner", json.RawMessage(`{"saved":42}`))
+	_, _, err := e.codeModeSessions.store.Apply("owner", json.RawMessage(`{"set":{"saved":42},"delete":[]}`), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -848,6 +846,9 @@ func TestCodeModeHumanInterruptAndScopedReset(t *testing.T) {
 	if got := string(e.codeModeSessions.store.State("owner")); got != `{"saved":42}` {
 		t.Fatalf("committed store changed: %s", got)
 	}
+	// A terminal receipt can precede actual-call settlement and asynchronous
+	// admission-place reclamation; interrupt includes those live leases.
+	waitCodeModeSlotIdle(t, e)
 	if e.InterruptCodeModeSession("owner") {
 		t.Fatal("terminal cell reported as active")
 	}
@@ -877,7 +878,7 @@ func TestCodeModeUserErrorClassification(t *testing.T) {
 
 func TestCodeModeResourceErrorClassification(t *testing.T) {
 	for message, want := range map[string]string{
-		"busy: VM capacity": "busy", "state_limit: result too large": "state_limit",
+		"vm_capacity: process VM capacity": "vm_capacity", "state_limit: result too large": "state_limit",
 		"state_total_limit": "state_limit", "unawaited_calls": "unawaited_calls",
 		"SyntaxError: bad syntax":                                      "script_error",
 		"script_error: Error: image":                                   "script_error",

@@ -70,6 +70,13 @@ Stop without deleting state:
 term-llm contain stop {{name}}
 ```
 
+## Script cells
+
+Newly bootstrapped agents include `spawn_script`, `wait_script` and `cancel_script`
+alongside their direct tools. Each session can own up to eight live cells. Stop
+cancels all of that session's cells, including while the conversation is idle.
+This template change does not overwrite existing agents' persisted configuration.
+
 ## Widgets
 
 The Web UI starts with term-llm widgets enabled and uses

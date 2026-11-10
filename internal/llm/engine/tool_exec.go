@@ -290,6 +290,9 @@ func (e *Engine) executeSingleToolCall(ctx context.Context, call core.ToolCall, 
 // structured output for both transcript and bridge result adapters.
 func (e *Engine) executeSingleToolCallOutcome(ctx context.Context, call core.ToolCall, send corestream.Sender, debug bool, debugRaw bool) toolCallOutcome {
 	tool, ok := e.tools.Get(call.Name)
+	if override, _ := ctx.Value(nestedToolOverrideKey{}).(core.Tool); override != nil {
+		tool, ok = override, true
+	}
 	if !ok && nestedExecution(ctx) {
 		return toolCallOutcome{call: call, err: fmt.Errorf("nested tool not registered: %s", call.Name)}
 	}

@@ -37,9 +37,7 @@ func TestCodeModeZeroMaxWaitPollsWithoutCancellation(t *testing.T) {
 		t.Fatalf("zero-wait observation did not poll: %+v; context: %v", polled, ctx.Err())
 	}
 	// An observation deadline must leave the cell and its host work running.
-	e.codeModeSessions.mu.Lock()
-	active := e.codeModeSessions.active
-	e.codeModeSessions.mu.Unlock()
+	active := e.codeModeSessions.lookup(first.CellID, "poll")
 	if active == nil {
 		t.Fatal("poll ended the active cell")
 	}

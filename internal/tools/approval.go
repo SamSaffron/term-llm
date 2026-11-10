@@ -17,6 +17,7 @@ import (
 	"github.com/samsaffron/term-llm/internal/llm/core"
 	"github.com/samsaffron/term-llm/internal/runtimeoutput"
 	"github.com/samsaffron/term-llm/internal/session"
+	"github.com/samsaffron/term-llm/internal/shellcmd"
 )
 
 // ApprovalCache provides session-scoped caching for tool+path decisions.
@@ -373,6 +374,7 @@ type WorkspaceApprovalResult struct {
 
 // ApprovalManager coordinates approval requests and caching.
 type ApprovalManager struct {
+	liveRoot         *ApprovalManager // immutable cell admission root, used only to narrow
 	cache            *ApprovalCache
 	dirCache         *DirCache // Tool-agnostic directory approvals
 	shellCache       *ShellApprovalCache
@@ -775,21 +777,6 @@ func (m *ApprovalManager) SetApprovalMode(mode ApprovalMode) {
 	if old == ModeAuto && mode != ModeAuto {
 		m.clearGuardianExactShell()
 	}
-}
-
-func (m *ApprovalManager) requestedMode() ApprovalMode {
-	if m == nil {
-		return ModePrompt
-	}
-	for cur := m; cur != nil; cur = cur.parent {
-		cur.modeMu.RLock()
-		mode := cur.mode
-		cur.modeMu.RUnlock()
-		if mode != ModePrompt {
-			return mode
-		}
-	}
-	return ModePrompt
 }
 
 // RequestedApprovalMode returns the configured mode before a Guardian breaker
@@ -1227,7 +1214,9 @@ func (m *ApprovalManager) CheckPathApprovalWithContext(ctx context.Context, tool
 	// 4. Need to prompt user - serialize prompts to avoid UI conflicts
 	// Use shared lock (via PromptLock()) to prevent concurrent prompts across parent/child managers
 	promptLock := m.PromptLock()
-	promptLock.Lock()
+	if err := core.LockCodeModeApproval(ctx, promptLock); err != nil {
+		return Cancel, err
+	}
 	defer promptLock.Unlock()
 
 	// Recheck yolo now that we hold the prompt lock; the user may have toggled it
@@ -1271,7 +1260,7 @@ func (m *ApprovalManager) CheckPathApprovalWithContext(ctx context.Context, tool
 		if m.DebugApproval {
 			runtimeoutput.Logf("[approval] CheckPathApproval tool=%s path=%q → calling PromptUIFunc", toolName, absPath)
 		}
-		result, err := promptUIFunc(absPath, isWrite, false, "")
+		result, err := core.WithCodeModeApproval(ctx, func() (ApprovalResult, error) { return promptUIFunc(absPath, isWrite, false, "") })
 		if err != nil {
 			if m.DebugApproval {
 				runtimeoutput.Logf("[approval] CheckPathApproval tool=%s path=%q → PromptUIFunc error: %v", toolName, absPath, err)
@@ -1462,7 +1451,9 @@ func (m *ApprovalManager) CheckSharedShellApprovalWithContext(ctx context.Contex
 		}
 	}
 	lock := m.PromptLock()
-	lock.Lock()
+	if err := core.LockCodeModeApproval(ctx, lock); err != nil {
+		return Cancel, err
+	}
 	defer lock.Unlock()
 	if m.YoloEnabled() {
 		return ProceedOnce, nil
@@ -1476,7 +1467,7 @@ func (m *ApprovalManager) CheckSharedShellApprovalWithContext(ctx context.Contex
 	if prompt == nil {
 		return Cancel, NewToolError(ErrPermissionDenied, "shared shell command requires approval, but no approval transport is available")
 	}
-	result, err := prompt(command)
+	result, err := core.WithCodeModeApproval(ctx, func() (ApprovalResult, error) { return prompt(command) })
 	if err != nil {
 		return Cancel, err
 	}
@@ -2310,65 +2301,7 @@ func splitSequentialCommands(input string) []string {
 	return commands
 }
 
-// splitPipeCommands splits on single pipe (|) but NOT on ||, &&, or ;.
-func splitPipeCommands(input string) []string {
-	var commands []string
-	var current strings.Builder
-	inSingle := false
-	inDouble := false
-	escaped := false
-	runes := []rune(input)
-
-	for i := 0; i < len(runes); i++ {
-		r := runes[i]
-		switch {
-		case escaped:
-			current.WriteRune(r)
-			escaped = false
-		case inSingle:
-			current.WriteRune(r)
-			if r == '\'' {
-				inSingle = false
-			}
-		case inDouble:
-			current.WriteRune(r)
-			switch r {
-			case '"':
-				inDouble = false
-			case '\\':
-				escaped = true
-			}
-		default:
-			switch {
-			case r == '\'':
-				inSingle = true
-				current.WriteRune(r)
-			case r == '"':
-				inDouble = true
-				current.WriteRune(r)
-			case r == '\\':
-				escaped = true
-				current.WriteRune(r)
-			case r == '|' && i+1 < len(runes) && runes[i+1] == '|':
-				// || is a sequential operator, preserve it
-				current.WriteRune(r)
-				current.WriteRune(runes[i+1])
-				i++ // skip second |
-			case r == '|':
-				if s := strings.TrimSpace(current.String()); s != "" {
-					commands = append(commands, s)
-				}
-				current.Reset()
-			default:
-				current.WriteRune(r)
-			}
-		}
-	}
-	if s := strings.TrimSpace(current.String()); s != "" {
-		commands = append(commands, s)
-	}
-	return commands
-}
+func splitPipeCommands(input string) []string { return shellcmd.SplitPipeCommands(input) }
 
 func canonicalApprovalPath(path string, isWrite bool) (string, error) {
 	if isWrite {

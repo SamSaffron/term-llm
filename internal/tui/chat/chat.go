@@ -288,9 +288,10 @@ type Model struct {
 	toolMgr                  *tools.ToolManager
 
 	// Embedded inline approval UI (alt screen mode only)
-	approvalModel       *tools.ApprovalModel
-	approvalDoneCh      chan<- tools.ApprovalResult
-	approvalIsWorkspace bool
+	approvalModel         *tools.ApprovalModel
+	approvalDoneCh        chan<- tools.ApprovalResult
+	approvalIsWorkspace   bool
+	approvalNoAutoApprove bool
 
 	// Embedded inline ask_user UI (alt screen mode only)
 	askUserModel  *tools.AskUserModel
@@ -808,16 +809,6 @@ type chatGPTModelsLoadedMsg struct {
 	models []core.ModelInfo
 	fresh  bool
 	err    error
-}
-
-// ApprovalRequestMsg triggers an inline approval prompt.
-type ApprovalRequestMsg struct {
-	Path        string
-	IsWrite     bool
-	IsShell     bool
-	IsWorkspace bool
-	WorkDir     string // directory where a shell command will execute (may be empty)
-	DoneCh      chan<- tools.ApprovalResult
 }
 
 // AskUserRequestMsg triggers an inline ask_user prompt.
@@ -2276,6 +2267,7 @@ func isParentChatMessage(msg tea.Msg) bool {
 		FlushBeforeApprovalMsg,
 		ResumeFromExternalUIMsg,
 		ApprovalRequestMsg,
+		DismissApprovalMsg,
 		AskUserRequestMsg,
 		HandoverRequestMsg,
 		mentionIndexReadyMsg,

@@ -362,6 +362,7 @@ func Run(ctx context.Context, args []string, opts Options, deps Dependencies) er
 
 	if !useRichRenderer && toolMgr != nil {
 		// Non-TUI mode: set up approval UI directly (no tea.Program to pause)
+		toolMgr.CodeModePromptBinder = terminalCodeModePromptBinder(nil, nil)
 		toolMgr.ApprovalMgr.PromptUIFunc = func(path string, isWrite bool, isShell bool, workDir string) (tools.ApprovalResult, error) {
 			if isShell {
 				return tools.RunShellApprovalUI(path, workDir)

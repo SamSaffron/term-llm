@@ -1804,3 +1804,91 @@ test('multi-user attribution bylines, facepiles and persisted author filter', as
     await page.getByRole('button', { name: 'Open sidebar', exact: true }).click();
   await expect(page.getByRole('radio', { name: 'Started by me', exact: true })).toBeChecked();
 });
+
+test('idle script cells expose mobile-safe per-cell cancel, approval and Stop all', async ({
+  page,
+}) => {
+  await mockAPI(page);
+  const cells = [
+    {
+      cell_id: 'cm_first',
+      status: 'awaiting_approval',
+      live: true,
+      started_at: Date.now(),
+      elapsed_ms: 2500,
+      has_more_output: false,
+      unsettled_calls: 0,
+    },
+    {
+      cell_id: 'cm_second',
+      status: 'running',
+      live: true,
+      started_at: Date.now(),
+      elapsed_ms: 2500,
+      has_more_output: true,
+      unsettled_calls: 0,
+    },
+  ];
+  let approvals = [
+    {
+      approval_id: 'appr_cell',
+      cell_id: 'cm_first',
+      title: 'Read Access Request',
+      path: '/owned/test.txt',
+      options: [{ index: 0, label: 'Allow once', description: 'One read only' }],
+    },
+  ];
+  const cancellations: Array<string | undefined> = [];
+  await page.route('**/v1/sessions/s1/activity', (route) =>
+    route.fulfill({
+      json: {
+        session_id: 's1',
+        cells,
+        agents: [],
+        jobs: [],
+        agents_availability: 'available',
+        jobs_availability: 'available',
+        agents_partial: false,
+        jobs_partial: false,
+      },
+    }),
+  );
+  await page.route('**/v1/sessions/s1/code-cells', (route) =>
+    route.fulfill({ json: { cells, pending_approvals: approvals } }),
+  );
+  await page.route('**/v1/sessions/s1/code-cells/cancel', async (route) => {
+    const body = route.request().postDataJSON() as { cell_id?: string };
+    cancellations.push(body.cell_id);
+    for (const cell of cells)
+      if (!body.cell_id || body.cell_id === cell.cell_id) {
+        cell.live = false;
+        cell.status = 'cancelled';
+      }
+    await route.fulfill({ json: { cells } });
+  });
+  await page.route('**/v1/sessions/s1/approval', async (route) => {
+    approvals = [];
+    cells[0].status = 'running';
+    await route.fulfill({ json: { status: 'accepted' } });
+  });
+  await page.goto('./chat/s1');
+  await expect(page.locator('#startupSplash')).toBeHidden();
+  await page.getByRole('button', { name: /^Activity: 2 active/ }).click();
+  const scripts = page.getByRole('region', { name: 'Scripts', exact: true });
+  await expect(scripts.getByText('Scripts (2/8)')).toBeVisible();
+  await expect(scripts.getByText(/Needs approval/)).toBeVisible();
+  await scripts.getByRole('button', { name: 'Allow once' }).click();
+  await expect(scripts.getByText(/Needs approval/)).toBeHidden();
+  const cancel = scripts.getByRole('button', { name: 'Cancel script cm_second' });
+  expect(
+    await cancel.evaluate((element) => element.getBoundingClientRect().height),
+  ).toBeGreaterThanOrEqual(44);
+  await cancel.click();
+  await expect(scripts.getByText('Scripts (1/8)')).toBeVisible();
+  await scripts.getByRole('button', { name: 'Stop all scripts' }).click();
+  await expect(scripts.getByText('Scripts (0/8)')).toBeVisible();
+  expect(cancellations).toEqual(['cm_second', undefined]);
+  expect(await scripts.evaluate((element) => element.scrollWidth <= element.clientWidth)).toBe(
+    true,
+  );
+});

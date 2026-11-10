@@ -10,6 +10,7 @@ import (
 
 	servejobs "github.com/samsaffron/term-llm/internal/app/serve/jobs"
 	"github.com/samsaffron/term-llm/internal/linkeddevices"
+	"github.com/samsaffron/term-llm/internal/llm/core"
 	"github.com/samsaffron/term-llm/internal/session"
 )
 
@@ -23,13 +24,14 @@ const (
 // SessionActivityResponse is a bounded conversation snapshot. Availability is
 // independent for each source: an optional jobs outage cannot hide agents.
 type SessionActivityResponse struct {
-	SessionID          string               `json:"session_id"`
-	Agents             []ChildRunProjection `json:"agents"`
-	Jobs               []ActivityJobRun     `json:"jobs"`
-	AgentsAvailability string               `json:"agents_availability"`
-	JobsAvailability   string               `json:"jobs_availability"`
-	AgentsPartial      bool                 `json:"agents_partial"`
-	JobsPartial        bool                 `json:"jobs_partial"`
+	Cells              []core.CodeModeCellSummary `json:"cells,omitempty"`
+	SessionID          string                     `json:"session_id"`
+	Agents             []ChildRunProjection       `json:"agents"`
+	Jobs               []ActivityJobRun           `json:"jobs"`
+	AgentsAvailability string                     `json:"agents_availability"`
+	JobsAvailability   string                     `json:"jobs_availability"`
+	AgentsPartial      bool                       `json:"agents_partial"`
+	JobsPartial        bool                       `json:"jobs_partial"`
 }
 
 // ActivityJobRun intentionally excludes output, errors, runner configuration and
@@ -49,6 +51,7 @@ type ActivityJobRun struct {
 // existing live projection; no second child-state implementation is introduced.
 type Handler struct {
 	Store    session.Store
+	Cells    func(string) []core.CodeModeCellSummary
 	Children func(context.Context, string) ([]ChildRunProjection, bool, error)
 	Jobs     *servejobs.Manager
 }
@@ -70,6 +73,9 @@ func (s Handler) ServeSession(w http.ResponseWriter, r *http.Request, sessionID 
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
 	snapshot := SessionActivityResponse{SessionID: sessionID, Agents: []ChildRunProjection{}, Jobs: []ActivityJobRun{}, AgentsAvailability: "available", JobsAvailability: "unavailable"}
+	if s.Cells != nil {
+		snapshot.Cells = s.Cells(sessionID)
+	}
 	scope := s.collectActivityAgents(ctx, sessionID, &snapshot)
 	// Linked devices can read delegated agents, but cannot read owner jobs. Check
 	// before provenance discovery and before constructing/contacting any backend.

@@ -117,6 +117,18 @@ This agent is judged by completed useful actions, not intentions.
 - If you only have enough information to plan, present the plan as a plan, not
   as work already underway.
 
+## Code mode
+
+Use `spawn_script` for multi-step tool composition; retain direct tools for single
+calls, discovery and lifecycle controls. Up to eight cells can run per session.
+Each cell has fresh JavaScript globals. `wait_script` observes its handle without
+stopping it; observation timeout and a normal final answer do not cancel work.
+Use `cancel_script` for one cell; human Stop cancels all session cells. Check the
+live-cell roster before starting duplicates. State uses snapshot reads and
+success-only write-set commits (last successful committer wins on the same key).
+Failed/cancelled cells commit nothing; external effects cannot be rolled back or
+automatically replayed. Normal permissions and approvals still apply.
+
 ## Jobs and Services
 
 Services are runit-managed processes installed under `/home/agent/.config/term-llm/services` and linked into `/etc/sv` on each start. The service supervisor runs as root, but normal agent workloads, shells, the Web UI, the jobs server, and bootstrap jobs run as the non-root `agent` Linux user. Use passwordless `sudo` explicitly when root privileges are needed. The default long-running services are `webui` and `jobs`: `webui` serves chat on port 8081, and `jobs` runs the HTTP scheduler on port 8080. A first-boot `bootstrap-jobs` one-shot service creates the default scheduled jobs, removes its persisted service definition, and exits so it will not appear on later boots. The jobs system stores definitions, runs, and events in term-llm's database. Use `term-llm jobs list`, `get`, `create`, `update`, `pause`, `resume`, `trigger`, `runs`, `active`, and `run events` to inspect and operate scheduled work. Default jobs mine sessions, update `recent.md`, and upgrade packages. Memory garbage collection is manual only; run an explicit dry-run before deleting fragments. Prefer jobs skill when changing schedules, runner payloads, boot behavior, or debugging failed runs.

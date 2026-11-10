@@ -46,6 +46,7 @@ WebSessionMetrics
 AuthorshipSessionFields
 HubStatus
 CoreCodeModeCallOutcome
+CoreCodeModeCellSummary
 CoreDiffComment
 CoreDiffCommentContextLine
 CoreGuardianReview

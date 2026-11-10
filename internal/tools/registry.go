@@ -321,6 +321,9 @@ func stringSliceContains(values []string, needle string) bool {
 // RegisterWithEngine registers all enabled tools with the LLM engine.
 func (r *LocalToolRegistry) RegisterWithEngine(eng *engine.Engine) {
 	eng.SetCodeModeDirectOnly(codeModeDirectOnlyTools())
+	eng.SetCodeModeAuthorityCapture(func(ctx context.Context, ref core.CodeModeCellRef, names []string) (core.CodeModeAuthority, error) {
+		return r.captureCodeModeAuthority(ctx, ref, names, nil)
+	})
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 
@@ -512,8 +515,9 @@ func (r *LocalToolRegistry) MediaPublisher() MediaPublisher {
 
 // ToolManager provides a high-level interface for tool management in commands.
 type ToolManager struct {
-	Registry    *LocalToolRegistry
-	ApprovalMgr *ApprovalManager
+	Registry             *LocalToolRegistry
+	ApprovalMgr          *ApprovalManager
+	CodeModePromptBinder func(core.CodeModeCellRef) CodeModePrompts
 }
 
 // NewToolManager creates a new tool manager from config.
@@ -606,6 +610,9 @@ func (m *ToolManager) IsReadPathApproved(path string) bool {
 // SetupEngine registers tools with the engine.
 func (m *ToolManager) SetupEngine(engine *engine.Engine) {
 	m.Registry.RegisterWithEngine(engine)
+	engine.SetCodeModeAuthorityCapture(func(ctx context.Context, ref core.CodeModeCellRef, names []string) (core.CodeModeAuthority, error) {
+		return m.Registry.captureCodeModeAuthority(ctx, ref, names, m.CodeModePromptBinder)
+	})
 }
 
 // FilterToolSpecsForApprovalMode removes tools that have no model-facing use in

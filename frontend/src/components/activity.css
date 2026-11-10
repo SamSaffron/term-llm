@@ -259,3 +259,46 @@
   font-size: 12px;
   overflow-wrap: anywhere;
 }
+
+.script-cells {
+  margin-block: 12px;
+}
+
+.script-cells-heading,
+.script-cell-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.script-cells button {
+  min-height: 44px;
+  white-space: normal;
+}
+
+.script-cell {
+  padding-block: 12px;
+  border-bottom: 1px solid var(--border);
+}
+
+.script-cell-heading code {
+  overflow-wrap: anywhere;
+  min-width: 0;
+}
+
+.script-cell p {
+  font-size: 0.85rem;
+  color: var(--muted);
+}
+
+.script-approval pre {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  max-height: 160px;
+  overflow: auto;
+}
+
+.script-approval .btn {
+  margin: 4px;
+}

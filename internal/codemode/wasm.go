@@ -12,6 +12,7 @@ import (
 
 	"github.com/tetratelabs/wazero"
 	"github.com/tetratelabs/wazero/api"
+	"github.com/tetratelabs/wazero/experimental"
 	"github.com/tetratelabs/wazero/imports/wasi_snapshot_preview1"
 )
 
@@ -21,7 +22,6 @@ var wasm []byte
 //go:embed prelude.js
 var prelude string
 
-var vmSlots = make(chan struct{}, 4)
 var compilationCache = wazero.NewCompilationCache()
 
 // Available reports whether this platform supports the sandbox.
@@ -61,10 +61,10 @@ type machine struct {
 
 // Run owns every WASM operation on the calling goroutine. Workers exchange copied JSON only.
 func Run(ctx context.Context, in Input, names []string, host Host, modules Modules) Result {
-	return run(ctx, in, names, host, modules, legacyMachinePolicy(), nil)
+	return run(ctx, in, names, host, modules, legacyMachinePolicy(), nil, nil)
 }
 
-func run(ctx context.Context, in Input, names []string, host Host, modules Modules, policy machinePolicy, sink func(kind string, value json.RawMessage) error) (result Result) {
+func run(ctx context.Context, in Input, names []string, host Host, modules Modules, policy machinePolicy, sink func(kind string, value json.RawMessage) error, budget *Budget) (result Result) {
 	result.Status = "failed"
 	if len(in.Code) > policy.code {
 		result.Error = "code_limit"
@@ -89,9 +89,21 @@ func run(ctx context.Context, in Input, names []string, host Host, modules Modul
 	case vmSlots <- struct{}{}:
 		defer func() { <-vmSlots }()
 	default:
-		result.Error = "busy: VM capacity"
+		result.Error = "vm_capacity: process VM capacity"
 		return
 	}
+	memory := newBudgetMemory(budget)
+	if memory == nil {
+		result.Error = "memory_capacity: aggregate admission floor unavailable"
+		return
+	}
+	defer memory.Free()
+	defer func() {
+		if memory.denied.Load() && result.Status != "completed" {
+			result.Error = aggregateMemoryError(result.Error)
+		}
+	}()
+	ctx = experimental.WithMemoryAllocator(ctx, memory)
 	if timeout > 0 {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(ctx, timeout)
@@ -107,7 +119,7 @@ func run(ctx context.Context, in Input, names []string, host Host, modules Modul
 	}()
 	r := wazero.NewRuntimeWithConfig(ctx, wazero.NewRuntimeConfig().WithCompilationCache(compilationCache).WithMemoryLimitPages(uint32(policy.linear/65536)).WithCloseOnContextDone(true))
 	defer r.Close(context.Background())
-	module, err := r.CompileModule(ctx, wasm)
+	module, err := withCompilationSlot(ctx, func() (wazero.CompiledModule, error) { return r.CompileModule(ctx, wasm) })
 	if err != nil {
 		result.Error = err.Error()
 		return
@@ -151,7 +163,7 @@ func run(ctx context.Context, in Input, names []string, host Host, modules Modul
 					m.err = errors.New("unawaited_calls: external effects may still be running")
 					break
 				}
-				if err := validateStateObject(q.Value, m.policy.stateTotal, m.policy.stateValue, m.policy.rejectImageState); err != nil {
+				if err := validateMachineState(q.Value, m.policy); err != nil {
 					m.err = err
 					break
 				}
@@ -525,7 +537,7 @@ func (m *machine) setup(in Input, names []string) error {
 	namesJSON, _ := json.Marshal(names)
 	stateJSON, _ := json.Marshal(string(in.State))
 	// Construct and capture closure handles before executing any guest source.
-	apiValue, err := m.eval("("+prelude+")(__bridge,"+string(namesJSON)+","+string(stateJSON)+")", "prelude.js")
+	apiValue, err := m.eval("("+prelude+")(__bridge,"+string(namesJSON)+","+string(stateJSON)+","+fmt.Sprint(m.policy.rejectImageState)+")", "prelude.js")
 	if err != nil {
 		return err
 	}
@@ -694,7 +706,11 @@ func StartCell(parent context.Context, spec CellSpec) (*Cell, error) {
 	if parent == nil {
 		parent = context.Background()
 	}
-	ctx, cancel := context.WithCancel(context.WithoutCancel(parent))
+	base := context.WithoutCancel(parent)
+	if spec.Context != nil {
+		base = spec.Context
+	}
+	ctx, cancel := context.WithCancel(base)
 	c := newCell(ctx, cancel)
 	go func() {
 		var result Result
@@ -704,7 +720,7 @@ func StartCell(parent context.Context, spec CellSpec) (*Cell, error) {
 					result = Result{Status: "failed", Error: fmt.Sprintf("panic: %v", v)}
 				}
 			}()
-			result = run(ctx, spec.Input, spec.Names, spec.Host, spec.Modules, sessionMachinePolicy(), spec.Sink)
+			result = run(ctx, spec.Input, spec.Names, spec.Host, spec.Modules, sessionMachinePolicy(), spec.Sink, spec.Memory)
 		}()
 		if spec.OnFinish != nil {
 			func() {

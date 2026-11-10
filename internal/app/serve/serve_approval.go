@@ -3,9 +3,9 @@ package serve
 import (
 	"errors"
 	"fmt"
-	"os"
 	"time"
 
+	"github.com/samsaffron/term-llm/internal/app/serve/approvalprompt"
 	"github.com/samsaffron/term-llm/internal/tools"
 )
 
@@ -15,26 +15,8 @@ var (
 	errServeApprovalNoTransport = errors.New("no approval transport configured")
 )
 
-type serveApprovalPrompt struct {
-	ApprovalID          string                `json:"approval_id"`
-	Path                string                `json:"path"`
-	IsWrite             bool                  `json:"is_write"`
-	IsShell             bool                  `json:"is_shell"`
-	IsWorkspace         bool                  `json:"is_workspace,omitempty"`
-	WorkDir             string                `json:"work_dir,omitempty"`
-	Scope               string                `json:"scope,omitempty"`
-	Title               string                `json:"title"`
-	Options             []serveApprovalOption `json:"options"`
-	ResumeAutoAvailable bool                  `json:"resume_auto_available,omitempty"`
-	CreatedAt           int64                 `json:"created_at"`
-}
-
-type serveApprovalOption struct {
-	Label       string `json:"label"`
-	Description string `json:"description"`
-	Index       int    `json:"index"`
-	Choice      string `json:"choice"`
-}
+type serveApprovalPrompt = approvalprompt.Prompt
+type serveApprovalOption = approvalprompt.Option
 
 type serveApprovalSubmission struct {
 	Result tools.ApprovalResult
@@ -42,6 +24,7 @@ type serveApprovalSubmission struct {
 }
 
 type servePendingApproval struct {
+	CellID              string
 	ApprovalID          string
 	Path                string
 	IsWrite             bool
@@ -57,41 +40,7 @@ type servePendingApproval struct {
 }
 
 func (p *servePendingApproval) snapshot() serveApprovalPrompt {
-	options := make([]serveApprovalOption, len(p.Options))
-	for i, opt := range p.Options {
-		options[i] = serveApprovalOption{
-			Label:       opt.Label,
-			Description: opt.Description,
-			Index:       i,
-			Choice:      approvalChoiceName(opt.Choice),
-		}
-	}
-
-	title := "Access Request"
-	switch {
-	case p.IsWorkspace:
-		title = "Allow workspace access?"
-	case p.IsShell:
-		title = "Shell Command Request"
-	case p.IsWrite:
-		title = "Write Access Request"
-	default:
-		title = "Read Access Request"
-	}
-
-	return serveApprovalPrompt{
-		ApprovalID:          p.ApprovalID,
-		Path:                p.Path,
-		IsWrite:             p.IsWrite,
-		IsShell:             p.IsShell,
-		IsWorkspace:         p.IsWorkspace,
-		WorkDir:             p.WorkDir,
-		Scope:               p.Scope,
-		Title:               title,
-		Options:             options,
-		ResumeAutoAvailable: p.ResumeAutoAvailable,
-		CreatedAt:           p.CreatedAt.UnixMilli(),
-	}
+	return (approvalprompt.Details{CellID: p.CellID, ApprovalID: p.ApprovalID, Path: p.Path, IsWrite: p.IsWrite, IsShell: p.IsShell, IsWorkspace: p.IsWorkspace, WorkDir: p.WorkDir, Scope: p.Scope, Options: p.Options, ResumeAutoAvailable: p.ResumeAutoAvailable, CreatedAt: p.CreatedAt}).Snapshot()
 }
 
 func (rt *serveRuntime) awaitApproval(target string, isWrite bool, isShell bool, workDir string) (tools.ApprovalResult, error) {
@@ -104,15 +53,7 @@ func (rt *serveRuntime) awaitSharedShellApproval(command string) (tools.Approval
 
 func (rt *serveRuntime) awaitWorkspaceApproval(workspace string) (tools.WorkspaceApprovalResult, error) {
 	result, err := rt.awaitApprovalRequest(workspace, true, false, true, "")
-	if err != nil {
-		return tools.WorkspaceApprovalResult{}, err
-	}
-	choice := result.Choice
-	return tools.WorkspaceApprovalResult{
-		Approved:  !result.Cancelled && (choice == tools.ApprovalChoiceWorkspace || choice == tools.ApprovalChoiceWorkspaceRemember),
-		Remember:  !result.Cancelled && choice == tools.ApprovalChoiceWorkspaceRemember,
-		Cancelled: result.Cancelled,
-	}, nil
+	return approvalprompt.WorkspaceResult(result, err)
 }
 
 func newServePendingApproval(target string, isWrite bool, isShell bool, isWorkspace bool, workDir string) *servePendingApproval {
@@ -120,32 +61,7 @@ func newServePendingApproval(target string, isWrite bool, isShell bool, isWorksp
 }
 
 func newServePendingApprovalScoped(target string, isWrite bool, isShell bool, isWorkspace bool, workDir, scope string) *servePendingApproval {
-	var options []tools.ApprovalOption
-	if isWorkspace {
-		options = tools.BuildWorkspaceOptions(target)
-	} else if isShell {
-		if scope == "shared_shell" {
-			options = tools.BuildSharedShellOptions(target)
-		} else {
-			dir := workDir
-			if dir == "" {
-				dir, _ = os.Getwd()
-			}
-			repoInfo := tools.DetectGitRepo(dir)
-			var repoInfoPtr *tools.GitRepoInfo
-			if repoInfo.IsRepo {
-				repoInfoPtr = &repoInfo
-			}
-			options = tools.BuildShellOptions(target, repoInfoPtr)
-		}
-	} else {
-		repoInfo := tools.DetectGitRepo(target)
-		var repoInfoPtr *tools.GitRepoInfo
-		if repoInfo.IsRepo {
-			repoInfoPtr = &repoInfo
-		}
-		options = tools.BuildFileOptions(target, repoInfoPtr, isWrite)
-	}
+	options := approvalprompt.Options(target, isWrite, isShell, isWorkspace, workDir, scope)
 
 	return &servePendingApproval{
 		ApprovalID:  "appr_" + randomSuffix(),
@@ -219,21 +135,7 @@ func (rt *serveRuntime) awaitApprovalRequestScoped(target string, isWrite bool, 
 	// Emit SSE event — if this fails the client never learns about the
 	// pending approval, so return immediately instead of blocking forever.
 	snap := pending.snapshot()
-	payload := map[string]any{
-		"approval_id":           snap.ApprovalID,
-		"path":                  snap.Path,
-		"is_write":              snap.IsWrite,
-		"is_shell":              snap.IsShell,
-		"is_workspace":          snap.IsWorkspace,
-		"title":                 snap.Title,
-		"scope":                 snap.Scope,
-		"options":               snap.Options,
-		"resume_auto_available": snap.ResumeAutoAvailable,
-		"created_at":            snap.CreatedAt,
-	}
-	if snap.WorkDir != "" {
-		payload["work_dir"] = snap.WorkDir
-	}
+	payload := snap.Payload()
 	if err := eventFunc("response.approval.prompt", payload); err != nil {
 		return tools.ApprovalResult{}, fmt.Errorf("failed to emit approval event: %w", err)
 	}
@@ -349,33 +251,4 @@ func (rt *serveRuntime) pendingApprovalPrompts() []serveApprovalPrompt {
 		func(pending *servePendingApproval) serveApprovalPrompt { return pending.snapshot() },
 		func(prompt serveApprovalPrompt) int64 { return prompt.CreatedAt },
 	)
-}
-
-func approvalChoiceName(c tools.ApprovalChoice) string {
-	switch c {
-	case tools.ApprovalChoiceDeny:
-		return "deny"
-	case tools.ApprovalChoiceOnce:
-		return "once"
-	case tools.ApprovalChoiceFile:
-		return "file"
-	case tools.ApprovalChoiceDirectory:
-		return "directory"
-	case tools.ApprovalChoiceRepoRead:
-		return "repo_read"
-	case tools.ApprovalChoiceRepoWrite:
-		return "repo_write"
-	case tools.ApprovalChoicePattern:
-		return "pattern"
-	case tools.ApprovalChoiceCommand:
-		return "command"
-	case tools.ApprovalChoiceWorkspace:
-		return "workspace"
-	case tools.ApprovalChoiceWorkspaceRemember:
-		return "workspace_remember"
-	case tools.ApprovalChoiceCancelled:
-		return "cancelled"
-	default:
-		return "unknown"
-	}
 }

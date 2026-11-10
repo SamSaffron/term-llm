@@ -26,14 +26,22 @@ func (m *Model) handleResumeFromExternalUI(msg ResumeFromExternalUIMsg) (tea.Mod
 }
 
 func (m *Model) handleApprovalRequest(msg ApprovalRequestMsg) (tea.Model, tea.Cmd) {
+	if msg.Context != nil && msg.Context.Err() != nil {
+		select {
+		case msg.DoneCh <- tools.ApprovalResult{Choice: tools.ApprovalChoiceCancelled, Cancelled: true}:
+		default:
+		}
+		return m, nil
+	}
 	// Yolo may resolve ordinary per-action prompts, but it can never make the
 	// direct-human primary workspace authority decision.
-	if m.isYoloModeActive() && !msg.IsWorkspace {
-		msg.DoneCh <- tools.ApprovalResult{Choice: tools.ApprovalChoiceOnce}
+	if m.isYoloModeActive() && !msg.IsWorkspace && !msg.NoAutoApprove {
+		select {
+		case msg.DoneCh <- tools.ApprovalResult{Choice: tools.ApprovalChoiceOnce}:
+		default:
+		}
 		m.pausedForExternalUI = false
-		m.approvalModel = nil
-		m.approvalDoneCh = nil
-		m.approvalIsWorkspace = false
+		m.clearApprovalPrompt()
 		return m, nil
 	}
 
@@ -44,6 +52,7 @@ func (m *Model) handleApprovalRequest(msg ApprovalRequestMsg) (tea.Model, tea.Cm
 	m.pausedForExternalUI = true
 	m.approvalDoneCh = msg.DoneCh
 	m.approvalIsWorkspace = msg.IsWorkspace
+	m.approvalNoAutoApprove = msg.NoAutoApprove
 	switch {
 	case msg.IsWorkspace:
 		m.approvalModel = tools.NewEmbeddedWorkspaceApprovalModel(msg.Path, m.width)

@@ -1,5 +1,7 @@
 package tools
 
+import "maps"
+
 // CloneForAgentRun snapshots the parent's approval scope before a child can
 // detach. The clone owns its caches and workspace identity: later serve requests
 // must never retarget an already-running child to another parent's grants.
@@ -31,28 +33,18 @@ func (m *ApprovalManager) CloneForAgentRun(sessionID string) *ApprovalManager {
 		clone.primaryWorkspace = root.primaryWorkspace
 		clone.primaryWorkspaceGrant = root.primaryWorkspaceGrant
 		clone.primaryWorkspaceDenied = root.primaryWorkspaceDenied
-		for path, grant := range root.workspaceGrants {
-			clone.workspaceGrants[path] = grant
-		}
-		for path, grant := range root.workspaceYoloGrants {
-			clone.workspaceYoloGrants[path] = grant
-		}
+		clone.workspaceGrants = maps.Clone(root.workspaceGrants)
+		clone.workspaceYoloGrants = maps.Clone(root.workspaceYoloGrants)
 	}
 	root.workspaceMu.Unlock()
 	clone.workspaceSessionID = sessionID
 	if sameOwner {
 		root.cache.mu.RLock()
-		for k, v := range root.cache.cache {
-			clone.cache.cache[k] = v
-		}
+		clone.cache.cache = maps.Clone(root.cache.cache)
 		root.cache.mu.RUnlock()
 		root.dirCache.mu.RLock()
-		for k, v := range root.dirCache.readDirs {
-			clone.dirCache.readDirs[k] = v
-		}
-		for k, v := range root.dirCache.writeDirs {
-			clone.dirCache.writeDirs[k] = v
-		}
+		clone.dirCache.readDirs = maps.Clone(root.dirCache.readDirs)
+		clone.dirCache.writeDirs = maps.Clone(root.dirCache.writeDirs)
 		root.dirCache.mu.RUnlock()
 		copyShellCache(clone.shellCache, root.shellCache)
 		copyShellCache(clone.sharedShellCache, root.sharedShellCache)
