@@ -194,6 +194,13 @@ export class SessionStore {
   private lastAppliedSidebarGeneration = 0;
   private sidebarRefreshPromise: Promise<void> | null = null;
   private recentTailLoaded = false;
+  // Snapshots only carry each partition's first-page cursor. Once a tail page
+  // has been loaded, the cursor must keep pointing past it: rewinding makes a
+  // visible pagination sentinel re-fetch every already-loaded page.
+  private noProjectTailLoaded = false;
+  private readonly projectTailsLoaded = new Set<string>();
+  // Loaded tails are only valid for the archived-visibility scope that paged them.
+  private loadedTailsArchived = false;
   private hubAgentLastFetch = 0;
   private hubAgentFetch: Promise<void> | null = null;
   private hubAgentRefreshTimer = 0;
@@ -216,7 +223,7 @@ export class SessionStore {
   ) {
     this.activity = new SessionActivityStore(services);
     this.authors = new AuthorStore(services, async () => {
-      this.recentTailLoaded = false;
+      this.resetLoadedTails();
       resetAuthorPages(this);
       if (this.sidebarSearch.peek()) {
         this.searchResults.value = [];
@@ -571,6 +578,7 @@ export class SessionStore {
         this.recentSessions.value = [];
         this.projects.value = [];
         this.catalogCached.value = false;
+        this.resetLoadedTails();
       }
       this.applySidebarSnapshot(data);
     });
@@ -583,6 +591,10 @@ export class SessionStore {
   }
 
   private applySidebarSnapshot(data: Record<string, unknown>): void {
+    if (this.loadedTailsArchived !== this.showArchived.peek()) {
+      this.resetLoadedTails();
+      this.loadedTailsArchived = this.showArchived.peek();
+    }
     const direct = listFrom(data, 'data', 'sessions', 'items').map((entry) =>
       this.sessionFrom(entry),
     );
@@ -594,10 +606,9 @@ export class SessionStore {
     const projects: Project[] = [];
     const ungrouped: Session[] = [...direct];
     const incompleteProjectIDs = new Set<string>();
-    let noProjectPageIncomplete = groups.length === 0 && Boolean(data.next_cursor);
     // Flat listings (projects disabled) carry the cursor at the top level;
     // project sidebars carry it on their "no project" group below.
-    this.noProjectCursor.value = String(data.next_cursor || '');
+    let noProjectCursor = String(data.next_cursor || '');
     for (const group of groups) {
       const sessions = listFrom(group, 'sessions', 'items');
       const projectSource =
@@ -606,8 +617,7 @@ export class SessionStore {
           : null;
       if (!projectSource || group.no_project) {
         ungrouped.push(...sessions.map((entry) => this.sessionFrom(entry)));
-        this.noProjectCursor.value = String(group.next_cursor || '');
-        noProjectPageIncomplete = Boolean(group.next_cursor);
+        noProjectCursor = String(group.next_cursor || '');
         continue;
       }
       const projectID = String(projectSource.id || '');
@@ -636,6 +646,13 @@ export class SessionStore {
         has_more: Boolean(group.next_cursor),
       };
       projects.push(project);
+    }
+    const noProjectPageIncomplete = Boolean(noProjectCursor);
+    if (!noProjectCursor) {
+      this.noProjectCursor.value = '';
+      this.noProjectTailLoaded = false;
+    } else if (!this.noProjectTailLoaded) {
+      this.noProjectCursor.value = noProjectCursor;
     }
     const incoming = [
       ...recent,
@@ -704,12 +721,26 @@ export class SessionStore {
         ...project,
         sessions,
       };
+      if (!project.next_cursor) this.projectTailsLoaded.delete(project.id);
+      else if (previous && this.projectTailsLoaded.has(project.id)) {
+        candidate.next_cursor = previous.next_cursor;
+        candidate.has_more = previous.has_more;
+      }
       return previous && semanticEqual(previous, candidate) ? previous : candidate;
     });
+    const listedProjectIDs = new Set(projects.map((project) => project.id));
+    for (const id of this.projectTailsLoaded)
+      if (!listedProjectIDs.has(id)) this.projectTailsLoaded.delete(id);
     // Projects keep their saved order; conversation activity never moves them.
     nextProjects.sort(compareProjects);
     if (!sameIdentityList(this.projects.peek(), nextProjects)) this.projects.value = nextProjects;
     this.lastSidebarRefreshAt = Date.now();
+  }
+
+  private resetLoadedTails(): void {
+    this.recentTailLoaded = false;
+    this.noProjectTailLoaded = false;
+    this.projectTailsLoaded.clear();
   }
 
   async refreshSidebar(authoritative = true): Promise<void> {
@@ -1012,12 +1043,13 @@ export class SessionStore {
     const cursor = this.recentCursor.peek();
     if (!cursor) return;
     const authorScope = this.authors.createdBy;
+    const archived = this.showArchived.peek();
     const data = await this.services.endpoints.recentSessions(
       cursor,
-      this.showArchived.value,
+      archived,
       this.authors.createdBy,
     );
-    if (authorScope !== this.authors.createdBy) return;
+    if (authorScope !== this.authors.createdBy || archived !== this.showArchived.peek()) return;
     const incoming = listFrom(data, 'sessions', 'items').map((entry) => this.sessionFrom(entry));
     const existing = new Map(this.sessions.peek().map((entry) => [entry.id, entry]));
     incoming.forEach((entry) =>
@@ -1035,13 +1067,14 @@ export class SessionStore {
     const project = this.projects.value.find((entry) => entry.id === projectId);
     if (!project?.next_cursor) return;
     const authorScope = this.authors.createdBy;
+    const archived = this.showArchived.peek();
     const data = await this.services.endpoints.projectSessions(
       projectId,
       project.next_cursor,
-      this.showArchived.value,
+      archived,
       this.authors.createdBy,
     );
-    if (authorScope !== this.authors.createdBy) return;
+    if (authorScope !== this.authors.createdBy || archived !== this.showArchived.peek()) return;
     const incoming = listFrom(data, 'sessions', 'items').map((entry) =>
       this.sessionFrom({ ...entry, project_id: project.id, project_name: project.name }),
     );
@@ -1066,18 +1099,20 @@ export class SessionStore {
           }
         : entry,
     );
+    this.projectTailsLoaded.add(projectId);
   }
 
   async loadMoreNoProject(): Promise<void> {
     const cursor = this.noProjectCursor.peek();
     if (!cursor) return;
     const authorScope = this.authors.createdBy;
+    const archived = this.showArchived.peek();
     const data = await this.services.endpoints.noProjectSessions(
       cursor,
-      this.showArchived.value,
+      archived,
       this.authors.createdBy,
     );
-    if (authorScope !== this.authors.createdBy) return;
+    if (authorScope !== this.authors.createdBy || archived !== this.showArchived.peek()) return;
     const incoming = listFrom(data, 'sessions', 'items').map((entry) => this.sessionFrom(entry));
     const existing = new Map(this.sessions.peek().map((entry) => [entry.id, entry]));
     incoming.forEach((entry) =>
@@ -1085,6 +1120,7 @@ export class SessionStore {
     );
     this.sessions.value = [...existing.values()].sort(compareSessionsByActivity);
     this.noProjectCursor.value = String(data.next_cursor || '');
+    this.noProjectTailLoaded = true;
   }
   async mutateProject(project: Project, patch: Record<string, unknown>): Promise<void> {
     await this.services.endpoints.patchProject(project.id, patch);
