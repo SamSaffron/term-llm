@@ -1987,6 +1987,40 @@ func TestResponseRunInteractiveRecoveryDoesNotDisableCompaction(t *testing.T) {
 	}
 }
 
+func TestResponseRunDelegatedAskUserRecoveryAddsNoParentToolRow(t *testing.T) {
+	run := newResponseRun("resp_delegated", "sess_parent", "", "mock", time.Now().Unix(), func() {})
+	if err := run.appendEvent("response.ask_user.prompt", map[string]any{
+		"call_id":   "child-1:call_ask",
+		"questions": []any{map[string]any{"header": "Target", "question": "Which schema?"}},
+		"origin":    &serveAskUserOrigin{ChildSessionID: "child-1", ChildAgent: "researcher", ParentCallID: "call-spawn"},
+	}); err != nil {
+		t.Fatalf("append delegated ask_user prompt: %v", err)
+	}
+	if err := run.appendEvent("response.output_item.added", map[string]any{
+		"call_id": "call-after",
+		"item":    map[string]any{"type": "function_call", "call_id": "call-after", "name": "read_file"},
+	}); err != nil {
+		t.Fatalf("append later parent tool: %v", err)
+	}
+
+	recovery := run.recoveryPayloadLocked()
+	messages, ok := recovery["messages"].([]map[string]any)
+	if !ok || len(messages) != 1 || messages[0]["role"] != "tool-group" {
+		t.Fatalf("delegated ask_user recovery messages = %#v, want only the later parent tool", recovery["messages"])
+	}
+	tools, ok := messages[0]["tools"].([]map[string]any)
+	if !ok || len(tools) != 1 || tools[0]["id"] != "call-after" {
+		t.Fatalf("delegated ask_user leaked into the parent tool group: %#v", messages[0]["tools"])
+	}
+	events, ok := recovery["events"].([]map[string]any)
+	if !ok || len(events) != 1 || events[0]["event"] != "response.ask_user.prompt" {
+		t.Fatalf("delegated ask_user recovery events = %#v", recovery["events"])
+	}
+	if !run.hasPendingInteraction("ask_user", "child-1:call_ask") {
+		t.Fatal("delegated prompt is no longer pending")
+	}
+}
+
 func TestResponseCreatedCarriesExactAnchorIdentity(t *testing.T) {
 	run := newResponseRun("resp_anchor", "sess_anchor", "", "mock", time.Now().Unix(), nil)
 	run.clientMessageID = "client-anchor"

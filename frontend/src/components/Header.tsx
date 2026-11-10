@@ -13,6 +13,7 @@ import { planSummary } from '../domain/plan';
 import { observePopoverPosition, positionPopover } from '../platform/browser';
 import { containPopoverScroll } from '../platform/popover-scroll';
 import { Icon } from './Icon';
+import { SelectControl } from './SelectControl';
 import { ContextMeter } from './ContextMeter';
 import { lazyComponent } from './lazyComponent';
 import { HeaderBreadcrumb } from './HeaderBreadcrumb';
@@ -37,6 +38,9 @@ function EffortMeter() {
 function RuntimePicker() {
   const store = useStore();
   const [open, setOpen] = useState(false);
+  // Safari draws a focus ring for the scripted initial focus even after a
+  // click. Hide it for pointer opens until the user reaches for the keyboard.
+  const [pointerOpened, setPointerOpened] = useState(false);
   const popoverID = useId();
   const trigger = useRef<HTMLButtonElement>(null);
   const popover = useRef<HTMLDialogElement>(null);
@@ -116,7 +120,11 @@ function RuntimePicker() {
               ? `${displayModel} · view runtime and queue reasoning effort for the next model turn`
               : `${displayModel} · choose provider, model, and reasoning effort`
           }
-          onClick={() => (open ? close() : setOpen(true))}
+          onClick={(event) => {
+            if (open) return close();
+            setPointerOpened(event.detail > 0);
+            setOpen(true);
+          }}
         >
           <span class={`chip-label ${!selectedModel && fallbackModel ? 'stats-muted' : ''}`}>
             {displayModel}
@@ -132,6 +140,8 @@ function RuntimePicker() {
       id={popoverID}
       class="chip-popover chip-popover-runtime"
       aria-label="Runtime settings"
+      data-pointer-opened={pointerOpened || undefined}
+      onKeyDown={() => pointerOpened && setPointerOpened(false)}
       onCancel={(event) => {
         event.preventDefault();
         close();
@@ -161,7 +171,7 @@ function RuntimePicker() {
       <div class="runtime-popover-fields">
         <label class="runtime-popover-field">
           <span class="runtime-popover-label">Provider</span>
-          <select
+          <SelectControl
             class="runtime-popover-select"
             aria-label="Provider"
             disabled={locked}
@@ -175,11 +185,11 @@ function RuntimePicker() {
                 {entry.is_default ? ' (default)' : ''}
               </option>
             ))}
-          </select>
+          </SelectControl>
         </label>
         <label class="runtime-popover-field">
           <span class="runtime-popover-label">Model</span>
-          <select
+          <SelectControl
             class="runtime-popover-select"
             aria-label="Runtime model"
             disabled={locked}
@@ -192,11 +202,11 @@ function RuntimePicker() {
                 {compactModelLabel(entry.name)}
               </option>
             ))}
-          </select>
+          </SelectControl>
         </label>
         <label class="runtime-popover-field">
           <span class="runtime-popover-label">Effort</span>
-          <select
+          <SelectControl
             class="runtime-popover-select"
             aria-label="Reasoning effort"
             value={store.selectedEffort.value}
@@ -207,7 +217,7 @@ function RuntimePicker() {
                 {entry || 'Auto (server default)'}
               </option>
             ))}
-          </select>
+          </SelectControl>
         </label>
         {fastSupported && !providerFast && (
           <div class="runtime-popover-fast-row">

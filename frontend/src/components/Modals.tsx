@@ -1,18 +1,14 @@
 import type { ComponentType } from 'preact';
-import { memo } from './memo';
 import { lazyComponent } from './lazyComponent';
-import { useEffect, useLayoutEffect, useRef, useState } from 'preact/hooks';
+import { useRef, useState } from 'preact/hooks';
 import { useStore } from '../app/context';
 import { errorMessage } from '../domain/text';
 import type { ApprovalPrompt, AskUserPrompt } from '../domain/types';
-import { Icon } from './Icon';
 import { Overlay } from './Overlay';
-import { Markdown } from './Markdown';
 
 // Modals opened from explicit user actions load on demand. Agent interactions
 // (approval, ask-user) stay eager: they must appear the moment the server asks,
-// without a chunk round trip. The side question stays here because other
-// surfaces import it directly, so splitting it would not shrink the entry.
+// without a chunk round trip.
 //
 // A failed import resolves to a dismissible error dialog titled like the real
 // one; `onClose` must repeat any cleanup the real dialog does on dismissal.
@@ -79,6 +75,12 @@ const LazyProjectAssignment = lazyModal('Assign project', () =>
 const LazyWorktrees = lazyModal('Worktrees', () =>
   import('./Worktrees').then(({ Worktrees }) => Worktrees),
 );
+// Dismissing the load error must also release the side-question session.
+const LazySideQuestion = lazyModal(
+  'Side question',
+  () => import('./SideQuestionModal').then(({ SideQuestion }) => SideQuestion),
+  (store) => store.closeSideQuestion(),
+);
 
 /** Resolves once every on-demand modal above can render synchronously. */
 export function preloadDeferredModals(): Promise<unknown> {
@@ -96,6 +98,7 @@ export function preloadDeferredModals(): Promise<unknown> {
       LazyProjectPicker,
       LazyProjectAssignment,
       LazyWorktrees,
+      LazySideQuestion,
     ].map((component) => component.preload()),
   );
 }
@@ -187,7 +190,11 @@ function AskUser({ interactionPrompt }: { interactionPrompt?: AskUserPrompt }) {
         if (!sending) dismiss();
       }}
     >
-      <p>The agent needs your input to continue.</p>
+      <p>
+        {prompt.origin?.childSessionId
+          ? `A delegated subagent${prompt.origin.childAgent ? ` (${prompt.origin.childAgent})` : ''} needs your input to continue.`
+          : 'The agent needs your input to continue.'}
+      </p>
       {prompt.questions.length > 1 && (
         <div class="ask-user-steps">
           {prompt.questions.map((_item, index) => (
@@ -425,197 +432,6 @@ function Approval({ interactionPrompt }: { interactionPrompt?: ApprovalPrompt })
   );
 }
 
-const SideQuestionHistory = memo(function SideQuestionHistory({
-  history,
-}: {
-  history: { question: string; response: string }[];
-}) {
-  return (
-    <>
-      {history.map((entry, index) => (
-        <section class="side-question-exchange" key={`${index}-${entry.question}`}>
-          <article class="message user">
-            <div class="message-body">{entry.question}</div>
-          </article>
-          <article class="message assistant">
-            <div class="message-body">
-              <Markdown value={entry.response} className="markdown-body" />
-            </div>
-          </article>
-        </section>
-      ))}
-    </>
-  );
-});
-
-export function SideQuestion() {
-  const store = useStore();
-  const state = store.sideQuestion.value;
-  const session = store.activeSession.value;
-  const transcript = useRef<HTMLDivElement>(null);
-  const input = useRef<HTMLInputElement>(null);
-  const stickToBottom = useRef(true);
-  const hasCurrent = Boolean(state.question);
-  const hasConversation = state.history.length > 0 || hasCurrent;
-
-  useLayoutEffect(() => {
-    const element = transcript.current;
-    if (element && stickToBottom.current) element.scrollTop = element.scrollHeight;
-  }, [state.history.length, state.response, state.running]);
-  useEffect(() => {
-    if (!state.loading && !state.running) input.current?.focus({ preventScroll: true });
-  }, [state.loading, state.running]);
-
-  if (!session || state.sessionId !== session.id) return null;
-
-  const submit = () => {
-    const question = state.draft.trim();
-    if (!question || state.running) return;
-    void store.askSideQuestion(question);
-  };
-  const escape = () => {
-    if (state.running) store.cancelSideQuestion();
-    else if (state.draft) store.setSideQuestionDraft('');
-    else store.closeSideQuestion();
-  };
-  const starters = [
-    'Summarise what we decided',
-    "What's still unresolved?",
-    'Explain the last change',
-  ];
-
-  return (
-    <Overlay
-      title="Side question"
-      wide
-      className="side-question-modal"
-      onClose={() => store.closeSideQuestion()}
-      onEscape={escape}
-    >
-      <div
-        class={`side-question-transcript ${hasConversation ? '' : 'empty'}`}
-        ref={transcript}
-        onScroll={(event) => {
-          const element = event.currentTarget;
-          stickToBottom.current =
-            element.scrollHeight - element.scrollTop - element.clientHeight < 96;
-        }}
-      >
-        {state.loading && !hasConversation && (
-          <div class="side-question-loading" role="status">
-            <span class="side-question-loading-dot" />
-            Loading side questions…
-          </div>
-        )}
-        {!state.loading && !hasConversation && (
-          <div class="side-question-empty">
-            <div class="side-question-empty-mark" aria-hidden="true">
-              <Icon class="glyph-icon" name="arrow-up-right" />
-            </div>
-            <h3>Ask about this conversation</h3>
-            <p>Answers use the transcript as context but are never added to it.</p>
-            <div class="side-question-starters" aria-label="Suggested side questions">
-              {starters.map((starter) => (
-                <button
-                  type="button"
-                  key={starter}
-                  onClick={() => {
-                    store.setSideQuestionDraft(starter);
-                    requestAnimationFrame(() => input.current?.focus());
-                  }}
-                >
-                  {starter}
-                </button>
-              ))}
-            </div>
-          </div>
-        )}
-        <SideQuestionHistory history={state.history} />
-        {hasCurrent && (
-          <section class="side-question-exchange side-question-current">
-            <article class="message user">
-              <div class="message-body">{state.question}</div>
-            </article>
-            {(state.response || state.running) && (
-              <article class="message assistant" aria-busy={state.running}>
-                <div class="message-body">
-                  {state.response ? (
-                    <Markdown
-                      value={state.response}
-                      streaming={state.running}
-                      className="markdown-body"
-                    />
-                  ) : (
-                    <span class="side-question-thinking">
-                      Thinking<span aria-hidden="true">…</span>
-                    </span>
-                  )}
-                </div>
-              </article>
-            )}
-          </section>
-        )}
-      </div>
-
-      {state.error && (
-        <div class="side-question-error" role="alert">
-          <span>{state.error}</span>
-          {state.question && !state.running && (
-            <button type="button" onClick={() => void store.askSideQuestion(state.question)}>
-              Try again
-            </button>
-          )}
-        </div>
-      )}
-
-      <div class="side-question-status" role="status" aria-live="polite" aria-atomic="true">
-        {state.loading
-          ? 'Loading side questions…'
-          : state.running
-            ? 'Answering side question…'
-            : ''}
-      </div>
-
-      {state.running ? (
-        <button class="side-question-stop" type="button" onClick={() => store.cancelSideQuestion()}>
-          <span aria-hidden="true" />
-          Stop answering
-        </button>
-      ) : (
-        <form
-          class="side-question-composer"
-          onSubmit={(event) => {
-            event.preventDefault();
-            submit();
-          }}
-        >
-          <label class="visually-hidden" for="sideQuestionInput">
-            Ask a side question
-          </label>
-          <input
-            ref={input}
-            id="sideQuestionInput"
-            autoFocus
-            autoComplete="off"
-            value={state.draft}
-            placeholder="Ask about this conversation…"
-            disabled={state.loading}
-            onInput={(event) => store.setSideQuestionDraft(event.currentTarget.value)}
-          />
-          <button
-            class="side-question-send"
-            type="submit"
-            aria-label="Send side question"
-            disabled={state.loading || !state.draft.trim()}
-          >
-            <Icon name="send" />
-          </button>
-        </form>
-      )}
-    </Overlay>
-  );
-}
-
 export function Modals() {
   const store = useStore();
   const activeSessionId = store.activeSessionId.value;
@@ -688,7 +504,7 @@ export function Modals() {
     case 'share':
       return <LazyShareModal />;
     case 'side':
-      return <SideQuestion />;
+      return <LazySideQuestion />;
     case 'branch':
       return <LazyBranchTree />;
     case 'branch-context':

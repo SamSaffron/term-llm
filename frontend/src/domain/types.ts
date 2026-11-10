@@ -576,10 +576,17 @@ export interface AskUserQuestion {
   options?: Array<{ label: string; description?: string }>;
 }
 
+/** Set when a delegated child asked the question through its parent. */
+export interface AskUserOrigin {
+  childSessionId?: string;
+  childAgent?: string;
+}
+
 export interface AskUserPrompt {
   sessionId: string;
   callId?: string;
   questions: AskUserQuestion[];
+  origin?: AskUserOrigin;
 }
 
 export interface ApprovalOption {

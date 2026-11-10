@@ -8,7 +8,7 @@ import { Header } from './Header';
 import { Transcript } from './Transcript';
 import { Sidebar } from './Sidebar';
 import { DiffSidebar } from './Panels';
-import { SideQuestion } from './Modals';
+import { SideQuestion } from './SideQuestionModal';
 import { Markdown } from './Markdown';
 import { markdownDocumentBlocks } from '../domain/markdown-document';
 import * as markdown from '../domain/markdown';

@@ -176,6 +176,8 @@
 }
 
 .ask-user-question {
+  min-width: 0;
+  margin: 0.75rem 0 0;
   border: 1px solid var(--border);
   border-radius: 8px;
   background: var(--surface-2);

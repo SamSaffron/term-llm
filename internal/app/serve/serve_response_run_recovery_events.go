@@ -15,8 +15,11 @@ func (r *responseRun) applyRecoveryResponseAskUserPrompt(event string, payload m
 		Event:   event,
 		Payload: cloneJSONMap(payload),
 	})
+	// A delegated child's question has no tool call in the parent transcript;
+	// it is answered through the prompt alone, so no recovery tool row.
+	origin, _ := payload["origin"].(interface{ delegated() bool })
 	callID := stringValue(payload["call_id"])
-	if callID == "" {
+	if callID == "" || (origin != nil && origin.delegated()) {
 		return
 	}
 	arguments := ""

@@ -4,6 +4,7 @@ import { normalizeSteering } from './steering';
 import type {
   ActiveRun,
   ApprovalPrompt,
+  AskUserOrigin,
   AskUserPrompt,
   Attachment,
   ContentPart,
@@ -348,6 +349,13 @@ function patchTool(messages: Message[], id: string, patch: Partial<ToolCall>): M
           ),
         },
   );
+}
+export function askUserOrigin(value: unknown): AskUserOrigin | undefined {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
+  const source = value as Record<string, unknown>;
+  const childSessionId = text(source.childSessionId || source.child_session_id).trim();
+  if (!childSessionId) return undefined;
+  return { childSessionId, childAgent: text(source.childAgent || source.child_agent).trim() };
 }
 function appendNotice(
   messages: Message[],
@@ -928,11 +936,20 @@ export function reduceResponse(
       };
     case 'response.ask_user.prompt': {
       const callId = text(event.call_id);
-      let entry: ToolCall;
-      [messages, entry] = tool(messages, responseId, callId, 'ask_user');
       const questions = Array.isArray(event.questions)
         ? (event.questions as AskUserPrompt['questions'])
         : [];
+      const origin = askUserOrigin(event.origin);
+      // A delegated child's question has no tool call in this transcript (the
+      // child's own transcript records it), so a card here could never anchor
+      // to a saved row and would drift to the tail. The modal is enough.
+      if (origin)
+        return {
+          ...next,
+          askUser: { sessionId: projection.run.sessionId, callId, questions, origin },
+        };
+      let entry: ToolCall;
+      [messages, entry] = tool(messages, responseId, callId, 'ask_user');
       messages = patchTool(messages, callId, {
         name: 'ask_user',
         arguments: entry.arguments || JSON.stringify({ questions }),

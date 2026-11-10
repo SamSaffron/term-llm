@@ -1180,6 +1180,14 @@ describe('Preact-owned chat surfaces', () => {
     );
     const closeRuntime = screen.getByRole('button', { name: 'Close runtime settings' });
     expect(closeRuntime).toHaveFocus();
+    // A pointer open hides the scripted-focus ring until a key is pressed.
+    expect(dialog).toHaveAttribute('data-pointer-opened');
+    fireEvent.keyDown(dialog, { key: 'Tab' });
+    expect(dialog).not.toHaveAttribute('data-pointer-opened');
+    // Inset custom chevron instead of each browser's native select chrome.
+    expect(
+      screen.getByRole('combobox', { name: 'Provider' }).closest('.control-select'),
+    ).not.toBeNull();
     expect(screen.getByRole('combobox', { name: 'Provider' })).not.toHaveFocus();
     expect(screen.getByRole('combobox', { name: 'Provider' })).toHaveValue('');
     expect(screen.getByRole('combobox', { name: 'Runtime model' })).toHaveValue('');

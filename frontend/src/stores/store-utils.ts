@@ -3,6 +3,7 @@ import type { AppConfig } from '../app/config';
 import { rebaseHubAssetURL } from '../app/config';
 import type { ApprovalPrompt, AskUserPrompt, MCPServer, Project, Session } from '../domain/types';
 import { sanitizeSession } from '../domain/transcript';
+import { askUserOrigin } from '../domain/response';
 
 export const uuid = (): string =>
   globalThis.crypto?.randomUUID?.() || Math.random().toString(36).slice(2);
@@ -105,10 +106,12 @@ export const askUserPrompt = (value: unknown, sessionId: string): AskUserPrompt 
   if (!source || !Array.isArray(source.questions) || !source.questions.length) return null;
   const callId = String(source.callId || source.call_id || '');
   if (!callId) return null;
+  const origin = askUserOrigin(source.origin);
   return {
     sessionId: String(source.sessionId || source.session_id || sessionId),
     callId,
     questions: source.questions as AskUserPrompt['questions'],
+    ...(origin ? { origin } : {}),
   };
 };
 

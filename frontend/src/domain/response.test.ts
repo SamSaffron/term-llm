@@ -689,6 +689,24 @@ describe('response projection', () => {
     });
   });
 
+  it('prompts for a delegated ask_user without adding a parent transcript card', () => {
+    const projection = reduceResponse(
+      initialProjection(run),
+      event('response.ask_user.prompt', 1, {
+        call_id: 'child-1:ask-1',
+        questions: [{ header: 'Target', question: 'Which schema?', options: [] }],
+        origin: { child_session_id: 'child-1', child_agent: 'researcher' },
+      }),
+    );
+    expect(projection.messages).toEqual([]);
+    expect(projection.askUser).toEqual({
+      sessionId: 's1',
+      callId: 'child-1:ask-1',
+      questions: [{ header: 'Target', question: 'Which schema?', options: [] }],
+      origin: { childSessionId: 'child-1', childAgent: 'researcher' },
+    });
+  });
+
   it('keeps interleaved parallel tool arguments attached to stable call and item identities', () => {
     let projection = initialProjection(run);
     projection = reduceResponse(

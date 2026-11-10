@@ -108,17 +108,6 @@
   cursor: pointer;
 }
 
-/* Header */
-.chip-trigger:is(select) {
-  -webkit-appearance: none;
-  appearance: none;
-  padding-right: 1.15rem;
-}
-
-.model-picker .chip-trigger:is(select) {
-  text-overflow: ellipsis;
-}
-
 .diff-toggle {
   min-width: 54px;
 }
@@ -580,7 +569,9 @@ mark.diff-word {
   overflow: auto;
 }
 
-.modal fieldset {
+/* The ask-user question box draws its own card (approvals.css); this reset
+   outranks a single class, so it must not strip that border and padding. */
+.modal fieldset:not(.ask-user-question) {
   min-width: 0;
   margin: 0.75rem 0 0;
   padding: 0;
@@ -591,6 +582,7 @@ mark.diff-word {
   display: block;
   float: left;
   width: 100%;
+  margin: 0;
   padding: 0 0 0.75rem;
 }
 
