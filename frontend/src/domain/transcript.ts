@@ -882,7 +882,8 @@ export function sanitizeSession(
     Object.hasOwn(source, 'approval_effective_mode') ||
     Object.hasOwn(source, 'approval_default_mode') ||
     Object.hasOwn(source, 'guardian_available') ||
-    Object.hasOwn(source, 'guardian_auto_suspended');
+    Object.hasOwn(source, 'guardian_auto_suspended') ||
+    Object.hasOwn(source, 'approval_actions');
   return {
     ...(createdBy ? { createdBy } : {}),
     ...(Array.isArray(source.participants)
@@ -940,6 +941,8 @@ export function sanitizeSession(
             source.guardian_auto_suspended == null
               ? undefined
               : Boolean(source.guardian_auto_suspended),
+          approvalActions:
+            source.approval_actions == null ? undefined : Boolean(source.approval_actions),
         }
       : {}),
     projectId: text(source.project_id),

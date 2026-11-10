@@ -36,9 +36,11 @@ export function Drawer({
   useLayoutEffect(() => {
     if (!open) return;
     token.current = overlayManager.acquire(undefined, backdrop.current);
-    const frame = requestAnimationFrame(() =>
-      (drawer.current?.querySelector<HTMLElement>(OVERLAY_FOCUSABLE) || drawer.current)?.focus(),
-    );
+    const frame = requestAnimationFrame(() => {
+      // Opening focus must not override a control the user already reached.
+      if (drawer.current?.contains(document.activeElement)) return;
+      (drawer.current?.querySelector<HTMLElement>(OVERLAY_FOCUSABLE) || drawer.current)?.focus();
+    });
     return () => {
       cancelAnimationFrame(frame);
       if (token.current) overlayManager.release(token.current);

@@ -310,6 +310,8 @@ The index below follows the canonical config schema. A dash means no default or 
 | `serve.web_push.subject` | string | — | — |
 | `serve.mcp.approval_mode` | string | — | — |
 | `serve.projects.enabled` | boolean | `true` | — |
+| `web.project_default_agent` | string | `developer` | Agent a new Web UI conversation starts with when a project is selected. Must name an available agent while projects are enabled. |
+| `web.agent_picker.common` | list of string | `["developer","sysadmin","extension-builder","widget-builder"]` | Ordered agents shown above the alphabetical agent list in the Web UI new-chat picker; an explicit list replaces the stock set and [] removes the split. |
 | `file_tracking.enabled` | boolean | `true` | — |
 | `file_tracking.max_file_bytes` | integer | `2097152` | — |
 | `file_tracking.max_session_bytes` | integer | `104857600` | — |

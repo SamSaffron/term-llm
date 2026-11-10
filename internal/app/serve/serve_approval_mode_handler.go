@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	runapproval "github.com/samsaffron/term-llm/internal/app/runtime/approval"
+	"github.com/samsaffron/term-llm/internal/app/serve/webagents"
 	"github.com/samsaffron/term-llm/internal/tools"
 )
 
@@ -15,30 +16,14 @@ type sessionApprovalModeRequest struct {
 }
 
 func runtimeApprovalPolicy(rt *serveRuntime) map[string]any {
-	policy := map[string]any{
-		"default_mode":            tools.ModePrompt.String(),
-		"requested_mode":          tools.ModePrompt.String(),
-		"effective_mode":          tools.ModePrompt.String(),
-		"controls_available":      false,
-		"guardian_available":      false,
-		"guardian_auto_suspended": false,
-	}
 	if rt == nil {
-		return policy
+		return webagents.ApprovalPolicy("", nil, nil, nil)
 	}
-	policy["default_mode"] = rt.approvalDefault.String()
-	policy["requested_mode"] = rt.approvalDefault.String()
-	policy["effective_mode"] = rt.approvalDefault.String()
-	if rt.toolMgr == nil || rt.toolMgr.ApprovalMgr == nil {
-		return policy
+	var mgr *tools.ApprovalManager
+	if rt.toolMgr != nil {
+		mgr = rt.toolMgr.ApprovalMgr
 	}
-	mgr := rt.toolMgr.ApprovalMgr
-	policy["controls_available"] = !mgr.HasParent()
-	policy["requested_mode"] = mgr.RequestedApprovalMode().String()
-	policy["effective_mode"] = mgr.ApprovalMode().String()
-	policy["guardian_available"] = mgr.GuardianReviewerAvailable()
-	policy["guardian_auto_suspended"] = mgr.GuardianAutoSuspended()
-	return policy
+	return webagents.ApprovalPolicy(rt.approvalDefault.String(), mgr, rt.engine, rt.mcpManagerSnapshot())
 }
 
 func (s *serveServer) approvalRuntime(ctx context.Context, sessionID string) (*serveRuntime, error) {

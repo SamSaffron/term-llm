@@ -21,6 +21,7 @@ import (
 	guardian "github.com/samsaffron/term-llm/internal/app/runtime/guardian"
 	"github.com/samsaffron/term-llm/internal/app/serve/authorship"
 	"github.com/samsaffron/term-llm/internal/app/serve/hubnode"
+	"github.com/samsaffron/term-llm/internal/app/serve/webagents"
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/linkeddevices"
 	"github.com/samsaffron/term-llm/internal/restart"
@@ -211,6 +212,11 @@ func runServeWith(parentCtx context.Context, deps serveDeps, opts *Options, args
 		return err
 	}
 
+	webAgentSettings, err := webagents.Resolve(cfg, agentName, availableAgentNames, projectsEnabled, hasWeb, opts.Tools, deps.Flags.Tools, opts.MCP)
+	if err != nil {
+		return err
+	}
+
 	forceExternalSearch := bootstrap.ResolveForceExternalSearch(cfg, opts.NativeSearch, opts.NoNativeSearch)
 	mediaPublisher, err := newServeMediaPublisher()
 	if err != nil {
@@ -336,6 +342,9 @@ func runServeWith(parentCtx context.Context, deps serveDeps, opts *Options, args
 				sidebarSessions:         append([]string(nil), sidebarSessions...),
 				agentName:               agentName,
 				agentNames:              append([]string(nil), availableAgentNames...),
+				projectDefaultAgent:     webAgentSettings.ProjectDefaultAgent,
+				agentPickerCommon:       append([]string{}, webAgentSettings.PickerCommon...),
+				agentApprovalActions:    webAgentSettings.ApprovalActions,
 				corsOrigins:             append([]string(nil), opts.CORSOrigins...),
 				filesDir:                resolveFilesDir(opts.FilesDir, cfg),
 				writeDirs:               resolveServeWriteDirs(opts.WriteDirs, cfg),

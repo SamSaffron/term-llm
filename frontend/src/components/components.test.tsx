@@ -7,7 +7,7 @@ import { AppStore } from '../stores/app-store';
 import { APIError } from '../api/client';
 import type { SessionShareResponse } from '../api/endpoints';
 import type { Attachment, ToolCall } from '../domain/types';
-import { Transcript } from './Transcript';
+import { NewChatControls, Transcript } from './Transcript';
 import { bindTranscriptMedia } from './transcript-media';
 import { Composer } from './Composer';
 import { DelegationContext, returnToParent } from './DelegationContext';
@@ -121,6 +121,7 @@ const expectPasswordManagersIgnored = (element: HTMLElement) => {
 // On-demand modals are preloaded too, so every test renders them synchronously
 // regardless of which earlier test first opened them.
 beforeAll(async () => {
+  await NewChatControls.preload();
   await Promise.all([
     import('../domain/rich-highlight'),
     import('../domain/rich-katex'),
@@ -2454,6 +2455,7 @@ describe('Preact-owned chat surfaces', () => {
   });
 
   it('offers immediate or queued delivery for inline review comments', async () => {
+    const user = userEvent.setup({ delay: null });
     const store = createStore();
     store.diff.value = {
       ...store.diff.value,
@@ -2482,42 +2484,43 @@ describe('Preact-owned chat surfaces', () => {
       </StoreContext.Provider>,
     );
 
-    await userEvent.click(screen.getByRole('button', { name: 'Comment on line 1' }));
+    await user.click(screen.getByRole('button', { name: 'Comment on line 1' }));
     let firstEditor = screen.getByRole('textbox', { name: 'Inline comment' });
     expect(screen.getByRole('button', { name: 'Send now' })).toBeDisabled();
-    await userEvent.type(firstEditor, 'Temporary draft');
+    fireEvent.input(firstEditor, { target: { value: 'Temporary draft' } });
+    expect(firstEditor).toHaveValue('Temporary draft');
 
-    await userEvent.click(screen.getByRole('button', { name: 'Comment on line 1' }));
+    await user.click(screen.getByRole('button', { name: 'Comment on line 1' }));
     expect(
       screen.queryByRole('region', { name: 'Inline comments for line 1' }),
     ).not.toBeInTheDocument();
-    await userEvent.click(screen.getByRole('button', { name: 'Comment on line 1' }));
+    await user.click(screen.getByRole('button', { name: 'Comment on line 1' }));
     firstEditor = screen.getByRole('textbox', { name: 'Inline comment' });
     expect(firstEditor).toHaveValue('Temporary draft');
 
-    await userEvent.click(screen.getByRole('button', { name: 'Comment on line 2' }));
+    await user.click(screen.getByRole('button', { name: 'Comment on line 2' }));
     expect(screen.getByRole('textbox', { name: 'Inline comment' })).toHaveValue('');
-    await userEvent.click(screen.getByRole('button', { name: 'Comment on line 1' }));
+    await user.click(screen.getByRole('button', { name: 'Comment on line 1' }));
     firstEditor = screen.getByRole('textbox', { name: 'Inline comment' });
     expect(firstEditor).toHaveValue('Temporary draft');
 
-    await userEvent.click(screen.getByRole('button', { name: 'More send options' }));
-    await userEvent.clear(firstEditor);
+    await user.click(screen.getByRole('button', { name: 'More send options' }));
+    fireEvent.input(firstEditor, { target: { value: '' } });
     await waitFor(() =>
       expect(screen.queryByText('Deliver later as one batch')).not.toBeInTheDocument(),
     );
     expect(screen.getByRole('button', { name: 'More send options' })).toBeDisabled();
-    await userEvent.type(firstEditor, 'Queue this');
+    fireEvent.input(firstEditor, { target: { value: 'Queue this' } });
     expect(screen.getByRole('button', { name: 'Send now' })).toBeEnabled();
-    await userEvent.click(screen.getByRole('button', { name: 'More send options' }));
-    await userEvent.click(screen.getByRole('menuitem', { name: /Queue comment/ }));
+    await user.click(screen.getByRole('button', { name: 'More send options' }));
+    await user.click(screen.getByRole('menuitem', { name: /Queue comment/ }));
     expect(store.queueDiffComment).toHaveBeenCalledWith(
       expect.objectContaining({ path: 'main.go', line: 1, body: 'Queue this' }),
     );
     expect(store.sendDiffComment).not.toHaveBeenCalled();
     expect(screen.getByRole('region', { name: 'Inline comments for line 1' })).toBeInTheDocument();
     firstEditor.focus();
-    await userEvent.keyboard('{Escape}');
+    await user.keyboard('{Escape}');
     expect(
       screen.queryByRole('region', { name: 'Inline comments for line 1' }),
     ).not.toBeInTheDocument();
@@ -2526,13 +2529,14 @@ describe('Preact-owned chat surfaces', () => {
     );
     expect(store.diff.value.open).toBe(true);
 
-    await userEvent.click(screen.getByRole('button', { name: 'Comment on line 2' }));
+    await user.click(screen.getByRole('button', { name: 'Comment on line 2' }));
     const secondEditor = screen.getByRole('textbox', { name: 'Inline comment' });
-    await userEvent.type(secondEditor, 'Send this');
-    await userEvent.keyboard('{Escape}');
+    fireEvent.input(secondEditor, { target: { value: 'Send this' } });
+    secondEditor.focus();
+    await user.keyboard('{Escape}');
     expect(secondEditor).toHaveValue('Send this');
     expect(store.diff.value.open).toBe(true);
-    await userEvent.keyboard('{Control>}{Enter}{/Control}');
+    await user.keyboard('{Control>}{Enter}{/Control}');
     expect(store.sendDiffComment).toHaveBeenCalledWith(
       expect.objectContaining({ path: 'main.go', line: 2, body: 'Send this' }),
     );
@@ -5084,16 +5088,19 @@ describe('Preact-owned chat surfaces', () => {
 
     const project = screen.getByRole('button', { name: 'Choose chat or project' });
     const agent = screen.getByRole('button', { name: 'Choose agent for new chat' });
-    expect(project).toHaveTextContent('Chat');
-    expect(agent).toHaveTextContent('AgentDefault');
+    expect(project).toHaveTextContent('No project');
+    expect(agent).toHaveTextContent('AgentChat');
     expect(project.closest('.new-chat-pickers')).toBe(agent.closest('.new-chat-pickers'));
 
     await userEvent.click(project);
     const projectPopover = screen.getByRole('dialog', { name: 'Choose chat or project' });
     expect(screen.getByRole('listbox', { name: 'Choose chat or project' })).toBeInTheDocument();
-    expect(screen.getByRole('option', { name: 'Chat' })).toHaveAttribute('aria-selected', 'true');
-    expect(screen.getByRole('option', { name: 'Chat' })).toHaveFocus();
-    expect(projectPopover).toHaveTextContent('Chat');
+    expect(screen.getByRole('option', { name: 'No project' })).toHaveAttribute(
+      'aria-selected',
+      'true',
+    );
+    expect(screen.getByRole('option', { name: 'No project' })).toHaveFocus();
+    expect(projectPopover).toHaveTextContent('No project');
     expect(projectPopover).toHaveTextContent('Alpha');
     expect(projectPopover).toHaveTextContent('Zeta');
     expect(projectPopover).not.toHaveTextContent('Archived');

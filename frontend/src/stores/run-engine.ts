@@ -588,6 +588,9 @@ export class RunEngine {
         projectName: this.sessionStore.projects.value.find((entry) => entry.id === project)?.name,
         worktreeDir: this.composer.selectedDraftWorktree.value || undefined,
         mcpEnabled: this.host.draftMCPEnabled(this.composer.runtimeDraftId()),
+        // Resolve the automatic project/no-project default once for this draft;
+        // the optimistic session carries it into the first response request.
+        agent: this.runtime.effectiveAgent.value,
         messages: [],
       };
     }
@@ -804,7 +807,11 @@ export class RunEngine {
    */
   private responseRequestBody(session: Session): Record<string, unknown> {
     const requestBody: Record<string, unknown> = { stream: true, include_server_tools: true };
-    if ((session.agent || this.runtime.selectedAgent.peek()) === 'extension-builder')
+    // Existing conversations keep the agent they were created with, including
+    // none: changing the browser preference must never mutate them. A new draft
+    // carries its resolved automatic/specific choice on the optimistic session.
+    const effectiveAgent = session.agent || '';
+    if (effectiveAgent === 'extension-builder')
       requestBody.ui_context = {
         asset_version: this.services.config.version,
         generation: extensionRuntime.generation.peek(),
@@ -820,8 +827,7 @@ export class RunEngine {
     } else requestBody.use_default_workspace = true;
     if (!session.lastResponseId && session.worktreeDir)
       requestBody.worktree_dir = session.worktreeDir;
-    if (!session.lastResponseId)
-      requestBody.agent = session.agent || this.runtime.selectedAgent.value;
+    if (!session.lastResponseId) requestBody.agent = effectiveAgent;
     const selectedModel = this.runtime.models.value.find(
       (entry) => entry.id === this.runtime.selectedModel.value,
     );
@@ -1381,6 +1387,8 @@ export class RunEngine {
         runtimePatch.guardianAvailable = Boolean(event.approval_guardian_available);
       if (Object.hasOwn(event, 'approval_guardian_auto_suspended'))
         runtimePatch.guardianAutoSuspended = Boolean(event.approval_guardian_auto_suspended);
+      if (Object.hasOwn(event, 'approval_approval_actions'))
+        runtimePatch.approvalActions = Boolean(event.approval_approval_actions);
     }
     if (event.type === 'response.completed' && next.usage) {
       const lastAssistant = [...next.messages]

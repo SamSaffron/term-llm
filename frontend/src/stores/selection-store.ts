@@ -243,6 +243,9 @@ export class SelectionStore {
       this.services.storage.setItem(this.services.keys.lastProject, selectedProject);
     updateSessionRoute(this.services.config.prefix, null, replace);
     this.composer.restore(this.composer.storageId(), 'draft');
+    // Explicit Chat is only offered without a project. Entering a project
+    // returns to its automatic agent; named choices are preserved.
+    this.runtime.syncDraftAgentForProject(selectedProject);
     // Slash-command skills must not wait for the first send to create a session.
     void this.skillStore.loadDraftSkills().catch(() => undefined);
   }
@@ -463,6 +466,8 @@ export class SelectionStore {
               approvalEffectiveMode: policyMode(policy.effective_mode),
               guardianAvailable: Boolean(policy.guardian_available),
               guardianAutoSuspended: Boolean(policy.guardian_auto_suspended),
+              approvalActions:
+                policy.approval_actions == null ? undefined : Boolean(policy.approval_actions),
             }
           : {
               approvalDefaultMode: this.services.config.approvalMode,
@@ -470,6 +475,7 @@ export class SelectionStore {
               approvalEffectiveMode: this.services.config.approvalMode,
               guardianAvailable: undefined,
               guardianAutoSuspended: false,
+              approvalActions: undefined,
             }),
       };
       if (current) this.sessionsStore.update(current.id, () => updated);

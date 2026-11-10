@@ -15,6 +15,7 @@ function applyPolicy(
     approvalEffectiveMode: value.effective_mode,
     guardianAvailable: value.guardian_available,
     guardianAutoSuspended: value.guardian_auto_suspended,
+    approvalActions: value.approval_actions,
   });
 }
 
@@ -22,6 +23,10 @@ export function ApprovalsModal() {
   const store = useStore();
   const session = store.draftActive.value ? null : store.activeSession.value;
   const sessionId = session?.id || '';
+  const draftActions = store.draftActive.value ? store.draftApprovalActions.value : undefined;
+  // False is authoritative (no approval-governed action exists). Undefined is
+  // unknown and keeps today's warnings rather than hiding them.
+  const approvalActions = session ? session.approvalActions : draftActions;
   const reportedMode =
     session?.approvalRequestedMode === 'auto' && session.guardianAvailable === false
       ? session.approvalEffectiveMode || store.config.approvalMode || 'prompt'
@@ -29,7 +34,9 @@ export function ApprovalsModal() {
   const [mode, setMode] = useState(reportedMode);
   const [saving, setSaving] = useState(false);
   const [loading, setLoading] = useState(Boolean(sessionId));
-  const [controlsAvailable, setControlsAvailable] = useState<boolean | null>(null);
+  const [controlsAvailable, setControlsAvailable] = useState<boolean | null>(
+    sessionId ? null : approvalActions === undefined ? null : approvalActions,
+  );
   const [error, setError] = useState('');
   const dirty = useRef(false);
   const submitting = useRef(false);
@@ -37,6 +44,7 @@ export function ApprovalsModal() {
   useEffect(() => {
     if (!sessionId || submitting.current) {
       setLoading(false);
+      if (!sessionId && draftActions !== undefined) setControlsAvailable(draftActions);
       return;
     }
     let live = true;
@@ -61,7 +69,7 @@ export function ApprovalsModal() {
     return () => {
       live = false;
     };
-  }, [store, sessionId]);
+  }, [draftActions, store, sessionId]);
   useEffect(() => {
     if (!dirty.current) setMode(reportedMode);
   }, [reportedMode]);
@@ -138,12 +146,17 @@ export function ApprovalsModal() {
                 autoFocus={
                   mode === value &&
                   controlsAvailable !== false &&
-                  !(value === 'auto' && session?.guardianAvailable === false)
+                  !(
+                    approvalActions !== false &&
+                    value === 'auto' &&
+                    session?.guardianAvailable === false
+                  )
                 }
                 aria-describedby={
                   controlsAvailable === false
                     ? 'approvalControlsUnavailable'
                     : controlsAvailable === true &&
+                        approvalActions !== false &&
                         value === 'auto' &&
                         session?.guardianAvailable === false
                       ? 'approvalGuardianUnavailable'
@@ -153,7 +166,9 @@ export function ApprovalsModal() {
                   loading ||
                   saving ||
                   controlsAvailable === false ||
-                  (value === 'auto' && session?.guardianAvailable === false)
+                  (approvalActions !== false &&
+                    value === 'auto' &&
+                    session?.guardianAvailable === false)
                 }
                 onChange={() => {
                   dirty.current = true;
@@ -179,11 +194,13 @@ export function ApprovalsModal() {
               : 'This conversation has no tools that require approval. Choose a tool-enabled agent to configure approval behavior.'}
           </div>
         )}
-        {controlsAvailable === true && session?.guardianAvailable === false && (
-          <div id="approvalGuardianUnavailable" class="approval-mode-notice" role="status">
-            Guardian is unavailable for this runtime, so Auto cannot be selected.
-          </div>
-        )}
+        {controlsAvailable === true &&
+          approvalActions !== false &&
+          session?.guardianAvailable === false && (
+            <div id="approvalGuardianUnavailable" class="approval-mode-notice" role="status">
+              Guardian is unavailable for this runtime, so Auto cannot be selected.
+            </div>
+          )}
         {error && (
           <div class="modal-error" role="alert">
             {error}

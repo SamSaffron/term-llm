@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/samsaffron/term-llm/internal/llm/core"
@@ -15,49 +16,50 @@ import (
 // tool loop in one provider stream. A loop that keeps calling tools must not
 // time out just because the stream as a whole outlasts the inactivity window.
 func TestStartResponseRunInlineToolLoopRefreshesTimeout(t *testing.T) {
-	const timeout = 200 * time.Millisecond
-	var calls []core.ToolCall
-	for _, id := range []string{"call-1", "call-2", "call-3", "call-4"} {
-		calls = append(calls, core.ToolCall{ID: id, Name: "response_timeout_delay", Arguments: json.RawMessage(`{}`)})
-	}
-	provider := mockprovider.NewMockProvider("mock").
-		WithCapabilities(core.Capabilities{ToolCalls: true, InlineToolLoop: true, OrderedInlineToolEvents: true}).
-		AddTurn(mockprovider.MockTurn{ToolCalls: calls, InlineTools: true, InlineText: "finished"})
-	registry := engine.NewToolRegistry()
-	// Each call fits the window, but the four together outlast it.
-	registry.Register(responseTimeoutDelayTool{delay: 80 * time.Millisecond})
-	rt := &serveRuntime{
-		provider:     provider,
-		providerKey:  "mock",
-		engine:       engine.NewEngine(provider, registry),
-		defaultModel: "mock-model",
-	}
-	rt.Touch()
-	srv := &serveServer{
-		cfg:          serveServerConfig{responseTimeout: timeout},
-		responseRuns: newServeResponseRunManager(),
-	}
-	defer srv.responseRuns.Close()
+	synctest.Test(t, func(t *testing.T) {
+		const timeout = 200 * time.Millisecond
+		var calls []core.ToolCall
+		for _, id := range []string{"call-1", "call-2", "call-3", "call-4"} {
+			calls = append(calls, core.ToolCall{ID: id, Name: "response_timeout_delay", Arguments: json.RawMessage(`{}`)})
+		}
+		provider := mockprovider.NewMockProvider("mock").
+			WithCapabilities(core.Capabilities{ToolCalls: true, InlineToolLoop: true, OrderedInlineToolEvents: true}).
+			AddTurn(mockprovider.MockTurn{ToolCalls: calls, InlineTools: true, InlineText: "finished"})
+		registry := engine.NewToolRegistry()
+		// Each call fits the window, but the four together outlast it.
+		registry.Register(responseTimeoutDelayTool{delay: 80 * time.Millisecond})
+		rt := &serveRuntime{
+			provider:     provider,
+			providerKey:  "mock",
+			engine:       engine.NewEngine(provider, registry),
+			defaultModel: "mock-model",
+		}
+		rt.Touch()
+		srv := &serveServer{
+			cfg:          serveServerConfig{responseTimeout: timeout},
+			responseRuns: newServeResponseRunManager(),
+		}
+		defer srv.responseRuns.Close()
 
-	run, err := srv.startResponseRun(rt, true, false, []core.Message{core.UserText("work")}, core.Request{
-		SessionID: "sess_inline_refresh_timeout",
-		Tools:     []core.ToolSpec{responseTimeoutDelayTool{}.Spec()},
-	}, "sess_inline_refresh_timeout", startResponseRunOptions{})
-	if err != nil {
-		t.Fatalf("startResponseRun: %v", err)
-	}
-	waitForServeCondition(t, 2*time.Second, func() bool {
-		status := stringValue(run.snapshot()["status"])
-		if status == "failed" {
-			t.Fatalf("inline tool loop failed: %v", run.snapshot()["error"])
+		run, err := srv.startResponseRun(rt, true, false, []core.Message{core.UserText("work")}, core.Request{
+			SessionID: "sess_inline_refresh_timeout",
+			Tools:     []core.ToolSpec{responseTimeoutDelayTool{}.Spec()},
+		}, "sess_inline_refresh_timeout", startResponseRunOptions{})
+		if err != nil {
+			t.Fatalf("startResponseRun: %v", err)
 		}
-		return status == "completed"
-	}, "inline tool loop to complete across refreshed timeouts")
-	for _, call := range calls {
-		if _, ok := provider.InlineToolResult(call.ID); !ok {
-			t.Fatalf("inline call %s never received a result", call.ID)
+		// Waiting on completion lets synctest advance virtual time through the
+		// provider/tool delays without polling or racing a wall-clock deadline.
+		<-run.settled
+		if snapshot := run.snapshot(); stringValue(snapshot["status"]) != "completed" {
+			t.Fatalf("response did not complete after refreshed timeout: %v", snapshot)
 		}
-	}
+		for _, call := range calls {
+			if _, ok := provider.InlineToolResult(call.ID); !ok {
+				t.Fatalf("inline call %s never received a result", call.ID)
+			}
+		}
+	})
 }
 
 func TestAppendResponseToolCallRefreshesTimeoutOnlyForInlineCalls(t *testing.T) {

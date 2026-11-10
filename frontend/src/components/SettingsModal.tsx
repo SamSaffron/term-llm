@@ -1,7 +1,9 @@
+import { AGENT_AUTO_VALUE, agentChoiceFromValue } from '../domain/agent-choice';
 import '../styles/features/settings.css';
 import { useState } from 'preact/hooks';
 import { useStore } from '../app/context';
 import { errorMessage } from '../domain/text';
+import { agentPickerCommon, buildAgentMenu } from '../domain/agent-selection';
 import { SettingsSelect } from './FormFields';
 import { lazyComponent } from './lazyComponent';
 import { Overlay } from './Overlay';
@@ -90,7 +92,7 @@ export function Settings() {
   const [model, setModel] = useState(store.selectedModel.value);
   const [effort, setEffort] = useState(store.selectedEffort.value);
   const [reasoning, setReasoning] = useState(store.selectedReasoningMode.value);
-  const [agent, setAgent] = useState(store.selectedAgent.value);
+  const [agent, setAgent] = useState(store.currentAgentChoiceValue());
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState('');
   const activeTabInfo = visibleTabs.find(({ slug }) => slug === activeTab) ?? visibleTabs[0];
@@ -103,7 +105,7 @@ export function Settings() {
       store.setPreference('model', model);
       store.setPreference('effort', effort);
       store.setPreference('reasoning', reasoning);
-      store.setPreference('agent', agent);
+      store.setAgentChoice(agentChoiceFromValue(agent));
       await store.saveSettings(token);
     } catch (error) {
       setSaveError(errorMessage(error));
@@ -250,10 +252,16 @@ export function Settings() {
                     value={agent}
                     onChange={(event) => setAgent(event.currentTarget.value)}
                   >
-                    <option value="">Default</option>
-                    {store.config.agentNames.map((name) => (
-                      <option value={name} key={name}>
-                        {name}
+                    <option value={AGENT_AUTO_VALUE}>
+                      Automatic ({store.automaticAgentLabel.value})
+                    </option>
+                    {buildAgentMenu({
+                      agentNames: store.config.agentNames,
+                      common: agentPickerCommon(store.config.agentPickerCommon),
+                      projectActive: Boolean(store.activeProjectId.value),
+                    }).options.map((option) => (
+                      <option value={option.value} key={option.value}>
+                        {option.label}
                       </option>
                     ))}
                   </SettingsSelect>

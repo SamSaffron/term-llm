@@ -254,6 +254,7 @@ type Config struct {
 	AgentsMd        AgentsMdConfig            `mapstructure:"agents_md"`
 	AutoCompact     bool                      `mapstructure:"auto_compact"`
 	Serve           ServeConfig               `mapstructure:"serve"`
+	Web             WebConfig                 `mapstructure:"web"`
 	FileTracking    FileTrackingConfig        `mapstructure:"file_tracking"`
 	LinkedDevices   LinkedDevicesConfig       `mapstructure:"linked_devices" yaml:"linked_devices,omitempty"`
 

@@ -46,6 +46,34 @@ describe('shared interaction primitives', () => {
     expect(trigger).toHaveFocus();
   });
 
+  it.each([false, true])(
+    'preserves user focus before the Drawer opening frame: %s',
+    (interactFirst) => {
+      let openingFrame: FrameRequestCallback | undefined;
+      vi.spyOn(window, 'requestAnimationFrame').mockImplementation((callback) => {
+        openingFrame = callback;
+        return 1;
+      });
+      vi.spyOn(window, 'cancelAnimationFrame').mockImplementation(() => {});
+      render(
+        <Drawer open title="Review" onClose={() => {}}>
+          <button>Change scope</button>
+          <textarea aria-label="Inline comment" />
+        </Drawer>,
+      );
+      const editor = screen.getByRole('textbox', { name: 'Inline comment' });
+      if (interactFirst) {
+        editor.focus();
+        fireEvent.input(editor, { target: { value: 'Draft' } });
+      }
+      act(() => openingFrame!(0));
+      expect(
+        interactFirst ? editor : screen.getByRole('button', { name: 'Change scope' }),
+      ).toHaveFocus();
+      if (interactFirst) expect(editor).toHaveValue('Draft');
+    },
+  );
+
   it('focuses a dialog action before its close button', async () => {
     render(
       <Overlay title="Question">

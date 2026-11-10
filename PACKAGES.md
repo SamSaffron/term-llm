@@ -49,6 +49,7 @@ One line per root-module package, generated from package doc comments by `make d
 - `internal/app/serve/sessionactivity` — builds bounded conversation-scoped agent and job-run read models.
 - `internal/app/serve/sessionsearch` — handles session-search HTTP validation, querying and projection.
 - `internal/app/serve/shell` — manages per-session PTY shell generations for `term-llm serve`.
+- `internal/app/serve/webagents` — resolves the Web UI's agent picker defaults and approval capabilities without constructing providers, runtimes, or MCP servers.
 - `internal/app/serve/wire` — owns the shared HTTP JSON, SSE, compression, and steering projection helpers.
 - `internal/app/service` — implements `term-llm service` install and management of the per-user web and hub services.
 - `internal/app/sessions` — implements the `term-llm sessions` command family.

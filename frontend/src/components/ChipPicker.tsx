@@ -1,3 +1,4 @@
+import { Fragment } from 'preact';
 import { Icon } from './Icon';
 import type { ComponentChildren, TargetedKeyboardEvent } from 'preact';
 import { useId, useLayoutEffect, useMemo, useRef, useState } from 'preact/hooks';
@@ -8,6 +9,8 @@ export interface ChipPickerOption {
   value: string;
   label: string;
   meta?: string;
+  /** Adjacent visible options with different groups get one divider. */
+  group?: number;
 }
 
 export interface ChipPickerAction {
@@ -21,6 +24,12 @@ interface ChipPickerProps {
   value: string;
   options: ChipPickerOption[];
   actions?: ChipPickerAction[];
+  /** Show the filter input even for short lists. */
+  alwaysFilter?: boolean;
+  /** Report a selection even when it equals the current value (explicit intent). */
+  notifyEqual?: boolean;
+  /** Include the raw option value in filter matching (encoding-aware pickers set false). */
+  matchValue?: boolean;
   onChange: (value: string) => void;
   triggerClass: string;
   popoverClass?: string;
@@ -34,6 +43,9 @@ export function ChipPicker({
   value,
   options,
   actions = [],
+  alwaysFilter = false,
+  notifyEqual = false,
+  matchValue = true,
   onChange,
   triggerClass,
   popoverClass = '',
@@ -45,14 +57,16 @@ export function ChipPicker({
   const trigger = useRef<HTMLButtonElement>(null);
   const popover = useRef<HTMLDialogElement>(null);
   const selected = options.find((option) => option.value === value) || options[0];
-  const filterable = options.length > FILTER_THRESHOLD;
+  const filterable = alwaysFilter || options.length > FILTER_THRESHOLD;
   const visibleOptions = useMemo(() => {
     const query = filter.trim().toLowerCase();
     if (!query) return options;
     return options.filter((option) =>
-      `${option.label} ${option.meta || ''} ${option.value}`.toLowerCase().includes(query),
+      `${option.label} ${option.meta || ''}${matchValue ? ` ${option.value}` : ''}`
+        .toLowerCase()
+        .includes(query),
     );
-  }, [filter, options]);
+  }, [filter, matchValue, options]);
 
   const close = (restoreFocus = false) => {
     const panel = popover.current;
@@ -63,7 +77,7 @@ export function ChipPicker({
   };
   const choose = (next: string) => {
     close(true);
-    if (next !== value) onChange(next);
+    if (next !== value || notifyEqual) onChange(next);
   };
   const runAction = (action: ChipPickerAction) => {
     close(true);
@@ -193,23 +207,29 @@ export function ChipPicker({
             />
           )}
           <div class="chip-popover-options" role="listbox" aria-label={ariaLabel}>
-            {visibleOptions.map((option) => (
-              <button
-                type="button"
-                key={option.value || 'default'}
-                class="chip-popover-item"
-                role="option"
-                aria-selected={option.value === value}
-                data-value={option.value}
-                onClick={() => choose(option.value)}
-                onKeyDown={handleItemKeys}
-              >
-                <span class="chip-popover-check" aria-hidden="true">
-                  {option.value === value && <Icon class="glyph-icon" name="check" />}
-                </span>
-                <span class="chip-popover-item-label">{option.label}</span>
-                {option.meta && <span class="chip-popover-item-meta">{option.meta}</span>}
-              </button>
+            {visibleOptions.map((option, index) => (
+              <Fragment key={option.value || 'default'}>
+                {index > 0 &&
+                  option.group !== undefined &&
+                  option.group !== visibleOptions[index - 1].group && (
+                    <div class="chip-popover-separator" aria-hidden="true" />
+                  )}
+                <button
+                  type="button"
+                  class="chip-popover-item"
+                  role="option"
+                  aria-selected={option.value === value}
+                  data-value={option.value}
+                  onClick={() => choose(option.value)}
+                  onKeyDown={handleItemKeys}
+                >
+                  <span class="chip-popover-check" aria-hidden="true">
+                    {option.value === value && <Icon class="glyph-icon" name="check" />}
+                  </span>
+                  <span class="chip-popover-item-label">{option.label}</span>
+                  {option.meta && <span class="chip-popover-item-meta">{option.meta}</span>}
+                </button>
+              </Fragment>
             ))}
             {!visibleOptions.length && <div class="chip-popover-empty">No matching options</div>}
           </div>

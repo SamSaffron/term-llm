@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/samsaffron/term-llm/internal/app/serve/wire"
 	"github.com/samsaffron/term-llm/internal/app/uploads"
 	"github.com/samsaffron/term-llm/internal/llm/core"
 )
@@ -200,7 +201,7 @@ func (s *serveServer) streamChatCompletions(ctx context.Context, w http.Response
 	ctx, cancelShutdown := s.contextWithShutdown(ctx)
 	defer cancelShutdown()
 
-	pingMu, stopPing := sseKeepalive(ctx, w, flusher, 10*time.Second)
+	pingMu, stopPing := wire.SSEKeepalive(ctx, w, flusher, 10*time.Second)
 
 	first := true
 	toolCallSeen := false

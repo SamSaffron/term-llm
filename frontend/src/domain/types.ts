@@ -327,6 +327,11 @@ export interface Session {
   approvalEffectiveMode?: ApprovalMode;
   guardianAvailable?: boolean;
   guardianAutoSuspended?: boolean;
+  /**
+   * Server-authoritative capability: whether this conversation owns any
+   * approval-governed action. Undefined means unknown; never hide warnings then.
+   */
+  approvalActions?: boolean;
   activeProvider?: string;
   projectId?: string;
   projectName?: string;

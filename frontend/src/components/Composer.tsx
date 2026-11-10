@@ -526,7 +526,12 @@ function ConversationComposer() {
     : 0;
   const project = store.projects.value.find((entry) => entry.id === store.activeProjectId.value);
   const bindingBlocked = store.draftActive.value && Boolean(project && project.available === false);
+  // False is the server saying no approval-governed action exists; unknown
+  // (undefined) keeps the existing warnings.
+  const approvalRelevant =
+    (session ? session.approvalActions : store.draftApprovalActions.value) !== false;
   const approvalChanged = Boolean(
+    approvalRelevant &&
     session?.approvalDefaultMode &&
     ((session.approvalEffectiveMode &&
       session.approvalEffectiveMode !== session.approvalDefaultMode) ||

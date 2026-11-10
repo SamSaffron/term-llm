@@ -12,6 +12,8 @@ export const STORAGE_BASE_KEYS = {
   selectedFast: 'term_llm_selected_fast',
   selectedReasoningMode: 'term_llm_selected_reasoning_mode',
   selectedAgent: 'term_llm_selected_agent',
+  /** '1' marks an explicit Chat (no agent) choice; absent means automatic. */
+  selectedAgentChat: 'term_llm_selected_agent_chat',
   sidebarCollapsed: 'term_llm_sidebar_collapsed',
   sidebarWidth: 'term_llm_sidebar_width',
   diffSidebarWidth: 'term_llm_diff_sidebar_width',

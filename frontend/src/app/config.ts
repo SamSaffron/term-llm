@@ -11,6 +11,9 @@ declare global {
     TERM_LLM_SIDEBAR_SESSIONS?: string[] | string;
     TERM_LLM_AGENT_NAME?: string;
     TERM_LLM_AGENT_NAMES?: string[];
+    TERM_LLM_PROJECT_DEFAULT_AGENT?: string;
+    TERM_LLM_AGENT_PICKER_COMMON?: string[];
+    TERM_LLM_AGENT_APPROVAL_ACTIONS?: Record<string, boolean>;
     TERM_LLM_UI_TITLE?: string;
     TERM_LLM_LOCATION_SHARING_ENABLED?: boolean;
     TERM_LLM_WORKTREES_ENABLED?: boolean;
@@ -41,6 +44,15 @@ export interface AppConfig {
   sidebarCategories: string[];
   agentName: string;
   agentNames: string[];
+  /** Agent a new project conversation starts with when the choice is automatic. */
+  projectDefaultAgent?: string;
+  /** Ordered common-agent block; omitted uses stock defaults and [] disables the split. */
+  agentPickerCommon?: string[];
+  /**
+   * Draft-time approval capability per agent ("" is the no-agent Chat mode).
+   * An absent entry is unknown and must not hide approval warnings.
+   */
+  agentApprovalActions?: Record<string, boolean>;
   title: string;
   locationSharing: boolean;
   worktrees: boolean;
@@ -99,6 +111,19 @@ export function readInjectedConfig(target: Window = window): AppConfig {
     agentNames: Array.isArray(target.TERM_LLM_AGENT_NAMES)
       ? [...new Set(target.TERM_LLM_AGENT_NAMES.map(String).filter(Boolean))]
       : [],
+    projectDefaultAgent: String(target.TERM_LLM_PROJECT_DEFAULT_AGENT || ''),
+    agentPickerCommon: Array.isArray(target.TERM_LLM_AGENT_PICKER_COMMON)
+      ? [...new Set(target.TERM_LLM_AGENT_PICKER_COMMON.map(String).filter(Boolean))]
+      : undefined,
+    agentApprovalActions:
+      target.TERM_LLM_AGENT_APPROVAL_ACTIONS &&
+      typeof target.TERM_LLM_AGENT_APPROVAL_ACTIONS === 'object'
+        ? Object.fromEntries(
+            Object.entries(target.TERM_LLM_AGENT_APPROVAL_ACTIONS).filter(
+              (entry): entry is [string, boolean] => typeof entry[1] === 'boolean',
+            ),
+          )
+        : undefined,
     title: String(target.TERM_LLM_UI_TITLE || ''),
     locationSharing: target.TERM_LLM_LOCATION_SHARING_ENABLED !== false,
     worktrees: target.TERM_LLM_WORKTREES_ENABLED === true,

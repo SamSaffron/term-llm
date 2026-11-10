@@ -15,7 +15,7 @@ import { AudioMedia } from './AudioMedia';
 import { useAttachmentPreview } from './useAttachmentPreview';
 import { trustedPublishedMediaURL } from '../domain/audio-media';
 import { bindTranscriptMedia } from './transcript-media';
-import { ChipPicker } from './ChipPicker';
+import { lazyComponent } from './lazyComponent';
 import { Icon, type IconName } from './Icon';
 import { attachmentIconName, formatAttachmentSize } from '../domain/attachments';
 import { copyText } from '../platform/clipboard';
@@ -29,6 +29,19 @@ import {
 } from './transcript-scroll';
 import { formatElapsedDuration, subscribeElapsedClock } from '../platform/elapsed-clock';
 import type { ComponentChildren } from 'preact';
+
+// Draft-only controls do not belong in the eager transcript payload.
+export const NewChatControls = lazyComponent(() =>
+  import('./NewChatControls')
+    .then((module) => module.NewChatControls)
+    .catch(() => () => (
+      <div class="new-chat-pickers" role="alert">
+        <button class="btn" type="button" onClick={() => window.location.reload()}>
+          Reload chat controls
+        </button>
+      </div>
+    )),
+);
 
 function publishedMediaURL(store: AppStore, value: string): string {
   return trustedPublishedMediaURL(rebaseHubAssetURL(store.config, value));
@@ -1399,71 +1412,6 @@ const MessageRow = memo(function MessageRow({
   );
 });
 
-function NewChatControls() {
-  const store = useStore();
-  if (!store.draftActive.value) return null;
-  const projects = store.projects.value
-    .filter((project) => !project.archived && project.available !== false)
-    .sort((left, right) => left.name.localeCompare(right.name));
-  return (
-    <div class="new-chat-pickers">
-      {store.config.agentNames.length > 0 && (
-        <div class="new-chat-project-picker new-chat-agent-picker">
-          <ChipPicker
-            ariaLabel="Choose agent for new chat"
-            value={store.selectedAgent.value}
-            options={[
-              { value: '', label: 'Default' },
-              ...store.config.agentNames.map((agent) => ({ value: agent, label: agent })),
-            ]}
-            triggerClass="new-chat-project-trigger new-chat-agent-trigger"
-            onChange={(agent) => store.setPreference('agent', agent)}
-            renderTrigger={(selected) => (
-              <>
-                <span class="new-chat-project-label">Agent</span>
-                <span class="new-chat-project-value">{selected.label}</span>
-                <span class="new-chat-project-chevron">
-                  <Icon class="glyph-icon" name="chevron-down" />
-                </span>
-              </>
-            )}
-          />
-        </div>
-      )}
-      {store.projectsEnabled.value && (
-        <div class="new-chat-project-picker">
-          <ChipPicker
-            ariaLabel="Choose chat or project"
-            value={store.activeProjectId.value}
-            options={[
-              { value: '', label: 'Chat' },
-              ...projects.map((project) => ({ value: project.id, label: project.name })),
-            ]}
-            triggerClass="new-chat-project-trigger"
-            actions={[
-              {
-                label: 'Add project…',
-                icon: <Icon name="add" />,
-                onSelect: () => store.openAddProject(),
-              },
-            ]}
-            onChange={(projectId) => store.newChat(true, projectId)}
-            renderTrigger={(selected) => (
-              <>
-                {selected.value && <span class="new-chat-project-label">Project</span>}
-                <span class="new-chat-project-value">{selected.label}</span>
-                <span class="new-chat-project-chevron">
-                  <Icon class="glyph-icon" name="chevron-down" />
-                </span>
-              </>
-            )}
-          />
-        </div>
-      )}
-    </div>
-  );
-}
-
 export function Transcript() {
   const store = useStore();
   const scroll = useRef<HTMLElement>(null);
@@ -1795,7 +1743,7 @@ export function Transcript() {
           <div class="empty-chat">
             <h2>{store.config.title || 'How can I help?'}</h2>
             <p>Start a conversation with your agent.</p>
-            <NewChatControls />
+            {store.draftActive.value && <NewChatControls />}
           </div>
         )}
         {hasEarlier && (

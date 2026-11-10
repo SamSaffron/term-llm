@@ -460,6 +460,12 @@
   flex: none;
 }
 
+.chip-popover-separator {
+  height: 1px;
+  margin: 0.3rem 0.6rem;
+  background: var(--border);
+}
+
 .chip-popover-empty {
   padding: 0.65rem 0.75rem;
   color: var(--text-muted);

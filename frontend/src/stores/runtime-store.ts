@@ -1,13 +1,16 @@
-import { batch, signal, type ReadonlySignal, type Signal } from '@preact/signals';
+import { batch, computed, signal, type ReadonlySignal, type Signal } from '@preact/signals';
 import type { Session } from '../domain/types';
 import type { RuntimeOption } from './store-types';
 import { listFrom } from './store-utils';
+import { agentChoiceValue, type AgentChoice } from '../domain/agent-choice';
 import type { AppStoreServices } from './app-store-services';
 import { MODEL_CATALOG_FRESH_MS, providerFingerprint } from './workspace-cache';
 
 export interface RuntimeStoreOptions {
   activeSession: ReadonlySignal<Session | null>;
   streaming: ReadonlySignal<boolean>;
+  draftActive: ReadonlySignal<boolean>;
+  activeProjectId: ReadonlySignal<string>;
 }
 
 /** Owns provider/model discovery and persisted runtime preferences. */
@@ -27,7 +30,23 @@ export class RuntimeStore {
   readonly selectedEffort: Signal<string>;
   readonly selectedFast: Signal<boolean>;
   readonly selectedReasoningMode: Signal<string>;
+  /** Explicit named agent preference ('' when none). Automatic choices never write it. */
   readonly selectedAgent: Signal<string>;
+  /** Explicit Chat mode (no agent) for a new draft; distinct from the server default. */
+  readonly agentChat: Signal<boolean>;
+  /** Agent name a new draft is actually sent with. */
+  readonly effectiveAgent: ReadonlySignal<string>;
+  /** True when no explicit agent choice owns the effective draft agent. */
+  readonly agentAutomatic: ReadonlySignal<boolean>;
+  /** Resolved identity for labels, including a server-pinned agent. */
+  readonly resolvedAgentLabel: ReadonlySignal<string>;
+  /** What Automatic resolves to now, independent of an explicit named choice. */
+  readonly automaticAgentLabel: ReadonlySignal<string>;
+  /**
+   * Whether the draft's effective agent can produce approval-governed actions.
+   * Undefined means the server could not classify it; callers must stay conservative.
+   */
+  readonly draftApprovalActions: ReadonlySignal<boolean | undefined>;
 
   private modelAbort: AbortController | null = null;
   private modelEpoch = 0;
@@ -44,6 +63,78 @@ export class RuntimeStore {
     this.selectedReasoningMode = signal(storage.getItem(keys.selectedReasoningMode) || 'standard');
     const agent = storage.getItem(keys.selectedAgent) || '';
     this.selectedAgent = signal(config.agentNames.includes(agent) ? agent : '');
+    this.agentChat = signal(storage.getItem(keys.selectedAgentChat) === '1');
+    const projectDefault = () => {
+      const fallback = config.projectDefaultAgent || '';
+      return config.agentNames.includes(fallback) ? fallback : '';
+    };
+    const projectActive = () =>
+      this.options.draftActive.value && Boolean(this.options.activeProjectId.value);
+    this.effectiveAgent = computed(() => {
+      if (this.selectedAgent.value) return this.selectedAgent.value;
+      // Chat is unavailable with a project. A persisted explicit Chat must not
+      // bypass the project default when that project is restored.
+      if (this.agentChat.value && !projectActive()) return '';
+      return projectActive() ? projectDefault() : '';
+    });
+    this.agentAutomatic = computed(
+      () => !this.selectedAgent.value && (!this.agentChat.value || projectActive()),
+    );
+    this.automaticAgentLabel = computed(() => {
+      if (!config.agentNames.length && config.agentName) return config.agentName;
+      if (this.options.draftActive.value && this.options.activeProjectId.value) {
+        const fallback = config.projectDefaultAgent || '';
+        return config.agentNames.includes(fallback) ? fallback : 'Chat';
+      }
+      return 'Chat';
+    });
+    this.resolvedAgentLabel = computed(
+      () => this.selectedAgent.value || this.automaticAgentLabel.value,
+    );
+    this.draftApprovalActions = computed(() => {
+      const actions = config.agentApprovalActions;
+      if (!actions) return undefined;
+      const name = this.effectiveAgent.value;
+      return Object.hasOwn(actions, name) ? actions[name] : undefined;
+    });
+  }
+
+  /** Applies an explicit choice; automatic resolution remains read-only. */
+  setAgentChoice(choice: AgentChoice): void {
+    const { keys, storage } = this.services;
+    if (choice.kind === 'agent') {
+      this.selectedAgent.value = choice.name;
+      this.agentChat.value = false;
+      storage.setItem(keys.selectedAgent, choice.name);
+      storage.removeItem(keys.selectedAgentChat);
+      return;
+    }
+    this.selectedAgent.value = '';
+    storage.removeItem(keys.selectedAgent);
+    if (choice.kind === 'chat') {
+      this.agentChat.value = true;
+      storage.setItem(keys.selectedAgentChat, '1');
+    } else {
+      this.agentChat.value = false;
+      storage.removeItem(keys.selectedAgentChat);
+    }
+  }
+
+  /** The picker value representing the current explicit or automatic choice. */
+  currentAgentChoiceValue(): string {
+    if (this.selectedAgent.peek()) return agentChoiceValue(this.selectedAgent.peek());
+    const chatUnavailable =
+      this.options.draftActive.peek() && Boolean(this.options.activeProjectId.peek());
+    return this.agentChat.peek() && !chatUnavailable ? 'chat' : 'auto';
+  }
+
+  /**
+   * A project choice replaces explicit Chat (Chat is unavailable there) but
+   * never touches an explicit named agent or an automatic choice.
+   */
+  syncDraftAgentForProject(projectId: string): void {
+    if (projectId && !this.selectedAgent.peek() && this.agentChat.peek())
+      this.setAgentChoice({ kind: 'auto' });
   }
 
   /**
@@ -244,9 +335,14 @@ export class RuntimeStore {
     } as const;
     const [target, key] = map[name];
     const changed = target.peek() !== value;
-    target.value = value;
-    if (value) storage.setItem(key, value);
-    else storage.removeItem(key);
+    if (name === 'agent') {
+      // Prefer the explicit choice API; an empty preference means automatic.
+      this.setAgentChoice(value ? { kind: 'agent', name: value } : { kind: 'auto' });
+    } else {
+      target.value = value;
+      if (value) storage.setItem(key, value);
+      else storage.removeItem(key);
+    }
     if (name === 'provider' && changed) {
       this.selectedModel.value = '';
       storage.removeItem(keys.selectedModel);

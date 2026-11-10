@@ -33,10 +33,15 @@ type serveServerConfig struct {
 	sidebarSessions         []string
 	agentName               string
 	agentNames              []string
-	corsOrigins             []string
-	filesDir                string   // opt-in directory for serving arbitrary files (videos, PDFs, etc)
-	writeDirs               []string // tool write-dirs (CLI + config); tool-reported files inside these are trusted sources for ensureFileServeable
-	responseTimeout         time.Duration
+	projectDefaultAgent     string
+	agentPickerCommon       []string
+	// agentApprovalActions is the draft-time capability map injected into the
+	// Web UI shell. An absent agent name means unknown, not tool-less.
+	agentApprovalActions map[string]bool
+	corsOrigins          []string
+	filesDir             string   // opt-in directory for serving arbitrary files (videos, PDFs, etc)
+	writeDirs            []string // tool write-dirs (CLI + config); tool-reported files inside these are trusted sources for ensureFileServeable
+	responseTimeout      time.Duration
 	// hubURL/hubNodeID/hubNodeName describe the term-llm Hub this node
 	// belongs to. When hubURL is set, the web UI gets window.TERM_LLM_HUB and
 	// renders a Back to Hub link. The hub proxy injects the same context

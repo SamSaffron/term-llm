@@ -190,8 +190,19 @@ const (
 	DefaultServeResponseTimeout = "30m"
 	DefaultServeAutoTitle       = true
 
+	// DefaultWebProjectDefaultAgent is the agent a new Web UI project
+	// conversation starts with. The Web UI has no per-project agent preference.
+	DefaultWebProjectDefaultAgent = "developer"
+
 	DefaultAutoCompact = true
 )
+
+// DefaultWebAgentPickerCommon is the stock "common agents" block in the Web UI
+// new-chat agent picker. An explicit web.agent_picker.common replaces it,
+// including [] for no split.
+func DefaultWebAgentPickerCommon() []string {
+	return []string{"developer", "sysadmin", "extension-builder", "widget-builder"}
+}
 
 // DefaultLinkedDevicesBrokerURL is term-llm's hosted public rendezvous broker.
 // It is used when linked_devices.broker_url and
@@ -502,6 +513,9 @@ var keySpecs = []KeySpec{
 	optional("serve.web_push.subject"),
 	optional("serve.mcp.approval_mode", withoutResetTemplate()),
 	def("serve.projects.enabled", true),
+
+	def("web.project_default_agent", DefaultWebProjectDefaultAgent, described("Agent a new Web UI conversation starts with when a project is selected. Must name an available agent while projects are enabled.")),
+	def("web.agent_picker.common", DefaultWebAgentPickerCommon(), described("Ordered agents shown above the alphabetical agent list in the Web UI new-chat picker; an explicit list replaces the stock set and [] removes the split.")),
 
 	def("file_tracking.enabled", DefaultFileTrackingEnabled),
 	def("file_tracking.max_file_bytes", DefaultFileTrackingMaxFileBytes),

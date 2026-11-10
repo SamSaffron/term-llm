@@ -1,4 +1,5 @@
 import { authorFrom } from '../domain/authors';
+import type { AgentChoice } from '../domain/agent-choice';
 import { ThinkingStore } from './thinking-store';
 import type { RushOperation } from '../domain/steering';
 import {
@@ -181,6 +182,12 @@ export class AppStore {
   readonly selectedFast: Signal<boolean>;
   readonly selectedReasoningMode: Signal<string>;
   readonly selectedAgent: Signal<string>;
+  readonly agentChat: Signal<boolean>;
+  readonly effectiveAgent: ReadonlySignal<string>;
+  readonly agentAutomatic: ReadonlySignal<boolean>;
+  readonly resolvedAgentLabel: ReadonlySignal<string>;
+  readonly automaticAgentLabel: ReadonlySignal<string>;
+  readonly draftApprovalActions: ReadonlySignal<boolean | undefined>;
   readonly token: Signal<string>;
   readonly prompt: Signal<string>;
   readonly attachments: Signal<Attachment[]>;
@@ -395,6 +402,8 @@ export class AppStore {
     this.runtime = new RuntimeStore(this.services, {
       activeSession: this.activeSession,
       streaming: streamingProxy,
+      draftActive: this.draftActive,
+      activeProjectId: this.activeProjectId,
     });
     this.providers = this.runtime.providers;
     this.models = this.runtime.models;
@@ -404,6 +413,12 @@ export class AppStore {
     this.selectedFast = this.runtime.selectedFast;
     this.selectedReasoningMode = this.runtime.selectedReasoningMode;
     this.selectedAgent = this.runtime.selectedAgent;
+    this.agentChat = this.runtime.agentChat;
+    this.effectiveAgent = this.runtime.effectiveAgent;
+    this.agentAutomatic = this.runtime.agentAutomatic;
+    this.resolvedAgentLabel = this.runtime.resolvedAgentLabel;
+    this.automaticAgentLabel = this.runtime.automaticAgentLabel;
+    this.draftApprovalActions = this.runtime.draftApprovalActions;
     this.composer = new ComposerStore(this.services, {
       activeSessionId: this.activeSessionId,
       activeProjectId: this.activeProjectId,
@@ -1929,6 +1944,13 @@ export class AppStore {
   ): void {
     this.runtime.setPreference(name, value, commit);
   }
+  /** Explicit new-chat agent choice; automatic project defaults never call this. */
+  setAgentChoice(choice: AgentChoice): void {
+    this.runtime.setAgentChoice(choice);
+  }
+  currentAgentChoiceValue(): string {
+    return this.runtime.currentAgentChoiceValue();
+  }
   async saveSettings(token: string): Promise<void> {
     if (token.trim() !== this.token.peek()) await this.connect(token);
     else await this.bootstrap(true);
@@ -2306,7 +2328,7 @@ export class AppStore {
         model: this.selectedModel.peek(),
         reasoning_effort: this.selectedEffort.peek(),
         reasoning_mode: this.selectedReasoningMode.peek(),
-        agent: this.selectedAgent.peek(),
+        agent: this.effectiveAgent.peek(),
       };
       if (this.projectsEnabled.peek()) {
         if (projectID) body.project_id = projectID;

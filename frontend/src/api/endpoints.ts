@@ -113,6 +113,8 @@ export interface ApprovalPolicyResponse {
   effective_mode: ApprovalMode;
   /** Omitted by older servers, which always exposed these controls. */
   controls_available?: boolean;
+  /** Omitted when the server cannot classify the runtime; never hide warnings. */
+  approval_actions?: boolean;
   guardian_available: boolean;
   guardian_auto_suspended: boolean;
 }

@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/samsaffron/term-llm/internal/app/serve/wire"
 	"github.com/samsaffron/term-llm/internal/llm/core"
 )
 
@@ -212,7 +213,7 @@ func (s *serveServer) streamAnthropicMessages(ctx context.Context, w http.Respon
 	ctx, cancelShutdown := s.contextWithShutdown(ctx)
 	defer cancelShutdown()
 
-	pingMu, stopPing := sseKeepalive(ctx, w, flusher, 10*time.Second)
+	pingMu, stopPing := wire.SSEKeepalive(ctx, w, flusher, 10*time.Second)
 
 	var (
 		blockIndex int

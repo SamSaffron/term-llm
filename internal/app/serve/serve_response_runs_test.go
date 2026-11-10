@@ -14,6 +14,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/samsaffron/term-llm/internal/config"
@@ -103,42 +104,47 @@ func (t *fakeResponseRunTimer) Stop() bool {
 }
 
 func TestStartResponseRunRefreshesTimeoutAfterLLMResponse(t *testing.T) {
-	const timeout = 100 * time.Millisecond
-	provider := mockprovider.NewMockProvider("mock").
-		AddTurn(mockprovider.MockTurn{
-			Delay: 60 * time.Millisecond,
-			ToolCalls: []core.ToolCall{{
-				ID:        "call-delay",
-				Name:      "response_timeout_delay",
-				Arguments: json.RawMessage(`{}`),
-			}},
-		}).
-		AddTurn(mockprovider.MockTurn{Text: "finished"})
-	registry := engine.NewToolRegistry()
-	registry.Register(responseTimeoutDelayTool{delay: 60 * time.Millisecond})
-	rt := &serveRuntime{
-		provider:     provider,
-		providerKey:  "mock",
-		engine:       engine.NewEngine(provider, registry),
-		defaultModel: "mock-model",
-	}
-	rt.Touch()
-	srv := &serveServer{
-		cfg:          serveServerConfig{responseTimeout: timeout},
-		responseRuns: newServeResponseRunManager(),
-	}
-	defer srv.responseRuns.Close()
+	synctest.Test(t, func(t *testing.T) {
+		const timeout = 100 * time.Millisecond
+		provider := mockprovider.NewMockProvider("mock").
+			AddTurn(mockprovider.MockTurn{
+				Delay: 60 * time.Millisecond,
+				ToolCalls: []core.ToolCall{{
+					ID:        "call-delay",
+					Name:      "response_timeout_delay",
+					Arguments: json.RawMessage(`{}`),
+				}},
+			}).
+			AddTurn(mockprovider.MockTurn{Text: "finished"})
+		registry := engine.NewToolRegistry()
+		registry.Register(responseTimeoutDelayTool{delay: 60 * time.Millisecond})
+		rt := &serveRuntime{
+			provider:     provider,
+			providerKey:  "mock",
+			engine:       engine.NewEngine(provider, registry),
+			defaultModel: "mock-model",
+		}
+		rt.Touch()
+		srv := &serveServer{
+			cfg:          serveServerConfig{responseTimeout: timeout},
+			responseRuns: newServeResponseRunManager(),
+		}
+		defer srv.responseRuns.Close()
 
-	run, err := srv.startResponseRun(rt, true, false, []core.Message{core.UserText("work")}, core.Request{
-		SessionID: "sess_refresh_timeout",
-		Tools:     []core.ToolSpec{responseTimeoutDelayTool{}.Spec()},
-	}, "sess_refresh_timeout", startResponseRunOptions{})
-	if err != nil {
-		t.Fatalf("startResponseRun: %v", err)
-	}
-	waitForServeCondition(t, 2*time.Second, func() bool {
-		return stringValue(run.snapshot()["status"]) == "completed"
-	}, "response run to complete after refreshed timeout")
+		run, err := srv.startResponseRun(rt, true, false, []core.Message{core.UserText("work")}, core.Request{
+			SessionID: "sess_refresh_timeout",
+			Tools:     []core.ToolSpec{responseTimeoutDelayTool{}.Spec()},
+		}, "sess_refresh_timeout", startResponseRunOptions{})
+		if err != nil {
+			t.Fatalf("startResponseRun: %v", err)
+		}
+		// Waiting on completion lets synctest advance virtual time through the
+		// provider/tool delays without polling or racing a wall-clock deadline.
+		<-run.settled
+		if snapshot := run.snapshot(); stringValue(snapshot["status"]) != "completed" {
+			t.Fatalf("response did not complete after refreshed timeout: %v", snapshot)
+		}
+	})
 }
 
 func TestResponseRunTimerRefreshStartsFreshInactivityWindow(t *testing.T) {

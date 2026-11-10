@@ -106,6 +106,15 @@
   box-shadow: 0 0 0 2px color-mix(in srgb, var(--text) 10%, transparent);
 }
 
+.new-chat-agent-pinned {
+  cursor: default;
+}
+
+.new-chat-agent-pinned:hover {
+  border-color: transparent;
+  background: var(--surface);
+}
+
 .new-chat-project-label {
   color: var(--text-muted);
   font-size: 0.76rem;
