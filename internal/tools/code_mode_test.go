@@ -132,8 +132,12 @@ func TestCodeModeGuardianDenialDoesNotCreateTrustedUserTurn(t *testing.T) {
 				if strings.Contains(p.ToolResult.Content, "SECRET") {
 					t.Fatal("denied data leaked")
 				}
-				if !strings.Contains(p.ToolResult.Content, "guardian-fixture") {
-					t.Fatalf("child guardian audit lost: %s", p.ToolResult.Content)
+				if strings.Contains(p.ToolResult.Content, "guardian-fixture") {
+					t.Fatal("private Guardian review leaked into provider content")
+				}
+				audit, _ := json.Marshal(p.ToolResult.ChildCalls)
+				if !strings.Contains(string(audit), "guardian-fixture") {
+					t.Fatalf("private child Guardian audit lost: %s", audit)
 				}
 			}
 		}

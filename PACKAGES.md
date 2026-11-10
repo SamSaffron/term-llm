@@ -45,6 +45,7 @@ One line per root-module package, generated from package doc comments by `make d
 - `internal/app/serve/liveprogress` — renders delegated-run events as templated voice progress notes.
 - `internal/app/serve/modelswap` — holds the provider-independent rules for how a mid-conversation model switch attempt ends.
 - `internal/app/serve/protocol` — encodes and parses the OSC 7770 markers that frame serve shell commands and output.
+- `internal/app/serve/servepath` — resolves filesystem paths for served media without HTTP state.
 - `internal/app/serve/server` — owns serve HTTP/platform behavior extracted from the command layer.
 - `internal/app/serve/sessionactivity` — builds bounded conversation-scoped agent and job-run read models.
 - `internal/app/serve/sessionsearch` — handles session-search HTTP validation, querying and projection.

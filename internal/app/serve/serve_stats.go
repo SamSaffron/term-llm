@@ -273,6 +273,9 @@ func (a *serveStats) discardAttempt(s *ui.SessionStats) {
 }
 
 func (rt *serveRuntime) recordStatsEvent(e core.Event) {
+	if e.ParentToolCallID != "" {
+		return
+	}
 	a := &rt.stats
 	a.mu.Lock()
 	defer a.mu.Unlock()

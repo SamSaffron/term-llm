@@ -610,3 +610,22 @@ func TestServeStatsRunningModel(t *testing.T) {
 		t.Fatal("completed model still running")
 	}
 }
+
+func TestServeStatsIgnoresBackgroundScriptChildEvents(t *testing.T) {
+	rt := &serveRuntime{}
+	rt.startStats("fixture-model")
+	usage := core.Usage{InputTokens: 123, OutputTokens: 7}
+	rt.recordStatsEvent(core.Event{Type: core.EventUsage, Use: &usage})
+	rt.stats.mu.Lock()
+	beforeAttempt, beforeCalls := rt.stats.attempt, rt.stats.attemptCalls
+	before := *rt.stats.stats
+	rt.stats.mu.Unlock()
+	for _, kind := range []core.EventType{core.EventToolCall, core.EventToolExecStart, core.EventToolExecEnd} {
+		rt.recordStatsEvent(core.Event{Type: kind, ParentToolCallID: "old-script", ToolCallID: "nested", ToolName: "shell", Tool: &core.ToolCall{ID: "nested", Name: "shell"}})
+	}
+	rt.stats.mu.Lock()
+	defer rt.stats.mu.Unlock()
+	if rt.stats.attempt != beforeAttempt || rt.stats.attemptCalls != beforeCalls || !reflect.DeepEqual(before, *rt.stats.stats) {
+		t.Fatal("background child event changed the current model attempt's accounting")
+	}
+}
