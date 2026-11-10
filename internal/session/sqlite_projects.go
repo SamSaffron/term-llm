@@ -477,6 +477,7 @@ func (s *SQLiteStore) Sidebar(ctx context.Context, opts SidebarOptions) ([]Sideb
 	if opts.IncludeArchivedSessions {
 		archiveClause = ""
 	}
+	archiveClause += s.sidebarVisibleClause(opts.SidebarVisible)
 	archiveClause, authorArgs := s.filterCreatedBy(archiveClause, nil, opts.CreatedBy)
 	authorArgs = append(authorArgs, opts.PerProject+1)
 	rows, err := s.queryDB().QueryContext(ctx, `

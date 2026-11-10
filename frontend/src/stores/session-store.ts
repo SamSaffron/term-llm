@@ -755,7 +755,7 @@ export class SessionStore {
       const data = this.projectsEnabled.value
         ? await this.services.endpoints.sidebar(showArchived, this.authors.createdBy)
         : await this.services.endpoints.sessions(
-            `limit=30&include_archived=${showArchived ? '1' : '0'}${this.authors.query}`,
+            `filter=sidebar&limit=30&include_archived=${showArchived ? '1' : '0'}${this.authors.query}`,
           );
       if (
         this.services.isDisposed ||

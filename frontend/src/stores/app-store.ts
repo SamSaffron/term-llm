@@ -813,7 +813,7 @@ export class AppStore {
         this.projectsEnabled.value
           ? this.endpoints.sidebar(this.showArchived.value, this.sessionStore.authors.createdBy)
           : this.endpoints.sessions(
-              `limit=30&include_archived=${this.showArchived.value ? '1' : '0'}${this.sessionStore.authors.query}`,
+              `filter=sidebar&limit=30&include_archived=${this.showArchived.value ? '1' : '0'}${this.sessionStore.authors.query}`,
             ),
       ]);
       this.applyProviders(providers);

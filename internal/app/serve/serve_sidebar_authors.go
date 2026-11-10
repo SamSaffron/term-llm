@@ -23,6 +23,7 @@ func (s *serveServer) handleSidebar(w http.ResponseWriter, r *http.Request) {
 		writeProjectError(w, http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed")
 		return
 	}
+	sidebarVisible := r.URL.Query().Get("filter") == "sidebar" // see handleSessions
 	perProject, _ := strconv.Atoi(r.URL.Query().Get("per_project"))
 	if r.URL.Query().Get("refresh_status") == "1" {
 		s.clearProjectStatusCache()
@@ -37,6 +38,7 @@ func (s *serveServer) handleSidebar(w http.ResponseWriter, r *http.Request) {
 		PerProject:              perProject,
 		IncludeArchivedProjects: r.URL.Query().Get("include_archived_projects") == "1",
 		IncludeArchivedSessions: r.URL.Query().Get("include_archived_sessions") == "1",
+		SidebarVisible:          sidebarVisible,
 	})
 	if err != nil {
 		writeProjectError(w, http.StatusInternalServerError, "projects_unavailable", "could not load projects and conversations")
@@ -49,6 +51,7 @@ func (s *serveServer) handleSidebar(w http.ResponseWriter, r *http.Request) {
 		Archived:         r.URL.Query().Get("include_archived_sessions") == "1",
 		SortByActivity:   true,
 		ExcludeSubagents: true,
+		SidebarVisible:   sidebarVisible,
 	})
 	if err != nil {
 		writeProjectError(w, http.StatusInternalServerError, "projects_unavailable", "could not load recent conversations")

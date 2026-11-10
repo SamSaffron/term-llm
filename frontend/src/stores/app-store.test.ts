@@ -2337,7 +2337,9 @@ describe('AppStore compatibility behavior', () => {
     });
     (store as unknown as { startStatusPoll(): void }).startStatusPoll = vi.fn();
     await store.bootstrap();
-    expect(store.endpoints.sessions).toHaveBeenCalledWith('limit=30&include_archived=0');
+    expect(store.endpoints.sessions).toHaveBeenCalledWith(
+      'filter=sidebar&limit=30&include_archived=0',
+    );
     expect(store.endpoints.sidebar).not.toHaveBeenCalled();
     expect(store.startupDone.value).toBe(true);
     expect(store.draftActive.value).toBe(true);

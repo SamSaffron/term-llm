@@ -700,6 +700,16 @@ func (s *SQLiteStore) Delete(ctx context.Context, id string) error {
 	return nil
 }
 
+// sidebarVisibleClause mirrors the web sidebar rule: terminal sessions only as chats, other origins always.
+func (s *SQLiteStore) sidebarVisibleClause(enabled bool) string {
+	if !enabled {
+		return ""
+	} else if !s.hasOrigin {
+		return " AND COALESCE(s.mode, '') IN ('', 'chat')"
+	}
+	return " AND (COALESCE(NULLIF(TRIM(s.origin), ''), 'tui') <> 'tui' OR COALESCE(s.mode, '') IN ('', 'chat'))"
+}
+
 // List returns sessions matching the options.
 func (s *SQLiteStore) sessionCategoryFilter(categories []string) (string, []any) {
 	if len(categories) == 0 {
@@ -886,6 +896,7 @@ func (s *SQLiteStore) List(ctx context.Context, opts ListOptions) ([]SessionSumm
 	categoryClause, categoryArgs := s.sessionCategoryFilter(opts.Categories)
 	query += categoryClause
 	args = append(args, categoryArgs...)
+	query += s.sidebarVisibleClause(opts.SidebarVisible)
 	if opts.BeforeNumber > 0 {
 		query += " AND s.number < ?"
 		args = append(args, opts.BeforeNumber)
