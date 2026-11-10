@@ -2,6 +2,7 @@ package core
 
 import (
 	"context"
+	"sync"
 	"time"
 )
 
@@ -104,5 +105,30 @@ func WithCodeModeApproval[T any](ctx context.Context, prompt func() (T, error)) 
 	if resumed := resume(); err == nil {
 		err = resumed
 	}
+	if err == nil {
+		err = ctx.Err()
+	}
 	return
+}
+
+// LockCodeModeApproval parks shared execution permits while waiting for a
+// prompt mutex, then reacquires them before any permission checks can succeed.
+// The caller owns Unlock only after a nil result. A cancelled cell also cancels
+// its lock holder's prompt, so queued cell calls cannot outlive an idle prompt.
+func LockCodeModeApproval(ctx context.Context, lock *sync.Mutex) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	resume, err := PauseCodeModeTool(ctx)
+	if err != nil {
+		return err
+	}
+	lock.Lock()
+	if err = resume(); err == nil {
+		err = ctx.Err()
+	}
+	if err != nil {
+		lock.Unlock()
+	}
+	return err
 }

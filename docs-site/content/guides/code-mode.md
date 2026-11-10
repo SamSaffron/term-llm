@@ -125,8 +125,8 @@ Nested tools share **4 executing slots/session** and **16/process**, regardless 
 cell count. FIFO channel admission and the per-session cap prevent one session
 from taking the entire tool pool; there is no strict round-robin or latency SLA.
 Many sessions can hold waiting VMs, but simultaneous tool throughput remains 16.
-Human approval waits park the shared executing slots, retaining their per-cell
-slot, and re-acquire cancellably before execution. Long-running actual tools keep
+Human approval waits **and prompt-mutex waiters** park the shared executing slots,
+retaining their per-cell slot, and re-acquire cancellably before execution. Long-running actual tools keep
 their slots until they return, even after cancellation. The UI/model roster
 separates `waiting_calls`, `awaiting_approval` and quarantined outcomes.
 
@@ -176,7 +176,9 @@ cross-session/fork state restoration.
 
 The old `code_mode` name remains an explicit synchronous compatibility tool with
 its original caller-carried state contract; it is not included in the new agent
-defaults. New workflows should use `spawn_script` / `wait_script` / `cancel_script`.
+defaults. Its synchronous lane is mutually exclusive with async cells in the same
+engine, including unresolved effects, so enabling compatibility cannot add a ninth
+cell or double the shared session tool capacity. New workflows should use `spawn_script` / `wait_script` / `cancel_script`.
 
 ## Limits
 

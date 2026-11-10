@@ -162,3 +162,22 @@ func (a *codeModeAsyncCell) dropRetained() {
 	a.parts = nil
 	a.pendingBytes = 0
 }
+
+// Keep policy context before the latest user message, never after a tool result.
+func (e *Engine) withCodeModeRoster(id string, messages []core.Message) []core.Message {
+	roster := e.codeModeRoster(id)
+	if roster == "" {
+		return messages
+	}
+	index := 0
+	for i := len(messages) - 1; i >= 0; i-- {
+		if messages[i].Role == core.RoleUser {
+			index = i
+			break
+		}
+	}
+	result := make([]core.Message, 0, len(messages)+1)
+	result = append(result, messages[:index]...)
+	result = append(result, core.Message{Role: core.RoleDeveloper, Parts: []core.Part{{Type: core.PartText, Text: roster}}})
+	return append(result, messages[index:]...)
+}

@@ -78,6 +78,20 @@ func (e *Engine) SetCodeModeDirectOnly(names []string) {
 }
 
 func (e *Engine) admitCodeCell(ctx context.Context, parent string, send corestream.Sender) (*nestedCell, error) {
+	// The explicit synchronous compatibility lane remains mutually exclusive
+	// with async cells, so it cannot add hidden session tool/memory capacity.
+	if s := e.codeModeSessions; s != nil {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		if s.closed {
+			return nil, &codemode.Error{Code: "engine_closed", Message: "engine closed"}
+		}
+		for _, o := range s.sessions {
+			if len(o.live) > 0 {
+				return nil, &codemode.Error{Code: "busy", Message: "async cells or unresolved effects still active"}
+			}
+		}
+	}
 	return e.admitCodeCellFor(ctx, parent, send, codemode.LegacyToolName, false)
 }
 
@@ -87,7 +101,7 @@ func (e *Engine) admitCodeCell(ctx context.Context, parent string, send corestre
 func (e *Engine) admitCodeCellFor(ctx context.Context, parent string, send corestream.Sender, required string, background bool) (*nestedCell, error) {
 	e.codeModeMu.Lock()
 	defer e.codeModeMu.Unlock()
-	if !background && e.codeModeCell != nil {
+	if e.codeModeCell != nil {
 		return nil, &codemode.Error{Code: "busy", Message: "cell or unresolved child still active"}
 	}
 	if !e.IsToolAllowed(required) {

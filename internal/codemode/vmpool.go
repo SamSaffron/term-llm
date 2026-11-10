@@ -1,6 +1,8 @@
 package codemode
 
 import (
+	"context"
+	"strings"
 	"sync"
 	"sync/atomic"
 
@@ -25,6 +27,7 @@ type Budget struct {
 
 var budgetMu sync.Mutex
 var processMemory = &Budget{limit: 2 << 30}
+var compileSlots = make(chan struct{}, 1) // bound cold-cache compiler working sets
 var vmSlots = make(chan struct{}, Limits.VMs)
 
 // NewSessionBudget limits one session to half the process linear-memory budget.
@@ -106,4 +109,20 @@ func (m *budgetMemory) Free() {
 		m.buf = nil
 		m.budget.release(int64(m.charged))
 	}
+}
+
+func withCompilationSlot[T any](ctx context.Context, compile func() (T, error)) (value T, err error) {
+	select {
+	case compileSlots <- struct{}{}:
+	case <-ctx.Done():
+		return value, ctx.Err()
+	}
+	defer func() { <-compileSlots }()
+	return compile()
+}
+func aggregateMemoryError(message string) string {
+	if message == "" || strings.Contains(message, "out of memory") || strings.Contains(message, "memory_limit") || strings.Contains(message, "<unprintable exception>") {
+		return "memory_limit: aggregate linear-memory budget exceeded; " + message
+	}
+	return message
 }

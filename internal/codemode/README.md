@@ -54,9 +54,12 @@ to avoid duplicate compiler working sets. Actual lightweight 32×8-VM measuremen
 and the before/after arithmetic are in the code-mode guide.
 
 Four nested executing tools per session and sixteen per process remain shared,
-not multiplied by cell count. Human prompts park shared execution permits until
+not multiplied by cell count. Human prompts and prompt-mutex waiters park shared execution permits until
 they can resume safely. Normal turn completion preserves cells, explicit Stop
 cancels the entire session, and reset/teardown cancel owned machines. Eight recent
 terminal records/session retain bounded output; undelivered images share a
 32 MiB/session cap. New cells read snapshots; successful explicit set/delete write
 sets merge atomically, with last-successful-committer wins on the same key.
+
+The explicit synchronous compatibility lane remains mutually exclusive with async
+cells in one engine, so it cannot bypass session concurrency or memory limits.

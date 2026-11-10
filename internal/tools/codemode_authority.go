@@ -20,10 +20,8 @@ type codeModeAuthority struct{ tools map[string]core.Tool }
 func (a *codeModeAuthority) Tool(name string) (core.Tool, bool) { t, ok := a.tools[name]; return t, ok }
 func (a *codeModeAuthority) Close()                             {}
 
+// Snapshot helpers require the non-nil config and permissions of a constructed registry.
 func (c *ToolConfig) snapshot() *ToolConfig {
-	if c == nil {
-		return nil
-	}
 	mu := c.mutex()
 	mu.RLock()
 	defer mu.RUnlock()
@@ -37,9 +35,6 @@ func (c *ToolConfig) snapshot() *ToolConfig {
 	return &next
 }
 func (p *ToolPermissions) clone() *ToolPermissions {
-	if p == nil {
-		return NewToolPermissions()
-	}
 	p.mu.RLock()
 	defer p.mu.RUnlock()
 	return &ToolPermissions{ReadDirs: append([]string(nil), p.ReadDirs...), WriteDirs: append([]string(nil), p.WriteDirs...), ShellAllow: append([]string(nil), p.ShellAllow...), ScriptCommands: append([]string(nil), p.ScriptCommands...)}
@@ -107,8 +102,7 @@ func (m *ApprovalManager) requestedMode() ApprovalMode {
 		mode := cur.mode
 		cur.modeMu.RUnlock()
 		if cur.liveRoot != nil {
-			mode = min(mode, cur.liveRoot.ApprovalMode()) // prompt < auto < yolo
-			return mode
+			return min(mode, cur.liveRoot.ApprovalMode()) // prompt < auto < yolo
 		}
 		if mode != ModePrompt {
 			return mode
@@ -124,12 +118,8 @@ func (m *ApprovalManager) codeModeGrantLive(grant session.WorkspaceGrant) bool {
 	root := m.liveRoot
 	root.workspaceMu.RLock()
 	defer root.workspaceMu.RUnlock()
-	for _, grants := range []map[string]session.WorkspaceGrant{root.workspaceGrants, root.workspaceYoloGrants} {
-		if live, ok := grants[grant.Path]; ok && live.ID == grant.ID && live.Access == grant.Access {
-			return true
-		}
-	}
-	return false
+	baseline, overlay := root.workspaceGrants[grant.Path], root.workspaceYoloGrants[grant.Path]
+	return grant.ID != "" && ((baseline.ID == grant.ID && baseline.Access == grant.Access) || (overlay.ID == grant.ID && overlay.Access == grant.Access))
 }
 
 func (m *ApprovalManager) primaryWorkspaceConfirmedLocked() bool {

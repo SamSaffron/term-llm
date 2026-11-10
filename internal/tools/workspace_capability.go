@@ -403,7 +403,9 @@ func (m *ApprovalManager) ensurePrimaryWorkspaceAccess(ctx context.Context, cano
 	remembered := m.isRememberedWorkspace(ctx, trustStore, proposal)
 
 	promptLock := root.PromptLock()
-	promptLock.Lock()
+	if err := core.LockCodeModeApproval(ctx, promptLock); err != nil {
+		return err
+	}
 	defer promptLock.Unlock()
 
 	lookedUpProposal := proposal

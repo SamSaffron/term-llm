@@ -144,3 +144,37 @@ func TestAggregateMemoryFailureOnlyAffectsOwningCell(t *testing.T) {
 		t.Fatalf("OOM crossed session: %+v", result)
 	}
 }
+
+func TestCompilationSlotReclaimedOnPanicAndCancelledWait(t *testing.T) {
+	func() {
+		defer func() {
+			if recover() == nil {
+				t.Error("expected injected compile panic")
+			}
+		}()
+		_, _ = withCompilationSlot(context.Background(), func() (int, error) { panic("compiler panic") })
+	}()
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if value, err := withCompilationSlot(ctx, func() (int, error) { return 42, nil }); err != nil || value != 42 {
+		t.Fatalf("compile slot wedged: %d %v", value, err)
+	}
+	compileSlots <- struct{}{}
+	cancelled, stop := context.WithCancel(context.Background())
+	stop()
+	_, err := withCompilationSlot(cancelled, func() (int, error) { t.Error("cancelled compiler was called"); return 0, nil })
+	<-compileSlots
+	if err != context.Canceled {
+		t.Fatalf("compile wait did not cancel: %v", err)
+	}
+}
+func TestAggregateDenialPreservesSpecificDiagnostics(t *testing.T) {
+	for _, message := range []string{"script_error: Error: specific later failure", "unawaited_calls: external effects may be running", "context canceled"} {
+		if got := aggregateMemoryError(message); got != message {
+			t.Fatalf("masked %q with %q", message, got)
+		}
+	}
+	if got := aggregateMemoryError("script_error: InternalError: out of memory"); !strings.HasPrefix(got, "memory_limit: aggregate") {
+		t.Fatalf("OOM not classified: %s", got)
+	}
+}

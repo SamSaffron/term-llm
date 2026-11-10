@@ -9,6 +9,7 @@ import (
 
 	"github.com/samsaffron/term-llm/internal/codemode"
 	"github.com/samsaffron/term-llm/internal/llm/core"
+	corestream "github.com/samsaffron/term-llm/internal/llm/core/stream"
 )
 
 func TestCodeModeMergedStateLimitIsAtomicAndMetadataBounded(t *testing.T) {
@@ -99,5 +100,63 @@ func TestCodeModeCancelledEffectsKeepOnlyTheirOwnAdmissionPlaces(t *testing.T) {
 	next = awaitCodeModeTerminal(t, e, ctx, next)
 	if next.Status != "completed" {
 		t.Fatalf("place not reclaimed %+v", next)
+	}
+}
+
+func TestCodeModeResetPrunesSettledSessionOwners(t *testing.T) {
+	e := newCodeEngine()
+	t.Cleanup(e.CloseCodeMode)
+	for _, id := range []string{"prune-a", "prune-b", "prune-c"} {
+		ctx := asyncCodeContext(id, "spawn")
+		r, _ := e.ExecCodeMode(ctx, `store('key',42)`, time.Second, 0)
+		awaitCodeModeTerminal(t, e, ctx, r)
+		waitCodeModeSlotIdle(t, e)
+		e.ResetCodeModeSession(id)
+	}
+	e.codeModeSessions.mu.Lock()
+	count := len(e.codeModeSessions.sessions)
+	e.codeModeSessions.mu.Unlock()
+	if count != 0 {
+		t.Fatalf("reset retained %d settled owners", count)
+	}
+}
+func TestLegacyCodeModeCannotBypassAsyncAdmissionAndToolBudgets(t *testing.T) {
+	e := newCodeEngine()
+	t.Cleanup(e.CloseCodeMode)
+	ctx := asyncCodeContext("mixed", "spawn")
+	legacy, err := e.admitCodeCell(ctx, "legacy", corestream.Sender{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	busy, _ := e.ExecCodeMode(ctx, `return 'bypass'`, time.Millisecond, 0)
+	if busy.Status != "busy" {
+		t.Fatalf("async bypassed legacy lane: %+v", busy)
+	}
+	legacy.Close()
+	gate := make(chan struct{})
+	defer close(gate)
+	e.RegisterTool(codeModeBlockingTool(make(chan struct{}, 8), gate))
+	running, _ := e.ExecCodeMode(ctx, `text('ready');await tools.hold({})`, time.Second, 0)
+	if running.IsError {
+		t.Fatal(running)
+	}
+	if legacy, err := e.admitCodeCell(ctx, "extra", corestream.Sender{}); err == nil {
+		legacy.Close()
+		t.Fatal("legacy bypassed async session budgets")
+	}
+}
+func TestCodeModeRosterPrecedesLatestUserWithoutMutatingTranscript(t *testing.T) {
+	e := newCodeEngine()
+	t.Cleanup(e.CloseCodeMode)
+	ctx := asyncCodeContext("roster", "spawn")
+	r, _ := e.ExecCodeMode(ctx, `return 1`, time.Second, 0)
+	awaitCodeModeTerminal(t, e, ctx, r)
+	messages := []core.Message{core.Message{Role: core.RoleSystem, Parts: []core.Part{{Type: core.PartText, Text: "policy"}}}, core.UserText("earlier"), core.AssistantText("answer"), core.UserText("latest")}
+	request := e.prepareProviderRequest(core.Request{SessionID: "roster", Messages: messages})
+	if len(request.Messages) != 5 || request.Messages[3].Role != core.RoleDeveloper || core.MessageText(request.Messages[4]) != "latest" {
+		t.Fatalf("roster placement %+v", request.Messages)
+	}
+	if len(messages) != 4 || core.MessageText(messages[3]) != "latest" {
+		t.Fatal("roster mutated transcript")
 	}
 }

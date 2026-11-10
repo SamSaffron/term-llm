@@ -38,7 +38,9 @@ func (m *ApprovalManager) checkShellApprovalWithContext(ctx context.Context, com
 	// Need to prompt - serialize prompts to avoid UI conflicts
 	// Use shared lock (via PromptLock()) to prevent concurrent prompts across parent/child managers
 	promptLock := m.PromptLock()
-	promptLock.Lock()
+	if err := core.LockCodeModeApproval(ctx, promptLock); err != nil {
+		return Cancel, err
+	}
 	defer promptLock.Unlock()
 
 	// Recheck yolo now that we hold the prompt lock; the user may have toggled it

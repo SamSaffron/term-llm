@@ -169,3 +169,24 @@ func TestCodeModeIdleStopEndpointCancelsAllAndProtectsEviction(t *testing.T) {
 		t.Fatalf("terminal outcomes missing: %s %v", response.Body.String(), err)
 	}
 }
+
+func TestCodeModeParallelApprovalWaitersDoNotStarveOtherSessions(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "file"), []byte("approved"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	for i := range 6 {
+		id := fmt.Sprintf("parallel-approval-%d", i)
+		rt := cellTestRuntime(t, id, dir, false)
+		result, err := rt.engine.ExecCodeMode(core.ContextWithSessionID(context.Background(), id), `text('ready');await Promise.all([1,2,3,4].map(()=>tools.read_file({path:'file'})))`, time.Second, 0)
+		if err != nil || result.IsError {
+			t.Fatalf("spawn %+v %v", result, err)
+		}
+		waitScriptPrompt(t, rt)
+	}
+	free := cellTestRuntime(t, "unrelated-approved", dir, true)
+	result, err := free.engine.ExecCodeMode(core.ContextWithSessionID(context.Background(), "unrelated-approved"), `text(await tools.read_file({path:'file'}))`, 2*time.Second, 0)
+	if err != nil || result.Status != "completed" {
+		t.Fatalf("prompt-mutex waiters exhausted shared permits: %+v %v", result, err)
+	}
+}

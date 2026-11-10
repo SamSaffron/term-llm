@@ -1214,7 +1214,9 @@ func (m *ApprovalManager) CheckPathApprovalWithContext(ctx context.Context, tool
 	// 4. Need to prompt user - serialize prompts to avoid UI conflicts
 	// Use shared lock (via PromptLock()) to prevent concurrent prompts across parent/child managers
 	promptLock := m.PromptLock()
-	promptLock.Lock()
+	if err := core.LockCodeModeApproval(ctx, promptLock); err != nil {
+		return Cancel, err
+	}
 	defer promptLock.Unlock()
 
 	// Recheck yolo now that we hold the prompt lock; the user may have toggled it
@@ -1449,7 +1451,9 @@ func (m *ApprovalManager) CheckSharedShellApprovalWithContext(ctx context.Contex
 		}
 	}
 	lock := m.PromptLock()
-	lock.Lock()
+	if err := core.LockCodeModeApproval(ctx, lock); err != nil {
+		return Cancel, err
+	}
 	defer lock.Unlock()
 	if m.YoloEnabled() {
 		return ProceedOnce, nil

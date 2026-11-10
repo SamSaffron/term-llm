@@ -25,7 +25,7 @@ type codeModeSessions struct {
 	engine *Engine
 	store  *codeModeStore
 
-	mu       sync.Mutex
+	mu       sync.Mutex // per-engine admission/reset lock, never a process-wide web-session lock
 	sessions map[string]*codeModeSessionCells
 	closed   bool
 }
@@ -305,6 +305,7 @@ func (s *codeModeSessions) finished(a *codeModeAsyncCell) {
 				owner.terminal = owner.terminal[1:]
 			}
 		}
+		s.pruneOwnerLocked(a.sessionID, owner)
 	}()
 }
 func (a *codeModeAsyncCell) abandonedLocked() bool {
@@ -663,7 +664,11 @@ func (s *codeModeSessions) exec(ctx context.Context, code string, yield time.Dur
 		if errors.As(err, &typed) {
 			code = typed.Code
 		}
-		return core.CodeModeCallResult{Status: "failed", Error: err.Error(), ErrorCode: code, IsError: true}, nil
+		status := "failed"
+		if code == "busy" {
+			status = "busy"
+		}
+		return core.CodeModeCallResult{Status: status, Error: err.Error(), ErrorCode: code, IsError: true}, nil
 	}
 	capability.sessionPermits = owner.permits
 	capability.inflight = owner.inflight
@@ -737,7 +742,7 @@ func unknownCell(cellID string) core.CodeModeCallResult {
 func (s *codeModeSessions) cancelActive() {
 	s.mu.Lock()
 	var cells []*codeModeAsyncCell
-	for _, o := range s.sessions {
+	for id, o := range s.sessions {
 		for _, a := range o.live {
 			cells = append(cells, a)
 		}
@@ -745,6 +750,7 @@ func (s *codeModeSessions) cancelActive() {
 			a.dropRetained()
 		}
 		o.terminal = nil
+		s.pruneOwnerLocked(id, o)
 	}
 	s.mu.Unlock()
 	for _, a := range cells {
@@ -768,7 +774,15 @@ func (s *codeModeSessions) cancelSession(sessionID string) {
 		a.abandon()
 	}
 	s.store.Clear(sessionID)
+	if o != nil {
+		s.pruneOwnerLocked(sessionID, o)
+	}
 	s.mu.Unlock()
+}
+func (s *codeModeSessions) pruneOwnerLocked(id string, o *codeModeSessionCells) {
+	if len(o.live) == 0 && len(o.terminal) == 0 {
+		delete(s.sessions, id)
+	}
 }
 func (s *codeModeSessions) closeAll() {
 	s.mu.Lock()

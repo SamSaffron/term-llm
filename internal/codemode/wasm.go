@@ -22,7 +22,6 @@ var wasm []byte
 //go:embed prelude.js
 var prelude string
 
-var compileSlots = make(chan struct{}, 1) // avoid duplicate cold-cache compiler working sets
 var compilationCache = wazero.NewCompilationCache()
 
 // Available reports whether this platform supports the sandbox.
@@ -101,7 +100,7 @@ func run(ctx context.Context, in Input, names []string, host Host, modules Modul
 	defer memory.Free()
 	defer func() {
 		if memory.denied.Load() && result.Status != "completed" {
-			result.Error = "memory_limit: aggregate linear-memory budget exceeded"
+			result.Error = aggregateMemoryError(result.Error)
 		}
 	}()
 	ctx = experimental.WithMemoryAllocator(ctx, memory)
@@ -120,14 +119,7 @@ func run(ctx context.Context, in Input, names []string, host Host, modules Modul
 	}()
 	r := wazero.NewRuntimeWithConfig(ctx, wazero.NewRuntimeConfig().WithCompilationCache(compilationCache).WithMemoryLimitPages(uint32(policy.linear/65536)).WithCloseOnContextDone(true))
 	defer r.Close(context.Background())
-	select {
-	case compileSlots <- struct{}{}:
-	case <-ctx.Done():
-		result.Error = ctx.Err().Error()
-		return
-	}
-	module, err := r.CompileModule(ctx, wasm)
-	<-compileSlots
+	module, err := withCompilationSlot(ctx, func() (wazero.CompiledModule, error) { return r.CompileModule(ctx, wasm) })
 	if err != nil {
 		result.Error = err.Error()
 		return

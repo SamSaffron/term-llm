@@ -79,9 +79,7 @@ const indirectVisionInstruction = "Uploaded images are represented as local file
 func (e *Engine) prepareProviderRequest(req core.Request) core.Request {
 	prepared := req
 	prepared.Messages = providerSafeRequestMessages(core.WithoutMessageAuthors(req.Messages))
-	if roster := e.codeModeRoster(req.SessionID); roster != "" {
-		prepared.Messages = append(append([]core.Message(nil), prepared.Messages...), core.Message{Role: core.RoleSystem, Parts: []core.Part{{Type: core.PartText, Text: roster}}})
-	}
+	prepared.Messages = e.withCodeModeRoster(req.SessionID, prepared.Messages)
 	if e.IndirectVision() {
 		normalized := ensureIndirectVisionImagePaths(prepared.Messages)
 		rewritten, changed := rewriteImagePartsAsReferences(normalized)
