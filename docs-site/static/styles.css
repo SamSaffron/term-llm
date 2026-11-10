@@ -217,7 +217,9 @@ kbd { font-size: 0.75rem; color: var(--muted); }
 .install-tabs { display: flex; gap: 1rem; margin-bottom: 0.75rem; border-bottom: 1px solid var(--border); }
 .install-tabs button { background: none; border: 0; border-bottom: 2px solid transparent; padding: 0.5rem 0; font-size: 0.8rem; color: var(--muted); }
 .install-tabs [aria-selected="true"] { border-color: var(--accent); color: var(--accent); }
-.install-option-label { font-size: 0.8rem; }
+.install-option-label { font-size: 0.8rem; margin: 1rem 0 0.75rem; font-weight: 600; }
+.install-terminal-label { font-size: 0.8rem; margin: 1.5rem 0 0.75rem; font-weight: 600; }
+.install-option .small-note + .command-block, .install-trial-note { margin-bottom: 0.75rem; }
 .small-note { font-size: 0.78rem; color: var(--muted); margin-top: 0.8rem; }
 .install-steps > .button { margin-top: 1.5rem; }
 .site-footer { border-top: 1px solid var(--border); padding: 2.5rem 0; }

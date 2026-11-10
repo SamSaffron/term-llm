@@ -10,6 +10,11 @@ open terminal. Linux uses **systemd user services**; macOS uses **LaunchAgents**
 The OS supervises the ordinary `serve` process—there is no separate daemon or
 internal watchdog. Run these commands as your normal user, **not with sudo**.
 
+On macOS 14+, [term-llm for Mac](/getting-started/installation/#macos-app-recommended)
+already manages the local web service and start-at-login; you do not need a
+separate `term-llm service install web` for the app-managed workspace. The
+instructions below cover CLI-managed services.
+
 ## Quick start
 
 Configure term-llm normally first, then:

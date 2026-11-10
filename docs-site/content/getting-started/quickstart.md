@@ -8,35 +8,78 @@ next:
   label: Connect your preferred provider
   url: /getting-started/providers-and-setup/
 ---
-Install term-llm and [connect a provider](/getting-started/providers-and-setup/) for your first question. On an interactive first run, the setup wizard helps you choose one.
+Install term-llm and [connect a provider](/getting-started/providers-and-setup/) for your first question. For Terminal commands, an interactive first-run setup wizard helps you choose one.
 
 ## 1. Install term-llm
 
-On macOS with Homebrew:
+### macOS
+
+[Download term-llm for Mac](https://term-llm.com/mac/download) (recommended for
+macOS 14+). Open the zip, move **term-llm.app** to **Applications**, and open it.
+The app manages the CLI and starts the local web service for you. See the
+[Mac app installation details](/getting-started/installation/#macos-app-recommended).
+
+To use the CLI in Terminal, `~/.local/bin` must be on your PATH. If your shell
+cannot find `term-llm`, add it to `~/.zprofile`:
+
+```sh
+echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.zprofile
+```
+
+Open a new Terminal window, or run `source ~/.zprofile` in your current Zsh session.
+
+Prefer a terminal-only macOS install? Homebrew is still supported:
 
 ```bash
 brew install samsaffron/tap/term-llm
 ```
 
-Or use the release installer on a supported platform:
+The [shell installer](#linux) below and [release archives](https://github.com/samsaffron/term-llm/releases)
+also remain supported on macOS.
+
+### Linux
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/samsaffron/term-llm/main/install.sh | sh
 ```
 
-The shell command downloads and executes the [installer script](https://github.com/samsaffron/term-llm/blob/main/install.sh). Inspect it first if you prefer, or [download a release archive](https://github.com/samsaffron/term-llm/releases). Published releases are self-contained: the browser interface is included, with no Node.js or frontend build required.
+This downloads and executes the [shell installer](https://github.com/samsaffron/term-llm/blob/main/install.sh).
+Inspect it first if you prefer, or [download a release archive](https://github.com/samsaffron/term-llm/releases).
 
-Confirm the binary is available:
+### Windows
+
+In PowerShell:
+
+```powershell
+irm https://raw.githubusercontent.com/samsaffron/term-llm/main/install.ps1 | iex
+```
+
+This downloads and executes the [PowerShell installer](https://github.com/samsaffron/term-llm/blob/main/install.ps1).
+Inspect it first if you prefer. See [Windows installation details](/getting-started/installation/#windows-powershell)
+for requirements and PATH instructions.
+
+### Check the CLI
+
+Published CLI releases include the browser interface, with no Node.js or frontend
+build required. If you plan to use Terminal, confirm the binary is available:
 
 ```bash
 term-llm version
 ```
 
-You should see the installed version. If your shell cannot find `term-llm`, follow the installer’s PATH instructions or see [installation](/getting-started/installation/).
+You should see the installed version. If your shell cannot find `term-llm`,
+check the Mac app PATH step above or follow your installer's PATH instructions.
 
 ## 2. Connect a provider and get a first answer
 
-Choose a [provider API key, supported subscription, or local model](/getting-started/providers-and-setup/) before asking your first question. The default getting-started option is OpenRouter’s free model router. Create an [OpenRouter API key](https://openrouter.ai/keys) and set it in your shell:
+**Using the Mac app?** Open its workspace window for browser chat; you do not
+need to start another web service. Choose a configured provider in the browser
+workspace's **Settings → Model**. Provider credentials must be available to the
+running service; exporting an API key in Terminal does not change the environment
+of an already-running app-managed service. See [provider setup](/getting-started/providers-and-setup/)
+for credential and configuration options.
+
+**Using Terminal?** Choose a [provider API key, supported subscription, or local model](/getting-started/providers-and-setup/) before asking your first question. The default getting-started option is OpenRouter’s free model router. Create an [OpenRouter API key](https://openrouter.ai/keys) and set it in your shell:
 
 ```bash
 export OPENROUTER_API_KEY=your-key
@@ -54,9 +97,14 @@ You should receive a short explanation of how rebase replays commits onto a new 
 
 ## 3. Choose your interface
 
-Both interfaces use the same underlying runtime and provider configuration. Try either one; run these commands separately.
+Choose the Mac app window, a browser, or Terminal. For CLI installations, run the commands below separately.
 
 ### Open the browser workspace
+
+**Mac app:** open the app's workspace window. The local web service is already
+managed by the app, including start-at-login; skip the command below.
+
+**CLI install:** start the web service yourself:
 
 ```bash
 term-llm serve web

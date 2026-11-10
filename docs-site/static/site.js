@@ -43,7 +43,7 @@
     link.addEventListener("click", () => { link.closest("details").open = false; });
   });
 
-  // Keep non-JS installs useful: both commands are visible until tabs are enhanced.
+  // Keep non-JS installs useful: all OS panels are visible until tabs are enhanced.
   document.querySelectorAll("[data-install-options]").forEach((options) => {
     const tablist = options.querySelector('[role="tablist"]');
     const tabs = [...tablist.querySelectorAll('[role="tab"]')];
@@ -62,7 +62,9 @@
       if (focus) tab.focus();
     }
     tablist.hidden = false;
-    activate(tabs[0]);
+    const platform = navigator.userAgentData?.platform || navigator.platform || navigator.userAgent;
+    const os = /win/i.test(platform) ? "windows" : /mac/i.test(platform) ? "macos" : "linux";
+    activate(tabs.find((tab) => tab.dataset.installOs === os) || tabs[0]);
     tabs.forEach((tab, index) => {
       tab.addEventListener("click", () => activate(tab));
       tab.addEventListener("keydown", (event) => {

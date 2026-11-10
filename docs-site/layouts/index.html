@@ -1,9 +1,9 @@
 {{ define "main" }}
   <section class="hero container">
-    <p class="eyebrow">{{ .Params.eyebrow }}</p>
+    {{ with .Params.eyebrow }}<p class="eyebrow">{{ . }}</p>{{ end }}
     <h1>{{ .Params.headline }}<br><span>{{ .Params.headline_second }}</span></h1>
     <p class="hero-intro">{{ .Params.intro }}</p>
-    <div class="actions"><a class="button primary" href="/getting-started/quickstart/">Get started <span aria-hidden="true">→</span></a><a class="button secondary" href="#web-workspace">See it in action <span aria-hidden="true">↓</span></a></div>
+    <div class="actions"><a class="button primary" href="#install">Install <span aria-hidden="true">↓</span></a><a class="button secondary" href="/getting-started/quickstart/">Quickstart <span aria-hidden="true">→</span></a></div>
     <p class="hero-note">MIT licensed <span aria-hidden="true">·</span> Self-hosted <span aria-hidden="true">·</span> Local and hosted models</p>
   </section>
 
@@ -48,7 +48,6 @@
       <picture><source data-tour-large-dark data-theme-image="dark" media="not all"><img data-tour-large-image alt=""></picture>
     </dialog>
     <div class="section-heading web-heading"><p class="eyebrow">{{ .eyebrow }}</p><h2 id="web-title">{{ .title }}</h2><p>{{ .description }}</p></div>
-    <div class="feature-grid">{{ range .features }}<div class="feature"><h3><a href="{{ .url }}">{{ .title }} <span aria-hidden="true">↗</span></a></h3><p>{{ .text }}</p></div>{{ end }}</div>
   </section>
   {{ end }}
 
@@ -91,26 +90,8 @@
 
   {{ with .Params.control }}
   <section class="home-section section-tinted" aria-labelledby="control-title"><div class="container">
-    <div class="section-heading"><p class="eyebrow">You stay in control</p><h2 id="control-title">{{ .title }}</h2><p>{{ .description }}</p></div>
+    <div class="section-heading"><p class="eyebrow">You stay in control</p><h2 id="control-title">{{ .title }}</h2>{{ with .description }}<p>{{ . }}</p>{{ end }}</div>
     <div class="feature-grid">{{ range .items }}<div class="feature"><h3><a href="{{ .url }}">{{ .title }} <span aria-hidden="true">↗</span></a></h3><p>{{ .text }}</p></div>{{ end }}</div>
-  </div></section>
-  {{ end }}
-
-  <section class="home-section container" aria-labelledby="explore-title">
-    <div class="section-heading"><p class="eyebrow">Room to grow</p><h2 id="explore-title">Start small. Build your own workflow.</h2></div>
-    <div class="explore-grid">{{ range .Params.explore }}<a class="explore-link" href="{{ .url }}"><h3>{{ .title }} <span aria-hidden="true">↗</span></h3><p>{{ .text }}</p></a>{{ end }}</div>
-  </section>
-
-  {{ with .Params.community }}
-  <section id="community" class="home-section section-tinted" aria-labelledby="community-title"><div class="container">
-    <div class="section-heading"><p class="eyebrow">{{ .eyebrow }}</p><h2 id="community-title">{{ .title }}</h2><p>{{ .description }}</p></div>
-    <div class="community-grid">{{ range .items }}<a class="community-link" href="{{ .url }}"><span class="community-mark" aria-hidden="true">
-      {{- if eq .icon "discuss" -}}
-      <svg viewBox="0 0 20 20" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M4.5 4h11A1.5 1.5 0 0 1 17 5.5v6a1.5 1.5 0 0 1-1.5 1.5H9.2L5.5 16v-3h-1A1.5 1.5 0 0 1 3 11.5v-6A1.5 1.5 0 0 1 4.5 4Z"/><path d="M6.5 7.5h7M6.5 10h4.5"/></svg>
-      {{- else -}}
-      <svg viewBox="0 0 20 20" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M5 3.5h7l4 4v8a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1v-11a1 1 0 0 1 1-1Z"/><path d="M12 3.5v4h4"/><path d="M6.5 10.5h7M6.5 13h4.5"/></svg>
-      {{- end -}}
-    </span><div class="community-body"><h3>{{ .title }} <span aria-hidden="true">↗</span></h3><p>{{ .text }}</p></div></a>{{ end }}</div>
   </div></section>
   {{ end }}
 
@@ -120,9 +101,29 @@
     <div class="install-steps">
       <h3><span class="step-number">1</span> Install term-llm</h3>
       <div class="install-options" data-install-options>
-        <div class="install-tabs" role="tablist" aria-label="Installation method" hidden><button id="tab-homebrew" role="tab" aria-controls="install-homebrew" aria-selected="true" type="button">Homebrew · macOS</button><button id="tab-shell" role="tab" aria-controls="install-shell" aria-selected="false" tabindex="-1" type="button">Shell installer</button></div>
-        <div id="install-homebrew" class="install-option"><p class="install-option-label">Homebrew · macOS</p>{{ partial "command.html" (dict "command" .homebrew "label" "Install with Homebrew") }}</div>
-        <div id="install-shell" class="install-option"><p class="install-option-label">Shell installer</p>{{ partial "command.html" (dict "command" .shell "label" "Install with the shell installer") }}<p class="small-note">Downloads and runs a shell script. <a href="https://github.com/samsaffron/term-llm/blob/main/install.sh">Inspect the installer</a> or <a href="https://github.com/samsaffron/term-llm/releases">download a release</a>.</p></div>
+        <div class="install-tabs" role="tablist" aria-label="Operating system" hidden>
+          <button id="tab-macos" role="tab" aria-controls="install-macos" aria-selected="true" data-install-os="macos" type="button">macOS</button>
+          <button id="tab-linux" role="tab" aria-controls="install-linux" aria-selected="false" tabindex="-1" data-install-os="linux" type="button">Linux</button>
+          <button id="tab-windows" role="tab" aria-controls="install-windows" aria-selected="false" tabindex="-1" data-install-os="windows" type="button">Windows</button>
+        </div>
+        <div id="install-macos" class="install-option">
+          <p class="install-option-label">macOS</p>
+          <a class="button primary" href="{{ .mac_download }}">Download term-llm for Mac</a>
+          <p class="small-note">macOS 14+ · Apple silicon &amp; Intel · notarized</p>
+          <p class="small-note">Open the zip and move term-llm.app to Applications. The app installs the CLI and keeps it updated.</p>
+          <p class="install-terminal-label">Prefer the terminal?</p>
+          {{ partial "command.html" (dict "command" .homebrew "label" "Install with Homebrew") }}
+        </div>
+        <div id="install-linux" class="install-option">
+          <p class="install-option-label">Linux</p>
+          {{ partial "command.html" (dict "command" .shell "label" "Install with the Linux shell installer") }}
+          <p class="small-note">Downloads and runs a shell script. <a href="https://github.com/samsaffron/term-llm/blob/main/install.sh">Inspect the installer</a> or <a href="https://github.com/samsaffron/term-llm/releases">download a release</a>.</p>
+        </div>
+        <div id="install-windows" class="install-option">
+          <p class="install-option-label">Windows</p>
+          {{ partial "command.html" (dict "command" .powershell "label" "Install with PowerShell") }}
+          <p class="small-note">Downloads and runs a PowerShell script. <a href="https://github.com/samsaffron/term-llm/blob/main/install.ps1">Inspect the installer</a> or <a href="https://github.com/samsaffron/term-llm/releases">download a release</a>.</p>
+        </div>
       </div>
       <h3><span class="step-number">2</span> Try a first question</h3>
       {{ partial "command.html" (dict "command" .trial "label" "Try a question") }}
@@ -130,5 +131,17 @@
       <a class="button primary" href="/getting-started/quickstart/">Continue to the quickstart →</a>
     </div>
   </section>
+  {{ end }}
+  {{ with .Params.community }}
+  <section id="community" class="home-section section-tinted" aria-labelledby="community-title"><div class="container">
+    <div class="section-heading"><p class="eyebrow">{{ .eyebrow }}</p><h2 id="community-title">{{ .title }}</h2>{{ with .description }}<p>{{ . }}</p>{{ end }}</div>
+    <div class="community-grid">{{ range .items }}<a class="community-link" href="{{ .url }}"><span class="community-mark" aria-hidden="true">
+      {{- if eq .icon "discuss" -}}
+      <svg viewBox="0 0 20 20" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M4.5 4h11A1.5 1.5 0 0 1 17 5.5v6a1.5 1.5 0 0 1-1.5 1.5H9.2L5.5 16v-3h-1A1.5 1.5 0 0 1 3 11.5v-6A1.5 1.5 0 0 1 4.5 4Z"/><path d="M6.5 7.5h7M6.5 10h4.5"/></svg>
+      {{- else -}}
+      <svg viewBox="0 0 20 20" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M5 3.5h7l4 4v8a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1v-11a1 1 0 0 1 1-1Z"/><path d="M12 3.5v4h4"/><path d="M6.5 10.5h7M6.5 13h4.5"/></svg>
+      {{- end -}}
+    </span><div class="community-body"><h3>{{ .title }} <span aria-hidden="true">↗</span></h3><p>{{ .text }}</p></div></a>{{ end }}</div>
+  </div></section>
   {{ end }}
 {{ end }}

@@ -17,6 +17,10 @@ next:
 
 ## Start the web runtime
 
+On macOS 14+, [term-llm for Mac](/getting-started/installation/#macos-app-recommended)
+manages the local web service and start-at-login. Open its workspace window
+instead of starting a second server with the commands below.
+
 [Configure a provider](/getting-started/providers-and-setup/) first, or pass `--provider` explicitly. Then start the server:
 
 ```bash
