@@ -12,6 +12,31 @@ import (
 )
 
 func TestAuthorHTTPDurableSteeringAfterRuntimeRestart(t *testing.T) {
+	var restarted *serveServer
+	t.Run("restart", func(t *testing.T) {
+		restarted = exerciseAuthorHTTPDurableSteeringAfterRuntimeRestart(t)
+	})
+	if restarted == nil {
+		return // The fixture failed before returning its server.
+	}
+	// Keep this regression from leaking its own worker when cleanup is broken.
+	defer func() {
+		restarted.responseLifecycleCancel()
+		restarted.responseLifecycleWG.Wait()
+	}()
+	done := make(chan struct{})
+	go func() {
+		restarted.responseLifecycleWG.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("restarted HTTP fixture cleanup left the response lifecycle worker running")
+	}
+}
+
+func exerciseAuthorHTTPDurableSteeringAfterRuntimeRestart(t *testing.T) *serveServer {
 	s, store := newAuthorHTTPFixture(t, mockprovider.NewMockProvider("debug"), nil)
 	// Freeze an active runtime between user admission and consumption. Unlike
 	// graceful cancellation, a process restart cannot drain its in-memory queue.
@@ -59,7 +84,18 @@ func TestAuthorHTTPDurableSteeringAfterRuntimeRestart(t *testing.T) {
 	restarted := &serveServer{cfg: s.cfg, cfgRef: s.cfgRef, store: reopened, sessionMgr: newServeSessionManager(time.Minute, 10, nil), responseRuns: newServeResponseRunManager()}
 	configureAuthorHTTPFixture(restarted, reopened, mockprovider.NewMockProvider("debug").AddTextResponse("resumed answer"), nil)
 	restarted.authors.Initialize(context.Background(), reopened)
-	defer func() { close(restarted.shutdownCh); restarted.responseRuns.Close(); restarted.sessionMgr.Close() }()
+	defer func() {
+		// Closing the HTTP channel does not stop the periodic lifecycle worker.
+		// Join it before closing SQLite or returning to tests that replace the
+		// process-wide reload coordinator.
+		if restarted.responseLifecycleCancel != nil {
+			restarted.responseLifecycleCancel()
+			restarted.responseLifecycleWG.Wait()
+		}
+		close(restarted.shutdownCh)
+		restarted.responseRuns.Close()
+		restarted.sessionMgr.Close()
+	}()
 	state, projection := authorHTTPJSON(t, restarted, http.MethodGet, "/v1/sessions/"+authorHTTPSession+"/state", "", "", false)
 	if state.Code != 200 {
 		t.Fatalf("state=%d %s", state.Code, state.Body.String())
@@ -81,4 +117,5 @@ func TestAuthorHTTPDurableSteeringAfterRuntimeRestart(t *testing.T) {
 	if pending, err := reopened.ListPendingSteering(context.Background(), authorHTTPSession); err != nil || len(pending) != 0 {
 		t.Fatalf("committed pending=%+v err=%v", pending, err)
 	}
+	return restarted
 }
