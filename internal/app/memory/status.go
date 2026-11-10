@@ -92,11 +92,11 @@ func Status(opts StatusOptions) error {
 		if err != nil {
 			return fmt.Errorf("get session %s: %w", summary.ID, err)
 		}
-		if sess == nil {
+		if sess == nil || sess.IsSubagent || sess.ParentID != "" {
 			continue
 		}
 
-		agent := env.ResolveAgent(sess.Agent)
+		agent := sessionAgentOrDefault(sess.Agent)
 		if filterAgent != "" && agent != filterAgent {
 			continue
 		}

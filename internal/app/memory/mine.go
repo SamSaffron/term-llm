@@ -638,7 +638,7 @@ func (opts MineOptions) buildMemoryMineCandidate(ctx context.Context, store sess
 	if currentID != "" && sess.ID == currentID {
 		return memoryMineCandidate{}, false, nil
 	}
-	if !opts.IncludeSubagents && sess.IsSubagent {
+	if !opts.IncludeSubagents && (sess.IsSubagent || sess.ParentID != "") {
 		return memoryMineCandidate{}, false, nil
 	}
 	if hasMemoryMiningTag(opts.Env, sess.Tags) {
