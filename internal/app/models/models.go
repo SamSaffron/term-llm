@@ -101,7 +101,7 @@ func (o *Options) Run(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("--refresh is only supported for ChatGPT model listings")
 	}
 
-	handled, err := handleUnsupportedModelListProvider(providerName, providerType, configured, o.JSON)
+	handled, err := handleUnsupportedModelListProvider(cfg, providerName, providerType, configured, o.JSON)
 	if handled {
 		return err
 	}
@@ -139,6 +139,7 @@ func (o *Options) Run(cmd *cobra.Command, args []string) error {
 		}
 		return fmt.Errorf("failed to list models: %w", err)
 	}
+	models = llm.ProviderModelsForDiscovery(cfg, providerName, models)
 
 	if len(models) == 0 {
 		fmt.Println("No models found.")
@@ -154,12 +155,13 @@ func (o *Options) Run(cmd *cobra.Command, args []string) error {
 	return printModelList(providerName, providerType, models)
 }
 
-func handleUnsupportedModelListProvider(providerName string, providerType config.ProviderType, configured, jsonOutput bool) (bool, error) {
+func handleUnsupportedModelListProvider(cfg *config.Config, providerName string, providerType config.ProviderType, configured, jsonOutput bool) (bool, error) {
 	if supportsModelListing(providerType) {
 		return false, nil
 	}
 
-	if staticModels := llm.ResolveProviderModelIDs(providerName); len(staticModels) > 0 {
+	staticModels := llm.ProviderModelIDsForDiscovery(cfg, providerName, llm.ResolveProviderModelIDs(providerName))
+	if len(staticModels) > 0 {
 		return true, printStaticModels(providerName, staticModels, jsonOutput)
 	}
 	if !configured {

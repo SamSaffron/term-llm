@@ -55,6 +55,9 @@ func (p Policy) Check(agent, provider, model string) error {
 }
 
 func (p Policy) CheckWithConfig(cfg *config.Config, agent, provider, model string) error {
+	if err := llm.CheckProviderModelAllowed(cfg, provider, model); err != nil {
+		return err
+	}
 	for i, rule := range p.Rules {
 		ok := false
 		for _, entry := range rule.Allowed {
@@ -65,7 +68,7 @@ func (p Policy) CheckWithConfig(cfg *config.Config, agent, provider, model strin
 			}
 		}
 		if !ok {
-			return &DeniedError{Agent: agent, Selected: provider + ":" + model, RuleAgent: rule.Agent, Allowed: append([]string(nil), rule.Allowed...), Inherited: i < len(p.Rules)-1 || rule.Agent != agent}
+			return &DeniedError{Agent: agent, Selected: provider + ":" + model, RuleAgent: rule.Agent, Allowed: deniedAllowedForConfig(cfg, rule.Allowed), Inherited: i < len(p.Rules)-1 || rule.Agent != agent}
 		}
 	}
 	return nil

@@ -58,8 +58,11 @@ func (c SpawnModelCatalog) ValidateSpawnModel(model string) error {
 		return nil
 	}
 	enabled := c.spawnModelProviders()
-	provider, _, err := llm.ParseProviderModel(model, c.cfg)
+	provider, modelName, err := llm.ParseProviderModel(model, c.cfg)
 	if err == nil && !c.cfg.ProviderDisabled(provider) && (provider == "debug" || slices.Contains(enabled, provider)) {
+		if policyErr := llm.CheckProviderModelAllowed(c.cfg, provider, modelName); policyErr != nil {
+			return fmt.Errorf("model %q: %w; omit model to use the agent's default", model, policyErr)
+		}
 		return nil
 	}
 	name, _, _ := strings.Cut(model, ":")

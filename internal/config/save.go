@@ -24,6 +24,7 @@ func Save(cfg *Config) error {
 	type saveProvider struct {
 		Type                      ProviderType      `yaml:"type,omitempty"`
 		Model                     string            `yaml:"model,omitempty"`
+		AllowedModels             []string          `yaml:"allowed_models,omitempty"`
 		FastModel                 string            `yaml:"fast_model,omitempty"`
 		FastProvider              string            `yaml:"fast_provider,omitempty"`
 		ServiceTier               string            `yaml:"service_tier,omitempty"`
@@ -73,6 +74,7 @@ func Save(cfg *Config) error {
 		saved.Providers[name] = saveProvider{
 			Type:                      p.Type,
 			Model:                     p.Model,
+			AllowedModels:             p.AllowedModels,
 			FastModel:                 p.FastModel,
 			FastProvider:              p.FastProvider,
 			ServiceTier:               p.ServiceTier,
@@ -84,6 +86,16 @@ func Save(cfg *Config) error {
 			AppURL:                    p.AppURL,
 			AppTitle:                  p.AppTitle,
 		}
+	}
+
+	allowedModels, err := providerAllowedModelsForSave(cfg)
+	if err != nil {
+		return fmt.Errorf("preserve provider model policy: %w", err)
+	}
+	for name, allowed := range allowedModels {
+		p := saved.Providers[name]
+		p.AllowedModels = allowed
+		saved.Providers[name] = p
 	}
 
 	data, err := yaml.Marshal(saved)

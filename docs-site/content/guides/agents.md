@@ -207,6 +207,8 @@ or `term-llm agents set developer allowed_models=chatgpt:*,claude-bin:*`. Leavin
 
 Every launch of the agent is checked before a model request is made: direct `ask`/`chat`/`loop` runs, resumed sessions, web sessions, jobs, and in-session switches (`/model` in the terminal, the web model picker). A rejected selection fails with an error naming the model and the allowed entries; a rejected switch keeps the current model.
 
+Provider-wide [`providers.<name>.allowed_models`](/reference/providers-and-models/#restrict-models-per-provider) applies even without an agent. It uses model-only entries, unlike this agent setting's `provider:model` entries. Both restrictions must allow a selection; an agent preference cannot widen a provider's list.
+
 #### Subagents: the parent always wins
 
 A child run may only use a model that **every ancestor's list and its own list** allow. This covers `spawn_agent`, `continue_agent`, isolated skills, commit drafting children, `queue_agent` jobs, and all deeper descendants.
@@ -222,7 +224,7 @@ A child run may only use a model that **every ancestor's list and its own list**
 
 Automatic auxiliary calls for a restricted session — titles, interrupt classification, and live control — use the provider's fast model only when the list allows it, and otherwise fall back to the session's allowed main model. Explicitly chosen auxiliary models, such as a side question on a different model, must be allowed.
 
-The guardian reviewer, memory batch commands, `sessions autotitle`, Telegram interrupt classification, and tools that call other services (`view_image` routing, `image_generate`, search) are configured by the operator and are not governed by `allowed_models`. The list governs term-llm's own model launches; it does not stop an agent from reaching another model through `shell` or HTTP. Restrict those with tool permissions.
+The guardian reviewer, memory batch commands, `sessions autotitle`, Telegram interrupt classification, and tools that call other services (`view_image` routing, `image_generate`, search) are configured by the operator and are not governed by the agent-level `allowed_models`. Provider-level restrictions still apply to their calls through text inference `providers`. The list governs term-llm's own model launches; it does not stop an agent from reaching another model through `shell` or HTTP. Restrict those with tool permissions.
 
 ## Time grounding
 

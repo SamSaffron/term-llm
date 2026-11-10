@@ -78,6 +78,24 @@ func TestValidateSpawnModelRejectsExplicitlyDisabledDebug(t *testing.T) {
 	}
 }
 
+func TestValidateSpawnModelRejectsProviderBlockedModel(t *testing.T) {
+	catalog := configDiscoveryCatalog()
+	chatgpt := catalog.cfg.Providers["chatgpt"]
+	chatgpt.AllowedModels = []string{"gpt-allowed"}
+	catalog.cfg.Providers["chatgpt"] = chatgpt
+
+	err := catalog.ValidateSpawnModel("chatgpt:gpt-blocked")
+	if err == nil || !strings.Contains(err.Error(), "providers.chatgpt.allowed_models") || !strings.Contains(err.Error(), "gpt-allowed") {
+		t.Fatalf("ValidateSpawnModel() = %v, want provider allowlist denial with allowed entry", err)
+	}
+	if strings.Contains(err.Error(), "gpt-5.6-luna") || strings.Contains(err.Error(), "gpt-5.4") {
+		t.Fatalf("provider denial enumerated a catalog: %v", err)
+	}
+	if err := catalog.ValidateSpawnModel("chatgpt:gpt-allowed"); err != nil {
+		t.Fatalf("ValidateSpawnModel(allowed) = %v", err)
+	}
+}
+
 func TestValidateSpawnModelBoundsRecoverySuggestions(t *testing.T) {
 	for _, count := range []int{0, 1, 3, 4, 40} {
 		t.Run(fmt.Sprintf("%d providers", count), func(t *testing.T) {

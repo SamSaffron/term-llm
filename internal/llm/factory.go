@@ -172,12 +172,15 @@ func NewProviderByName(cfg *config.Config, name string, model string) (core.Prov
 	if err != nil {
 		return nil, err
 	}
-	return WrapWithRetry(provider, DefaultRetryConfig()), nil
+	return wrapWithProviderModelPolicy(cfg, name, model, provider, DefaultRetryConfig()), nil
 }
 
 // newNamedProvider creates provider name without the retry wrapper.
 func newNamedProvider(cfg *config.Config, name string, model string) (core.Provider, error) {
 	if err := ProviderUnavailableError(cfg, name); err != nil {
+		return nil, err
+	}
+	if err := CheckProviderModelAllowed(cfg, name, model); err != nil {
 		return nil, err
 	}
 	if name == "debug" {
@@ -218,11 +221,20 @@ func resolvedProviderConfig(cfg *config.Config, name string) (config.ProviderCon
 }
 
 // NewProviderByNameNoRetry creates the same provider as NewProviderByName but
-// returns the underlying adapter without the production retry wrapper. It is
+// disables automatic retries while retaining provider model restrictions. It is
 // intended for controlled callers such as benchmarks where an implicit retry
 // would hide attempt boundaries and could reuse a now-cacheable payload.
+// Restricted providers retain a request-admission wrapper with one attempt;
+// unrestricted providers return the underlying adapter.
 func NewProviderByNameNoRetry(cfg *config.Config, name string, model string) (core.Provider, error) {
-	return newNamedProvider(cfg, name, model)
+	provider, err := newNamedProvider(cfg, name, model)
+	if err != nil {
+		return nil, err
+	}
+	if len(cfg.Providers[name].AllowedModels) == 0 {
+		return provider, nil
+	}
+	return wrapWithProviderModelPolicy(cfg, name, model, provider, RetryConfig{MaxAttempts: 1}), nil
 }
 
 // ResolveFastTarget resolves the provider and lightweight model for background

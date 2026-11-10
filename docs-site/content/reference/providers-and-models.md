@@ -87,6 +87,45 @@ An unknown value such as `provider_discovery: strict` is a config error, not a s
 
 A catalog entry is not a guarantee of capacity, free access, tool support, or access by your account. Use the upstream model ID returned for your provider; the same model family can have different names and limits on different services.
 
+## Restrict models per provider
+
+`providers.<name>.allowed_models` is an enforced allowlist for **any text inference provider**, including custom-named providers. It is independent of `models`, which supplies discovery/completion entries and capability metadata but does not restrict inference.
+
+```yaml
+providers:
+  claude-bin:
+    model: claude-opus-5-5
+    fast_model: claude-sonnet-5-5
+    allowed_models:
+      - claude-opus-5-5
+      - claude-sonnet-5-5
+
+  chatgpt:
+    model: gpt-6-sol-high
+    fast_model: gpt-6-sol-low
+    allowed_models: [gpt-6-sol]
+
+  local:
+    type: openai_compatible
+    base_url: http://localhost:8000/v1
+    model: friendly
+    allowed_models: [upstream/model]
+    models:
+      - id: upstream/model
+        alias: friendly
+        reasoning_efforts: [low, high, max]
+```
+
+- Entries are **model names only**, not `provider:model` entries. Model IDs can themselves contain colons (for example `qwen:8b`). Matching is case-sensitive. Whitespace and wildcard patterns such as `claude-*` are rejected.
+- An omitted or empty list is unrestricted. A base model permits its reasoning-effort variants: `claude-opus-5-5` allows `claude-opus-5-5-high` and `claude-opus-5-5-max`. An explicitly suffixed entry, such as `claude-opus-5-5-high`, permits only that variant. The existing [agent model allowlist](/guides/agents/#model-allowlists) effort rules apply: declared/catalog capabilities take precedence, and unknown models use standard effort suffixes rather than arbitrary name prefixes. Declared `reasoning_efforts` can include provider-specific values. If an adapter-specific effort is absent from the catalog, declare it there; the allowlist does not add capability metadata. This is not prefix matching: allowing `amazing-model` permits `amazing-model-high`, but not `amazing-model2` or `amazing-model-mini`.
+- Configured `models[].alias` names and upstream IDs refer to the same allowed model, including declared effort variants. Moving backend aliases such as Claude Code's `opus` are **not** resolved to a pinned generation: allow the full ID to prevent accidental generation changes.
+- The restriction applies to the configured **provider key**, not all providers of its `type`. The `local` restriction above does not restrict another `type: openai_compatible` provider.
+- Provider and agent lists intersect. Neither an agent's `allowed_models: [claude-bin:*]` nor a model override can widen the provider list. Agentless CLI runs, jobs, resumed sessions, model switches, request-level overrides and helper conversations also retain the provider ceiling. Disallowed choices fail before inference; they are not silently replaced with the first allowed entry.
+- Set `model` and `fast_model` consistently with the list. `fast_provider` redirects to a different provider key, so that target's allowlist applies. Automatic session auxiliary work can fall back to the admitted main model when its fast model is blocked; separately configured callers may report an error instead. Config loading permits a disallowed default so an explicit allowed override can still be used.
+- Autocomplete, text model pickers, model listings and model suggestions in errors respect the provider list. Listing fewer choices is not the enforcement boundary: explicit overrides are checked too.
+
+This controls text inference routed through term-llm's `providers` configuration. It does not restrict separate image, audio, embedding, realtime or `classify.providers` settings, nor commands an agent executes directly through shell/HTTP. It does not verify a remote service's claim about which model an alias resolves to. Restart long-running processes after changing the config.
+
 ## Provider categories
 
 The provider name selects an integration, not just a model vendor:
@@ -630,6 +669,7 @@ Use `base_url` when the standard `/chat/completions` path should be appended aut
 | `enabled` | bool | Set `false` to disable this provider (built-in or custom) even when credentials are detected. Default `true`. |
 | `model` | string | Default model name. For configured model objects, this may be either the upstream `id` or the friendly `alias`. |
 | `models` | list | Optional list for model pickers and shell completion. Entries may be strings or objects with `id`, optional `alias`, `context_window`, `max_output_tokens`, `parse_reasoning`, `include_reasoning`, `thinking_param`, `reasoning_efforts`, and `default_reasoning_effort`. |
+| `allowed_models` | list of strings | Enforced provider-wide model allowlist. Model names only; base entries include reasoning-effort variants. Empty or omitted is unrestricted. See [model restrictions](#restrict-models-per-provider). |
 | `fast_model` | string | Lightweight model used for control-plane tasks (e.g., title generation) and the agent `model: fast` alias. This is separate from service-tier fast mode. Usually this is all you need. When omitted, built-in providers on their stock endpoint use their built-in fast model; providers with a custom `base_url`/`url` fall back to the `default_provider`'s fast model and provider, so a model is never sent to an endpoint it was not defined for. |
 | `fast_provider` | string | Optional provider key to use when the `fast_model` should run on a different configured provider than this one. Without `fast_model`, the target provider's own fast model is used. |
 | `use_previous_response_id` | bool | `type: openai` only (including custom Responses endpoints). Default `true`. Set `false` to omit response-ID continuation and replay full history over HTTP/SSE or WebSocket. Keep encrypted reasoning enabled for replay. See [Responses API continuation](/reference/configuration/#responses-api-continuation). |
