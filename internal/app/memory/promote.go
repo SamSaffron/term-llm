@@ -199,7 +199,10 @@ func collectPromoteChangedFragments(ctx context.Context, store *memorydb.Store, 
 		return nil, time.Time{}, err
 	}
 
-	fragments, err := store.ListFragments(ctx, memorydb.ListOptions{Agent: agentName, Since: &cutoff})
+	// Since filters creation time, not edits. Compare update instants below:
+	// persisted timestamps may have different UTC offsets and cannot safely be
+	// filtered by a lexical SQL timestamp comparison.
+	fragments, err := store.ListFragments(ctx, memorydb.ListOptions{Agent: agentName})
 	if err != nil {
 		return nil, time.Time{}, fmt.Errorf("list fragments for promote: %w", err)
 	}
