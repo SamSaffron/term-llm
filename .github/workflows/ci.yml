@@ -114,7 +114,8 @@ jobs:
           done
 
   macos-codemode-signing:
-    runs-on: macos-15-arm64
+    # Standard macos-15 is Apple Silicon; the smoke also rejects non-arm64 hosts.
+    runs-on: macos-15
     permissions:
       contents: read
     steps:
