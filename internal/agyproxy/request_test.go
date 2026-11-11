@@ -20,25 +20,32 @@ func generationBody(names ...string) []byte {
 	return body
 }
 
-func generationBodyWithText(text string) []byte {
+func generationBodyWithOutput(output string) []byte {
 	body, _ := json.Marshal(map[string]any{
 		"model": "test",
 		"request": map[string]any{
 			"contents": []any{map[string]any{
-				"parts": []any{map[string]any{"text": text}},
+				"role": "model",
+				"parts": []any{map[string]any{"functionResponse": map[string]any{
+					"name": "mcp_term-llm_shell", "response": map[string]any{"output": output},
+				}}},
 			}},
 		},
 	})
 	return body
 }
 
-func firstPartText(t *testing.T, body []byte) string {
+func firstOutput(t *testing.T, body []byte) string {
 	t.Helper()
 	var request struct {
 		Request struct {
 			Contents []struct {
 				Parts []struct {
-					Text string `json:"text"`
+					FunctionResponse struct {
+						Response struct {
+							Output string `json:"output"`
+						} `json:"response"`
+					} `json:"functionResponse"`
 				} `json:"parts"`
 			} `json:"contents"`
 		} `json:"request"`
@@ -46,7 +53,7 @@ func firstPartText(t *testing.T, body []byte) string {
 	if err := json.Unmarshal(body, &request); err != nil {
 		t.Fatal(err)
 	}
-	return request.Request.Contents[0].Parts[0].Text
+	return request.Request.Contents[0].Parts[0].FunctionResponse.Response.Output
 }
 
 func fileURL(path string) string { return (&url.URL{Scheme: "file", Path: path}).String() }
@@ -88,14 +95,15 @@ func TestExpandGenerationArtifactsRehydratesPrivateSpill(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "brain")
 	content := "full tool result\nwith details"
 	artifact := writeArtifact(t, root, "3", content)
-	body := generationBodyWithText("metadata\n(" + agySpillNotice(artifact) + ").\nafter")
+	prefix := "Created At: 2026-11-12T08:56:31+11:00\nCompleted At: 2026-11-12T08:56:31+11:00\n"
+	body := generationBodyWithOutput(prefix + agySpillNotice(artifact))
 
 	expanded, err := ExpandGenerationArtifacts(body, root)
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := "metadata\n(" + content + ").\nafter"
-	if got := firstPartText(t, expanded); got != want {
+	want := prefix + content
+	if got := firstOutput(t, expanded); got != want {
 		t.Fatalf("expanded text = %q, want %q", got, want)
 	}
 }
@@ -106,13 +114,13 @@ func TestExpandGenerationArtifactsRestoresTruncatedPreview(t *testing.T) {
 	content := "1: package main ├── 日本語 🚀\n" + strings.Repeat("middle line ünïcødé\n", 50) + "99: } ✓\n"
 	artifact := writeArtifact(t, root, "2", content)
 	prefix := "Created At: now\nCompleted At: now\n"
-	body := generationBodyWithText(prefix + agyTruncationNotice(artifact, content, 20))
+	body := generationBodyWithOutput(prefix + agyTruncationNotice(artifact, content, 20))
 
 	expanded, err := ExpandGenerationArtifacts(body, root)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := firstPartText(t, expanded); got != prefix+content {
+	if got := firstOutput(t, expanded); got != prefix+content {
 		t.Fatalf("expanded text = %q, want %q", got, prefix+content)
 	}
 }
@@ -122,13 +130,13 @@ func TestExpandGenerationArtifactsRestoresPreviewQuotingElision(t *testing.T) {
 	quoted := "\n<truncated 5 of 10 bytes from the middle of the output>\n"
 	content := "trace:" + quoted + strings.Repeat("body\n", 40) + "end\n"
 	artifact := writeArtifact(t, root, "2", content)
-	body := generationBodyWithText(agyTruncationNotice(artifact, content, len("trace:"+quoted)+4))
+	body := generationBodyWithOutput(agyTruncationNotice(artifact, content, len("trace:"+quoted)+4))
 
 	expanded, err := ExpandGenerationArtifacts(body, root)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := firstPartText(t, expanded); got != content {
+	if got := firstOutput(t, expanded); got != content {
 		t.Fatalf("expanded text = %q, want %q", got, content)
 	}
 }
@@ -138,13 +146,13 @@ func TestExpandGenerationArtifactsDoesNotRescanRestoredOutput(t *testing.T) {
 	other := writeArtifact(t, root, "1", "other artifact")
 	content := "quoted: " + agySpillNotice(other) + "\n" + strings.Repeat("padding\n", 30)
 	artifact := writeArtifact(t, root, "2", content)
-	body := generationBodyWithText(agyTruncationNotice(artifact, content, 12))
+	body := generationBodyWithOutput(agyTruncationNotice(artifact, content, 12))
 
 	expanded, err := ExpandGenerationArtifacts(body, root)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := firstPartText(t, expanded); got != content {
+	if got := firstOutput(t, expanded); got != content {
 		t.Fatalf("restored output = %q, want it byte-for-byte", got)
 	}
 }
@@ -160,7 +168,7 @@ func TestExpandGenerationArtifactsKeepsMismatchedPreview(t *testing.T) {
 		"missing elision": strings.Replace(agyTruncationNotice(artifact, content, 20), "<truncated", "<cut", 1),
 	} {
 		t.Run(name, func(t *testing.T) {
-			body := generationBodyWithText(text)
+			body := generationBodyWithOutput(text)
 			expanded, err := ExpandGenerationArtifacts(body, root)
 			if err != nil {
 				t.Fatal(err)
@@ -186,7 +194,7 @@ func TestExpandGenerationArtifactsRejectsUnsafeSpills(t *testing.T) {
 	oversized := writeArtifact(t, root, "6", string(make([]byte, maxAgyArtifactSize+1)))
 	for _, path := range []string{external, missing, wrongShape, oversized} {
 		for _, notice := range []string{agySpillNotice(path), agyTruncationNotice(path, "secret-secret-secret", 3)} {
-			body := generationBodyWithText(notice)
+			body := generationBodyWithOutput(notice)
 			expanded, err := ExpandGenerationArtifacts(body, root)
 			if err != nil {
 				t.Fatalf("path %q: %v", path, err)
@@ -204,7 +212,7 @@ func TestExpandGenerationArtifactsRejectsUnsafeSpills(t *testing.T) {
 	if err := os.Symlink(external, symlink); err != nil {
 		t.Skipf("symlinks unavailable: %v", err)
 	}
-	body := generationBodyWithText(agySpillNotice(symlink))
+	body := generationBodyWithOutput(agySpillNotice(symlink))
 	expanded, err := ExpandGenerationArtifacts(body, root)
 	if err != nil {
 		t.Fatal(err)

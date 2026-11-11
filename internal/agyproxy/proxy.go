@@ -8,6 +8,7 @@ package agyproxy
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"crypto/rand"
 	"crypto/subtle"
@@ -146,7 +147,7 @@ func (s *Server) Start() (proxyURL, caPath string, err error) {
 	return proxy.String(), path, nil
 }
 
-// SetRequireMCP controls whether generation requests lacking call_mcp_tool are
+// SetRequireMCP controls whether tool-enabled generations lacking bridge tools are
 // rejected. Providers should enable this for turns exposing term-llm tools.
 func (s *Server) SetRequireMCP(required bool) {
 	s.mu.Lock()
@@ -364,16 +365,7 @@ func (s *Server) forward(w http.ResponseWriter, req *http.Request) {
 			http.Error(w, "agy tool-filter proxy rejected oversized request", http.StatusBadGateway)
 			return
 		}
-		expanded, err := ExpandGenerationArtifacts(body, artifactRoot)
-		if err != nil {
-			http.Error(w, "agy tool-filter proxy rejected artifact expansion: "+err.Error(), http.StatusBadGateway)
-			return
-		}
-		if len(expanded) > maxRequestBody {
-			http.Error(w, "agy tool-filter proxy rejected oversized expanded request", http.StatusBadGateway)
-			return
-		}
-		filtered, verified, err := filterGenerationRequest(expanded, requireMCP)
+		filtered, verified, err := processGenerationRequest(body, artifactRoot, requireMCP, maxRequestBody)
 		if err != nil {
 			http.Error(w, "agy tool-filter proxy rejected request: "+err.Error(), http.StatusBadGateway)
 			return
@@ -382,7 +374,7 @@ func (s *Server) forward(w http.ResponseWriter, req *http.Request) {
 			http.Error(w, "agy tool-filter proxy could not write request trace: "+err.Error(), http.StatusBadGateway)
 			return
 		}
-		req.Body = io.NopCloser(strings.NewReader(string(filtered)))
+		req.Body = io.NopCloser(bytes.NewReader(filtered))
 		req.ContentLength = int64(len(filtered))
 		req.Header.Del("Content-Encoding")
 		req.Header.Del("Transfer-Encoding")

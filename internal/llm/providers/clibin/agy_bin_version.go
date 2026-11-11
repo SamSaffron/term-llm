@@ -10,8 +10,9 @@ import (
 )
 
 // agyBinMinimumVersion is the first agy release that honours the MCP
-// antigravity/alwaysLoad tool annotation. agy-bin depends on it because a
-// custom agent cannot call lazily loaded MCP tools (agy issue #674).
+// antigravity/alwaysLoad tool annotation. agy-bin requires eager bridge schemas
+// and native names for proxy isolation; older custom agents also failed to call
+// lazily loaded MCP tools (agy issue #674).
 const agyBinMinimumVersion = "1.3.3"
 
 const agyVersionCheckTimeout = 10 * time.Second

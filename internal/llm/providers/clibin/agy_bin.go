@@ -657,8 +657,8 @@ func (p *AgyBinProvider) ensureMCPServer(ctx context.Context, tools []core.ToolS
 }
 
 // agyMCPToolSpecs registers every bridge tool as a native agy tool with its
-// real schema. Lazily loaded tools are reachable only through call_mcp_tool,
-// which hides their schemas and which custom agents cannot call (agy #674).
+// real schema. Eager loading avoids lazy discovery (agy #674 on older versions)
+// and gives the isolation proxy explicit native bridge names to allow.
 func agyMCPToolSpecs(tools []core.ToolSpec) []mcphttp.ToolSpec {
 	specs := mcpToolSpecs(tools)
 	for i := range specs {

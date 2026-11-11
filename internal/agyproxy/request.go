@@ -27,34 +27,27 @@ const (
 	// agyTruncationMarker precedes the spill path when agy keeps a preview with
 	// the middle of a large tool result elided. The preview runs to the end of
 	// the tool output.
-	agyTruncationMarker   = "The tool's output was truncated due to being too long. You can find the full output in a file at file://"
-	agyTruncationPreview  = "\n\nHere is a preview with the middle of the output truncated:\n"
-	agyArtifactDelimiters = ".,;:)]}\"'`>"
-	maxAgyArtifactSize    = 1 << 20
+	agyTruncationMarker  = "The tool's output was truncated due to being too long. You can find the full output in a file at file://"
+	agyTruncationPreview = "\n\nHere is a preview with the middle of the output truncated:\n"
+	maxAgyArtifactSize   = 1 << 20
 )
 
 var agyTruncationElision = regexp.MustCompile(`\n<truncated ([0-9]+) of ([0-9]+) bytes from the middle of the output>\n`)
 
-// ExpandGenerationArtifacts replaces agy's private spill and truncation
-// notices in the model request with the original tool output. Only regular
+// ExpandGenerationArtifacts replaces complete agy spill and truncation notices
+// only in bridge functionResponse.response.output slots in request contents.
+// Lazy call_mcp_tool results require a matching term-llm call ID. Only regular
 // output.txt files in <artifactRoot>/<conversation>/.system_generated/steps/<n>/
 // are eligible; missing, malformed, oversized, symlinked, or external paths,
-// and previews that do not match the file, are left intact.
+// and previews that do not match the file, are left intact. The body must contain
+// exactly one JSON value, even when no artifacts need restoration.
 func ExpandGenerationArtifacts(body []byte, artifactRoot string) ([]byte, error) {
-	artifactRoot = strings.TrimSpace(artifactRoot)
-	text := string(body)
-	if artifactRoot == "" || (!strings.Contains(text, agySpillMarker) && !strings.Contains(text, agyTruncationMarker)) {
-		return body, nil
+	root, err := decodeGenerationRequest(body)
+	if err != nil {
+		return nil, err
 	}
-	var root map[string]any
-	if err := json.Unmarshal(body, &root); err != nil {
-		return nil, fmt.Errorf("decode generation request for artifact expansion: %w", err)
-	}
-	request, ok := root["request"].(map[string]any)
-	if !ok {
-		return body, nil
-	}
-	if !expandAgyArtifactValue(request, artifactRoot) {
+	request, _ := root["request"].(map[string]any)
+	if !expandAgyArtifacts(request, strings.TrimSpace(artifactRoot)) {
 		return body, nil
 	}
 	out, err := json.Marshal(root)
@@ -64,57 +57,29 @@ func ExpandGenerationArtifacts(body []byte, artifactRoot string) ([]byte, error)
 	return out, nil
 }
 
-func expandAgyArtifactValue(value any, artifactRoot string) bool {
-	changed := false
-	switch value := value.(type) {
-	case map[string]any:
-		for key, child := range value {
-			if text, ok := child.(string); ok {
-				if expanded, replaced := expandAgyArtifactText(text, artifactRoot); replaced {
-					value[key] = expanded
-					changed = true
-				}
-				continue
-			}
-			if expandAgyArtifactValue(child, artifactRoot) {
-				changed = true
-			}
-		}
-	case []any:
-		for index, child := range value {
-			if text, ok := child.(string); ok {
-				if expanded, replaced := expandAgyArtifactText(text, artifactRoot); replaced {
-					value[index] = expanded
-					changed = true
-				}
-				continue
-			}
-			if expandAgyArtifactValue(child, artifactRoot) {
-				changed = true
-			}
-		}
-	}
-	return changed
-}
-
-// expandAgyArtifactText restores at most one notice format. Restored output
-// is never rescanned, so a notice quoted inside a tool result stays literal.
+// expandAgyArtifactText accepts only a complete agy notice, optionally preceded
+// by its timestamp envelope. Arbitrary prefixes/suffixes indicate quoted tool
+// output, not a spill. Restored output is never rescanned.
 func expandAgyArtifactText(text, artifactRoot string) (string, bool) {
-	if expanded, ok := expandAgyTruncationNotice(text, artifactRoot); ok {
-		return expanded, true
+	prefix := agyToolTimestamps.FindString(text)
+	notice := text[len(prefix):]
+	if expanded, ok := expandAgyTruncationNotice(notice, artifactRoot); ok {
+		return prefix + expanded, true
 	}
-	return expandAgySpillNotices(text, artifactRoot)
+	if expanded, ok := expandAgySpillNotice(notice, artifactRoot); ok {
+		return prefix + expanded, true
+	}
+	return text, false
 }
 
 // expandAgyTruncationNotice restores a truncated tool result. The preview's
 // head, elision count, and tail must all match the artifact, which guarantees
 // the replaced span is exactly agy's notice plus preview.
 func expandAgyTruncationNotice(text, artifactRoot string) (string, bool) {
-	marker := strings.Index(text, agyTruncationMarker)
-	if marker < 0 {
+	if !strings.HasPrefix(text, agyTruncationMarker) {
 		return text, false
 	}
-	pathStart := marker + len(agyTruncationMarker)
+	pathStart := len(agyTruncationMarker)
 	pathLen := strings.Index(text[pathStart:], agyTruncationPreview)
 	if pathLen < 0 {
 		return text, false
@@ -125,7 +90,7 @@ func expandAgyTruncationNotice(text, artifactRoot string) (string, bool) {
 	if !ok || !agyPreviewMatches(preview, content) {
 		return text, false
 	}
-	return text[:marker] + content, true
+	return content, true
 }
 
 // agyPreviewMatches tries every elision-shaped line because the tool output
@@ -148,37 +113,17 @@ func agyPreviewMatches(preview, content string) bool {
 	return false
 }
 
-func expandAgySpillNotices(text, artifactRoot string) (string, bool) {
-	if !strings.Contains(text, agySpillMarker) {
+func expandAgySpillNotice(text, artifactRoot string) (string, bool) {
+	if !strings.HasPrefix(text, agySpillMarker) {
 		return text, false
 	}
-	var out strings.Builder
-	changed := false
-	for {
-		marker := strings.Index(text, agySpillMarker)
-		if marker < 0 {
-			out.WriteString(text)
-			return out.String(), changed
-		}
-		pathStart := marker + len(agySpillMarker)
-		tokenEnd := pathStart
-		for tokenEnd < len(text) && text[tokenEnd] > ' ' {
-			tokenEnd++
-		}
-		pathEnd := tokenEnd
-		for pathEnd > pathStart && strings.ContainsRune(agyArtifactDelimiters, rune(text[pathEnd-1])) {
-			pathEnd--
-		}
-		out.WriteString(text[:marker])
-		if content, ok := readAgyArtifact("file://"+text[pathStart:pathEnd], artifactRoot); ok {
-			out.WriteString(content)
-			out.WriteString(text[pathEnd:tokenEnd])
-			changed = true
-		} else {
-			out.WriteString(text[marker:tokenEnd])
-		}
-		text = text[tokenEnd:]
+	path := strings.TrimSuffix(strings.TrimRight(text[len(agySpillMarker):], "\r\n"), ".")
+	// agy emits a single file URL, not prose containing one. In particular,
+	// never replace a notice quoted in an otherwise ordinary tool result.
+	if strings.ContainsAny(path, " \t\r\n") {
+		return text, false
 	}
+	return readAgyArtifact("file://"+path, artifactRoot)
 }
 
 func readAgyArtifact(rawURL, artifactRoot string) (string, bool) {
@@ -250,28 +195,26 @@ func FilterGenerationRequest(body []byte, requireMCP bool) ([]byte, error) {
 // tools. Callers use that evidence to distinguish an agent generation from
 // agy's tool-less auxiliary generations.
 func filterGenerationRequest(body []byte, requireMCP bool) ([]byte, bool, error) {
-	var root map[string]any
-	if err := json.Unmarshal(body, &root); err != nil {
-		return nil, false, fmt.Errorf("decode generation request: %w", err)
-	}
-	request, ok := root["request"].(map[string]any)
-	if !ok {
-		return nil, false, errors.New("generation request missing request object")
-	}
+	return processGenerationRequest(body, "", requireMCP, 0)
+}
+
+// filterGenerationObject mutates an already decoded request. Auxiliary requests
+// have no tools field and are neither cleaned nor counted as bridge evidence.
+func filterGenerationObject(request map[string]any, requireMCP bool) (changed, verified bool, err error) {
 	rawTools, exists := request["tools"]
 	if !exists {
-		return body, false, nil
+		return false, false, nil
 	}
 	tools, ok := rawTools.([]any)
 	if !ok {
-		return nil, false, errors.New("generation request has invalid tools array")
+		return false, false, errors.New("generation request has invalid tools array")
 	}
 	kept, err := bridgeDeclarations(tools)
 	if err != nil {
-		return nil, false, err
+		return false, false, err
 	}
 	if requireMCP && len(kept) == 0 {
-		return nil, false, errors.New("generation request missing term-llm bridge tools")
+		return false, false, errors.New("generation request missing term-llm bridge tools")
 	}
 	if len(kept) == 0 {
 		delete(request, "tools")
@@ -281,11 +224,7 @@ func filterGenerationRequest(body []byte, requireMCP bool) ([]byte, bool, error)
 		filterAllowedFunctionNames(request, kept)
 	}
 	cleanAgyContents(request)
-	out, err := json.Marshal(root)
-	if err != nil {
-		return nil, false, fmt.Errorf("encode generation request: %w", err)
-	}
-	return out, len(kept) > 0, nil
+	return true, len(kept) > 0, nil
 }
 
 func bridgeDeclarations(tools []any) ([]any, error) {
