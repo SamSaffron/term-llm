@@ -36,13 +36,12 @@ func NewExec() *ExecTool { return &ExecTool{} }
 func (t *ExecTool) Spec() core.ToolSpec {
 	return core.ToolSpec{
 		Name: ExecName,
-		Description: `Start a fresh QuickJS cell for multi-step JavaScript that composes tools or activated skill modules. Prefer direct tools for one simple call.
-Put an async function body in code (no Markdown fences). Fresh QuickJS per cell: no Node, filesystem or network except admitted tools. Native, skill-script and MCP tools keep normal permissions and approvals. Await every call; use Promise.all only for independent work.
-- Output: text(value), image(handleOrBlock), or return value. Intermediates stay private. Each spawn_script/wait_script observation returns at most max_output_tokens (default 10000, 4 bytes per estimated token); withheld text stays queued for a later wait_script and permanently over-cap output is truncated and reported.
-- State: load(key)/store(key,value) use a session snapshot. On success only written/deleted keys merge atomically; last successful committer wins on the same key. Limits: 1 MiB total JSON, 256 KiB per value. Failed or cancelled cells roll back staged state. This is process-local state, not durable session storage.
-- Lifecycle: up to EIGHT live cells per session, independent of other sessions. Normal final/end-turn and browser disconnect preserve cells. Human Stop cancels all session cells; cancel_script stops one. Returns when the cell finishes, emits output, or the max_wait budget in seconds (default 60, maximum 600) expires. Set max_wait to 0 to poll without waiting. "yielded" or "running" means the cell is still active; call wait_script with the returned cell_id. Wait expiry and request cancellation do not stop the cell; use cancel_script explicitly.
-- Limits: 256 MiB JS heap; 2 s active JS per cell (waiting for tools or sleep is excluded); 64 bridge requests/cell; 4 executing tools/session and 16/process shared across cells; 64 nested requests in flight/session; await sleep(ms) with ms<=1000.
-Process safety admission: 256 VMs, 2 GiB charged linear memory, 1 GiB/session, 4 MiB admission floor; capacity errors are immediate. Eight terminal receipts/session are retained FIFO. Image handles are limited to 64 and 16 MiB per cell; use fresh cells for long screenshot workflows. Global output/compaction limits may lower an observation budget. No external-effect rollback or automatic replay; reconcile outcome_unknown actions.`,
+		Description: `Run async JavaScript in fresh QuickJS (function body, no fences). Prefer direct tools for single calls. No Node/filesystem/network except tools. Skills: await import('skill:name').
+` + callableContract + `Output: text(value), image(handleOrBlock), or return. max_output_tokens caps one observation (default 10000); withheld output queues for wait_script. Overflow keeps a final text tail; omissions reported.
+State: load(key)/store(key,value) use a process-local session snapshot. Success merges written/deleted keys only (last committer wins). Failure/cancel discards writes.
+Lifecycle: eight live cells/session. End-turn/disconnect preserve cells; Stop cancels all cells; cancel_script stops one. Wait/request expiry or cancellation never stops cells. Observe running/yielded with wait_script; max_wait:0 polls. Eight terminal receipts; drained expire first, otherwise oldest.
+Limits: 64 bridge requests/cell; 2s active JS excluding waits; await sleep(ms), ms<=1000. No external-effect rollback/replay; reconcile outcome_unknown.
+` + checkedExample,
 		Schema: map[string]interface{}{
 			"type": "object",
 			"properties": map[string]interface{}{

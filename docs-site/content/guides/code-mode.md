@@ -24,11 +24,16 @@ loops, several calls, filtering or an activated skill module are useful.
 | Global | Contract |
 |---|---|
 | `tools[exactName](args)` | Promise of a permitted registered tool's programmatic result. No prototype-derived callable names. |
-| `describeTools([names])` | Authoritative input/output schemas, exact names, schema hash and envelope description within the admitted capability ceiling. Use model-facing `tool_search` before a cell for lazy discovery. |
+| `describeTools([names])` | Purpose (up to 1 KiB), authoritative input/output schemas, exact names, schema hash and envelope description within the admitted capability ceiling. Use model-facing `tool_search` before a cell for lazy discovery. |
 | `text(value)` | Explicit ordered text; strings stay strings, JSON values serialize as JSON. Separate nonempty emissions are newline-separated in flattened output; existing newlines are preserved. A defined return value emits text after explicit output. |
 | `image(blockOrHandle)` | Explicit image emission. Accepts an MCP image block or a current-cell host handle; never fetches a URL or reads an arbitrary path. |
 | `load(key)` / `store(key, value)` | Staged session-local JSON state, automatically committed after success. Missing keys return undefined; storing undefined deletes. Cycles, functions, BigInt and nonfinite numbers reject. |
+| `settleInOrder(promises)` | Async iterator of `{index,status,value}` or `{index,status,reason}` in settlement order. Does not limit concurrency or cancel calls on break. |
 | `sleep(ms)` | Cancellable host wait, at most1000ms per call; counted in cell resources. No detached timers. |
+
+Use `for await (const r of settleInOrder(calls))` for a small batch of independent
+calls. Rejections have `status: "rejected"`; fulfilled values still need error-flag
+checks. Await remaining calls after breaking; dispatched effects are not undone.
 
 MCP results resolve as `{content: MCPContentBlock[], structuredContent?, isError?}`.
 The raw structured envelope is available **before** model-text truncation; text
@@ -148,7 +153,8 @@ Observation budgets may split a single emission across observations: concatenati
 those text chunks reconstructs the emission without an extra separator in the
 middle. Inserted separator bytes count toward the text observation budget and the
 retained-output cap. Undelivered text remains queued for `wait_script`; output
-beyond the retention cap is permanently omitted and reported as truncated. These
+beyond the retention cap evicts the oldest unread text, preserving the final tail.
+Omitted bytes are reported; images stay in emission order. These
 limits do not turn successful work into a false tool failure. Raw intermediate
 bodies and the stored state are not automatically printed. Nested calls remain
 auditable effects, not extra model-authored calls. Outstanding unawaited host
@@ -202,7 +208,7 @@ cell or double the shared session tool capacity. New workflows should use `spawn
 | Observation wait (`max_wait`) | 0–600 seconds, default 60; 0 polls immediately; does not terminate the cell |
 | Image handles / decoded image bytes | 64 handles / 16 MiB over the cell lifetime; start a fresh cell for longer screenshot workflows |
 | Model-visible text | 10,000 estimated tokens per observation by default; 1 MiB retained text per cell |
-| Recent terminal receipts | 8/session FIFO; oldest handles expire with their output |
+| Recent terminal receipts | 8/session; drained receipts expire first, otherwise oldest |
 | Undelivered image retention | 32 MiB/session; excess is permanently omitted and reported |
 | MCP stdio frame / SSE event / ordinary HTTP response body | 16 MiB each; no lifetime cap on SSE connections |
 

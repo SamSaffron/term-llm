@@ -94,31 +94,62 @@ func TestCodeModeTextSeparatorBudgetSplits(t *testing.T) {
 	}
 }
 
-func TestCodeModeTextSeparatorRetention(t *testing.T) {
-	for _, tc := range []struct {
-		name, suffix, next, retained string
-		space, omitted               int
-	}{
-		{"partial", "", "bcd", "\nb", 2, 2},
-		{"full", "", "b", "", 0, 2},
-		{"UTF-8", "", "é", "\n", 1, 2},
-		{"existing newline", "\n", "bc", "b", 1, 1},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
+func TestCodeModeTextTailRetention(t *testing.T) {
+	for _, next := range []string{"b", "é", "\nsummary", strings.Repeat("é", codemode.SessionLimits.RetainBytes)} {
+		t.Run(strconv.Itoa(len(next)), func(t *testing.T) {
 			cell := newCodeModeAsyncCell(nil, "test", "session", nil)
-			first := strings.Repeat("a", codemode.SessionLimits.RetainBytes-tc.space-len(tc.suffix)) + tc.suffix
+			first := strings.Repeat("a", codemode.SessionLimits.RetainBytes)
 			emitCodeModeText(t, cell, first)
-			emitCodeModeText(t, cell, tc.next)
-			if !cell.truncated || cell.omittedBytes != tc.omitted {
-				t.Fatalf("retention omitted %d bytes, want %d; truncated=%v", cell.omittedBytes, tc.omitted, cell.truncated)
+			emitCodeModeText(t, cell, next)
+			want := first
+			if !strings.HasPrefix(next, "\n") {
+				want += "\n"
 			}
-			parts, _ := cell.drainPartsLocked(codemode.SessionLimits.RetainBytes)
-			if got := partsText(core.CodeModeCallResult{Parts: parts}); got != first+tc.retained {
-				t.Fatalf("retained text suffix = %q, want %q", strings.TrimPrefix(got, first), tc.retained)
+			want += next
+			cut := len(want) - codemode.SessionLimits.RetainBytes
+			for cut < len(want) && !utf8.RuneStart(want[cut]) {
+				cut++
 			}
-			if cell.pendingBytes != 0 {
-				t.Fatalf("pending bytes after drain = %d", cell.pendingBytes)
+			want = want[cut:]
+			if !cell.truncated || cell.omittedBytes != cut || cell.pendingBytes != len(want) {
+				t.Fatalf("retention pending=%d omitted=%d want=%d/%d", cell.pendingBytes, cell.omittedBytes, len(want), cut)
+			}
+			var got strings.Builder
+			for len(cell.parts) > 0 {
+				parts, _ := cell.drainPartsLocked(7)
+				chunk := partsText(core.CodeModeCallResult{Parts: parts})
+				if !utf8.ValidString(chunk) || chunk == "" {
+					t.Fatal("invalid pagination")
+				}
+				got.WriteString(chunk)
+			}
+			if got.String() != want || cell.pendingBytes != 0 {
+				t.Fatal("tail lost or duplicated")
 			}
 		})
+	}
+}
+
+func TestCodeModeTailPreservesMediaAndObservedOutput(t *testing.T) {
+	cell := newCodeModeAsyncCell(nil, "test", "session", nil)
+	emitCodeModeText(t, cell, "observed")
+	parts, _ := cell.drainPartsLocked(100)
+	if partsText(core.CodeModeCallResult{Parts: parts}) != "observed" {
+		t.Fatal(parts)
+	}
+	emitCodeModeText(t, cell, strings.Repeat("x", codemode.SessionLimits.RetainBytes))
+	cell.parts = append(cell.parts, core.ToolContentPart{Type: core.ToolContentPartImageData, ImageData: &core.ToolImageData{Base64: "aW1n"}})
+	emitCodeModeText(t, cell, "final summary")
+	if cell.parts[len(cell.parts)-2].Type != core.ToolContentPartImageData || cell.parts[len(cell.parts)-1].Text != "\nfinal summary" {
+		t.Fatal("text moved ahead of image")
+	}
+	before := cell.pendingBytes
+	parts, limited := cell.drainPartsLocked(4)
+	if !limited || len(parts) != 1 || len(parts[0].Text) != 4 || cell.pendingBytes != before-4 {
+		t.Fatal("pagination reordered image")
+	}
+	parts, _ = cell.drainPartsLocked(codemode.SessionLimits.RetainBytes)
+	if parts[len(parts)-2].Type != core.ToolContentPartImageData || parts[len(parts)-1].Text != "\nfinal summary" {
+		t.Fatal("media order lost")
 	}
 }

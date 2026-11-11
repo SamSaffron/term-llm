@@ -172,18 +172,8 @@ func (a *codeModeAsyncCell) emitText(text string) {
 	if a.textSeparator && !strings.HasPrefix(text, "\n") {
 		text = "\n" + text
 	}
-	remaining := max(0, codemode.SessionLimits.RetainBytes-a.pendingBytes)
-	if len(text) > remaining {
-		original := len(text)
-		text = truncateUTF8(text, remaining)
-		a.omittedBytes += original - len(text)
-		a.truncated = true
-	}
-	if text != "" {
-		a.textSeparator = !strings.HasSuffix(text, "\n")
-		a.pendingBytes += len(text)
-		a.parts = append(a.parts, core.ToolContentPart{Type: core.ToolContentPartText, Text: text})
-	}
+	a.textSeparator = !strings.HasSuffix(text, "\n")
+	a.retainTextLocked(text)
 	a.notifyLocked()
 }
 
@@ -301,8 +291,7 @@ func (s *codeModeSessions) finished(a *codeModeAsyncCell) {
 		if !a.abandonedLocked() {
 			owner.terminal = append(owner.terminal, a)
 			if len(owner.terminal) > codemode.MaxTerminalCells {
-				owner.terminal[0].dropRetained()
-				owner.terminal = owner.terminal[1:]
+				owner.evictTerminal()
 			}
 		}
 		s.pruneOwnerLocked(a.sessionID, owner)

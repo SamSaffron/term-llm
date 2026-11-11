@@ -20,8 +20,8 @@ term-llm exec --tools read_file,write_file,edit_file,shell,grep,glob,view_image
 <!-- BEGIN GENERATED: tools -->
 | Tool | Description | Permission policy | Default enabled | Aliases |
 |---|---|---|---|---|
-| `code_mode` | Run JavaScript to compose tools, filter results or use activated skill modules. | `execute` | false | — |
-| `spawn_script` | Start a fresh QuickJS cell for multi-step JavaScript that composes tools or activated skill modules. | `execute` | false | — |
+| `code_mode` | Run JavaScript to compose tools or activated skill modules. | `execute` | false | — |
+| `spawn_script` | Run async JavaScript in fresh QuickJS (function body, no fences). | `execute` | false | — |
 | `wait_script` | Wait for a code cell created by spawn_script and return output not yet observed by a previous spawn_script/wait_script/cancel_script response. | `execute` | false | — |
 | `cancel_script` | Explicitly cancel_script a code cell created by spawn_script. | `execute` | false | — |
 | `read_file` | Read file contents. | `read` | true | — |
