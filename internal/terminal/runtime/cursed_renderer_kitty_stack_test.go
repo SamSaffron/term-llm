@@ -96,7 +96,7 @@ func TestCursedRendererPushesAndPopsKittyKeyboardStack(t *testing.T) {
 
 	r.start()
 	r.render(view)
-	if err := r.flush(false); err != nil {
+	if _, err := r.flush(false); err != nil {
 		t.Fatalf("flush: %v", err)
 	}
 	if err := r.close(); err != nil {
@@ -140,7 +140,7 @@ func TestCursedRendererStacksKittyKeyboardPerScreenAcrossScreenSwitch(t *testing
 	r.start()
 	for _, view := range []View{mainView, altView, mainView} {
 		r.render(view)
-		if err := r.flush(false); err != nil {
+		if _, err := r.flush(false); err != nil {
 			t.Fatalf("flush: %v", err)
 		}
 	}
@@ -200,7 +200,7 @@ func TestCursedRendererStacksKittyKeyboardAcrossStopStart(t *testing.T) {
 	for cycle := 0; cycle < 2; cycle++ {
 		r.start()
 		r.render(view)
-		if err := r.flush(false); err != nil {
+		if _, err := r.flush(false); err != nil {
 			t.Fatalf("flush %d: %v", cycle, err)
 		}
 		if err := r.close(); err != nil {
@@ -228,7 +228,7 @@ func TestKittyStackPushPrecedesPopWhenStoppedBeforeFlush(t *testing.T) {
 	// real entry is left orphaned on the stack.
 	r.start()
 	r.render(view)
-	if err := r.flush(false); err != nil {
+	if _, err := r.flush(false); err != nil {
 		t.Fatalf("flush: %v", err)
 	}
 	if err := r.close(); err != nil {
@@ -266,7 +266,7 @@ func TestCursedRendererUpdatesKittyKeyboardFlagsInPlace(t *testing.T) {
 
 	r.start()
 	r.render(first)
-	if err := r.flush(false); err != nil {
+	if _, err := r.flush(false); err != nil {
 		t.Fatalf("first flush: %v", err)
 	}
 	mid := len(output.snapshot())
@@ -275,7 +275,7 @@ func TestCursedRendererUpdatesKittyKeyboardFlagsInPlace(t *testing.T) {
 	}
 
 	r.render(second)
-	if err := r.flush(false); err != nil {
+	if _, err := r.flush(false); err != nil {
 		t.Fatalf("second flush: %v", err)
 	}
 

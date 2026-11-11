@@ -18,7 +18,7 @@ func TestSetNoInputConcurrentWithFlush(t *testing.T) {
 
 	r.start()
 	r.render(NewView("frame 0"))
-	if err := r.flush(false); err != nil {
+	if _, err := r.flush(false); err != nil {
 		t.Fatalf("initial flush: %v", err)
 	}
 
@@ -40,7 +40,7 @@ func TestSetNoInputConcurrentWithFlush(t *testing.T) {
 			default:
 			}
 			r.render(NewView(fmt.Sprintf("frame %d", i)))
-			if err := r.flush(false); err != nil {
+			if _, err := r.flush(false); err != nil {
 				flushed <- err
 				return
 			}

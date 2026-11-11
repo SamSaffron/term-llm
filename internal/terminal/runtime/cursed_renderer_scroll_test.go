@@ -122,7 +122,7 @@ func TestVerticalScrollRejectsCrossLineStyleState(t *testing.T) {
 	view := NewView(oldContent)
 	view.AltScreen = true
 	r.render(view)
-	if err := r.flush(false); err != nil {
+	if _, err := r.flush(false); err != nil {
 		t.Fatal(err)
 	}
 	r.scr.SetScrollOptim(false)
@@ -130,7 +130,7 @@ func TestVerticalScrollRejectsCrossLineStyleState(t *testing.T) {
 	view = NewView(newContent)
 	view.AltScreen = true
 	r.render(view)
-	if err := r.flush(false); err != nil {
+	if _, err := r.flush(false); err != nil {
 		t.Fatal(err)
 	}
 	assertRendererCellsEqualContent(t, r, newContent, width, height)
@@ -153,7 +153,7 @@ func TestChangedRowsFastPathClearsShortBlankWideAndStyledRows(t *testing.T) {
 		view := NewView(content)
 		view.AltScreen = true
 		r.render(view)
-		if err := r.flush(false); err != nil {
+		if _, err := r.flush(false); err != nil {
 			t.Fatalf("frame %d: %v", i, err)
 		}
 		assertRendererCellsEqualContent(t, r, content, width, height)
@@ -171,7 +171,7 @@ func TestChangedRowsFastPathClipsConsecutiveFramesTallerThanTerminal(t *testing.
 		view := NewView(content)
 		view.AltScreen = true
 		r.render(view)
-		if err := r.flush(false); err != nil {
+		if _, err := r.flush(false); err != nil {
 			t.Fatalf("frame %d: %v", i, err)
 		}
 		assertRendererCellsEqualContent(t, r, content, width, height)
@@ -202,7 +202,7 @@ func TestVerticalScrollFastPathPreservesRepeatedBlankAndWideRows(t *testing.T) {
 	view := NewView(content)
 	view.AltScreen = true
 	r.render(view)
-	if err := r.flush(false); err != nil {
+	if _, err := r.flush(false); err != nil {
 		t.Fatalf("initial flush: %v", err)
 	}
 	assertRendererCellsEqualContent(t, r, content, width, height)
@@ -217,7 +217,7 @@ func TestVerticalScrollFastPathPreservesRepeatedBlankAndWideRows(t *testing.T) {
 		view = NewView(content)
 		view.AltScreen = true
 		r.render(view)
-		if err := r.flush(false); err != nil {
+		if _, err := r.flush(false); err != nil {
 			t.Fatalf("frame %d offset %d: %v", frame, offset, err)
 		}
 		assertRendererCellsEqualContent(t, r, content, width, height)
@@ -236,7 +236,7 @@ func TestVerticalScrollFastPathEmitsScrollRegionBytes(t *testing.T) {
 		view := NewView(scrollCorrectnessFrame(lines, offset, width, height))
 		view.AltScreen = true
 		r.render(view)
-		if err := r.flush(false); err != nil {
+		if _, err := r.flush(false); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -268,7 +268,7 @@ func TestVerticalScrollDoesNotMutateCellbufWhenHardScrollPreconditionFails(t *te
 	view := NewView(strings.Join(oldLines, "\n"))
 	view.AltScreen = true
 	r.render(view)
-	if err := r.flush(false); err != nil {
+	if _, err := r.flush(false); err != nil {
 		t.Fatal(err)
 	}
 
@@ -486,7 +486,7 @@ func FuzzIncrementalRendererMatchesForcedFullRedraw(f *testing.F) {
 			view := NewView(oldContent)
 			view.AltScreen = true
 			r.render(view)
-			if err := r.flush(false); err != nil {
+			if _, err := r.flush(false); err != nil {
 				t.Fatalf("initial flush: %v", err)
 			}
 			return r, output
@@ -499,7 +499,7 @@ func FuzzIncrementalRendererMatchesForcedFullRedraw(f *testing.F) {
 			view := NewView(newContent)
 			view.AltScreen = true
 			r.render(view)
-			if err := r.flush(false); err != nil {
+			if _, err := r.flush(false); err != nil {
 				t.Fatalf("next flush: %v", err)
 			}
 		}

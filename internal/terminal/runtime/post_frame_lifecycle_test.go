@@ -114,7 +114,7 @@ type blockingLifecycleRenderer struct {
 	maximum atomic.Int32
 }
 
-func (r *blockingLifecycleRenderer) flush(bool) error {
+func (r *blockingLifecycleRenderer) flush(bool) (bool, error) {
 	active := r.active.Add(1)
 	defer r.active.Add(-1)
 	for {
@@ -125,7 +125,7 @@ func (r *blockingLifecycleRenderer) flush(bool) error {
 	}
 	r.once.Do(func() { close(r.entered) })
 	<-r.release
-	return nil
+	return true, nil
 }
 
 func TestRendererConcurrentStartsKeepExactlyOneLoop(t *testing.T) {
@@ -286,12 +286,12 @@ type panicAfterFlushRenderer struct {
 	panicked sync.Once
 }
 
-func (r *panicAfterFlushRenderer) flush(closing bool) error {
-	err := r.cursedRenderer.flush(closing)
+func (r *panicAfterFlushRenderer) flush(closing bool) (bool, error) {
+	active, err := r.cursedRenderer.flush(closing)
 	if !closing {
 		r.panicked.Do(func() { panic("renderer ticker panic") })
 	}
-	return err
+	return active, err
 }
 
 func TestRendererTickerPanicRestoresTerminalModesAndDoesNotDeadlock(t *testing.T) {
@@ -401,7 +401,7 @@ func TestTerminalCleanupPrecedesAltScreenExit(t *testing.T) {
 	view.AltScreen = true
 	view.TerminalCleanup = testKittyCleanup
 	r.render(view)
-	if err := r.flush(false); err != nil {
+	if _, err := r.flush(false); err != nil {
 		t.Fatalf("flush image frame: %v", err)
 	}
 	if err := r.close(); err != nil {

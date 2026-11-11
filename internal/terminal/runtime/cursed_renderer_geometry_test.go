@@ -17,7 +17,7 @@ func TestCursedRendererInsertAboveFlushesQueuedView(t *testing.T) {
 	output := &boundaryWriter{}
 	r := newBoundaryRenderer(output)
 	r.render(NewView("stale frame\nstale row"))
-	if err := r.flush(false); err != nil {
+	if _, err := r.flush(false); err != nil {
 		t.Fatal(err)
 	}
 
@@ -62,7 +62,7 @@ func TestCursedRendererInsertAboveDoesNotRedrawUnchangedFrame(t *testing.T) {
 	output := &boundaryWriter{}
 	r := newBoundaryRenderer(output)
 	r.render(NewView("stable frame"))
-	if err := r.flush(false); err != nil {
+	if _, err := r.flush(false); err != nil {
 		t.Fatal(err)
 	}
 	start := len(output.snapshot())
@@ -84,7 +84,7 @@ func TestCursedRendererInsertAboveIgnoredInAltScreen(t *testing.T) {
 	view := NewView("stable alt-screen frame")
 	view.AltScreen = true
 	r.render(view)
-	if err := r.flush(false); err != nil {
+	if _, err := r.flush(false); err != nil {
 		t.Fatal(err)
 	}
 
@@ -121,14 +121,14 @@ func TestCursedRendererResizeRepaintsIdenticalView(t *testing.T) {
 			view := NewView("identical frame")
 			view.AltScreen = tt.altScreen
 			r.render(view)
-			if err := r.flush(false); err != nil {
+			if _, err := r.flush(false); err != nil {
 				t.Fatal(err)
 			}
 
 			start := len(output.snapshot())
 			r.resize(tt.width, tt.height)
 			r.render(view)
-			if err := r.flush(false); err != nil {
+			if _, err := r.flush(false); err != nil {
 				t.Fatal(err)
 			}
 			joined := bytes.Join(output.snapshot()[start:], nil)
@@ -147,7 +147,7 @@ func TestCursedRendererInsertAboveCountsExactWidthWraps(t *testing.T) {
 	output := &boundaryWriter{}
 	r := newCursedRenderer(output, []string{"TERM=xterm-256color", "TERM_PROGRAM=Apple_Terminal"}, width, 5)
 	r.render(NewView("frame"))
-	if err := r.flush(false); err != nil {
+	if _, err := r.flush(false); err != nil {
 		t.Fatal(err)
 	}
 	start := len(output.snapshot())
@@ -183,7 +183,7 @@ func TestCursedRendererOnMouseConcurrentFlush(t *testing.T) {
 	view := NewView("initial")
 	view.OnMouse = func(MouseMsg) Cmd { return nil }
 	r.render(view)
-	if err := r.flush(false); err != nil {
+	if _, err := r.flush(false); err != nil {
 		t.Fatal(err)
 	}
 
@@ -195,7 +195,7 @@ func TestCursedRendererOnMouseConcurrentFlush(t *testing.T) {
 			view := NewView(strconv.Itoa(i))
 			view.OnMouse = func(MouseMsg) Cmd { return nil }
 			r.render(view)
-			if err := r.flush(false); err != nil {
+			if _, err := r.flush(false); err != nil {
 				t.Errorf("flush: %v", err)
 				return
 			}

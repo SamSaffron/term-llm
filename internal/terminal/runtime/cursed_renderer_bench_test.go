@@ -137,7 +137,7 @@ func benchmarkFlushView(b *testing.B, size rendererBenchmarkSize, initial View, 
 	w := &benchmarkByteCounter{}
 	r := newBenchmarkRenderer(w, size)
 	r.render(initial)
-	if err := r.flush(false); err != nil {
+	if _, err := r.flush(false); err != nil {
 		b.Fatal(err)
 	}
 	w.reset()
@@ -146,7 +146,7 @@ func benchmarkFlushView(b *testing.B, size rendererBenchmarkSize, initial View, 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		r.render(next(i))
-		if err := r.flush(false); err != nil {
+		if _, err := r.flush(false); err != nil {
 			b.Fatal(err)
 		}
 	}
@@ -253,7 +253,7 @@ func BenchmarkCursedRenderer(b *testing.B) {
 				r := newBenchmarkRenderer(w, size)
 				view := NewView(baseContent)
 				r.render(view)
-				if err := r.flush(false); err != nil {
+				if _, err := r.flush(false); err != nil {
 					b.Fatal(err)
 				}
 				w.reset()
@@ -279,7 +279,7 @@ func BenchmarkCursedRenderer(b *testing.B) {
 				w := &benchmarkByteCounter{}
 				r := newBenchmarkRenderer(w, size)
 				r.render(views[0])
-				if err := r.flush(false); err != nil {
+				if _, err := r.flush(false); err != nil {
 					b.Fatal(err)
 				}
 				w.reset()
@@ -290,7 +290,7 @@ func BenchmarkCursedRenderer(b *testing.B) {
 					target := []rendererBenchmarkSize{size, smaller}[idx]
 					r.resize(target.width, target.height)
 					r.render(views[idx])
-					if err := r.flush(false); err != nil {
+					if _, err := r.flush(false); err != nil {
 						b.Fatal(err)
 					}
 				}
@@ -314,7 +314,7 @@ func BenchmarkCursedRenderer(b *testing.B) {
 				w.Grow(len(payload) * 2)
 				r := newBenchmarkRenderer(&w, size)
 				r.render(base)
-				if err := r.flush(false); err != nil {
+				if _, err := r.flush(false); err != nil {
 					b.Fatal(err)
 				}
 				w.Reset()
@@ -326,7 +326,7 @@ func BenchmarkCursedRenderer(b *testing.B) {
 					view.PostFrame = payload
 					view.PostFrameMsg = func(error) Msg { return nil }
 					r.render(view)
-					if err := r.flush(false); err != nil {
+					if _, err := r.flush(false); err != nil {
 						b.Fatal(err)
 					}
 					w.Reset()
@@ -338,7 +338,7 @@ func BenchmarkCursedRenderer(b *testing.B) {
 				w := &benchmarkByteCounter{}
 				r := newBenchmarkRenderer(w, size)
 				r.render(base)
-				if err := r.flush(false); err != nil {
+				if _, err := r.flush(false); err != nil {
 					b.Fatal(err)
 				}
 				w.reset()
@@ -352,7 +352,7 @@ func BenchmarkCursedRenderer(b *testing.B) {
 						view.PostFrameMsg = func(error) Msg { return nil }
 						r.render(view)
 					}
-					if err := r.flush(false); err != nil {
+					if _, err := r.flush(false); err != nil {
 						b.Fatal(err)
 					}
 				}

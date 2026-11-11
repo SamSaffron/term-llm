@@ -119,7 +119,7 @@ func TestRetainedRowIndependenceMemoMatchesRecompute(t *testing.T) {
 		view := NewView(content)
 		view.AltScreen = altScreen
 		r.render(view)
-		if err := r.flush(false); err != nil {
+		if _, err := r.flush(false); err != nil {
 			t.Fatalf("%s: flush: %v", label, err)
 		}
 		check(label)
@@ -172,7 +172,7 @@ func TestContentLineBuffersDoNotShareStorage(t *testing.T) {
 		view := NewView(content)
 		view.AltScreen = true
 		r.render(view)
-		if err := r.flush(false); err != nil {
+		if _, err := r.flush(false); err != nil {
 			t.Fatalf("frame %d: flush: %v", i, err)
 		}
 	}

@@ -31,8 +31,9 @@ type renderer interface {
 	// messages returns scheduler-safe messages produced at render boundaries.
 	messages() <-chan Msg
 
-	// flush flushes the renderer's buffer to the output.
-	flush(closing bool) error
+	// flush flushes the renderer's buffer to the output and reports activity.
+	// Activity includes side-band payloads and callbacks, even for equal views.
+	flush(closing bool) (bool, error)
 
 	// invalidate forces a complete repaint after a shared writer failure.
 	invalidate()

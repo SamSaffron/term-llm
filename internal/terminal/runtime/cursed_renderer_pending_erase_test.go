@@ -16,7 +16,7 @@ func TestCursedRendererRepaintsSameViewAfterClearScreen(t *testing.T) {
 	view := NewView(content)
 
 	r.render(view)
-	if err := r.flush(false); err != nil {
+	if _, err := r.flush(false); err != nil {
 		t.Fatalf("initial flush: %v", err)
 	}
 
@@ -25,7 +25,7 @@ func TestCursedRendererRepaintsSameViewAfterClearScreen(t *testing.T) {
 	// clear would pass for the wrong reason.
 	start := len(output.snapshot())
 	r.render(view)
-	if err := r.flush(false); err != nil {
+	if _, err := r.flush(false); err != nil {
 		t.Fatalf("control flush: %v", err)
 	}
 	if got := len(output.snapshot()); got != start {
@@ -34,7 +34,7 @@ func TestCursedRendererRepaintsSameViewAfterClearScreen(t *testing.T) {
 
 	r.clearScreen()
 	r.render(view)
-	if err := r.flush(false); err != nil {
+	if _, err := r.flush(false); err != nil {
 		t.Fatalf("flush after clear: %v", err)
 	}
 
@@ -102,7 +102,7 @@ func TestCursedRendererRepaintsSameViewAfterResize(t *testing.T) {
 			view.AltScreen = tt.altScreen
 
 			r.render(view)
-			if err := r.flush(false); err != nil {
+			if _, err := r.flush(false); err != nil {
 				t.Fatalf("initial flush: %v", err)
 			}
 
@@ -111,7 +111,7 @@ func TestCursedRendererRepaintsSameViewAfterResize(t *testing.T) {
 			// assertion after the resize would pass for the wrong reason.
 			start := len(output.snapshot())
 			r.render(view)
-			if err := r.flush(false); err != nil {
+			if _, err := r.flush(false); err != nil {
 				t.Fatalf("control flush: %v", err)
 			}
 			if got := len(output.snapshot()); got != start {
@@ -121,7 +121,7 @@ func TestCursedRendererRepaintsSameViewAfterResize(t *testing.T) {
 			before := r.cellbuf.Bounds()
 			r.resize(tt.resizeW, tt.resizeH)
 			r.render(view)
-			if err := r.flush(false); err != nil {
+			if _, err := r.flush(false); err != nil {
 				t.Fatalf("flush after resize: %v", err)
 			}
 

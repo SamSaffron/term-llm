@@ -92,7 +92,7 @@ func TestPostFrameFollowsItsRendererFrameNotUnmanagedOutput(t *testing.T) {
 	if err := renderer.insertAbove(testScrollback); err != nil {
 		t.Fatalf("scrollback insert error = %v", err)
 	}
-	if err := renderer.flush(false); err != nil {
+	if _, err := renderer.flush(false); err != nil {
 		t.Fatalf("renderer flush error = %v", err)
 	}
 	if err := <-completed; err != nil {
@@ -131,7 +131,7 @@ func TestPostFrameRapidReplacementKeepsExactAcceptedView(t *testing.T) {
 	accepted.PostFrameMsg = func(err error) Msg { acceptedDone <- err; return nil }
 	renderer.render(accepted)
 
-	if err := renderer.flush(false); err != nil {
+	if _, err := renderer.flush(false); err != nil {
 		t.Fatalf("renderer flush error = %v", err)
 	}
 	if err := <-acceptedDone; err != nil {
@@ -153,7 +153,7 @@ func TestPostFrameRapidIdenticalReplacementCompletesOnlyNewestView(t *testing.T)
 	output := &boundaryWriter{}
 	renderer := newBoundaryRenderer(output)
 	renderer.render(NewView(testRendererFrame))
-	if err := renderer.flush(false); err != nil {
+	if _, err := renderer.flush(false); err != nil {
 		t.Fatalf("initial renderer flush error = %v", err)
 	}
 
@@ -169,7 +169,7 @@ func TestPostFrameRapidIdenticalReplacementCompletesOnlyNewestView(t *testing.T)
 	accepted.PostFrameMsg = func(err error) Msg { acceptedDone <- err; return nil }
 	renderer.render(accepted)
 
-	if err := renderer.flush(false); err != nil {
+	if _, err := renderer.flush(false); err != nil {
 		t.Fatalf("unchanged renderer flush error = %v", err)
 	}
 	if err := <-acceptedDone; err != nil {
@@ -188,7 +188,7 @@ func TestPostFrameFlushesOnceForUnchangedFrameAndCommitsExactView(t *testing.T) 
 	output := &boundaryWriter{}
 	renderer := newBoundaryRenderer(output)
 	renderer.render(NewView(testRendererFrame))
-	if err := renderer.flush(false); err != nil {
+	if _, err := renderer.flush(false); err != nil {
 		t.Fatalf("initial renderer flush error = %v", err)
 	}
 
@@ -199,7 +199,7 @@ func TestPostFrameFlushesOnceForUnchangedFrameAndCommitsExactView(t *testing.T) 
 	unchanged.PostFrame = testPostFrame
 	unchanged.PostFrameMsg = func(err error) Msg { completed <- err; return nil }
 	renderer.render(unchanged)
-	if err := renderer.flush(false); err != nil {
+	if _, err := renderer.flush(false); err != nil {
 		t.Fatalf("unchanged renderer flush error = %v", err)
 	}
 	if err := <-completed; err != nil {
@@ -218,7 +218,7 @@ func TestPostFrameFlushesOnceForUnchangedFrameAndCommitsExactView(t *testing.T) 
 		t.Fatalf("lastView retained consumed post-frame state: %#v", renderer.lastView)
 	}
 
-	if err := renderer.flush(false); err != nil {
+	if _, err := renderer.flush(false); err != nil {
 		t.Fatalf("repeat renderer flush error = %v", err)
 	}
 	if got := len(output.snapshot()); got != len(writes) {
@@ -235,7 +235,7 @@ func TestPostFrameSurvivesResizeBeforeFlush(t *testing.T) {
 	view.PostFrameMsg = func(err error) Msg { completed <- err; return nil }
 	renderer.render(view)
 	renderer.resize(40, 12)
-	if err := renderer.flush(false); err != nil {
+	if _, err := renderer.flush(false); err != nil {
 		t.Fatalf("renderer flush after resize error = %v", err)
 	}
 	if err := <-completed; err != nil {
@@ -259,7 +259,7 @@ func TestFrameErrorDiscardsPostFrameAndCompletion(t *testing.T) {
 	view.PostFrameMsg = func(error) Msg { callbacks.Add(1); return nil }
 	renderer.render(view)
 
-	if err := renderer.flush(false); !errors.Is(err, frameErr) {
+	if _, err := renderer.flush(false); !errors.Is(err, frameErr) {
 		t.Fatalf("renderer flush error = %v, want %v", err, frameErr)
 	}
 	if write := writeContaining(output.snapshot(), testPostFrame, 0); write >= 0 {
@@ -268,7 +268,7 @@ func TestFrameErrorDiscardsPostFrameAndCompletion(t *testing.T) {
 
 	// The renderer may retry its own state, but this exact frame's side-band
 	// state must not attach to that later attempt.
-	if err := renderer.flush(false); err != nil {
+	if _, err := renderer.flush(false); err != nil {
 		t.Fatalf("renderer retry error = %v", err)
 	}
 	if write := writeContaining(output.snapshot(), testPostFrame, 0); write >= 0 {
@@ -292,7 +292,7 @@ func TestFailedIncrementalFrameForcesCorrectFullRedraw(t *testing.T) {
 		view := NewView(content)
 		view.AltScreen = true
 		r.render(view)
-		err := r.flush(false)
+		_, err := r.flush(false)
 		if content == failedContent {
 			if !errors.Is(err, frameErr) {
 				t.Fatalf("failed incremental flush error = %v, want %v", err, frameErr)
@@ -305,7 +305,7 @@ func TestFailedIncrementalFrameForcesCorrectFullRedraw(t *testing.T) {
 	view := NewView(recoveredContent)
 	view.AltScreen = true
 	r.render(view)
-	if err := r.flush(false); err != nil {
+	if _, err := r.flush(false); err != nil {
 		t.Fatalf("recovery flush: %v", err)
 	}
 	assertRendererCellsEqualContent(t, r, recoveredContent, width, height)
@@ -329,7 +329,8 @@ func TestPostFrameErrorPreservesFrameBookkeepingAndCompletionRunsUnlocked(t *tes
 	renderer.render(view)
 	flushDone := make(chan error, 1)
 	go func() {
-		flushDone <- renderer.flush(false)
+		_, flushErr := renderer.flush(false)
+		flushDone <- flushErr
 	}()
 
 	select {
@@ -353,7 +354,7 @@ func TestPostFrameErrorPreservesFrameBookkeepingAndCompletionRunsUnlocked(t *tes
 	if !renderer.forceRedraw {
 		t.Fatal("post-frame write failure did not invalidate incremental state")
 	}
-	if err := renderer.flush(false); err != nil {
+	if _, err := renderer.flush(false); err != nil {
 		t.Fatalf("full redraw after post-frame failure: %v", err)
 	}
 	if renderer.forceRedraw {
@@ -377,13 +378,13 @@ func TestPostFramePartialWriteReportsOnceAndDoesNotRetry(t *testing.T) {
 	view.PostFrameMsg = func(err error) Msg { completed <- err; return nil }
 	renderer.render(view)
 
-	if err := renderer.flush(false); err != nil {
+	if _, err := renderer.flush(false); err != nil {
 		t.Fatalf("renderer flush returned side-band error = %v", err)
 	}
 	if err := <-completed; !errors.Is(err, postFrameErr) {
 		t.Fatalf("partial-write completion error = %v, want %v", err, postFrameErr)
 	}
-	if err := renderer.flush(false); err != nil {
+	if _, err := renderer.flush(false); err != nil {
 		t.Fatalf("repeat renderer flush error = %v", err)
 	}
 	select {
@@ -405,7 +406,7 @@ func TestPostFrameShortWriteWithoutErrorIsReported(t *testing.T) {
 	view.PostFrameMsg = func(err error) Msg { completed <- err; return nil }
 	renderer.render(view)
 
-	if err := renderer.flush(false); err != nil {
+	if _, err := renderer.flush(false); err != nil {
 		t.Fatalf("renderer flush returned side-band error = %v", err)
 	}
 	if err := <-completed; !errors.Is(err, io.ErrShortWrite) {
@@ -423,7 +424,7 @@ func TestProgramAndScrollbackReportShortWrites(t *testing.T) {
 		view := NewView(testRendererFrame)
 		view.AltScreen = true
 		renderer.render(view)
-		if err := renderer.flush(false); err != nil {
+		if _, err := renderer.flush(false); err != nil {
 			t.Fatal(err)
 		}
 		program := &Program{output: output, renderer: renderer}
@@ -435,7 +436,7 @@ func TestProgramAndScrollbackReportShortWrites(t *testing.T) {
 			t.Fatal("raw output failure did not invalidate renderer state")
 		}
 		renderer.render(view)
-		if err := renderer.flush(false); err != nil {
+		if _, err := renderer.flush(false); err != nil {
 			t.Fatalf("full redraw after raw output failure: %v", err)
 		}
 		if renderer.forceRedraw {
@@ -447,7 +448,7 @@ func TestProgramAndScrollbackReportShortWrites(t *testing.T) {
 		output := &boundaryWriter{}
 		renderer := newBoundaryRenderer(output)
 		renderer.render(NewView(testRendererFrame))
-		if err := renderer.flush(false); err != nil {
+		if _, err := renderer.flush(false); err != nil {
 			t.Fatal(err)
 		}
 		output.failContains = []byte(testScrollback)
@@ -467,7 +468,7 @@ func TestRendererResultQueueDoesNotBlockTwoAcceptedFrames(t *testing.T) {
 		view.PostFrameMsg = func(error) Msg { return rendererLifecycleAckMsg{} }
 		renderer.render(view)
 		flushed := make(chan error, 1)
-		go func() { flushed <- renderer.flush(false) }()
+		go func() { _, flushErr := renderer.flush(false); flushed <- flushErr }()
 		select {
 		case err := <-flushed:
 			if err != nil {
@@ -498,7 +499,7 @@ func TestRendererResultQueueFullNeverBlocksFlushInsertAboveOrShutdown(t *testing
 	view.PostFrameMsg = func(error) Msg { return rendererLifecycleAckMsg{} }
 	renderer.render(view)
 	flushed := make(chan error, 1)
-	go func() { flushed <- renderer.flush(false) }()
+	go func() { _, flushErr := renderer.flush(false); flushed <- flushErr }()
 	select {
 	case err := <-flushed:
 		if err != nil {
@@ -552,7 +553,7 @@ func TestRendererShutdownNeverInvokesPostFrameCompletion(t *testing.T) {
 		view.PostFrame = testPostFrame
 		view.PostFrameMsg = func(error) Msg { callbacks.Add(1); return nil }
 		renderer.render(view)
-		if err := renderer.flush(true); err != nil {
+		if _, err := renderer.flush(true); err != nil {
 			t.Fatalf("closing flush error = %v", err)
 		}
 		if writeContaining(output.snapshot(), testPostFrame, 0) < 0 {

@@ -534,6 +534,7 @@ type Program struct {
 	rendererLifecycleMu sync.Mutex
 	rendererStop        chan struct{}
 	rendererLoopDone    chan struct{}
+	rendererWake        chan struct{} // coalesced work notification, including while parked
 	rendererClosed      bool
 
 	// suspendFunc replaces the platform suspend operation in deterministic tests.
@@ -596,6 +597,7 @@ func NewProgram(model Model, opts ...ProgramOption) *Program {
 		initialModel: model,
 		msgs:         make(chan Msg),
 		errs:         make(chan error, 1),
+		rendererWake: make(chan struct{}, 1),
 	}
 
 	// Apply all options to the program.
@@ -859,6 +861,7 @@ func (p *Program) eventLoop(model Model, cmds chan Cmd) (Model, error) {
 func (p *Program) render(model Model) {
 	if p.renderer != nil {
 		p.renderer.render(model.View()) // send view to renderer
+		p.wakeRenderer()
 	}
 }
 
@@ -1159,6 +1162,7 @@ func (p *Program) execute(seq string) {
 	p.mu.Lock()
 	_, _ = p.outputBuf.WriteString(seq)
 	p.mu.Unlock()
+	p.wakeRenderer()
 }
 
 // executeQuery skips reply-dependent queries when input is disabled. Otherwise
@@ -1349,80 +1353,4 @@ func (p *Program) Printf(template string, args ...any) {
 	p.msgs <- printLineMessage{
 		messageBody: fmt.Sprintf(template, args...),
 	}
-}
-
-// startRenderer starts one renderer loop. Repeated starts while the loop is
-// live are no-ops; an exited loop is joined and closed before replacement.
-func (p *Program) startRenderer() {
-	p.rendererLifecycleMu.Lock()
-	defer p.rendererLifecycleMu.Unlock()
-
-	if p.renderer == nil {
-		return
-	}
-	if p.rendererLoopDone != nil {
-		select {
-		case <-p.rendererLoopDone:
-			p.rendererStop = nil
-			p.rendererLoopDone = nil
-			if !p.rendererClosed {
-				p.renderer.beginShutdown()
-				_ = p.renderer.flush(true)
-				_ = p.renderer.close()
-				p.rendererClosed = true
-			}
-		default:
-			return
-		}
-	}
-
-	p.renderer.start()
-	p.rendererClosed = false
-	stop := make(chan struct{})
-	done := make(chan struct{})
-	p.rendererStop = stop
-	p.rendererLoopDone = done
-	ticker := time.NewTicker(time.Second / time.Duration(p.fps))
-	renderer := p.renderer
-	go func() {
-		defer close(done)
-		defer ticker.Stop()
-		defer func() {
-			if r := recover(); r != nil {
-				p.recoverFromGoPanic(r)
-			}
-		}()
-		for {
-			select {
-			case <-stop:
-				return
-			case <-ticker.C:
-				_ = p.flush()
-				_ = renderer.flush(false)
-			}
-		}
-	}()
-}
-
-// stopRenderer stops and joins the renderer loop before flushing or closing
-// renderer state. If kill is true, the final frame is discarded.
-func (p *Program) stopRenderer(kill bool) {
-	p.rendererLifecycleMu.Lock()
-	defer p.rendererLifecycleMu.Unlock()
-
-	if p.renderer == nil || p.rendererClosed {
-		return
-	}
-	p.renderer.beginShutdown()
-	if p.rendererLoopDone != nil {
-		close(p.rendererStop)
-		<-p.rendererLoopDone
-		p.rendererStop = nil
-		p.rendererLoopDone = nil
-	}
-	if !kill {
-		_ = p.renderer.flush(true)
-	}
-	_ = p.renderer.close()
-	p.rendererClosed = true
 }
