@@ -94,6 +94,71 @@ describe('markdown security and streaming', () => {
       expect(link.querySelector('strong')?.textContent).toBe('label');
     }
   });
+  it('wraps every table in its own horizontal scroll box', () => {
+    const source = '| ID | Status |\n| --- | --- |\n| 42 | **done** |';
+    for (const html of [
+      renderMarkdown(source),
+      renderMarkdown(source, () => undefined),
+      markdownDocumentBlocks(source)
+        .map((block) => block.html)
+        .join(''),
+    ]) {
+      const root = document.createElement('div');
+      root.innerHTML = html;
+      const table = root.querySelector('table')!;
+      expect(table.parentElement?.className).toBe('markdown-table-scroll');
+      expect(root.querySelectorAll('.markdown-table-scroll')).toHaveLength(1);
+      expect(table.querySelector('td strong')?.textContent).toBe('done');
+    }
+  });
+  it('breaks long table tokens at their own boundaries and keeps short hyphenated runs whole', () => {
+    const path = 'frontend/src/components/MarkdownTableScrollContainer.tsx';
+    const url = 'https://example.com/builds/2026-11-11/frontend-bundle-report.html';
+    const hash = 'a4b76c18d90e23f58c92a640e71bd305';
+    const math = '\\(a_1+a_2+a_3+a_4+a_5\\)';
+    const emoji = '🎉'.repeat(12);
+    const snake = 'snake_case_function_name';
+    const source = [
+      '| File | Link | Hash | Math | Status | Emoji | Name | ID | Notes |',
+      '| --- | --- | --- | --- | --- | --- | --- | --- | --- |',
+      `| \`${path}\` | ${url} | ${hash} | ${math} | Done | ${emoji} | ${snake} | T-101 | Self-hosted model |`,
+      '',
+      `Outside the table: ${hash}`,
+    ].join('\n');
+    for (const html of [
+      renderMarkdown(source),
+      markdownDocumentBlocks(source)
+        .map((block) => block.html)
+        .join(''),
+    ]) {
+      const root = document.createElement('div');
+      root.innerHTML = html;
+      const [file, link, plain, formula, status, symbols, identifier, id, notes] =
+        root.querySelectorAll('td');
+      // Breaks fall at the token's own boundaries; copied text is unchanged.
+      expect(file.textContent).toBe(path);
+      expect(file.querySelector('code')?.innerHTML).toBe(
+        'frontend/<wbr>src/<wbr>components/<wbr>Markdown<wbr>Table<wbr>Scroll<wbr>Container<wbr>.tsx',
+      );
+      expect(link.querySelector('a')?.getAttribute('href')).toBe(url);
+      expect(link.textContent).toBe(url);
+      expect(link.querySelector('a')?.innerHTML).toBe(
+        'https://<wbr>example<wbr>.com/<wbr>builds/<wbr>2026-<wbr>11-<wbr>11/<wbr>frontend-<wbr>bundle-<wbr>report<wbr>.html',
+      );
+      expect(identifier.innerHTML).toBe('snake_<wbr>case_<wbr>function_<wbr>name');
+      // A run with no boundaries of its own falls back to even chunks.
+      expect(plain.textContent).toBe(hash);
+      expect(plain.innerHTML).toBe(`${hash.slice(0, 16)}<wbr>${hash.slice(16)}`);
+      expect(formula.textContent).toBe(math);
+      expect(formula.querySelector('wbr')).toBeNull();
+      // Short hyphenated runs stay on one line; plain words are untouched.
+      expect(id.innerHTML).toBe('<span class="markdown-table-nowrap">T-101</span>');
+      expect(notes.innerHTML).toBe('<span class="markdown-table-nowrap">Self-hosted</span> model');
+      expect(status.innerHTML).toBe('Done');
+      expect(symbols.innerHTML).toBe(emoji);
+      expect(root.querySelector('p')?.querySelector('wbr')).toBeNull();
+    }
+  });
   it('resolves registered term-llm media references with contextual alt text', () => {
     const reference = '0123456789abcdef0123456789abcdef';
     const resolve = (value: string) =>
