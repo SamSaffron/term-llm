@@ -17,7 +17,8 @@ export XDG_CACHE_HOME="$scratch/cache" TMPDIR="$scratch/tmp"
 
 # These children may be killed by code-signing enforcement. Never execute the
 # compiler in the coordinating process. allow-jit only covers MAP_JIT, which
-# wazero v1.11.0 does not use; verify that it is insufficient here too.
+# wazero v1.11.0 does not use. Ad-hoc signatures do not necessarily reproduce
+# Developer ID enforcement, so report passing negative controls honestly too.
 sed 's/allow-unsigned-executable-memory/allow-jit/' scripts/macos-entitlements.plist > "$scratch/jit.plist"
 for variant in none jit release; do
 	binary="$scratch/$variant.test"
@@ -41,8 +42,14 @@ for variant in none jit release; do
 		[[ "$status" == 0 ]] || exit 1
 		grep -q -- '--- PASS: TestCodeModeHello' "$scratch/$variant.log"
 	else
-		# SIGKILL (not an arbitrary test failure) proves hardened enforcement.
-		[[ "$status" == 137 ]] || exit 1
 		grep -q '=== RUN   TestCodeModeHello' "$scratch/$variant.log"
+		case "$status" in
+			137) echo "$variant: hardened execution was killed (SIGKILL)" ;;
+			0)
+				grep -q -- '--- PASS: TestCodeModeHello' "$scratch/$variant.log"
+				echo "$variant: ad-hoc signing did NOT reproduce entitlement enforcement"
+				;;
+			*) echo "$variant: unexpected failure" >&2; exit 1 ;;
+		esac
 	fi
 done
