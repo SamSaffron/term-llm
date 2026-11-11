@@ -9,7 +9,7 @@ require (
 	github.com/muesli/cancelreader v0.2.2
 	github.com/rivo/uniseg v0.4.7
 	github.com/xo/terminfo v1.3.1
-	golang.org/x/sys v0.49.0
+	golang.org/x/sys v0.50.0
 )
 
 require (

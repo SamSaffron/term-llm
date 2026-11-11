@@ -11,7 +11,7 @@ require (
 	github.com/creack/pty v1.1.24
 	github.com/lucasb-eyer/go-colorful v1.4.1
 	github.com/muesli/cancelreader v0.2.2
-	golang.org/x/sys v0.49.0
+	golang.org/x/sys v0.50.0
 )
 
 require (

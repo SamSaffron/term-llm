@@ -1,6 +1,6 @@
 module github.com/samsaffron/term-llm
 
-go 1.27.3
+go 1.27.4
 
 // Patch-pinned: CI and release builds read this directive via
 // go-version-file: go.mod, so the pinned patch is the Go version that shipped
@@ -54,7 +54,7 @@ require (
 	golang.org/x/net v0.62.0
 	golang.org/x/oauth2 v0.37.0
 	golang.org/x/sync v0.24.0
-	golang.org/x/sys v0.49.0
+	golang.org/x/sys v0.50.0
 	golang.org/x/term v0.47.0
 	gopkg.in/yaml.v3 v3.0.1
 	modernc.org/sqlite v1.61.1
