@@ -5,31 +5,9 @@ import (
 	"strings"
 	"unicode"
 	"unicode/utf8"
-)
 
-// liveSecretPatterns catch credentials a tool preview can carry, such as a
-// shell command with an auth header or a key in a URL. Previews are sent to the
-// voice provider, and the model may repeat them aloud. This is a conservative
-// backstop, not a guarantee.
-var liveSecretPatterns = []struct {
-	pattern     *regexp.Regexp
-	replacement string
-}{
-	// Whatever follows an Authorization or Cookie header name, quoted or not.
-	{regexp.MustCompile(`(?i)\b(authorization["']?\s*[:=]\s*)(?:"[^"]*"|'[^']*'|(?:(?:basic|bearer|token)\s+)?[^\s"',;}]+)`), "${1}[redacted]"},
-	{regexp.MustCompile(`(?i)\b((?:set-)?cookie["']?\s*:\s*)(?:"[^"]*"|'[^']*'|[^"'\n]+)`), "${1}[redacted]"},
-	// curl's -b sends cookies. Only curl's: -b means something else elsewhere
-	// (git checkout -b names a branch). --cookie is caught by the flag rule.
-	{regexp.MustCompile(`(\bcurl\b[^|;&\n]*?\s-b\s+)(?:"[^"]*"|'[^']*'|[^\s"']+)`), "${1}[redacted]"},
-	// curl's -u/--user carries user:password; elsewhere, only a --user value
-	// shaped like user:password is treated as a credential.
-	{regexp.MustCompile(`(\bcurl\b[^|;&\n]*?\s(?:-u|--user)(?:\s+|=))(?:"[^"]*"|'[^']*'|[^\s"']+)`), "${1}[redacted]"},
-	{regexp.MustCompile(`(?i)((?:^|\s)--?user(?:name)?(?:\s+|=))["']?[^\s"':]+:[^\s"']+["']?`), "${1}[redacted]"},
-	// user:password@ in URLs.
-	{regexp.MustCompile(`://[^/\s:@]+:[^/\s@]+@`), "://[redacted]@"},
-	// Well-known key prefixes, however short the rest.
-	{regexp.MustCompile(`\b(?:sk|pk|rk)-[A-Za-z0-9_-]{8,}|\b(?:ghp|gho|ghu|ghs|ghr|github_pat)_[A-Za-z0-9_]{8,}|\bxox[abeoprs]-[A-Za-z0-9-]{8,}|\bglpat-[A-Za-z0-9_-]{8,}|\bAKIA[0-9A-Z]{12,}|\bAIza[0-9A-Za-z_-]{20,}`), "[redacted]"},
-}
+	"github.com/samsaffron/term-llm/internal/secrettext"
+)
 
 // liveSecretKey matches a field or flag name that may hold a secret;
 // isLiveSecretKey then rejects the few names that only look like one.
@@ -74,9 +52,7 @@ func credentialShaped(value string) bool {
 var liveLongToken = regexp.MustCompile(`[A-Za-z0-9_+=-]{32,}`)
 
 func redactLiveProgress(text string) string {
-	for _, secret := range liveSecretPatterns {
-		text = secret.pattern.ReplaceAllString(text, secret.replacement)
-	}
+	text = secrettext.Redact(text)
 	for _, keyed := range liveKeyedSecrets {
 		text = keyed.ReplaceAllStringFunc(text, func(match string) string {
 			parts := keyed.FindStringSubmatch(match)

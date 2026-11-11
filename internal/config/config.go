@@ -226,6 +226,7 @@ type Config struct {
 	DefaultProvider string                    `mapstructure:"default_provider"`
 	Providers       map[string]ProviderConfig `mapstructure:"providers"`
 	Diagnostics     DiagnosticsConfig         `mapstructure:"diagnostics"`
+	Memory          MemoryConfig              `mapstructure:"memory" yaml:"memory,omitempty"`
 	DebugLogs       DebugLogsConfig           `mapstructure:"debug_logs"`
 	Sessions        SessionsConfig            `mapstructure:"sessions"`
 	Approval        ApprovalConfig            `mapstructure:"approval"`

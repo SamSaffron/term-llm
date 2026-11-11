@@ -150,6 +150,67 @@ term-llm memory promote --agent assistant --recent-max-bytes 20000
 term-llm memory promote --agent assistant --dry-run
 ```
 
+### Native content protection
+
+Mining and recent-summary generation apply native credential protection by
+default; no environment variable, executable, shell hook or plugin enables it.
+The same policy covers extraction input and lookup tools, taxonomy paths,
+insights, image-to-fragment mining, embedding input, promotion, and
+`update-recent`. Images, embeddings and insights remain supported.
+
+Recognizable credentials are redacted from complete source text **before**
+clipping or provider calls. Detectors include common provider-key prefixes,
+auth/cookie headers, credential assignments such as `api_key`, `password` and
+`client_secret`, sensitive URL parameters/userinfo, and private-key blocks.
+Credential records under `fragments/credentials/` or named
+`accounts-and-credentials.md` are excluded from memory context and embeddings.
+System, developer and event messages are not conversational mining evidence.
+
+Detected credentials are rejected in proposed fragment paths/content, insight
+fields and image metadata before persistence. Promotion and `update-recent`
+validate the complete generated summary before atomic replacement and checkpoint
+updates: empty/heading-only summaries, obvious refusal/error text, code fences,
+detected credentials and oversized output are rejected. Promotion never silently
+truncates oversized output. `update-recent` may request compaction once, but
+rejects output that still exceeds its budget rather than truncating it.
+
+A rejected extraction batch fails without advancing its cursor, even if the
+model continues or subsequently encounters a provider error. Earlier accepted
+writes in that batch remain; source attribution is attempted even on rejection
+(database attribution failures still warn). This is not transactional batch
+rollback. Raw and structured model debugging are disabled for these memory
+requests because output is untrusted until checked. Provider error bodies are
+withheld. This deliberately reduces diagnostic detail.
+
+Optional additional detectors are **data only**, added to—not replacing—the
+built-ins:
+
+```yaml
+memory:
+  secret_patterns:
+    - 'synthetic_private_[A-Z0-9]+'
+```
+
+Added rules inspect the complete original source field (including a trimmed
+variant); any match redacts that whole field. Built-in detectors redact recognized
+spans. Whole-field projection prevents one detector from hiding another’s context.
+
+Rules use Go/RE2 syntax (at most 32 rules, 1,024 bytes each). Invalid, empty-matching,
+wrongly typed or unknown policy settings fail before memory provider calls or
+mutations. Rule literals are sensitive config fields and are not echoed in
+validation errors. Overbroad rules can over-redact or reject legitimate output.
+Use prose pointers such as “credentials come from `EXAMPLE_KEY`”; literal
+`api_key: $EXAMPLE_KEY` assignments are conservatively redacted too.
+
+**Limits:** this is a best-effort backstop, not universal DLP or a prompt-injection
+firewall. Unknown, encoded or fragmented secrets may evade recognition; valid
+structure does not establish factual truth or freshness. Existing stored source
+records are not purged or rewritten. These protections do not change manual
+memory administration or unrelated runtime tools.
+
+Dry-run still makes model calls. `mine --since` selects sessions by update time,
+not individual message dates, and is not a strict calendar bound for a backfill.
+
 ## Consolidate safely
 
 ```bash

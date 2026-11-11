@@ -319,9 +319,10 @@ func assistantMessagePriority(text string) int {
 }
 
 type memorySearchFragmentsTool struct {
-	store     *memorydb.Store
-	agent     string
-	readBytes int
+	store      *memorydb.Store
+	agent      string
+	readBytes  int
+	protection *memoryProtection
 }
 
 func (t *memorySearchFragmentsTool) Spec() core.ToolSpec {
@@ -370,7 +371,20 @@ func (t *memorySearchFragmentsTool) Execute(ctx context.Context, args json.RawMe
 	if err != nil {
 		return core.ToolOutput{}, err
 	}
+	safeResults := results[:0]
 	for i := range results {
+		if excludedMemoryPath(results[i].Path) {
+			continue
+		}
+		frag, err := t.store.GetFragment(ctx, t.agent, results[i].Path)
+		if err != nil {
+			return core.ToolOutput{}, err
+		}
+		if frag == nil {
+			continue
+		}
+		results[i].Snippet = t.protection.sanitize(frag.Content)
+		results[i].Path = t.protection.sanitize(frag.Path)
 		snippetLimit := memoryMineFragmentSnippetChars
 		if t.readBytes > 0 && t.readBytes < snippetLimit {
 			snippetLimit = t.readBytes
@@ -378,7 +392,9 @@ func (t *memorySearchFragmentsTool) Execute(ctx context.Context, args json.RawMe
 		if len(results[i].Snippet) > snippetLimit {
 			results[i].Snippet = results[i].Snippet[:snippetLimit] + "..."
 		}
+		safeResults = append(safeResults, results[i])
 	}
+	results = safeResults
 	response := map[string]any{
 		"query":   payload.Query,
 		"agent":   t.agent,
@@ -389,8 +405,9 @@ func (t *memorySearchFragmentsTool) Execute(ctx context.Context, args json.RawMe
 }
 
 type memoryListFragmentsTool struct {
-	store *memorydb.Store
-	agent string
+	store      *memorydb.Store
+	agent      string
+	protection *memoryProtection
 }
 
 func (t *memoryListFragmentsTool) Spec() core.ToolSpec {
@@ -436,6 +453,14 @@ func (t *memoryListFragmentsTool) Execute(ctx context.Context, args json.RawMess
 	if err != nil {
 		return core.ToolOutput{}, err
 	}
+	safePaths := paths[:0]
+	for _, path := range paths {
+		if !excludedMemoryPath(path) {
+			safePaths = append(safePaths, t.protection.sanitize(path))
+		}
+	}
+	paths = safePaths
+
 	response := map[string]any{
 		"agent":  t.agent,
 		"prefix": prefix,
@@ -446,9 +471,10 @@ func (t *memoryListFragmentsTool) Execute(ctx context.Context, args json.RawMess
 }
 
 type memoryGetFragmentTool struct {
-	store     *memorydb.Store
-	agent     string
-	readBytes int
+	store      *memorydb.Store
+	agent      string
+	readBytes  int
+	protection *memoryProtection
 }
 
 func (t *memoryGetFragmentTool) Spec() core.ToolSpec {
@@ -484,6 +510,9 @@ func (t *memoryGetFragmentTool) Execute(ctx context.Context, args json.RawMessag
 		return core.ToolOutput{}, fmt.Errorf("parse memory_get_fragment args: %w", err)
 	}
 	fragPath := strings.TrimSpace(payload.Path)
+	if excludedMemoryPath(fragPath) {
+		return core.TextOutput(`{"found":false}`), nil
+	}
 	if fragPath == "" {
 		return core.ToolOutput{}, fmt.Errorf("path is required")
 	}
@@ -494,7 +523,8 @@ func (t *memoryGetFragmentTool) Execute(ctx context.Context, args json.RawMessag
 	if frag == nil {
 		return core.TextOutput(fmt.Sprintf("{\n  \"agent\": %q,\n  \"path\": %q,\n  \"found\": false\n}", t.agent, fragPath)), nil
 	}
-	content := frag.Content
+	content := t.protection.sanitize(frag.Content)
+	safePath := t.protection.sanitize(frag.Path)
 	readLimit := memoryMineFragmentReadChars
 	if t.readBytes > 0 && t.readBytes < readLimit {
 		readLimit = t.readBytes
@@ -504,7 +534,7 @@ func (t *memoryGetFragmentTool) Execute(ctx context.Context, args json.RawMessag
 	}
 	response := map[string]any{
 		"agent":   t.agent,
-		"path":    frag.Path,
+		"path":    safePath,
 		"found":   true,
 		"content": content,
 	}

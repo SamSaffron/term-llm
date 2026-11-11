@@ -3,6 +3,7 @@ package memory
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -28,10 +29,25 @@ type memoryExtractionCollector struct {
 	skipped  int
 	affected []string
 	seen     map[string]struct{}
+	rejected bool
 }
 
 func newMemoryExtractionCollector() *memoryExtractionCollector {
 	return &memoryExtractionCollector{seen: map[string]struct{}{}}
+}
+
+func (c *memoryExtractionCollector) rejectPolicy() {
+	if c == nil {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.rejected = true
+}
+func (c *memoryExtractionCollector) policyFailed() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.rejected
 }
 
 func (c *memoryExtractionCollector) noteCreated(path string) {
@@ -82,10 +98,11 @@ func (c *memoryExtractionCollector) result(finalText string) memoryExtractionRes
 }
 
 type memoryCreateFragmentTool struct {
-	store     *memorydb.Store
-	agent     string
-	dryRun    bool
-	collector *memoryExtractionCollector
+	store      *memorydb.Store
+	agent      string
+	dryRun     bool
+	collector  *memoryExtractionCollector
+	protection *memoryProtection
 }
 
 func (t *memoryCreateFragmentTool) Spec() core.ToolSpec {
@@ -122,6 +139,10 @@ func (t *memoryCreateFragmentTool) Execute(ctx context.Context, args json.RawMes
 	if err := json.Unmarshal(args, &payload); err != nil {
 		return core.ToolOutput{}, fmt.Errorf("parse memory_create_fragment args: %w", err)
 	}
+	if err := t.protection.fragment(payload.Path, payload.Content); err != nil {
+		t.collector.rejectPolicy()
+		return core.ToolOutput{}, err
+	}
 	fragPath, err := validateFragmentPath(payload.Path)
 	if err != nil {
 		return core.ToolOutput{}, err
@@ -143,10 +164,11 @@ func (t *memoryCreateFragmentTool) Execute(ctx context.Context, args json.RawMes
 }
 
 type memoryUpdateFragmentTool struct {
-	store     *memorydb.Store
-	agent     string
-	dryRun    bool
-	collector *memoryExtractionCollector
+	store      *memorydb.Store
+	agent      string
+	dryRun     bool
+	collector  *memoryExtractionCollector
+	protection *memoryProtection
 }
 
 func (t *memoryUpdateFragmentTool) Spec() core.ToolSpec {
@@ -183,6 +205,10 @@ func (t *memoryUpdateFragmentTool) Execute(ctx context.Context, args json.RawMes
 	if err := json.Unmarshal(args, &payload); err != nil {
 		return core.ToolOutput{}, fmt.Errorf("parse memory_update_fragment args: %w", err)
 	}
+	if err := t.protection.fragment(payload.Path, payload.Content); err != nil {
+		t.collector.rejectPolicy()
+		return core.ToolOutput{}, err
+	}
 	fragPath, err := validateFragmentPath(payload.Path)
 	if err != nil {
 		return core.ToolOutput{}, err
@@ -207,16 +233,17 @@ func (t *memoryUpdateFragmentTool) Execute(ctx context.Context, args json.RawMes
 	return core.TextOutput(fmt.Sprintf("updated %s", fragPath)), nil
 }
 
-func registerMemoryExtractionTools(engine *engine.Engine, store *memorydb.Store, agent string, collector *memoryExtractionCollector, readBytes int, dryRun bool) ([]core.ToolSpec, func()) {
+func registerMemoryExtractionTools(engine *engine.Engine, store *memorydb.Store, agent string, collector *memoryExtractionCollector, readBytes int, dryRun bool, protection *memoryProtection) ([]core.ToolSpec, func()) {
 	tools := []core.Tool{
-		&memorySearchFragmentsTool{store: store, agent: agent, readBytes: readBytes},
-		&memoryListFragmentsTool{store: store, agent: agent},
-		&memoryGetFragmentTool{store: store, agent: agent, readBytes: readBytes},
-		&memoryCreateFragmentTool{store: store, agent: agent, dryRun: dryRun, collector: collector},
-		&memoryUpdateFragmentTool{store: store, agent: agent, dryRun: dryRun, collector: collector},
+		&memorySearchFragmentsTool{store: store, agent: agent, readBytes: readBytes, protection: protection},
+		&memoryListFragmentsTool{store: store, agent: agent, protection: protection},
+		&memoryGetFragmentTool{store: store, agent: agent, readBytes: readBytes, protection: protection},
+		&memoryCreateFragmentTool{store: store, agent: agent, dryRun: dryRun, collector: collector, protection: protection},
+		&memoryUpdateFragmentTool{store: store, agent: agent, dryRun: dryRun, collector: collector, protection: protection},
 	}
 	specs := make([]core.ToolSpec, 0, len(tools))
 	for _, tool := range tools {
+		tool = &memoryProtectedTool{Tool: tool, protection: protection, collector: collector}
 		engine.RegisterTool(tool)
 		specs = append(specs, tool.Spec())
 	}
@@ -226,4 +253,23 @@ func registerMemoryExtractionTools(engine *engine.Engine, store *memorydb.Store,
 		}
 	}
 	return specs, cleanup
+}
+
+// Policy applies to every provider-bound tool result, not just the first turn.
+type memoryProtectedTool struct {
+	core.Tool
+	protection *memoryProtection
+	collector  *memoryExtractionCollector
+}
+
+func (t *memoryProtectedTool) Execute(ctx context.Context, args json.RawMessage) (core.ToolOutput, error) {
+	out, err := t.Tool.Execute(ctx, args)
+	if errors.Is(err, errMemorySafety) {
+		t.collector.rejectPolicy()
+	}
+	if err != nil {
+		return core.ToolOutput{}, err
+	}
+	out.Content = t.protection.sanitize(out.Content)
+	return out, nil
 }

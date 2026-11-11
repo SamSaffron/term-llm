@@ -48,6 +48,7 @@ The index below follows the canonical config schema. A dash means no default or 
 | `default_provider` | string | `openrouter` | — |
 | `provider_discovery` | string | `auto` | — |
 | `auto_compact` | boolean | `true` | — |
+| `memory.secret_patterns` | list of string | — | Additional RE2 patterns for native memory secret protection; built-in detectors cannot be disabled |
 | `approval.default_mode` | string | — | — |
 | `guardian.backend` | string | `llm` | — |
 | `guardian.classify.provider` | string | — | — |

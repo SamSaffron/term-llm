@@ -3,6 +3,7 @@ package memory
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -13,7 +14,6 @@ import (
 	"time"
 
 	"github.com/samsaffron/term-llm/internal/config"
-	"github.com/samsaffron/term-llm/internal/embedding"
 	"github.com/samsaffron/term-llm/internal/llm"
 	"github.com/samsaffron/term-llm/internal/llm/core"
 	"github.com/samsaffron/term-llm/internal/llm/engine"
@@ -70,8 +70,9 @@ type memoryAgentFragmentStore interface {
 }
 
 type memoryAgentFragmentCache struct {
-	maxTokens int
-	corpora   map[string]*memoryAgentFragmentCorpus
+	maxTokens  int
+	protection *memoryProtection
+	corpora    map[string]*memoryAgentFragmentCorpus
 }
 
 type memoryAgentFragmentCorpus struct {
@@ -100,7 +101,7 @@ func (c *memoryAgentFragmentCache) get(ctx context.Context, store memoryAgentFra
 
 	corpus := &memoryAgentFragmentCorpus{
 		fragments:   fragments,
-		taxonomyMap: buildTaxonomyMap(fragments, c.maxTokens),
+		taxonomyMap: c.protection.taxonomy(fragments, c.maxTokens),
 		byPath:      make(map[string]int, len(fragments)),
 	}
 	for i, frag := range fragments {
@@ -140,7 +141,7 @@ func (c *memoryAgentFragmentCache) applyChanges(ctx context.Context, store memor
 		corpus.fragments = append(corpus.fragments, *frag)
 	}
 
-	corpus.taxonomyMap = buildTaxonomyMap(corpus.fragments, c.maxTokens)
+	corpus.taxonomyMap = c.protection.taxonomy(corpus.fragments, c.maxTokens)
 	return nil
 }
 
@@ -196,6 +197,12 @@ func Mine(opts MineOptions) error {
 	if err != nil {
 		return err
 	}
+
+	env, err = env.withProtection(cfg)
+	if err != nil {
+		return err
+	}
+	opts.Env = env
 
 	if err := env.ApplyAskProviderOverrides(cfg); err != nil {
 		return err
@@ -261,6 +268,7 @@ func Mine(opts MineOptions) error {
 	var totalCreated, totalUpdated, totalSkipped int
 	var summaryStats memoryMineSummaryStats
 	fragmentCache := newMemoryAgentFragmentCache(opts.TaxonomyMaxTokens)
+	fragmentCache.protection = env.protection
 
 	walkResult, err := opts.walkMineCandidates(ctx, sessStore, memStore, sourceSessions, currentID, func(position, total int, candidate memoryMineCandidate) (memoryMineCandidateVisitResult, error) {
 		visitResult := memoryMineCandidateVisitResult{}
@@ -288,6 +296,11 @@ func Mine(opts MineOptions) error {
 			return visitResult, fmt.Errorf("load messages for session %s: %w", candidate.Session.ID, err)
 		}
 		if len(loadResult.Messages) == 0 {
+			if !env.DryRun && loadResult.NextOffset > startOffset {
+				if err := memStore.UpsertState(ctx, &memorydb.MiningState{SessionID: candidate.Session.ID, Agent: candidate.Agent, LastMinedOffset: loadResult.NextOffset, MinedAt: time.Now()}); err != nil {
+					return visitResult, err
+				}
+			}
 			fmt.Printf("[%d/%d] #%d no new messages to mine\n", position, total, candidate.Summary.Number)
 			return visitResult, nil
 		}
@@ -297,8 +310,19 @@ func Mine(opts MineOptions) error {
 		batchStats := opts.newMemoryExtractionStats(candidate, startOffset, loadResult.NextOffset, len(existing), loadResult, promptParts)
 		batchStart := time.Now()
 		extractionResult, err := opts.runExtractionRequest(ctx, engine, memStore, candidate.Agent, promptParts.Prompt, &batchStats)
+		if !env.DryRun {
+
+			for _, p := range extractionResult.AffectedPaths {
+				if srcErr := memStore.AddFragmentSource(ctx, candidate.Agent, p, candidate.Session.ID, startOffset, loadResult.NextOffset); srcErr != nil {
+					fmt.Fprintf(os.Stderr, "warning: record fragment source %s: %v\n", p, srcErr)
+				}
+			}
+		}
 		if err != nil {
 			fragmentCache.invalidate(candidate.Agent)
+			if errors.Is(err, errMemorySafety) {
+				return visitResult, err
+			}
 			fmt.Fprintf(os.Stderr, "warning: skipping session %s batch at offset %d: %v\n", candidate.Session.ID, startOffset, err)
 			return visitResult, nil
 		}
@@ -307,11 +331,6 @@ func Mine(opts MineOptions) error {
 		created, updated, skipped, affectedPaths := extractionResult.Created, extractionResult.Updated, extractionResult.Skipped, extractionResult.AffectedPaths
 
 		if !env.DryRun {
-			for _, p := range affectedPaths {
-				if srcErr := memStore.AddFragmentSource(ctx, candidate.Agent, p, candidate.Session.ID, startOffset, loadResult.NextOffset); srcErr != nil {
-					fmt.Fprintf(os.Stderr, "warning: record fragment source %s: %v\n", p, srcErr)
-				}
-			}
 			if err := memStore.UpsertState(ctx, &memorydb.MiningState{
 				SessionID:       candidate.Session.ID,
 				Agent:           candidate.Agent,
@@ -349,7 +368,10 @@ func Mine(opts MineOptions) error {
 	if env.DryRun {
 		fmt.Println("Dry run mode: skipping image mining phase.")
 	} else {
-		imageMined := env.mineGeneratedImages(ctx, memStore)
+		imageMined, err := env.mineGeneratedImages(ctx, memStore)
+		if err != nil {
+			return err
+		}
 		if imageMined > 0 {
 			fmt.Printf("mined %d image fragment(s)\n", imageMined)
 		}
@@ -392,6 +414,9 @@ func Mine(opts MineOptions) error {
 					DryRun:         false,
 					QuietNothing:   true,
 				}); err != nil {
+					if errors.Is(err, errMemorySafety) {
+						return err
+					}
 					fmt.Fprintf(os.Stderr, "warning: promote failed for %s: %v\n", promoteAgent, err)
 				}
 			}
@@ -414,6 +439,9 @@ func Mine(opts MineOptions) error {
 			}
 			insightCount, insightStats, err := opts.runInsightExtractionPass(ctx, cfg, engine, sessStore, memStore, insightCandidates)
 			if err != nil {
+				if errors.Is(err, errMemorySafety) {
+					return err
+				}
 				fmt.Fprintf(os.Stderr, "warning: insight extraction failed: %v\n", err)
 			} else {
 				fmt.Printf("insights: %d created/reinforced\n", insightCount)
@@ -655,97 +683,6 @@ func (opts MineOptions) buildMemoryMineCandidate(ctx context.Context, store sess
 	}, true, nil
 }
 
-func (opts MineOptions) loadMessagesForMining(ctx context.Context, store session.Store, candidate memoryMineCandidate, offset int, taxonomyMap string) (memoryMineLoadResult, error) {
-	remaining := opts.MaxMessages
-	currentSeq := offset
-	all := make([]session.Message, 0, opts.BatchSize)
-	result := memoryMineLoadResult{}
-
-	for {
-		limit := opts.BatchSize
-		if remaining > 0 && remaining < limit {
-			limit = remaining
-		}
-
-		msgs, err := store.GetMessagesFrom(ctx, candidate.Session.ID, currentSeq, limit)
-		if err != nil {
-			return result, err
-		}
-		if len(msgs) == 0 {
-			break
-		}
-
-		for _, msg := range msgs {
-			candidateMessages := append(cloneMessages(all), msg)
-			nextSeq := msg.Sequence + 1
-			fit, ok := opts.fitMessagesForPromptBudget(candidate, offset, nextSeq, candidateMessages, taxonomyMap)
-			if !ok {
-				result.PromptBudgetHit = true
-				result.Messages = all
-				result.NextOffset = currentSeq
-				return result, nil
-			}
-			all = fit.Messages
-			currentSeq = nextSeq
-			result.TruncatedMessages = fit.TruncatedMessages
-			result.AssistantMessagesCut = fit.AssistantMessagesCut
-			result.UserMessagesCut = fit.UserMessagesCut
-			result.SingleMessageClipped = fit.SingleMessageClipped
-			if fit.TruncatedMessages > 0 {
-				result.PromptBudgetHit = true
-			}
-			if remaining > 0 {
-				remaining--
-				if remaining <= 0 {
-					result.Messages = all
-					result.NextOffset = currentSeq
-					return result, nil
-				}
-			}
-		}
-
-		if len(msgs) < limit {
-			break
-		}
-	}
-
-	result.Messages = all
-	result.NextOffset = currentSeq
-	return result, nil
-}
-
-func buildExtractionPrompt(candidate memoryMineCandidate, startOffset, endOffset int, messages []session.Message, taxonomyMap string) string {
-	return buildExtractionPromptParts(candidate, startOffset, endOffset, messages, taxonomyMap).Prompt
-}
-
-func buildTranscript(messages []session.Message) []transcriptMessage {
-	out := make([]transcriptMessage, 0, len(messages))
-
-	for _, msg := range messages {
-		entry := transcriptMessage{Role: string(msg.Role)}
-
-		if msg.Role != core.RoleTool {
-			if text := strings.TrimSpace(msg.TextContent); text != "" {
-				entry.Text = text
-			}
-		}
-
-		calls := collectToolCallNames(msg)
-		if len(calls) > 0 {
-			entry.ToolCalls = calls
-		}
-
-		if entry.Text == "" && len(entry.ToolCalls) == 0 && msg.Role == core.RoleTool {
-			// Explicitly suppress raw tool output.
-			continue
-		}
-
-		out = append(out, entry)
-	}
-
-	return out
-}
-
 func collectToolCallNames(msg session.Message) []string {
 	seen := map[string]struct{}{}
 	out := []string{}
@@ -768,16 +705,18 @@ func collectToolCallNames(msg session.Message) []string {
 
 func (opts MineOptions) runExtractionRequest(ctx context.Context, engine *engine.Engine, store *memorydb.Store, agent, prompt string, stats *memoryExtractionStats) (memoryExtractionResult, error) {
 	collector := newMemoryExtractionCollector()
-	toolSpecs, cleanup := registerMemoryExtractionTools(engine, store, agent, collector, opts.ReadBytes, opts.DryRun)
+	toolSpecs, cleanup := registerMemoryExtractionTools(engine, store, agent, collector, opts.ReadBytes, opts.DryRun, opts.protection)
 	defer cleanup()
 	finalText, err := opts.runExtractionRequestWithSystem(ctx, engine, memoryExtractionSystemPrompt, prompt, stats, toolSpecs...)
-	if err != nil {
-		return memoryExtractionResult{}, err
+	if collector.policyFailed() {
+		return collector.result(finalText), errMemorySafety
 	}
-	return collector.result(finalText), nil
+	return collector.result(finalText), err
 }
 
 func (opts MineOptions) runExtractionRequestWithSystem(ctx context.Context, engine *engine.Engine, systemPrompt, prompt string, stats extractionRequestStats, tools ...core.ToolSpec) (string, error) {
+	prompt = opts.protection.sanitize(prompt)
+	engine.SetDebugLogger(nil)
 	req := core.Request{
 		Model:           strings.TrimSpace(opts.Model),
 		Ephemeral:       true,
@@ -785,7 +724,7 @@ func (opts MineOptions) runExtractionRequestWithSystem(ctx context.Context, engi
 		MaxTurns:        1,
 		MaxOutputTokens: opts.MaxOutputTokens,
 		Debug:           false,
-		DebugRaw:        opts.debugRaw(),
+		DebugRaw:        false,
 	}
 	if len(tools) > 0 {
 		req.Tools = tools
@@ -796,7 +735,7 @@ func (opts MineOptions) runExtractionRequestWithSystem(ctx context.Context, engi
 
 	stream, err := engine.Stream(ctx, req)
 	if err != nil {
-		return "", err
+		return "", errors.New("memory extraction provider operation failed")
 	}
 	defer stream.Close()
 
@@ -807,7 +746,7 @@ func (opts MineOptions) runExtractionRequestWithSystem(ctx context.Context, engi
 			break
 		}
 		if err != nil {
-			return "", err
+			return "", errors.New("memory extraction provider operation failed")
 		}
 		switch ev.Type {
 		case core.EventTextDelta:
@@ -822,7 +761,7 @@ func (opts MineOptions) runExtractionRequestWithSystem(ctx context.Context, engi
 			}
 		case core.EventError:
 			if ev.Err != nil {
-				return "", ev.Err
+				return "", errors.New("memory extraction provider operation failed")
 			}
 		}
 	}
@@ -878,21 +817,25 @@ func isWindowsAbsPath(p string) bool {
 	return false
 }
 
-func (env Env) mineGeneratedImages(ctx context.Context, store *memorydb.Store) int {
+func (env Env) mineGeneratedImages(ctx context.Context, store *memorydb.Store) (int, error) {
 	agents, err := env.resolveImageMineAgents(ctx, store)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "warning: resolve image mining agents: %v\n", err)
-		return 0
+		return 0, err
 	}
 	if len(agents) == 0 {
-		return 0
+		return 0, nil
 	}
 
 	total := 0
 	for _, agent := range agents {
-		total += env.mineGeneratedImagesForAgent(ctx, store, agent)
+		count, err := env.mineGeneratedImagesForAgent(ctx, store, agent)
+		if err != nil {
+			return total, err
+		}
+		total += count
 	}
-	return total
+	return total, nil
 }
 
 func (env Env) resolveImageMineAgents(ctx context.Context, store *memorydb.Store) ([]string, error) {
@@ -902,19 +845,19 @@ func (env Env) resolveImageMineAgents(ctx context.Context, store *memorydb.Store
 	return store.ListImageAgents(ctx)
 }
 
-func (env Env) mineGeneratedImagesForAgent(ctx context.Context, store *memorydb.Store, agent string) int {
+func (env Env) mineGeneratedImagesForAgent(ctx context.Context, store *memorydb.Store, agent string) (int, error) {
 	metaKey := env.memoryImageMineMetaKey(agent)
 	lastValue, err := store.GetMeta(ctx, metaKey)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "warning: read image mine meta for %s: %v\n", agent, err)
-		return 0
+		return 0, err
 	}
 
 	lastTime := time.Time{}
 	if strings.TrimSpace(lastValue) != "" {
 		parsed, err := time.Parse(time.RFC3339, lastValue)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "warning: invalid image mine timestamp for %s (%q): %v\n", agent, lastValue, err)
+			fmt.Fprintln(os.Stderr, "warning: invalid image mining timestamp; stored value withheld")
 		} else {
 			lastTime = parsed
 		}
@@ -923,10 +866,10 @@ func (env Env) mineGeneratedImagesForAgent(ctx context.Context, store *memorydb.
 	images, err := store.ListImagesSince(ctx, agent, lastTime)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "warning: list images for %s: %v\n", agent, err)
-		return 0
+		return 0, err
 	}
 	if len(images) == 0 {
-		return 0
+		return 0, nil
 	}
 
 	effectiveAgent := strings.TrimSpace(agent)
@@ -936,11 +879,13 @@ func (env Env) mineGeneratedImagesForAgent(ctx context.Context, store *memorydb.
 
 	created := 0
 	for _, img := range images {
+		if err := env.protection.checkImage(img); err != nil {
+			return created, err
+		}
 		path := buildImageFragmentPath(img)
 		content := env.buildImageFragmentContent(img)
 		if err := env.upsertImageFragment(ctx, store, effectiveAgent, path, content); err != nil {
-			fmt.Fprintf(os.Stderr, "warning: failed mining image %s: %v\n", img.ID, err)
-			continue
+			return created, err
 		}
 		created++
 	}
@@ -950,7 +895,7 @@ func (env Env) mineGeneratedImagesForAgent(ctx context.Context, store *memorydb.
 		fmt.Fprintf(os.Stderr, "warning: update image mine meta for %s: %v\n", agent, err)
 	}
 
-	return created
+	return created, nil
 }
 
 func (env Env) memoryImageMineMetaKey(agent string) string {
@@ -1042,6 +987,9 @@ func imagePromptSlug(prompt string) string {
 }
 
 func (env Env) upsertImageFragment(ctx context.Context, store *memorydb.Store, agent, fragPath, content string) error {
+	if err := env.protection.fragment(fragPath, content); err != nil {
+		return err
+	}
 	if env.DryRun {
 		return nil
 	}
@@ -1059,75 +1007,6 @@ func (env Env) upsertImageFragment(ctx context.Context, store *memorydb.Store, a
 		return updateErr
 	}
 	return createErr
-}
-
-func (opts MineOptions) runMemoryEmbedPhase(ctx context.Context, cfg *config.Config, store *memorydb.Store) (int, error) {
-	providerName, modelName, providerSpec := resolveMemoryEmbeddingProvider(cfg, opts.EmbedProvider)
-	if providerName == "" || providerSpec == "" {
-		fmt.Fprintln(os.Stderr, "warning: embedding provider unavailable, skipping EMBED phase")
-		return 0, nil
-	}
-
-	embedder, err := embedding.NewEmbeddingProvider(cfg, providerSpec)
-	if err != nil {
-		if strings.TrimSpace(opts.EmbedProvider) != "" {
-			return 0, err
-		}
-		fmt.Fprintf(os.Stderr, "warning: embedding provider initialization failed (%v), skipping EMBED phase\n", err)
-		return 0, nil
-	}
-
-	if modelName == "" {
-		modelName = embedder.DefaultModel()
-	}
-
-	fragments, err := store.GetFragmentsNeedingEmbedding(ctx, opts.AgentFilter(), providerName, modelName)
-	if err != nil {
-		return 0, fmt.Errorf("query fragments needing embedding: %w", err)
-	}
-	if len(fragments) == 0 {
-		return 0, nil
-	}
-
-	embeddedCount := 0
-	embedBatchSize := cfg.Embed.BatchSize
-	if embedBatchSize <= 0 {
-		embedBatchSize = 32
-	}
-	for i := 0; i < len(fragments); i += embedBatchSize {
-		end := i + embedBatchSize
-		if end > len(fragments) {
-			end = len(fragments)
-		}
-		batch := fragments[i:end]
-		texts := make([]string, len(batch))
-		for j, frag := range batch {
-			texts[j] = frag.Content
-		}
-
-		result, err := embedder.Embed(ctx, embedding.EmbedRequest{
-			Texts:    texts,
-			Model:    modelName,
-			TaskType: "RETRIEVAL_DOCUMENT",
-		})
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "warning: failed embedding batch starting at %d: %v\n", i, err)
-			continue
-		}
-		for j, emb := range result.Embeddings {
-			if len(emb.Vector) == 0 {
-				continue
-			}
-			frag := batch[j]
-			if err := store.UpsertEmbedding(ctx, frag.ID, providerName, modelName, len(emb.Vector), emb.Vector); err != nil {
-				fmt.Fprintf(os.Stderr, "warning: failed to persist embedding for fragment %s: %v\n", frag.ID, err)
-				continue
-			}
-			embeddedCount++
-		}
-	}
-
-	return embeddedCount, nil
 }
 
 // ── Insight extraction pass ───────────────────────────────────────────────────
@@ -1188,7 +1067,8 @@ func buildInsightTranscript(messages []session.Message) []transcriptMessage {
 	pending := make([]pendingMessage, 0, len(messages))
 	userTokenBudget := 0
 	for _, msg := range messages {
-		if msg.Role == core.RoleSystem {
+		msg = (*memoryProtection)(nil).message(msg)
+		if excludedMemoryEvidenceRole(msg.Role) {
 			continue
 		}
 		if msg.Role == core.RoleTool {
@@ -1352,7 +1232,7 @@ func buildInsightExtractionPromptFromTranscript(agent string, transcript []trans
 	}
 	summaries := make([]existingSummary, 0, len(existing))
 	for _, ins := range existing {
-		preview := ins.Content
+		preview := (*memoryProtection)(nil).sanitize(ins.Content)
 		if len(preview) > 120 {
 			preview = preview[:120] + "..."
 		}
@@ -1393,6 +1273,12 @@ func (opts MineOptions) runInsightExtractionPass(
 	memStore *memorydb.Store,
 	candidates []memoryMineCandidate,
 ) (int, insightExtractionSummaryStats, error) {
+	env, err := opts.Env.withProtection(cfg)
+	if err != nil {
+		return 0, insightExtractionSummaryStats{}, err
+	}
+	opts.Env = env
+
 	total := 0
 	var summary insightExtractionSummaryStats
 	for _, candidate := range candidates {
@@ -1423,6 +1309,9 @@ func (opts MineOptions) runInsightExtractionPass(
 			existing = nil
 		}
 
+		for _, ins := range existing {
+			ins.Content = opts.protection.sanitize(ins.Content)
+		}
 		transcript := buildInsightTranscript(messages)
 		prompt := buildInsightExtractionPromptFromTranscript(candidate.Agent, transcript, existing)
 		stats := newInsightExtractionStats(candidate, messages, transcript, len(existing), prompt)
@@ -1450,9 +1339,17 @@ func (opts MineOptions) runInsightExtractionPass(
 			continue
 		}
 
+		for i, item := range resp.Insights {
+			normalized, err := opts.protection.insight(item)
+			if err != nil {
+				return total, summary, err
+			}
+			resp.Insights[i] = normalized
+		}
+
 		sessionInsights := 0
 		for _, item := range resp.Insights {
-			rule := strings.TrimSpace(item.Rule)
+			rule := item.Rule
 			if rule == "" {
 				continue
 			}
@@ -1475,9 +1372,9 @@ func (opts MineOptions) runInsightExtractionPass(
 			ins := &memorydb.Insight{
 				Agent:          candidate.Agent,
 				Content:        rule,
-				CompactContent: strings.TrimSpace(item.Compact),
-				Category:       strings.TrimSpace(item.Category),
-				TriggerDesc:    strings.TrimSpace(item.Trigger),
+				CompactContent: item.Compact,
+				Category:       item.Category,
+				TriggerDesc:    item.Trigger,
 				Confidence:     item.Confidence,
 			}
 			if ins.Confidence <= 0 {

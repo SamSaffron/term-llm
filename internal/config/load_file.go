@@ -220,8 +220,12 @@ func mergeSettings(dst, src map[string]any) {
 }
 
 // decodeSettings decodes merged settings into cfg. Inputs are weakly typed so
-// that, for example, a quoted "5" fills an int field.
+// that, for example, a quoted "5" fills an int field. The native memory policy
+// is checked strictly first to avoid coercing or ignoring security options.
 func decodeSettings(settings map[string]any, cfg *Config, path string) error {
+	if err := validateMemorySettings(settings); err != nil {
+		return err
+	}
 	decoder, err := mapstructure.NewDecoder(&mapstructure.DecoderConfig{
 		WeaklyTypedInput: true,
 		DecodeHook:       mapstructure.ComposeDecodeHookFunc(liveControlPlaneDecodeHook(), providerModelsDecodeHook()),
