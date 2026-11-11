@@ -113,6 +113,27 @@ jobs:
             (cd "$module" && GODEBUG=checkptr=2 go test ./...)
           done
 
+  macos-codemode-signing:
+    runs-on: macos-15-arm64
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Build frontend assets
+        run: make frontend
+      - name: Test hardened compiler with release entitlements
+        timeout-minutes: 10
+        run: bash scripts/macos-codemode-smoke.sh
+
   windows:
     runs-on: windows-latest
     steps:
