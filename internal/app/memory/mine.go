@@ -3,6 +3,7 @@ package memory
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -98,9 +99,13 @@ func (c *memoryAgentFragmentCache) get(ctx context.Context, store memoryAgentFra
 		return nil, "", err
 	}
 
+	taxonomyMap, err := buildGuardedTaxonomyMap(ctx, fragments, c.maxTokens)
+	if err != nil {
+		return nil, "", err
+	}
 	corpus := &memoryAgentFragmentCorpus{
 		fragments:   fragments,
-		taxonomyMap: buildTaxonomyMap(fragments, c.maxTokens),
+		taxonomyMap: taxonomyMap,
 		byPath:      make(map[string]int, len(fragments)),
 	}
 	for i, frag := range fragments {
@@ -140,8 +145,9 @@ func (c *memoryAgentFragmentCache) applyChanges(ctx context.Context, store memor
 		corpus.fragments = append(corpus.fragments, *frag)
 	}
 
-	corpus.taxonomyMap = buildTaxonomyMap(corpus.fragments, c.maxTokens)
-	return nil
+	var err error
+	corpus.taxonomyMap, err = buildGuardedTaxonomyMap(ctx, corpus.fragments, c.maxTokens)
+	return err
 }
 
 func (c *memoryAgentFragmentCache) invalidate(agent string) {
@@ -157,6 +163,9 @@ type transcriptMessage struct {
 // Mine mines complete and active sessions into memory fragments.
 func Mine(opts MineOptions) error {
 	env := opts.Env
+	if memoryGuardEnabled() && opts.Insights {
+		return fmt.Errorf("memory content policy does not support --insights; omit it")
+	}
 	if opts.BatchSize <= 0 {
 		return fmt.Errorf("--batch-size must be > 0")
 	}
@@ -288,6 +297,11 @@ func Mine(opts MineOptions) error {
 			return visitResult, fmt.Errorf("load messages for session %s: %w", candidate.Session.ID, err)
 		}
 		if len(loadResult.Messages) == 0 {
+			if !env.DryRun && loadResult.NextOffset > startOffset {
+				if err := memStore.UpsertState(ctx, &memorydb.MiningState{SessionID: candidate.Session.ID, Agent: candidate.Agent, LastMinedOffset: loadResult.NextOffset, MinedAt: time.Now()}); err != nil {
+					return visitResult, fmt.Errorf("checkpoint excluded context: %w", err)
+				}
+			}
 			fmt.Printf("[%d/%d] #%d no new messages to mine\n", position, total, candidate.Summary.Number)
 			return visitResult, nil
 		}
@@ -297,8 +311,21 @@ func Mine(opts MineOptions) error {
 		batchStats := opts.newMemoryExtractionStats(candidate, startOffset, loadResult.NextOffset, len(existing), loadResult, promptParts)
 		batchStart := time.Now()
 		extractionResult, err := opts.runExtractionRequest(ctx, engine, memStore, candidate.Agent, promptParts.Prompt, &batchStats)
+		// Record accepted writes even if a later tool in this batch is rejected.
+		// Rejection still leaves the mining checkpoint unchanged.
+		if !env.DryRun {
+
+			for _, p := range extractionResult.AffectedPaths {
+				if srcErr := memStore.AddFragmentSource(ctx, candidate.Agent, p, candidate.Session.ID, startOffset, loadResult.NextOffset); srcErr != nil {
+					fmt.Fprintf(os.Stderr, "warning: record fragment source %s: %v\n", p, srcErr)
+				}
+			}
+		}
 		if err != nil {
 			fragmentCache.invalidate(candidate.Agent)
+			if errors.Is(err, errMemoryPolicy) {
+				return visitResult, err
+			}
 			fmt.Fprintf(os.Stderr, "warning: skipping session %s batch at offset %d: %v\n", candidate.Session.ID, startOffset, err)
 			return visitResult, nil
 		}
@@ -307,11 +334,6 @@ func Mine(opts MineOptions) error {
 		created, updated, skipped, affectedPaths := extractionResult.Created, extractionResult.Updated, extractionResult.Skipped, extractionResult.AffectedPaths
 
 		if !env.DryRun {
-			for _, p := range affectedPaths {
-				if srcErr := memStore.AddFragmentSource(ctx, candidate.Agent, p, candidate.Session.ID, startOffset, loadResult.NextOffset); srcErr != nil {
-					fmt.Fprintf(os.Stderr, "warning: record fragment source %s: %v\n", p, srcErr)
-				}
-			}
 			if err := memStore.UpsertState(ctx, &memorydb.MiningState{
 				SessionID:       candidate.Session.ID,
 				Agent:           candidate.Agent,
@@ -346,8 +368,8 @@ func Mine(opts MineOptions) error {
 		fmt.Println("No sessions eligible for memory mining.")
 	}
 
-	if env.DryRun {
-		fmt.Println("Dry run mode: skipping image mining phase.")
+	if env.DryRun || memoryGuardEnabled() {
+		fmt.Println("Dry run or content policy: skipping image mining phase.")
 	} else {
 		imageMined := env.mineGeneratedImages(ctx, memStore)
 		if imageMined > 0 {
@@ -357,8 +379,8 @@ func Mine(opts MineOptions) error {
 
 	embeddedCount := 0
 	if opts.Embed {
-		if env.DryRun {
-			fmt.Println("Dry run mode: skipping EMBED phase.")
+		if env.DryRun || memoryGuardEnabled() {
+			fmt.Println("Dry run or content policy: skipping EMBED phase.")
 		} else {
 			embeddedCount, err = opts.runMemoryEmbedPhase(ctx, cfg, memStore)
 			if err != nil {
@@ -655,97 +677,6 @@ func (opts MineOptions) buildMemoryMineCandidate(ctx context.Context, store sess
 	}, true, nil
 }
 
-func (opts MineOptions) loadMessagesForMining(ctx context.Context, store session.Store, candidate memoryMineCandidate, offset int, taxonomyMap string) (memoryMineLoadResult, error) {
-	remaining := opts.MaxMessages
-	currentSeq := offset
-	all := make([]session.Message, 0, opts.BatchSize)
-	result := memoryMineLoadResult{}
-
-	for {
-		limit := opts.BatchSize
-		if remaining > 0 && remaining < limit {
-			limit = remaining
-		}
-
-		msgs, err := store.GetMessagesFrom(ctx, candidate.Session.ID, currentSeq, limit)
-		if err != nil {
-			return result, err
-		}
-		if len(msgs) == 0 {
-			break
-		}
-
-		for _, msg := range msgs {
-			candidateMessages := append(cloneMessages(all), msg)
-			nextSeq := msg.Sequence + 1
-			fit, ok := opts.fitMessagesForPromptBudget(candidate, offset, nextSeq, candidateMessages, taxonomyMap)
-			if !ok {
-				result.PromptBudgetHit = true
-				result.Messages = all
-				result.NextOffset = currentSeq
-				return result, nil
-			}
-			all = fit.Messages
-			currentSeq = nextSeq
-			result.TruncatedMessages = fit.TruncatedMessages
-			result.AssistantMessagesCut = fit.AssistantMessagesCut
-			result.UserMessagesCut = fit.UserMessagesCut
-			result.SingleMessageClipped = fit.SingleMessageClipped
-			if fit.TruncatedMessages > 0 {
-				result.PromptBudgetHit = true
-			}
-			if remaining > 0 {
-				remaining--
-				if remaining <= 0 {
-					result.Messages = all
-					result.NextOffset = currentSeq
-					return result, nil
-				}
-			}
-		}
-
-		if len(msgs) < limit {
-			break
-		}
-	}
-
-	result.Messages = all
-	result.NextOffset = currentSeq
-	return result, nil
-}
-
-func buildExtractionPrompt(candidate memoryMineCandidate, startOffset, endOffset int, messages []session.Message, taxonomyMap string) string {
-	return buildExtractionPromptParts(candidate, startOffset, endOffset, messages, taxonomyMap).Prompt
-}
-
-func buildTranscript(messages []session.Message) []transcriptMessage {
-	out := make([]transcriptMessage, 0, len(messages))
-
-	for _, msg := range messages {
-		entry := transcriptMessage{Role: string(msg.Role)}
-
-		if msg.Role != core.RoleTool {
-			if text := strings.TrimSpace(msg.TextContent); text != "" {
-				entry.Text = text
-			}
-		}
-
-		calls := collectToolCallNames(msg)
-		if len(calls) > 0 {
-			entry.ToolCalls = calls
-		}
-
-		if entry.Text == "" && len(entry.ToolCalls) == 0 && msg.Role == core.RoleTool {
-			// Explicitly suppress raw tool output.
-			continue
-		}
-
-		out = append(out, entry)
-	}
-
-	return out
-}
-
 func collectToolCallNames(msg session.Message) []string {
 	seen := map[string]struct{}{}
 	out := []string{}
@@ -771,13 +702,18 @@ func (opts MineOptions) runExtractionRequest(ctx context.Context, engine *engine
 	toolSpecs, cleanup := registerMemoryExtractionTools(engine, store, agent, collector, opts.ReadBytes, opts.DryRun)
 	defer cleanup()
 	finalText, err := opts.runExtractionRequestWithSystem(ctx, engine, memoryExtractionSystemPrompt, prompt, stats, toolSpecs...)
-	if err != nil {
-		return memoryExtractionResult{}, err
+	// Policy failure is terminal even if a subsequent provider turn also fails.
+	if collector.policyFailed() {
+		return collector.result(finalText), errMemoryPolicy
 	}
-	return collector.result(finalText), nil
+	return collector.result(finalText), err
 }
 
 func (opts MineOptions) runExtractionRequestWithSystem(ctx context.Context, engine *engine.Engine, systemPrompt, prompt string, stats extractionRequestStats, tools ...core.ToolSpec) (string, error) {
+	prompt, err := sanitizeMemoryInput(ctx, prompt)
+	if err != nil {
+		return "", err
+	}
 	req := core.Request{
 		Model:           strings.TrimSpace(opts.Model),
 		Ephemeral:       true,
@@ -785,7 +721,7 @@ func (opts MineOptions) runExtractionRequestWithSystem(ctx context.Context, engi
 		MaxTurns:        1,
 		MaxOutputTokens: opts.MaxOutputTokens,
 		Debug:           false,
-		DebugRaw:        opts.debugRaw(),
+		DebugRaw:        opts.debugRaw() && !memoryGuardEnabled(),
 	}
 	if len(tools) > 0 {
 		req.Tools = tools
@@ -1188,7 +1124,7 @@ func buildInsightTranscript(messages []session.Message) []transcriptMessage {
 	pending := make([]pendingMessage, 0, len(messages))
 	userTokenBudget := 0
 	for _, msg := range messages {
-		if msg.Role == core.RoleSystem {
+		if excludedMemoryEvidenceRole(msg.Role) {
 			continue
 		}
 		if msg.Role == core.RoleTool {

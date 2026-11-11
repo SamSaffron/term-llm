@@ -33,7 +33,10 @@ Rules:
 - Prioritise: active projects, recent events, infrastructure facts, preferences, API/config details that would be painful to re-derive.
 - Keep memory-palace shape: group facts into stable rooms such as User / Preferences, Projects, Infrastructure / tools, Open loops, and Recent work when those rooms are useful.
 - Drop: transient observations, resolved issues, one-off tasks, anything already obvious from context.
-- Incorporate new/changed fragments; if they conflict with existing content, prefer the newer version.
+- Treat existing recent.md as a lossy cache, not independent evidence. Canonical records and explicit dated observations take precedence.
+- Edit timestamps are not observation dates. Resolve conflicts by explicit observation dates and canonical scope, not edit order.
+- Incorporate new/changed fragments, replacing superseded facts. Do not duplicate a fact across sections.
+- Never include credentials, refusals, provider errors or commentary. Store canonical secret-file pointers instead.
 - Preserve useful structure (dates, headers, palace rooms) but trim ruthlessly within each section.
 - Replace superseded facts instead of preserving history.
 - Output ONLY the raw markdown — no commentary, no code fences.`
@@ -116,9 +119,22 @@ func runMemoryPromoteFlow(ctx context.Context, env Env, cfg *config.Config, engi
 
 	buildUpdatedRecent := func(changed []memorydb.Fragment, existingRecent string) (string, error) {
 		prompt := buildPromotePrompt(changed, existingRecent)
+		prompt, err := appendPromotionContext(prompt)
+		if err != nil {
+			return "", err
+		}
 		updatedRecent, err := runMemoryPromoteRequest(ctx, engine, strings.TrimSpace(opts.Model), prompt, maxWords, env.debugRaw())
 		if err != nil {
 			return "", err
+		}
+		if memoryGuardEnabled() {
+			if len(updatedRecent) > maxBytes {
+				return "", fmt.Errorf("promotion exceeds byte cap; existing recent.md preserved")
+			}
+			if err := runMemoryContentGuard(ctx, "promotion", "recent.md", updatedRecent); err != nil {
+				return "", err
+			}
+			return updatedRecent, nil
 		}
 		return truncatePromotedRecent(updatedRecent, maxBytes), nil
 	}
@@ -199,14 +215,14 @@ func collectPromoteChangedFragments(ctx context.Context, store *memorydb.Store, 
 		return nil, time.Time{}, err
 	}
 
-	fragments, err := store.ListFragments(ctx, memorydb.ListOptions{Agent: agentName, Since: &cutoff})
+	fragments, err := store.ListFragments(ctx, memorydb.ListOptions{Agent: agentName, UpdatedSince: &cutoff})
 	if err != nil {
 		return nil, time.Time{}, fmt.Errorf("list fragments for promote: %w", err)
 	}
 
 	changed := make([]memorydb.Fragment, 0, len(fragments))
 	for _, frag := range fragments {
-		if frag.UpdatedAt.After(cutoff) {
+		if frag.UpdatedAt.After(cutoff) && !excludedPromotionPath(frag.Path) {
 			changed = append(changed, frag)
 		}
 	}
@@ -291,9 +307,16 @@ func loadRecentContent(recentPath string) (string, error) {
 	return string(data), nil
 }
 
+func excludedPromotionPath(path string) bool {
+	return strings.HasPrefix(path, "fragments/credentials/") || strings.HasSuffix(path, "/accounts-and-credentials.md")
+}
+
 func buildPromotePrompt(changed []memorydb.Fragment, existingRecent string) string {
 	var b strings.Builder
 	for _, frag := range changed {
+		if excludedPromotionPath(frag.Path) {
+			continue
+		}
 		b.WriteString("## ")
 		b.WriteString(frag.Path)
 		b.WriteString("\n\n")
@@ -306,6 +329,10 @@ func buildPromotePrompt(changed []memorydb.Fragment, existingRecent string) stri
 }
 
 func runMemoryPromoteRequest(ctx context.Context, engine *engine.Engine, model, prompt string, maxWords int, debugRaw bool) (string, error) {
+	prompt, err := sanitizeMemoryInput(ctx, prompt)
+	if err != nil {
+		return "", err
+	}
 	sysInstruction := fmt.Sprintf(memoryPromoteSystemInstructionTemplate, maxWords)
 	req := core.Request{
 		Model:     strings.TrimSpace(model),
@@ -315,7 +342,7 @@ func runMemoryPromoteRequest(ctx context.Context, engine *engine.Engine, model, 
 			core.UserText(prompt),
 		},
 		MaxTurns: 1,
-		DebugRaw: debugRaw,
+		DebugRaw: debugRaw && !memoryGuardEnabled(),
 	}
 
 	stream, err := engine.Stream(ctx, req)

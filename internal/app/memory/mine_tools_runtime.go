@@ -3,6 +3,7 @@ package memory
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -28,10 +29,25 @@ type memoryExtractionCollector struct {
 	skipped  int
 	affected []string
 	seen     map[string]struct{}
+	rejected bool
 }
 
 func newMemoryExtractionCollector() *memoryExtractionCollector {
 	return &memoryExtractionCollector{seen: map[string]struct{}{}}
+}
+
+func (c *memoryExtractionCollector) rejectPolicy() {
+	if c == nil {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.rejected = true
+}
+func (c *memoryExtractionCollector) policyFailed() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.rejected
 }
 
 func (c *memoryExtractionCollector) noteCreated(path string) {
@@ -133,6 +149,10 @@ func (t *memoryCreateFragmentTool) Execute(ctx context.Context, args json.RawMes
 	if len([]byte(content)) > 8192 {
 		return core.ToolOutput{}, fmt.Errorf("content exceeds 8192 bytes")
 	}
+	if err := runMemoryContentGuard(ctx, "fragment", fragPath, content); err != nil {
+		t.collector.rejectPolicy()
+		return core.ToolOutput{}, err
+	}
 	if !t.dryRun {
 		if err := t.store.CreateFragment(ctx, &memorydb.Fragment{Agent: t.agent, Path: fragPath, Content: content, Source: memorydb.DefaultSourceMine}); err != nil {
 			return core.ToolOutput{}, err
@@ -194,6 +214,10 @@ func (t *memoryUpdateFragmentTool) Execute(ctx context.Context, args json.RawMes
 	if len([]byte(content)) > 8192 {
 		return core.ToolOutput{}, fmt.Errorf("content exceeds 8192 bytes")
 	}
+	if err := runMemoryContentGuard(ctx, "fragment", fragPath, content); err != nil {
+		t.collector.rejectPolicy()
+		return core.ToolOutput{}, err
+	}
 	if !t.dryRun {
 		ok, err := t.store.UpdateFragment(ctx, t.agent, fragPath, content)
 		if err != nil {
@@ -217,6 +241,7 @@ func registerMemoryExtractionTools(engine *engine.Engine, store *memorydb.Store,
 	}
 	specs := make([]core.ToolSpec, 0, len(tools))
 	for _, tool := range tools {
+		tool = &memoryPolicyTool{Tool: tool, collector: collector}
 		engine.RegisterTool(tool)
 		specs = append(specs, tool.Spec())
 	}
@@ -226,4 +251,29 @@ func registerMemoryExtractionTools(engine *engine.Engine, store *memorydb.Store,
 		}
 	}
 	return specs, cleanup
+}
+
+// Guard lookup results as well as the initial prompt; subsequent engine turns
+// otherwise bypass input sanitization. A rejected tool cannot be hidden by the
+// model replying "done": the collector prevents checkpoint advancement.
+type memoryPolicyTool struct {
+	core.Tool
+	collector *memoryExtractionCollector
+}
+
+func (t *memoryPolicyTool) Execute(ctx context.Context, args json.RawMessage) (core.ToolOutput, error) {
+	out, err := t.Tool.Execute(ctx, args)
+	if err != nil {
+		if errors.Is(err, errMemoryPolicy) {
+			t.collector.rejectPolicy()
+		}
+		return out, err
+	}
+	safe, err := sanitizeMemoryInput(ctx, out.Content)
+	if err != nil {
+		t.collector.rejectPolicy()
+		return core.ToolOutput{}, err
+	}
+	out.Content = safe
+	return out, nil
 }

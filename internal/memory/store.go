@@ -60,10 +60,11 @@ type ScoredFragment struct {
 
 // ListOptions configures fragment listing.
 type ListOptions struct {
-	Agent      string
-	Since      *time.Time
-	Limit      int
-	PathFilter string // substring match on path (case-insensitive)
+	Agent        string
+	Since        *time.Time // creation cutoff
+	UpdatedSince *time.Time // content-update cutoff (independent of Since)
+	Limit        int
+	PathFilter   string // substring match on path (case-insensitive)
 }
 
 // SearchResult is a BM25 result from FTS.

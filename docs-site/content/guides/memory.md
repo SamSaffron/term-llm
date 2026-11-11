@@ -150,6 +150,59 @@ term-llm memory promote --agent assistant --recent-max-bytes 20000
 term-llm memory promote --agent assistant --dry-run
 ```
 
+### Optional local content policy
+
+Set `TERM_LLM_MEMORY_CONTENT_GUARD` to a **trusted executable path** to apply a
+local policy to `memory mine` and `memory promote`. The executable is invoked
+directly (no shell or arguments). One JSON object is sent on stdin:
+
+- `{"mode":"input","path":"","content":"..."}`: sanitize input before sending
+  it to the model. Exit zero and return `{"content":"sanitized text"}` on stdout.
+- `{"mode":"fragment","path":"fragments/notes/example.md","content":"..."}`:
+  approve the exact proposed create/update text by exiting zero.
+- `{"mode":"promotion","path":"recent.md","content":"..."}`: approve the exact
+  proposed summary by exiting zero.
+
+Nonzero exit, missing executables, cancellation, a ten-second timeout, or invalid
+input-mode output fail closed. Stdout is limited to 4 MiB; child diagnostics are
+not copied to CLI errors. Raw model debug logging is disabled while the policy
+is configured. The policy is trusted code with the CLI's permissions; this hook
+is not a sandbox or a built-in secret detector.
+
+Mining sanitizes messages before prompt-budget clipping, the assembled prompt,
+and complete lookup source text before clipping (guarded search excerpts use the
+start of the sanitized source rather than an FTS snippet). Taxonomy paths are
+sanitized before directory summarization and budget selection. System, developer and event messages are not mining
+evidence. Fragment creates and updates are checked even in dry-run mode. Any
+policy rejection fails the batch without advancing its mining checkpoint, even
+if the model continues after a rejected tool call. Previously accepted writes in
+the same batch are not rolled back; their source ranges are still recorded. Context-only ranges advance the sequence
+checkpoint without an extraction request.
+
+With a policy configured, image mining and embedding are skipped and `--insights` is rejected
+before mining starts: those independent write paths are not covered by this
+hook. Existing unguarded behavior is unchanged when the variable is unset.
+The hook does not govern other memory commands or runtime memory tools.
+
+Promotion checks the complete output **before** atomically replacing `recent.md`
+and updating its watermark. Over-budget guarded output is rejected, not
+truncated; rejected output leaves both the summary and watermark unchanged.
+Promotion selects fragments by their content-update time, including edits to
+older records. Creation-time listing semantics are unchanged. Credential records
+under `fragments/credentials/` or named `accounts-and-credentials.md` are omitted
+from promotion prompts (this is not a substitute for input sanitization).
+
+For promotion, `TERM_LLM_MEMORY_PROMOTION_CONTEXT` optionally names a UTF-8 text
+file (at most 1 MiB) of authoritative, dated canonical context to append to the
+prompt. Unreadable or oversized context fails the operation. This context is
+also passed through input sanitization when a policy is configured; it does not
+change which fragments are selected or directly write any memory.
+
+**Dry run is not an offline preview:** mining and promotion dry-runs still make
+model calls. `mine --since` selects sessions by their update timestamps, not the
+dates of individual messages. It is not a safe calendar bound for a historical
+backfill: newly updated old sessions may contain much older unmined messages.
+
 ## Consolidate safely
 
 ```bash

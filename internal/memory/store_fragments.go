@@ -358,6 +358,11 @@ func (s *Store) ListFragments(ctx context.Context, opts ListOptions) ([]Fragment
 		query += ` AND agent = ?`
 		args = append(args, strings.TrimSpace(opts.Agent))
 	}
+	if opts.UpdatedSince != nil {
+		query += ` AND updated_at >= ?`
+		args = append(args, *opts.UpdatedSince)
+	}
+
 	if opts.Since != nil {
 		query += ` AND created_at >= ?`
 		args = append(args, *opts.Since)

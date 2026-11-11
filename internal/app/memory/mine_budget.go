@@ -371,6 +371,27 @@ func (t *memorySearchFragmentsTool) Execute(ctx context.Context, args json.RawMe
 		return core.ToolOutput{}, err
 	}
 	for i := range results {
+		if memoryGuardEnabled() {
+			// FTS snippets have already been clipped by SQLite. Never try to
+			// detect credentials in them: sanitize the complete source first.
+			frag, err := t.store.GetFragment(ctx, t.agent, results[i].Path)
+			if err != nil {
+				return core.ToolOutput{}, err
+			}
+			if frag == nil {
+				return core.ToolOutput{}, errMemoryPolicy
+			}
+			safe, err := sanitizeMemoryInput(ctx, frag.Content)
+			if err != nil {
+				return core.ToolOutput{}, err
+			}
+			safePath, err := sanitizeMemoryInput(ctx, frag.Path)
+			if err != nil {
+				return core.ToolOutput{}, err
+			}
+			results[i].Snippet, results[i].Path = safe, safePath
+		}
+
 		snippetLimit := memoryMineFragmentSnippetChars
 		if t.readBytes > 0 && t.readBytes < snippetLimit {
 			snippetLimit = t.readBytes
@@ -494,7 +515,14 @@ func (t *memoryGetFragmentTool) Execute(ctx context.Context, args json.RawMessag
 	if frag == nil {
 		return core.TextOutput(fmt.Sprintf("{\n  \"agent\": %q,\n  \"path\": %q,\n  \"found\": false\n}", t.agent, fragPath)), nil
 	}
-	content := frag.Content
+	content, err := sanitizeMemoryInput(ctx, frag.Content)
+	if err != nil {
+		return core.ToolOutput{}, err
+	}
+	safePath, err := sanitizeMemoryInput(ctx, frag.Path)
+	if err != nil {
+		return core.ToolOutput{}, err
+	}
 	readLimit := memoryMineFragmentReadChars
 	if t.readBytes > 0 && t.readBytes < readLimit {
 		readLimit = t.readBytes
@@ -504,7 +532,7 @@ func (t *memoryGetFragmentTool) Execute(ctx context.Context, args json.RawMessag
 	}
 	response := map[string]any{
 		"agent":   t.agent,
-		"path":    frag.Path,
+		"path":    safePath,
 		"found":   true,
 		"content": content,
 	}
