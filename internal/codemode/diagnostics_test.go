@@ -5,6 +5,7 @@ package codemode
 import (
 	"context"
 	"encoding/json"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -49,7 +50,7 @@ func TestBindingScriptDiagnostics(t *testing.T) {
 // getter must not recursively replace the original diagnostic.
 func TestBindingHostExceptionDiagnostics(t *testing.T) {
 	ctx := context.Background()
-	r := wazero.NewRuntimeWithConfig(ctx, wazero.NewRuntimeConfig().WithCompilationCache(compilationCache))
+	r := wazero.NewRuntimeWithConfig(ctx, runtimeConfig(runtime.GOOS, runtime.GOARCH).WithCompilationCache(compilationCache))
 	defer r.Close(ctx)
 	module, err := r.CompileModule(ctx, wasm)
 	if err != nil {

@@ -7,6 +7,7 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
+	"runtime"
 	"testing"
 
 	"github.com/tetratelabs/wazero"
@@ -17,7 +18,7 @@ func TestPinnedABI(t *testing.T) {
 		t.Fatal(got)
 	}
 	ctx := context.Background()
-	r := wazero.NewRuntime(ctx)
+	r := wazero.NewRuntimeWithConfig(ctx, runtimeConfig(runtime.GOOS, runtime.GOARCH))
 	defer r.Close(ctx)
 	mod, err := r.CompileModule(ctx, wasm)
 	if err != nil {
