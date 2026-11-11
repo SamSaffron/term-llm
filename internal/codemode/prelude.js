@@ -100,8 +100,37 @@
       };
     },
   });
+  // Observe every input immediately, including when iteration ends early.
+  function settleInOrder(promises) {
+    const ready = [];
+    let wake,
+      remaining = promises.length;
+    for (let index = 0; index < remaining; index++) {
+      const promise = promises[index];
+      const push = (result) => {
+        ready.push(result);
+        if (wake) {
+          wake();
+          wake = undefined;
+        }
+      };
+      SafePromise.resolve(promise).then(
+        (value) => push({ index, status: "fulfilled", value }),
+        (reason) => push({ index, status: "rejected", reason }),
+      );
+    }
+    return (async function* () {
+      while (remaining > 0) {
+        if (ready.length === 0)
+          await new SafePromise((resolve) => { wake = resolve; });
+        remaining--;
+        yield ready.shift();
+      }
+    })();
+  }
   Object.assign(globalThis, {
     tools,
+    settleInOrder,
     text: (value) =>
       send({
         kind: "text",

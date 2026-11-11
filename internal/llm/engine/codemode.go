@@ -189,7 +189,7 @@ func (c *nestedCell) Describe(ctx context.Context, names []string) (json.RawMess
 		if err != nil {
 			return nil, err
 		}
-		out = append(out, map[string]any{"name": name, "inputSchema": id.spec.Schema, "outputSchema": id.spec.OutputSchema, "schema_hash": id.hash, "returns": "MCP: {content, structuredContent?, isError?}; native: {text,isError,timedOut,content?}; image blocks use cell-scoped handle, explicit image(block) emits"})
+		out = append(out, map[string]any{"name": name, "description": truncateUTF8(id.spec.Description, 1024), "inputSchema": id.spec.Schema, "outputSchema": id.spec.OutputSchema, "schema_hash": id.hash, "returns": "MCP: {content, structuredContent?, isError?}; native: {text,isError,timedOut,content?}; image blocks use cell-scoped handle, explicit image(block) emits"})
 	}
 	b, err := json.Marshal(out)
 	if len(b) > codemode.Limits.Arguments {

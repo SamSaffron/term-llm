@@ -39,7 +39,7 @@ The original `code_mode` path is a synchronous bounded cell: 64MiB QuickJS heap,
 
 The engine-owned async `spawn_script`/`wait_script`/`cancel_script` path starts one fresh instance per cell with a different policy: **256MiB QuickJS heap**, **512MiB WASM linear cap** (the linear cap must be larger than the heap), 512KiB stack, 1MiB total JSON state with a256KiB per-value cap, 2s active JS per cell, and no whole-cell wall kill. The 2s guard is accumulated JS execution only; time spent waiting for host tools or `sleep(ms)` does not consume it. A request or wait cancellation does not stop the cell; only explicit cancel or session teardown does. `max_wait` is in seconds (0–600, default60); zero polls immediately. It bounds one observation, not the cell.
 
-Visible text is bounded per observation by `max_output_tokens` (default10000, converted at4 bytes per estimated token). Output withheld by that observation budget stays queued; the retained collector is separately bounded at1MiB of text and16 images/16MiB of decoded image bytes. Excess collector output is permanently truncated and reported in the metadata envelope rather than failing otherwise successful work. State is committed only after successful completion; failed, cancelled or torn-down cells discard staged state, and image handles are rejected from state.
+Visible text is bounded per observation by `max_output_tokens` (default10000, converted at4 bytes per estimated token). Output withheld by that observation budget stays queued; the retained collector is separately bounded at1MiB of text and16 images/16MiB of decoded image bytes. Overflow evicts oldest unread text, retaining the final tail without reordering images; omitted bytes are reported rather than failing successful work. State is committed only after successful completion; failed, cancelled or torn-down cells discard staged state, and image handles are rejected from state.
 
 
 ### Concurrent sessions and aggregate budgets
@@ -57,7 +57,7 @@ Four nested executing tools per session and sixteen per process remain shared,
 not multiplied by cell count. Human prompts and prompt-mutex waiters park shared execution permits until
 they can resume safely. Normal turn completion preserves cells, explicit Stop
 cancels the entire session, and reset/teardown cancel owned machines. Eight recent
-terminal records/session retain bounded output; undelivered images share a
+terminal records/session retain bounded output (drained receipts expire first, otherwise oldest); undelivered images share a
 32 MiB/session cap. New cells read snapshots; successful explicit set/delete write
 sets merge atomically, with last-successful-committer wins on the same key.
 

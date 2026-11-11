@@ -3,6 +3,7 @@ package engine
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -158,5 +159,77 @@ func TestCodeModeRosterPrecedesLatestUserWithoutMutatingTranscript(t *testing.T)
 	}
 	if len(messages) != 4 || core.MessageText(messages[3]) != "latest" {
 		t.Fatal("roster mutated transcript")
+	}
+}
+
+func TestCodeModeTerminalEvictionPrefersDrained(t *testing.T) {
+	owner := &codeModeSessionCells{}
+	for i := 0; i < codemode.MaxTerminalCells+1; i++ {
+		cell := newCodeModeAsyncCell(nil, fmt.Sprint(i), "session", nil)
+		cell.done = true
+		cell.observed = true
+		cell.emitText("unread")
+		owner.terminal = append(owner.terminal, cell)
+	}
+	// The oldest receipt still has unread text; a newer drained receipt expires.
+	owner.terminal[3].drainPartsLocked(100)
+	owner.evictTerminal()
+	if len(owner.terminal) != codemode.MaxTerminalCells || owner.terminal[0].id != "0" || owner.terminal[3].id != "4" {
+		t.Fatal("did not prefer drained receipt")
+	}
+	// With no drained receipts, the oldest unread receipt must expire.
+	oldest := owner.terminal[0]
+	owner.evictTerminal()
+	if owner.terminal[0].id != "1" || len(oldest.parts) != 0 || oldest.pendingBytes != 0 {
+		t.Fatal("FIFO fallback did not release output")
+	}
+}
+
+func TestCodeModeNinthCompletionKeepsUnreadOutput(t *testing.T) {
+	e := newCodeEngine()
+	t.Cleanup(e.CloseCodeMode)
+	ctx := asyncCodeContext("unread-retention", "spawn")
+	first, err := e.ExecCodeMode(ctx, `text('x'.repeat(1000))`, time.Second, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for first.Status != "completed" {
+		first, err = e.WaitCodeMode(ctx, first.CellID, time.Second, 1)
+		if err != nil || first.IsError {
+			t.Fatalf("%+v %v", first, err)
+		}
+	}
+	if !first.HasMoreOutput {
+		t.Fatal("first output already drained")
+	}
+	waitCodeModeSlotIdle(t, e)
+	var drainedID string
+	for i := 0; i < codemode.MaxTerminalCells; i++ {
+		r, err := e.ExecCodeMode(ctx, `text('drained')`, time.Second, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		r = awaitCodeModeTerminal(t, e, ctx, r)
+		if i == 0 {
+			drainedID = r.CellID
+		}
+		waitCodeModeSlotIdle(t, e)
+	}
+	if len(e.CodeModeCells("unread-retention")) != codemode.MaxTerminalCells {
+		t.Fatal("terminal count grew")
+	}
+	expired, _ := e.WaitCodeMode(ctx, drainedID, 0, 0)
+	if expired.Status != "unknown" {
+		t.Fatal("old drained receipt survived")
+	}
+	cancelled, cancel := context.WithCancel(ctx)
+	cancel()
+	untouched, _ := e.WaitCodeMode(cancelled, first.CellID, 0, 1)
+	if len(untouched.Parts) != 0 || !untouched.HasMoreOutput {
+		t.Fatal("cancelled observer drained output")
+	}
+	rest, _ := e.WaitCodeMode(ctx, first.CellID, 0, 0)
+	if rest.Status != "completed" || len(partsText(rest)) < 990 || rest.HasMoreOutput || rest.OutputTruncated {
+		t.Fatalf("unread output lost: %+v", rest)
 	}
 }

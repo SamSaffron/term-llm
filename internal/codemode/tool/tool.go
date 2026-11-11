@@ -15,6 +15,13 @@ import (
 
 const Name = codemode.LegacyToolName
 
+const callableContract = `Tools: await tools[exactName](args); list Object.keys(tools); inspect text(await describeTools([name])). Normal approvals apply.
+Results: native {text,isError,timedOut,content?}; MCP {content,structuredContent?,isError?}. Check flags; bridge failures throw. Await calls; parallelize only independent work.
+settleInOrder(promises): yields {index,status,value|reason} in completion order; break does not cancel calls—await remaining work.
+`
+
+const checkedExample = `Example (read_file admitted): const r = await tools.read_file({path:'README.md'}); if (r.isError || r.timedOut) throw Error(r.text); text(r.text);`
+
 // Tool runs a bounded async body, using only engine-admitted capabilities.
 type Tool struct{}
 
@@ -22,14 +29,12 @@ func New() *Tool { return &Tool{} }
 func (t *Tool) Spec() core.ToolSpec {
 	return core.ToolSpec{
 		Name: Name,
-		Description: `Run JavaScript to compose tools, filter results or use activated skill modules. Prefer direct tools for simple calls, discovery, skill activation and controls.
-Put an async function body in code (no Markdown fences); await/return work. Fresh QuickJS per call: no Node, filesystem or network except through admitted tools.
-- Tools: await tools[exactName](args); inspect unfamiliar schemas with text(await describeTools([names])). Native, skill-script and MCP tools retain normal permissions; MCP is optional.
-- Results: native {text,isError,timedOut,content?}; MCP {content,structuredContent?,isError?}. Check error flags; bridge failures throw. Await every call; use Promise.all only for independent work.
-- Output: text(value), image(imageBlockOrHandle), or return value. Intermediates stay private; return emits output, not state.
+		Description: `Run JavaScript to compose tools or activated skill modules. Prefer direct tools for simple calls.
+Put an async function body in code (no fences). Fresh QuickJS per call; no Node, filesystem or network except admitted tools.
+` + callableContract + `- Output: text(value), image(imageBlockOrHandle), or return value. Intermediates stay private; return emits output, not state.
 - State: store(key,value) stages JSON; load(key) reads it. Pass the successful result's state as the next call's state; nothing persists automatically. Globals and image handles expire.
-- Skills: const m = await import('skill:activated-name'); use its documented exports. Host tools perform filesystem/browser work.
-Example (read_file admitted): const r = await tools.read_file({path:'README.md'}); if (r.isError || r.timedOut) throw Error(r.text); text(r.text);
+- Skills: await import('skill:activated-name').
+` + checkedExample + `
 Limits: 120s wall default, 300s max via timeout_ms (includes approvals); 2s active JS; 64 host calls, 4 concurrent; await sleep(ms) with ms<=1000.
 No external-effect rollback. Reconcile outcome_unknown before retrying actions.`,
 		Schema: map[string]interface{}{"type": "object", "properties": map[string]interface{}{"code": map[string]interface{}{"type": "string", "description": "Async function body; use dynamic import('skill:activated-name')"}, "state": map[string]interface{}{"type": "object", "additionalProperties": true, "description": "Explicit prior returned state, or empty object"}, "timeout_ms": map[string]interface{}{"type": "integer", "minimum": 1, "maximum": 300000}}, "required": []string{"code"}, "additionalProperties": false},
