@@ -414,8 +414,12 @@ func TestApplyDurableSessionTotalsReportsWholeSession(t *testing.T) {
 		CostUSD: &observed, ActiveMS: msPointer(1), ModelMS: msPointer(1), ToolMS: msPointer(0),
 	}
 	srv.applyDurableSessionTotals(live, rt, entries, sessionDelegatedCost{CostUSD: 4, Partial: true}, totals)
-	if len(live.Models) != 1 || live.Models[0].Model != "observed-by-runtime" {
-		t.Fatalf("live breakdown replaced by recorded rows: %+v", live.Models)
+	if len(live.Models) != 2 {
+		t.Fatalf("live breakdown lost recorded or runtime-only models: %+v", live.Models)
+	}
+	modelUsageStatsRow(t, live.Models, "observed-by-runtime")
+	if row := modelUsageStatsRow(t, live.Models, "opus"); row.InputTokens != 1_000 {
+		t.Fatalf("live breakdown lost historical opus usage: %+v", row)
 	}
 	// Recorded rows are the whole session and the runtime only ever holds the
 	// slice it ran, so the runtime figure does not replace them; delegated runs
@@ -432,6 +436,55 @@ func TestApplyDurableSessionTotalsReportsWholeSession(t *testing.T) {
 	// Recorded turns plus the clock of the turn still running.
 	if live.ActiveMS == nil || *live.ActiveMS != 27_000 || *live.ModelMS != 23_000 {
 		t.Fatalf("live timing = %v/%v, want recorded plus the uncommitted 3000ms", live.ActiveMS, live.ModelMS)
+	}
+}
+
+func TestApplyDurableSessionTotalsRetainsModelsAcrossHandover(t *testing.T) {
+	entries := []session.ModelUsage{
+		{Model: "opus", Kind: session.ModelUsageMain, InputTokens: 2_000, OutputTokens: 100, CachedInputTokens: 500, CacheWriteTokens: 50, LLMTurns: 2, ToolCalls: 3, LLMMS: 4_000, ToolMS: 500},
+		{Model: "gpt-6.1-sol", Kind: session.ModelUsageMain, InputTokens: 1_000, OutputTokens: 20, LLMTurns: 1, LLMMS: 2_000},
+	}
+	for _, current := range []string{"gpt-6.1-sol", "opus"} {
+		t.Run(current, func(t *testing.T) {
+			rt := &serveRuntime{}
+			rt.startStats(current)
+			rt.recordStatsEvent(core.Event{Type: core.EventUsage, Use: &core.Usage{InputTokens: 1_000, OutputTokens: 20}})
+			rt.finishStats()
+			out := statsResponseForRuntime(rt)
+			(&serveServer{}).applyDurableSessionTotals(out, rt, entries, sessionDelegatedCost{}, webSessionMetrics{InputTokens: 3_000, OutputTokens: 120, CachedInputTokens: 500, CacheWriteTokens: 50})
+			if len(out.Models) != 2 || out.Models[0].Model != "gpt-6.1-sol" || out.Models[1].Model != "opus" {
+				t.Fatalf("models after handover = %+v, want both models in stable order", out.Models)
+			}
+			opus := modelUsageStatsRow(t, out.Models, "opus")
+			if opus.InputTokens != 2_000 || opus.OutputTokens != 100 || opus.CachedInputTokens != 500 || opus.CacheWriteTokens != 50 || opus.LLMTurns != 2 || opus.ToolCalls != 3 || opus.ActiveMS == nil || *opus.ActiveMS != 4_500 {
+				t.Fatalf("opus usage lost or double-counted after handover: %+v", opus)
+			}
+			sol := modelUsageStatsRow(t, out.Models, "gpt-6.1-sol")
+			if sol.InputTokens != 1_000 || sol.OutputTokens != 20 || sol.LLMTurns != 1 {
+				t.Fatalf("sol usage lost or double-counted after handover: %+v", sol)
+			}
+		})
+	}
+}
+
+func TestSessionModelStatsKeepsUnrecordedModelsAndRunningState(t *testing.T) {
+	recorded := []serveStatsModel{{Model: "opus", webSessionMetrics: webSessionMetrics{InputTokens: 2_000}}}
+	observed := []serveStatsModel{
+		{Model: "opus", Running: true, webSessionMetrics: webSessionMetrics{InputTokens: 1_000}},
+		{Model: "sol", Running: true, webSessionMetrics: webSessionMetrics{OutputTokens: 20}},
+	}
+	rows := sessionModelStats(recorded, observed)
+	if len(rows) != 2 || !rows[0].Running || !rows[1].Running || rows[0].InputTokens != 2_000 || rows[1].OutputTokens != 20 {
+		t.Fatalf("merged model stats = %+v", rows)
+	}
+	if recorded[0].Running {
+		t.Fatal("merging mutated recorded rows")
+	}
+	if got := sessionModelStats(nil, observed); !reflect.DeepEqual(got, observed) {
+		t.Fatalf("missing attribution discarded observed rows: %+v", got)
+	}
+	if got := sessionModelStats(nil, nil); got == nil || len(got) != 0 {
+		t.Fatalf("empty model stats must serialize as an array: %+v", got)
 	}
 }
 

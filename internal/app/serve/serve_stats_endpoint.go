@@ -44,8 +44,8 @@ type serveStatsModel struct {
 }
 type serveStatsResponse struct {
 	Metrics webSessionMetrics `json:"metrics"`
-	// DurableMetrics is deliberately separate: metrics/timing/cost share the
-	// runtime-local scope whenever observation exists, never a fabricated blend.
+	// DurableMetrics keeps recorded token totals separate from runtime-local
+	// metrics. Headline timing, cost and model attribution span the session.
 	DurableMetrics        *webSessionMetrics `json:"durable_metrics,omitempty"`
 	ActiveMS              *int64             `json:"active_ms,omitempty"`
 	ModelMS               *int64             `json:"model_ms,omitempty"`
@@ -377,18 +377,11 @@ func (s *serveServer) delegatedCost(ctx context.Context, parentID string) sessio
 }
 
 func (s *serveServer) applyDurableSessionTotals(out *serveStatsResponse, rt *serveRuntime, entries []session.ModelUsage, delegated sessionDelegatedCost, totals webSessionMetrics) {
-	// Recorded history shows the breakdown itself; a live runtime keeps its own
-	// observed rows and only borrows the session-wide totals.
-	breakdown := out
-	if out.Scope != "durable_history" {
-		breakdown = &serveStatsResponse{}
-	}
+	// Prefer session-wide attribution without double-counting the runtime ledger.
+	breakdown := &serveStatsResponse{}
 	appendDurableModelStats(breakdown, entries, totals)
-	// Spend no row claims belongs on screen in either scope: it is the only
-	// evidence that the session's own totals are larger than the breakdown.
-	if breakdown != out && breakdown.Unattributed != nil {
-		out.Unattributed = breakdown.Unattributed
-	}
+	out.Models = sessionModelStats(breakdown.Models, out.Models)
+	out.Unattributed = breakdown.Unattributed
 
 	split := durableCostFromEntries(entries)
 	// The recorded rows are the whole session; the runtime holds only the slice
@@ -433,6 +426,7 @@ func (s *serveServer) applyDurableSessionTotals(out *serveStatsResponse, rt *ser
 		}
 	}
 	if len(breakdown.Models) > 0 {
+		out.Unavailable = removeUnavailable(out.Unavailable, "models")
 		out.Unavailable = removeUnavailable(out.Unavailable, "historical_model_usage")
 	}
 }

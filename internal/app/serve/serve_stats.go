@@ -603,9 +603,8 @@ func appendRuntimeModelStats(out *serveStatsResponse, calls []ui.UsageCall, runs
 	accumulator.flush(out, pricingPerRequest)
 }
 
-// appendDurableModelStats builds the recorded-history breakdown from persisted
-// per-model attribution. Timing and request boundaries were never retained, so
-// the rows report token counters priced as a single aggregate estimate.
+// appendDurableModelStats builds recorded attribution with aggregate pricing
+// and timing where retained.
 //
 // It also reports whatever the rows do not account for. Sessions that ran
 // before attribution existed keep their whole bucket there, and any future call
@@ -640,6 +639,24 @@ func appendDurableModelStats(out *serveStatsResponse, entries []session.ModelUsa
 	accumulator.flush(out, pricingAggregate)
 	out.Unavailable = removeUnavailable(out.Unavailable, "models")
 	out.Unavailable = removeUnavailable(out.Unavailable, "historical_model_usage")
+}
+
+// sessionModelStats overlays recorded usage, retaining runtime-only models and running flags.
+func sessionModelStats(recorded, observed []serveStatsModel) []serveStatsModel {
+	models := make(map[string]serveStatsModel, len(recorded)+len(observed))
+	for _, row := range observed {
+		models[row.Model] = row
+	}
+	for _, row := range recorded {
+		row.Running = row.Running || models[row.Model].Running
+		models[row.Model] = row
+	}
+	rows := make([]serveStatsModel, 0, len(models))
+	for _, row := range models {
+		rows = append(rows, row)
+	}
+	sort.Slice(rows, func(i, j int) bool { return rows[i].Model < rows[j].Model })
+	return rows
 }
 
 // aggregateCost prices summed counters as one estimate for a model. Recorded
