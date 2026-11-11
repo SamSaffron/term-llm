@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"runtime"
 	"time"
 
 	"github.com/tetratelabs/wazero"
@@ -23,6 +24,16 @@ var wasm []byte
 var prelude string
 
 var compilationCache = wazero.NewCompilationCache()
+
+func runtimeConfig(goos, goarch string) wazero.RuntimeConfig {
+	// Hardened macOS arm64 binaries cannot execute wazero-generated code without
+	// executable-memory entitlements. Interpret WASM instead of weakening signing.
+	// See https://github.com/wazero/wazero/issues/2393.
+	if goos == "darwin" && goarch == "arm64" {
+		return wazero.NewRuntimeConfigInterpreter()
+	}
+	return wazero.NewRuntimeConfig()
+}
 
 // Available reports whether this platform supports the sandbox.
 func Available() bool { return true }
@@ -117,7 +128,7 @@ func run(ctx context.Context, in Input, names []string, host Host, modules Modul
 			result.Status = "cancelled"
 		}
 	}()
-	r := wazero.NewRuntimeWithConfig(ctx, wazero.NewRuntimeConfig().WithCompilationCache(compilationCache).WithMemoryLimitPages(uint32(policy.linear/65536)).WithCloseOnContextDone(true))
+	r := wazero.NewRuntimeWithConfig(ctx, runtimeConfig(runtime.GOOS, runtime.GOARCH).WithCompilationCache(compilationCache).WithMemoryLimitPages(uint32(policy.linear/65536)).WithCloseOnContextDone(true))
 	defer r.Close(context.Background())
 	module, err := withCompilationSlot(ctx, func() (wazero.CompiledModule, error) { return r.CompileModule(ctx, wasm) })
 	if err != nil {

@@ -2,6 +2,8 @@
 
 The product embeds `quickjs.wasm` from **quickjs-wasi 3.6.2**; it does not run the npm JavaScript wrapper, Node, extensions, a native interpreter, or a downloaded binary at runtime. The thin Go adapter uses wazero v1.11.0. `js/wasm` hosts return an explicit unavailable result.
 
+On macOS arm64, the WASM runtime explicitly uses wazero's interpreter. Its compiler requires executable-memory signing entitlements on that platform ([upstream issue](https://github.com/wazero/wazero/issues/2393)); hardened signed binaries can otherwise be terminated by macOS when the first cell compiles. Interpreting avoids adding those entitlements or weakening hardened signing. Other platforms, including macOS amd64, retain wazero's default engine. This trades slower script execution on Apple Silicon (including unsigned development builds) for compatibility with hardened signing; computationally heavy scripts may complete less work before the unchanged 2s active-time limit. The same memory, cancellation and tool-admission limits still apply. `bash scripts/macos-codemode-smoke.sh` runs the native sandbox tests in a hardened-signed test binary without executable-memory entitlements; CI runs it on both macOS architectures.
+
 ## Exact published artifact
 
 - URL: https://registry.npmjs.org/quickjs-wasi/-/quickjs-wasi-3.6.2.tgz
