@@ -106,11 +106,11 @@ func UpdateRecent(opts UpdateRecentOptions) error {
 			engine = env.NewEngine(provider, cfg)
 		}
 
-		updatedRecent, err := runMemoryUpdateRecentRequest(ctx, engine, reqModel, env.protection.sanitize(sessionSnippets), env.protection.sanitize(existingRecent), env.protection.sanitize(fragmentsText), opts.TargetTokens, targetChars, env.debugRaw(), env.protection)
+		updatedRecent, err := runMemoryUpdateRecentRequest(ctx, engine, reqModel, protectionOrDefault(env.protection).sanitize(sessionSnippets), protectionOrDefault(env.protection).sanitize(existingRecent), protectionOrDefault(env.protection).sanitize(fragmentsText), opts.TargetTokens, targetChars, env.debugRaw(), env.protection)
 		if err != nil {
 			return "", err
 		}
-		if err := env.protection.check(updatedRecent); err != nil {
+		if err := protectionOrDefault(env.protection).check(updatedRecent); err != nil {
 			return "", err
 		}
 		updatedRecent = strings.TrimSpace(updatedRecent)
@@ -118,11 +118,11 @@ func UpdateRecent(opts UpdateRecentOptions) error {
 		if err != nil {
 			return "", err
 		}
-		if err := env.protection.check(updatedRecent); err != nil {
+		if err := protectionOrDefault(env.protection).check(updatedRecent); err != nil {
 			return "", err
 		}
 		updatedRecent = strings.TrimSpace(updatedRecent)
-		if err := env.protection.recent(updatedRecent, highWaterChars); err != nil {
+		if err := protectionOrDefault(env.protection).recent(updatedRecent, highWaterChars); err != nil {
 			return "", err
 		}
 		return updatedRecent, nil
@@ -270,12 +270,8 @@ func newMemoryUpdateRecentProvider(cfg *config.Config, modelOverride string) (co
 	return provider, modelOverride, nil
 }
 
-func runMemoryUpdateRecentRequest(ctx context.Context, engine *engine.Engine, model, sessionSnippets, existingRecent, fragmentsText string, targetTokens, targetChars int, debugRaw bool, protections ...*memoryProtection) (string, error) {
-	var protection *memoryProtection
-	if len(protections) > 0 {
-		protection = protections[0]
-	}
-	engine.SetDebugLogger(nil)
+func runMemoryUpdateRecentRequest(ctx context.Context, engine *engine.Engine, model, sessionSnippets, existingRecent, fragmentsText string, targetTokens, targetChars int, debugRaw bool, protection *memoryProtection) (string, error) {
+	debugRaw = protection.prepareDebug(engine, debugRaw)
 	req := core.Request{
 		Model:     strings.TrimSpace(model),
 		Ephemeral: true,
@@ -284,12 +280,12 @@ func runMemoryUpdateRecentRequest(ctx context.Context, engine *engine.Engine, mo
 			core.UserText(protection.sanitize(memoryUpdateRecentUserPrompt(sessionSnippets, existingRecent, fragmentsText))),
 		},
 		MaxTurns: 1,
-		DebugRaw: false,
+		DebugRaw: debugRaw,
 	}
 
 	stream, err := engine.Stream(ctx, req)
 	if err != nil {
-		return "", fmt.Errorf("recent-memory provider operation failed")
+		return "", protection.providerError("recent-memory provider operation failed", err)
 	}
 	defer stream.Close()
 
@@ -300,14 +296,14 @@ func runMemoryUpdateRecentRequest(ctx context.Context, engine *engine.Engine, mo
 			break
 		}
 		if err != nil {
-			return "", fmt.Errorf("recent-memory provider operation failed")
+			return "", protection.providerError("recent-memory provider operation failed", err)
 		}
 		switch ev.Type {
 		case core.EventTextDelta:
 			b.WriteString(ev.Text)
 		case core.EventError:
 			if ev.Err != nil {
-				return "", fmt.Errorf("recent-memory provider operation failed")
+				return "", protection.providerError("recent-memory provider operation failed", ev.Err)
 			}
 		}
 	}
@@ -319,12 +315,8 @@ func runMemoryUpdateRecentRequest(ctx context.Context, engine *engine.Engine, mo
 	return content, nil
 }
 
-func runMemoryCompactRecentRequest(ctx context.Context, engine *engine.Engine, model, candidateRecent string, targetTokens, targetChars int, debugRaw bool, protections ...*memoryProtection) (string, error) {
-	var protection *memoryProtection
-	if len(protections) > 0 {
-		protection = protections[0]
-	}
-	engine.SetDebugLogger(nil)
+func runMemoryCompactRecentRequest(ctx context.Context, engine *engine.Engine, model, candidateRecent string, targetTokens, targetChars int, debugRaw bool, protection *memoryProtection) (string, error) {
+	debugRaw = protection.prepareDebug(engine, debugRaw)
 	req := core.Request{
 		Model:     strings.TrimSpace(model),
 		Ephemeral: true,
@@ -333,12 +325,12 @@ func runMemoryCompactRecentRequest(ctx context.Context, engine *engine.Engine, m
 			core.UserText(protection.sanitize(memoryCompactRecentUserPrompt(candidateRecent))),
 		},
 		MaxTurns: 1,
-		DebugRaw: false,
+		DebugRaw: debugRaw,
 	}
 
 	stream, err := engine.Stream(ctx, req)
 	if err != nil {
-		return "", fmt.Errorf("recent-memory provider operation failed")
+		return "", protection.providerError("recent-memory provider operation failed", err)
 	}
 	defer stream.Close()
 
@@ -349,14 +341,14 @@ func runMemoryCompactRecentRequest(ctx context.Context, engine *engine.Engine, m
 			break
 		}
 		if err != nil {
-			return "", fmt.Errorf("recent-memory provider operation failed")
+			return "", protection.providerError("recent-memory provider operation failed", err)
 		}
 		switch ev.Type {
 		case core.EventTextDelta:
 			b.WriteString(ev.Text)
 		case core.EventError:
 			if ev.Err != nil {
-				return "", fmt.Errorf("recent-memory provider operation failed")
+				return "", protection.providerError("recent-memory provider operation failed", ev.Err)
 			}
 		}
 	}
@@ -368,19 +360,19 @@ func runMemoryCompactRecentRequest(ctx context.Context, engine *engine.Engine, m
 	return content, nil
 }
 
-func fitUpdatedRecentWithinBudget(ctx context.Context, engine *engine.Engine, model, updatedRecent string, targetTokens, targetChars, highWaterChars int, debugRaw bool, protections ...*memoryProtection) (string, error) {
+func fitUpdatedRecentWithinBudget(ctx context.Context, engine *engine.Engine, model, updatedRecent string, targetTokens, targetChars, highWaterChars int, debugRaw bool, protection *memoryProtection) (string, error) {
 	if len([]byte(updatedRecent)) <= highWaterChars {
 		return updatedRecent, nil
 	}
 
-	compacted, err := runMemoryCompactRecentRequest(ctx, engine, model, updatedRecent, targetTokens, targetChars, debugRaw, protections...)
+	compacted, err := runMemoryCompactRecentRequest(ctx, engine, model, updatedRecent, targetTokens, targetChars, debugRaw, protection)
 	if err != nil {
 		return "", err
 	}
 	if len([]byte(compacted)) <= highWaterChars {
 		return compacted, nil
 	}
-	return "", errMemorySafety
+	return "", errRecentSize
 }
 
 func memoryUpdateRecentSystemPrompt(targetTokens, targetChars int) string {
@@ -435,11 +427,7 @@ func memoryUpdateRecentUserPrompt(sessionSnippets, existingRecent, fragmentsText
 
 // loadRecentFragmentsText returns up to maxChars of fragment content for the given agent,
 // ordered by most recently created first (newest fragments first).
-func loadRecentFragmentsText(ctx context.Context, store *memorydb.Store, agentName string, maxChars int, protections ...*memoryProtection) (string, error) {
-	var protection *memoryProtection
-	if len(protections) > 0 {
-		protection = protections[0]
-	}
+func loadRecentFragmentsText(ctx context.Context, store *memorydb.Store, agentName string, maxChars int, protection *memoryProtection) (string, error) {
 	if maxChars <= 0 {
 		return "", nil
 	}
@@ -453,7 +441,7 @@ func loadRecentFragmentsText(ctx context.Context, store *memorydb.Store, agentNa
 
 	var b strings.Builder
 	for _, f := range fragments {
-		if excludedMemoryPath(f.Path) {
+		if protection.excluded(f.Path) {
 			continue
 		}
 		f.Path = protection.sanitize(f.Path)
@@ -555,11 +543,7 @@ type memoryUpdateRecentInput struct {
 	DeferredFrom time.Time
 }
 
-func collectMemoryUpdateRecentInput(ctx context.Context, store *memorydb.Store, sessStore session.Store, agentName string, updatedAtOrAfter time.Time, maxInputChars int, protections ...*memoryProtection) (memoryUpdateRecentInput, error) {
-	var protection *memoryProtection
-	if len(protections) > 0 {
-		protection = protections[0]
-	}
+func collectMemoryUpdateRecentInput(ctx context.Context, store *memorydb.Store, sessStore session.Store, agentName string, updatedAtOrAfter time.Time, maxInputChars int, protection *memoryProtection) (memoryUpdateRecentInput, error) {
 	current, err := sessStore.GetCurrent(ctx)
 	if err != nil {
 		return memoryUpdateRecentInput{}, fmt.Errorf("get current session: %w", err)

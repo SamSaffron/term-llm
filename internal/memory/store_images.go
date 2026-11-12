@@ -112,17 +112,15 @@ func (s *Store) ListImageAgents(ctx context.Context) ([]string, error) {
 	return agents, rows.Err()
 }
 
-// ListImagesSince returns generated images for an agent created after the given time.
+// ListImagesSince includes the timestamp boundary for idempotent replay. New
+// rows can share SQLite's second-resolution timestamp with the last checkpoint.
 func (s *Store) ListImagesSince(ctx context.Context, agent string, since time.Time) ([]ImageRecord, error) {
 	query := `
 		SELECT id, agent, session_id, prompt, output_path, mime_type, provider, width, height, file_size, created_at
 		FROM generated_images
 		WHERE agent = ?`
 	args := []interface{}{agent}
-	if !since.IsZero() {
-		query += ` AND created_at > ?`
-		args = append(args, since)
-	}
+	// Compare instants in Go: persisted timestamps need not share a text format.
 	query += ` ORDER BY created_at ASC`
 
 	rows, err := s.db.QueryContext(ctx, query, args...)
@@ -138,7 +136,9 @@ func (s *Store) ListImagesSince(ctx context.Context, agent string, since time.Ti
 			&r.MimeType, &r.Provider, &r.Width, &r.Height, &r.FileSize, &r.CreatedAt); err != nil {
 			return nil, fmt.Errorf("scan image row: %w", err)
 		}
-		out = append(out, r)
+		if since.IsZero() || !r.CreatedAt.Before(since) {
+			out = append(out, r)
+		}
 	}
 	return out, rows.Err()
 }

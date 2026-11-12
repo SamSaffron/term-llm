@@ -63,7 +63,7 @@ func TestNativeMemorySanitizesProviderInputAndDisablesRawDebug(t *testing.T) {
 }
 
 func TestNativePromotionRejectsInvalidOutputBeforeMutation(t *testing.T) {
-	for _, output := range []string{"# Bad\n\napi_key: " + nativeSyntheticSecret, strings.Repeat("long ", 200), "I cannot help with that request.", "# Empty"} {
+	for _, output := range []string{"# Bad\n\napi_key: " + nativeSyntheticSecret, strings.Repeat("long ", 200), ""} {
 		t.Run(strings.Split(output, "\n")[0][:min(len(strings.Split(output, "\n")[0]), 12)], func(t *testing.T) {
 			ctx := context.Background()
 			dir := t.TempDir()
@@ -105,15 +105,15 @@ func TestNativePromotionRejectsInvalidOutputBeforeMutation(t *testing.T) {
 }
 
 func TestNativePromotionAcceptsExactSafeOutput(t *testing.T) {
-	p := (*memoryProtection)(nil)
+	p := defaultProtection
 	for _, text := range []string{"# Recent\n\n- A durable observation.", "# Recent\n\n## Project\n\nSafe state."} {
 		if err := p.recent(text, len(text)); err != nil {
 			t.Fatal("safe native summary rejected")
 		}
 	}
 	for _, path := range []string{" fragments/credentials/test.md ", `fragments\credentials\test.md`, "fragments/./credentials/test.md"} {
-		if !excludedMemoryPath(path) {
-			t.Fatal("canonical path exclusion bypass")
+		if defaultProtection.excluded(path) {
+			t.Fatal("default policy unexpectedly excludes credential locations")
 		}
 	}
 }
@@ -141,5 +141,36 @@ func TestNativeProviderDiagnosticsCannotEchoUncheckedOutput(t *testing.T) {
 	provider.AddError(errors.New(nativeSyntheticSecret))
 	if _, err := opts.runExtractionRequestWithSystem(context.Background(), eng, "extract", "safe input", nil); err == nil || strings.Contains(err.Error(), nativeSyntheticSecret) {
 		t.Fatal("provider error body leaked")
+	}
+}
+
+func TestFableOwnerOptoutPermitsExplicitRawDebug(t *testing.T) {
+	p, err := newMemoryProtection(config.MemoryConfig{Secrets: config.MemorySecretsConfig{Disable: []string{"all"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	provider := mockprovider.NewMockProvider("owner-optout").AddTextResponse("safe diagnostic output")
+	eng := engine.NewEngine(provider, nil)
+	logger := &nativeRecordingDebugLogger{}
+	eng.SetDebugLogger(logger)
+	opts := MineOptions{Env: Env{protection: p, Deps: Deps{DebugRaw: func() bool { return true }}}}
+	if _, err := opts.runExtractionRequestWithSystem(context.Background(), eng, "extract", "safe input", nil); err != nil {
+		t.Fatal(err)
+	}
+	if !provider.RecordedRequests()[0].DebugRaw || logger.calls.Load() == 0 {
+		t.Fatal("explicit owner optout did not restore raw diagnostics")
+	}
+}
+func TestFableProviderDetailsRemainUsefulAndRedacted(t *testing.T) {
+	err := defaultProtection.providerError("extraction", errors.New("HTTP 429 rate limit; api_key: "+nativeSyntheticSecret))
+	if !strings.Contains(err.Error(), "429 rate limit") || strings.Contains(err.Error(), nativeSyntheticSecret) {
+		t.Fatal("diagnostic detail lost or secret leaked")
+	}
+}
+func TestFableQualityHeuristicsAreNotHardSecurityRules(t *testing.T) {
+	for _, text := range []string{"A short plain summary.", "Rate limit handling is now exponential.", "# Configuration\n\n```yaml\nretries: 3\n```", "# Empty"} {
+		if err := defaultProtection.recent(text, 1000); err != nil {
+			t.Fatal("editorial heuristic still blocks owner memory")
+		}
 	}
 }

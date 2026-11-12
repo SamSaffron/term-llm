@@ -37,7 +37,7 @@ func (opts MineOptions) loadMessagesForMining(ctx context.Context, store session
 				currentSeq = nextSeq
 				continue
 			}
-			msg = opts.protection.message(msg)
+			msg = protectionOrDefault(opts.protection).message(msg)
 			candidateMessages := append(cloneMessages(all), msg)
 			fit, ok := opts.fitMessagesForPromptBudget(candidate, offset, nextSeq, candidateMessages, taxonomyMap)
 			if !ok {

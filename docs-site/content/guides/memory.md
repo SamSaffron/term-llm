@@ -152,64 +152,96 @@ term-llm memory promote --agent assistant --dry-run
 
 ### Native content protection
 
-Mining and recent-summary generation apply native credential protection by
-default; no environment variable, executable, shell hook or plugin enables it.
-The same policy covers extraction input and lookup tools, taxonomy paths,
-insights, image-to-fragment mining, embedding input, promotion, and
-`update-recent`. Images, embeddings and insights remain supported.
-
-Recognizable credentials are redacted from complete source text **before**
-clipping or provider calls. Detectors include common provider-key prefixes,
-auth/cookie headers, credential assignments such as `api_key`, `password` and
-`client_secret`, sensitive URL parameters/userinfo, and private-key blocks.
-Credential records under `fragments/credentials/` or named
-`accounts-and-credentials.md` are excluded from memory context and embeddings.
-System, developer and event messages are not conversational mining evidence.
-
-Detected credentials are rejected in proposed fragment paths/content, insight
-fields and image metadata before persistence. Promotion and `update-recent`
-validate the complete generated summary before atomic replacement and checkpoint
-updates: empty/heading-only summaries, obvious refusal/error text, code fences,
-detected credentials and oversized output are rejected. Promotion never silently
-truncates oversized output. `update-recent` may request compaction once, but
-rejects output that still exceeds its budget rather than truncating it.
-
-A rejected extraction batch fails without advancing its cursor, even if the
-model continues or subsequently encounters a provider error. Earlier accepted
-writes in that batch remain; source attribution is attempted even on rejection
-(database attribution failures still warn). This is not transactional batch
-rollback. Raw and structured model debugging are disabled for these memory
-requests because output is untrusted until checked. Provider error bodies are
-withheld. This deliberately reduces diagnostic detail.
-
-Optional additional detectors are **data only**, added to—not replacing—the
-built-ins:
+Automated memory processing uses native secret heuristics with protective defaults
+and complete **trusted owner control** in `config.yaml`. There is no executable,
+shell hook, plugin, environment override, or model-selected policy. Missing policy
+and empty lists mean all built-ins enabled, no extra rules, and no paths excluded.
 
 ```yaml
 memory:
-  secret_patterns:
-    - 'synthetic_private_[A-Z0-9]+'
+  secrets:
+    disable: []     # detector names, or [all] to disable every built-in
+    patterns: []    # extra RE2 patterns; only matched spans are redacted
+  exclude_paths: [] # fragment globs, e.g. ['fragments/credentials/**']
 ```
 
-Added rules inspect the complete original source field (including a trimmed
-variant); any match redacts that whole field. Built-in detectors redact recognized
-spans. Whole-field projection prevents one detector from hiding another’s context.
+- Disable a noisy heuristic with `disable: [named-credential]` or `[cli-user]`.
+- Extend defaults with `patterns: ['synthetic_private_[A-Z0-9]+']`.
+- Replace defaults with `disable: [all]` plus your patterns.
+- Opt out entirely with `disable: [all]` and no patterns. This is intentional owner
+  control, not a safety bug; detected-secret checks and redaction are then off.
+- Exclude selected fragment paths using glob data, including `**` directories.
+  No taxonomy room or deployment-specific file name is excluded by default;
+  credential-location and handling-rule memories remain legitimate searchable facts.
 
-Rules use Go/RE2 syntax (at most 32 rules, 1,024 bytes each). Invalid, empty-matching,
-wrongly typed or unknown policy settings fail before memory provider calls or
-mutations. Rule literals are sensitive config fields and are not echoed in
-validation errors. Overbroad rules can over-redact or reject legitimate output.
-Use prose pointers such as “credentials come from `EXAMPLE_KEY`”; literal
-`api_key: $EXAMPLE_KEY` assignments are conservatively redacted too.
+[Detector names and source-backed patterns](/reference/configuration/#memory-secret-detectors)
+are documented so a noisy rule can be disabled and replaced without patching Go.
+Names are stable; unknown detector names/options and invalid patterns/globs fail
+before provider work. Custom expressions use Go/RE2 and must not match the empty
+string. Pattern errors identify the index, never the literal. Pattern config is
+sensitive in config display. There are no arbitrary rule-count or rule-length caps.
+The former `memory.secret_patterns` spelling was unreleased and is replaced—not
+aliased—by `memory.secrets.patterns`.
 
-**Limits:** this is a best-effort backstop, not universal DLP or a prompt-injection
-firewall. Unknown, encoded or fragmented secrets may evade recognition; valid
-structure does not establish factual truth or freshness. Existing stored source
-records are not purged or rewritten. These protections do not change manual
-memory administration or unrelated runtime tools.
+#### Redaction, retries and checkpoints
 
-Dry-run still makes model calls. `mine --since` selects sessions by update time,
-not individual message dates, and is not a strict calendar bound for a backfill.
+Every enabled detector examines the **original complete text**; overlapping spans
+are unioned and replaced once. A match in one section of existing `recent.md` does
+not erase other sections. Complete source text is sanitized before clipping or
+provider calls, including tool metadata, taxonomy, lookup sources, insights and
+embedding input. Search results hydrate complete source text before excerpting:
+redacting an already-clipped FTS snippet can miss a credential split at the edge.
+System, developer and event roles are not conversational mining evidence.
+
+Model-proposed writes are checked before persistence. Rejections identify detector
+names or custom-rule indices, not values. Normal path/empty/size mistakes remain
+ordinary actionable tool errors. Tools execute serially; a successful corrected
+write to the **same canonical path** resolves its prior failure. Other accepted
+writes do not clear unresolved evidence. An extraction finishing with unresolved
+writes (or a provider failure) keeps that batch's cursor, warns and returns an
+incomplete result after unrelated sessions and later phases have run. It does
+**not** blindly advance past rejected evidence. A completed extraction with no new
+memory is an examined outcome and may advance normally. Explicit owner path
+exclusions are counted skips, not hidden rejected writes.
+
+Already accepted partial writes are not rolled back; their source attribution is
+attempted even if the batch remains incomplete (DB attribution failures still
+warn). Counts include rejected attempts and accepted corrections. Changing owner
+policy or retrying corrected content does not require resetting live cursors.
+
+Images are deterministic source input: sanitize metadata spans, write the projected
+fragment and continue. Row failures do not block other images/phases. The image
+watermark advances only through fully processed timestamp groups before the first
+failure. Its boundary group is replayed inclusively/idempotently, so a late row
+sharing SQLite's timestamp is not lost. Later accepted rows may be replayed while
+an earlier failed row is retried. Excluded and failed rows are reported explicitly.
+
+Promotion and `update-recent` keep atomic replacement and checkpoints intact on
+failure. They require nonempty valid UTF-8 within budget and no detected secret;
+headings, code fences and editorial/refusal wording are not hard security rules.
+One compaction request is allowed for oversized output; a still-oversized result
+returns a size error without truncation or replacement. Native validation does
+not guarantee useful content, factual truth, freshness or faithful LLM retention.
+
+#### Diagnostics and limits
+
+Provider errors retain useful **sanitized** details. A sanitized error never keeps
+an unchecked provider body in its unwrap chain; cancellation identity is retained.
+With detectors enabled, raw/structured model logs remain suppressed because output
+can contain unsafe generated text even when input was sanitized. `--debug-raw`
+warns explicitly about this; it is passed through only with owner full optout
+(`disable: [all]`, no extra patterns). Raw optout diagnostics can expose secrets.
+Memory policy does not change the existing live-preview redaction behavior.
+
+These are heuristics, not universal DLP or a prompt-injection firewall. Unknown,
+encoded, fragmented or paraphrased secrets can evade recognition; default rules
+can over-redact location prose (for example `Password: kept in the team vault`).
+An owner can turn that detector off or replace it with a narrower rule. Existing
+stored sources are not scrubbed. Manual memory administration and unrelated
+runtime tools remain outside this automated-pipeline policy.
+
+Dry-run still makes model calls. `mine --since` selects session update timestamps,
+not message dates; it is not a strict calendar bound for historical backfill.
 
 ## Consolidate safely
 

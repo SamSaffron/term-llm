@@ -220,7 +220,9 @@ var keySpecs = []KeySpec{
 	def("default_provider", DefaultConfigProvider),
 	def("provider_discovery", ProviderDiscoveryAuto),
 	def("auto_compact", DefaultAutoCompact),
-	def("memory.secret_patterns", []string{}, sensitive(), redactExplicit(), described("Additional RE2 patterns for native memory secret protection; built-in detectors cannot be disabled")),
+	def("memory.secrets.disable", []string{}, described("Built-in memory secret detector names to disable; all disables every built-in")),
+	def("memory.secrets.patterns", []string{}, sensitive(), redactExplicit(), described("Additional RE2 secret patterns; matched spans are redacted")),
+	def("memory.exclude_paths", []string{}, described("Fragment path globs excluded from automated memory processing")),
 
 	optional("approval.default_mode", withoutResetTemplate()),
 

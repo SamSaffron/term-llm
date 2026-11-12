@@ -49,6 +49,7 @@ const memoryExtractionSystemPrompt = `You are a strict memory extraction engine.
 Goal: extract durable long-term memory from the provided transcript.
 Focus on stable facts, decisions, preferences, and technical details worth remembering.
 Ignore ephemeral details such as transient errors, one-off debugging steps, and conversational filler.
+Store credential locations, never credential values. A rejected write names its detector; retry corrected content at the same path to resolve it.
 
 Use the provided memory tools to inspect existing fragments and to create or update memory directly.
 Prefer updating existing fragments over creating duplicates.
@@ -101,7 +102,7 @@ func (c *memoryAgentFragmentCache) get(ctx context.Context, store memoryAgentFra
 
 	corpus := &memoryAgentFragmentCorpus{
 		fragments:   fragments,
-		taxonomyMap: c.protection.taxonomy(fragments, c.maxTokens),
+		taxonomyMap: protectionOrDefault(c.protection).taxonomy(fragments, c.maxTokens),
 		byPath:      make(map[string]int, len(fragments)),
 	}
 	for i, frag := range fragments {
@@ -141,7 +142,7 @@ func (c *memoryAgentFragmentCache) applyChanges(ctx context.Context, store memor
 		corpus.fragments = append(corpus.fragments, *frag)
 	}
 
-	corpus.taxonomyMap = c.protection.taxonomy(corpus.fragments, c.maxTokens)
+	corpus.taxonomyMap = protectionOrDefault(c.protection).taxonomy(corpus.fragments, c.maxTokens)
 	return nil
 }
 
@@ -266,6 +267,9 @@ func Mine(opts MineOptions) error {
 	}
 
 	var totalCreated, totalUpdated, totalSkipped int
+	failedBatches := 0
+	var batchErrors []error
+	var phaseErrors []error
 	var summaryStats memoryMineSummaryStats
 	fragmentCache := newMemoryAgentFragmentCache(opts.TaxonomyMaxTokens)
 	fragmentCache.protection = env.protection
@@ -320,10 +324,11 @@ func Mine(opts MineOptions) error {
 		}
 		if err != nil {
 			fragmentCache.invalidate(candidate.Agent)
-			if errors.Is(err, errMemorySafety) {
-				return visitResult, err
-			}
-			fmt.Fprintf(os.Stderr, "warning: skipping session %s batch at offset %d: %v\n", candidate.Session.ID, startOffset, err)
+			failedBatches++
+			batchErrors = append(batchErrors, err)
+			totalCreated += extractionResult.Created
+			totalUpdated += extractionResult.Updated
+			fmt.Fprintf(os.Stderr, "warning: session %s batch at offset %d incomplete; cursor retained; create=%d update=%d rejected=%d: %v\n", candidate.Session.ID, startOffset, extractionResult.Created, extractionResult.Updated, extractionResult.Rejected, err)
 			return visitResult, nil
 		}
 		batchStats.Duration = time.Since(batchStart)
@@ -349,8 +354,8 @@ func Mine(opts MineOptions) error {
 		totalUpdated += updated
 		totalSkipped += skipped
 
-		fmt.Printf("[%d/%d] #%d mined messages [%d,%d): create=%d update=%d skip=%d\n",
-			position, total, candidate.Summary.Number, startOffset, loadResult.NextOffset, created, updated, skipped)
+		fmt.Printf("[%d/%d] #%d mined messages [%d,%d): create=%d update=%d skip=%d rejected=%d\n",
+			position, total, candidate.Summary.Number, startOffset, loadResult.NextOffset, created, updated, skipped, extractionResult.Rejected)
 		if opts.ShowStats {
 			fmt.Printf("[%d/%d] #%d %s\n", position, total, candidate.Summary.Number, batchStats.oneLine())
 			summaryStats.add(batchStats)
@@ -370,7 +375,8 @@ func Mine(opts MineOptions) error {
 	} else {
 		imageMined, err := env.mineGeneratedImages(ctx, memStore)
 		if err != nil {
-			return err
+			phaseErrors = append(phaseErrors, err)
+			fmt.Fprintf(os.Stderr, "warning: image mining incomplete: %v\n", err)
 		}
 		if imageMined > 0 {
 			fmt.Printf("mined %d image fragment(s)\n", imageMined)
@@ -384,7 +390,8 @@ func Mine(opts MineOptions) error {
 		} else {
 			embeddedCount, err = opts.runMemoryEmbedPhase(ctx, cfg, memStore)
 			if err != nil {
-				return err
+				phaseErrors = append(phaseErrors, err)
+				fmt.Fprintf(os.Stderr, "warning: embedding phase: %v\n", err)
 			}
 			fmt.Printf("embedded %d fragments\n", embeddedCount)
 		}
@@ -414,9 +421,7 @@ func Mine(opts MineOptions) error {
 					DryRun:         false,
 					QuietNothing:   true,
 				}); err != nil {
-					if errors.Is(err, errMemorySafety) {
-						return err
-					}
+					phaseErrors = append(phaseErrors, err)
 					fmt.Fprintf(os.Stderr, "warning: promote failed for %s: %v\n", promoteAgent, err)
 				}
 			}
@@ -439,9 +444,7 @@ func Mine(opts MineOptions) error {
 			}
 			insightCount, insightStats, err := opts.runInsightExtractionPass(ctx, cfg, engine, sessStore, memStore, insightCandidates)
 			if err != nil {
-				if errors.Is(err, errMemorySafety) {
-					return err
-				}
+				phaseErrors = append(phaseErrors, err)
 				fmt.Fprintf(os.Stderr, "warning: insight extraction failed: %v\n", err)
 			} else {
 				fmt.Printf("insights: %d created/reinforced\n", insightCount)
@@ -452,7 +455,11 @@ func Mine(opts MineOptions) error {
 		}
 	}
 
-	return nil
+	if failedBatches > 0 {
+		phaseErrors = append(phaseErrors, fmt.Errorf("%d failed memory batch(es); cursors retained for retry: %w", failedBatches, errors.Join(batchErrors...)))
+	}
+	return errors.Join(phaseErrors...)
+
 }
 
 func (opts MineOptions) newMemoryMineProvider(cfg *config.Config) (core.Provider, string, error) {
@@ -708,15 +715,15 @@ func (opts MineOptions) runExtractionRequest(ctx context.Context, engine *engine
 	toolSpecs, cleanup := registerMemoryExtractionTools(engine, store, agent, collector, opts.ReadBytes, opts.DryRun, opts.protection)
 	defer cleanup()
 	finalText, err := opts.runExtractionRequestWithSystem(ctx, engine, memoryExtractionSystemPrompt, prompt, stats, toolSpecs...)
-	if collector.policyFailed() {
-		return collector.result(finalText), errMemorySafety
+	if pending := collector.pendingError(); pending != nil {
+		return collector.result(finalText), errors.Join(err, pending)
 	}
 	return collector.result(finalText), err
 }
 
 func (opts MineOptions) runExtractionRequestWithSystem(ctx context.Context, engine *engine.Engine, systemPrompt, prompt string, stats extractionRequestStats, tools ...core.ToolSpec) (string, error) {
-	prompt = opts.protection.sanitize(prompt)
-	engine.SetDebugLogger(nil)
+	prompt = protectionOrDefault(opts.protection).sanitize(prompt)
+	rawDebug := protectionOrDefault(opts.protection).prepareDebug(engine, opts.debugRaw())
 	req := core.Request{
 		Model:           strings.TrimSpace(opts.Model),
 		Ephemeral:       true,
@@ -724,18 +731,18 @@ func (opts MineOptions) runExtractionRequestWithSystem(ctx context.Context, engi
 		MaxTurns:        1,
 		MaxOutputTokens: opts.MaxOutputTokens,
 		Debug:           false,
-		DebugRaw:        false,
+		DebugRaw:        rawDebug,
 	}
 	if len(tools) > 0 {
 		req.Tools = tools
 		req.ToolChoice = core.ToolChoice{Mode: core.ToolChoiceAuto}
-		req.ParallelToolCalls = true
+		req.ParallelToolCalls = false
 		req.MaxTurns = opts.ToolMaxTurns
 	}
 
 	stream, err := engine.Stream(ctx, req)
 	if err != nil {
-		return "", errors.New("memory extraction provider operation failed")
+		return "", protectionOrDefault(opts.protection).providerError("memory extraction provider operation failed", err)
 	}
 	defer stream.Close()
 
@@ -746,7 +753,7 @@ func (opts MineOptions) runExtractionRequestWithSystem(ctx context.Context, engi
 			break
 		}
 		if err != nil {
-			return "", errors.New("memory extraction provider operation failed")
+			return "", protectionOrDefault(opts.protection).providerError("memory extraction provider operation failed", err)
 		}
 		switch ev.Type {
 		case core.EventTextDelta:
@@ -761,7 +768,7 @@ func (opts MineOptions) runExtractionRequestWithSystem(ctx context.Context, engi
 			}
 		case core.EventError:
 			if ev.Err != nil {
-				return "", errors.New("memory extraction provider operation failed")
+				return "", protectionOrDefault(opts.protection).providerError("memory extraction provider operation failed", ev.Err)
 			}
 		}
 	}
@@ -828,14 +835,15 @@ func (env Env) mineGeneratedImages(ctx context.Context, store *memorydb.Store) (
 	}
 
 	total := 0
+	var failures []error
 	for _, agent := range agents {
 		count, err := env.mineGeneratedImagesForAgent(ctx, store, agent)
 		if err != nil {
-			return total, err
+			failures = append(failures, err)
 		}
 		total += count
 	}
-	return total, nil
+	return total, errors.Join(failures...)
 }
 
 func (env Env) resolveImageMineAgents(ctx context.Context, store *memorydb.Store) ([]string, error) {
@@ -878,24 +886,51 @@ func (env Env) mineGeneratedImagesForAgent(ctx context.Context, store *memorydb.
 	}
 
 	created := 0
-	for _, img := range images {
-		if err := env.protection.checkImage(img); err != nil {
-			return created, err
+	excluded := 0
+	var failures []error
+	safeThrough := lastTime
+	blocked := false
+	for i := 0; i < len(images); {
+		end := i + 1
+		for end < len(images) && images[end].CreatedAt.Equal(images[i].CreatedAt) {
+			end++
 		}
-		path := buildImageFragmentPath(img)
-		content := env.buildImageFragmentContent(img)
-		if err := env.upsertImageFragment(ctx, store, effectiveAgent, path, content); err != nil {
-			return created, err
+		groupOK := true
+		for _, img := range images[i:end] {
+			img.Prompt = protectionOrDefault(env.protection).sanitize(img.Prompt)
+			img.OutputPath = protectionOrDefault(env.protection).sanitize(img.OutputPath)
+			img.Provider = protectionOrDefault(env.protection).sanitize(img.Provider)
+			img.SessionID = protectionOrDefault(env.protection).sanitize(img.SessionID)
+			fragPath := protectionOrDefault(env.protection).sanitize(buildImageFragmentPath(img))
+			if protectionOrDefault(env.protection).excluded(fragPath) {
+				excluded++
+				continue
+			} // explicit owner exclusion is an examined outcome
+			if err := env.upsertImageFragment(ctx, store, effectiveAgent, fragPath, protectionOrDefault(env.protection).sanitize(env.buildImageFragmentContent(img))); err != nil {
+				failures = append(failures, protectionOrDefault(env.protection).providerError("image row failed; watermark retained", err))
+				groupOK = false
+				continue
+			}
+			created++
 		}
-		created++
+		if !groupOK {
+			blocked = true
+		}
+		if !blocked {
+			safeThrough = images[i].CreatedAt
+		}
+		i = end
 	}
-
-	lastProcessed := images[len(images)-1].CreatedAt
-	if err := store.SetMeta(ctx, metaKey, lastProcessed.Format(time.RFC3339)); err != nil {
-		fmt.Fprintf(os.Stderr, "warning: update image mine meta for %s: %v\n", agent, err)
+	if safeThrough.After(lastTime) {
+		if err := store.SetMeta(ctx, metaKey, safeThrough.Format(time.RFC3339Nano)); err != nil {
+			failures = append(failures, err)
+		}
 	}
+	if excluded > 0 || len(failures) > 0 {
+		fmt.Fprintf(os.Stderr, "images: processed=%d excluded=%d failed=%d; checkpoint_blocked=%t\n", created, excluded, len(failures), blocked)
+	}
+	return created, errors.Join(failures...)
 
-	return created, nil
 }
 
 func (env Env) memoryImageMineMetaKey(agent string) string {
@@ -987,7 +1022,7 @@ func imagePromptSlug(prompt string) string {
 }
 
 func (env Env) upsertImageFragment(ctx context.Context, store *memorydb.Store, agent, fragPath, content string) error {
-	if err := env.protection.fragment(fragPath, content); err != nil {
+	if err := protectionOrDefault(env.protection).fragment(fragPath, content); err != nil {
 		return err
 	}
 	if env.DryRun {
@@ -1067,7 +1102,6 @@ func buildInsightTranscript(messages []session.Message) []transcriptMessage {
 	pending := make([]pendingMessage, 0, len(messages))
 	userTokenBudget := 0
 	for _, msg := range messages {
-		msg = (*memoryProtection)(nil).message(msg)
 		if excludedMemoryEvidenceRole(msg.Role) {
 			continue
 		}
@@ -1232,7 +1266,7 @@ func buildInsightExtractionPromptFromTranscript(agent string, transcript []trans
 	}
 	summaries := make([]existingSummary, 0, len(existing))
 	for _, ins := range existing {
-		preview := (*memoryProtection)(nil).sanitize(ins.Content)
+		preview := ins.Content
 		if len(preview) > 120 {
 			preview = preview[:120] + "..."
 		}
@@ -1281,6 +1315,7 @@ func (opts MineOptions) runInsightExtractionPass(
 
 	total := 0
 	var summary insightExtractionSummaryStats
+	var failures []error
 	for _, candidate := range candidates {
 		// Skip sessions already processed for insights — avoids redundant LLM
 		// calls and duplicate extraction. MarkInsightMined is called on success.
@@ -1310,7 +1345,7 @@ func (opts MineOptions) runInsightExtractionPass(
 		}
 
 		for _, ins := range existing {
-			ins.Content = opts.protection.sanitize(ins.Content)
+			ins.Content = protectionOrDefault(opts.protection).sanitize(ins.Content)
 		}
 		transcript := buildInsightTranscript(messages)
 		prompt := buildInsightExtractionPromptFromTranscript(candidate.Agent, transcript, existing)
@@ -1339,12 +1374,19 @@ func (opts MineOptions) runInsightExtractionPass(
 			continue
 		}
 
+		valid := true
 		for i, item := range resp.Insights {
-			normalized, err := opts.protection.insight(item)
+			normalized, err := protectionOrDefault(opts.protection).insight(item)
 			if err != nil {
-				return total, summary, err
+				failures = append(failures, err)
+				fmt.Fprintf(os.Stderr, "warning: insight session %s rejected; marker retained: %v\n", candidate.Session.ID, err)
+				valid = false
+				break
 			}
 			resp.Insights[i] = normalized
+		}
+		if !valid {
+			continue
 		}
 
 		sessionInsights := 0
@@ -1400,7 +1442,7 @@ func (opts MineOptions) runInsightExtractionPass(
 			fmt.Fprintf(os.Stderr, "  [insight] warning: mark mined failed for %s: %v\n", candidate.Session.ID, err)
 		}
 	}
-	return total, summary, nil
+	return total, summary, errors.Join(failures...)
 }
 
 // isSimilarInsight uses Jaccard similarity on keywords (words >3 chars) to

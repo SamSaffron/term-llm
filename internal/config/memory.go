@@ -2,19 +2,37 @@ package config
 
 import "fmt"
 
-// MemoryConfig adds declarative detectors to always-on native memory protection.
-// Patterns are compiled and validated before memory provider calls or mutations.
-// There is deliberately no executable, environment hook or enable/disable flag.
+// MemoryConfig is trusted owner-authored data, never derived from mined text.
+// Empty lists select native defaults; disabling all permits explicit full optout.
 type MemoryConfig struct {
-	SecretPatterns []string `mapstructure:"secret_patterns" yaml:"secret_patterns,omitempty"`
+	Secrets      MemorySecretsConfig `mapstructure:"secrets" yaml:"secrets,omitempty"`
+	ExcludePaths []string            `mapstructure:"exclude_paths" yaml:"exclude_paths,omitempty"`
+}
+type MemorySecretsConfig struct {
+	Disable  []string `mapstructure:"disable" yaml:"disable,omitempty"`
+	Patterns []string `mapstructure:"patterns" yaml:"patterns,omitempty"`
 }
 
-// validateMemorySettings runs before the general weak decoder: security data
-// must not silently accept a command/disable field, scalar list, or non-string
-// rule. Never include an unknown key or value in the diagnostic.
+func stringList(value any, key string) error {
+	switch list := value.(type) {
+	case nil, []string:
+		return nil
+	case []any:
+		for _, v := range list {
+			if _, ok := v.(string); !ok {
+				return fmt.Errorf("%s must be a list of strings", key)
+			}
+		}
+		return nil
+	}
+	return fmt.Errorf("%s must be a list of strings", key)
+}
+
+// Validate strictly before the general weak decoder. Pattern literals are never
+// echoed. Unknown option names are reported so owner typos are actionable.
 func validateMemorySettings(settings map[string]any) error {
-	raw, ok := settings["memory"]
-	if !ok || raw == nil {
+	raw := settings["memory"]
+	if raw == nil {
 		return nil
 	}
 	block, ok := raw.(map[string]any)
@@ -22,19 +40,29 @@ func validateMemorySettings(settings map[string]any) error {
 		return fmt.Errorf("memory must be a declarative policy mapping")
 	}
 	for key, value := range block {
-		if key != "secret_patterns" {
-			return fmt.Errorf("unknown memory policy option")
-		}
-		switch values := value.(type) {
-		case nil, []string:
-		case []any:
-			for _, v := range values {
-				if _, ok := v.(string); !ok {
-					return fmt.Errorf("memory.secret_patterns must be a list of strings")
+		switch key {
+		case "exclude_paths":
+			if err := stringList(value, "memory.exclude_paths"); err != nil {
+				return err
+			}
+		case "secrets":
+			if value == nil {
+				continue
+			}
+			secrets, ok := value.(map[string]any)
+			if !ok {
+				return fmt.Errorf("memory.secrets must be a mapping")
+			}
+			for name, list := range secrets {
+				if name != "disable" && name != "patterns" {
+					return fmt.Errorf("unknown memory.secrets option %q", name)
+				}
+				if err := stringList(list, "memory.secrets."+name); err != nil {
+					return err
 				}
 			}
 		default:
-			return fmt.Errorf("memory.secret_patterns must be a list of strings")
+			return fmt.Errorf("unknown memory policy option %q", key)
 		}
 	}
 	return nil

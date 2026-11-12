@@ -125,7 +125,7 @@ func runMemoryPromoteFlow(ctx context.Context, env Env, cfg *config.Config, engi
 
 	buildUpdatedRecent := func(changed []memorydb.Fragment, existingRecent string) (string, error) {
 		prompt := env.protection.promotePrompt(changed, existingRecent)
-		updatedRecent, err := runMemoryPromoteRequest(ctx, engine, strings.TrimSpace(opts.Model), prompt, maxWords, env.debugRaw())
+		updatedRecent, err := runMemoryPromoteRequest(ctx, engine, strings.TrimSpace(opts.Model), prompt, maxWords, env.debugRaw(), env.protection)
 		if err != nil {
 			return "", err
 		}
@@ -133,7 +133,14 @@ func runMemoryPromoteFlow(ctx context.Context, env Env, cfg *config.Config, engi
 			return "", err
 		}
 		updatedRecent = strings.TrimSpace(updatedRecent)
-
+		updatedRecent, err = fitUpdatedRecentWithinBudget(ctx, engine, strings.TrimSpace(opts.Model), updatedRecent, maxWords, maxBytes, maxBytes, env.debugRaw(), env.protection)
+		if err != nil {
+			return "", err
+		}
+		if err := env.protection.check(updatedRecent); err != nil {
+			return "", err
+		}
+		updatedRecent = strings.TrimSpace(updatedRecent)
 		if err := env.protection.recent(updatedRecent, maxBytes); err != nil {
 			return "", err
 		}
@@ -146,6 +153,7 @@ func runMemoryPromoteFlow(ctx context.Context, env Env, cfg *config.Config, engi
 		if err != nil {
 			return 0, err
 		}
+		changed = env.protection.included(changed)
 		if len(changed) == 0 {
 			if !opts.QuietNothing {
 				fmt.Println("Nothing to promote.")
@@ -174,6 +182,7 @@ func runMemoryPromoteFlow(ctx context.Context, env Env, cfg *config.Config, engi
 		if err != nil {
 			return err
 		}
+		changed = env.protection.included(changed)
 		if len(changed) == 0 {
 			if !opts.QuietNothing {
 				fmt.Println("Nothing to promote.")
@@ -223,7 +232,7 @@ func collectPromoteChangedFragments(ctx context.Context, store *memorydb.Store, 
 
 	changed := make([]memorydb.Fragment, 0, len(fragments))
 	for _, frag := range fragments {
-		if frag.UpdatedAt.After(cutoff) && !excludedMemoryPath(frag.Path) {
+		if frag.UpdatedAt.After(cutoff) {
 			changed = append(changed, frag)
 		}
 	}
@@ -311,9 +320,6 @@ func loadRecentContent(recentPath string) (string, error) {
 func buildPromotePrompt(changed []memorydb.Fragment, existingRecent string) string {
 	var b strings.Builder
 	for _, frag := range changed {
-		if excludedMemoryPath(frag.Path) {
-			continue
-		}
 		b.WriteString("## ")
 		b.WriteString(frag.Path)
 		b.WriteString("\n\n")
@@ -325,9 +331,9 @@ func buildPromotePrompt(changed []memorydb.Fragment, existingRecent string) stri
 	return b.String()
 }
 
-func runMemoryPromoteRequest(ctx context.Context, engine *engine.Engine, model, prompt string, maxWords int, debugRaw bool) (string, error) {
-	prompt = (*memoryProtection)(nil).sanitize(prompt)
-	engine.SetDebugLogger(nil)
+func runMemoryPromoteRequest(ctx context.Context, engine *engine.Engine, model, prompt string, maxWords int, debugRaw bool, protection *memoryProtection) (string, error) {
+	prompt = protection.sanitize(prompt)
+	debugRaw = protection.prepareDebug(engine, debugRaw)
 	sysInstruction := fmt.Sprintf(memoryPromoteSystemInstructionTemplate, maxWords)
 	req := core.Request{
 		Model:     strings.TrimSpace(model),
@@ -337,12 +343,12 @@ func runMemoryPromoteRequest(ctx context.Context, engine *engine.Engine, model, 
 			core.UserText(prompt),
 		},
 		MaxTurns: 1,
-		DebugRaw: false,
+		DebugRaw: debugRaw,
 	}
 
 	stream, err := engine.Stream(ctx, req)
 	if err != nil {
-		return "", fmt.Errorf("memory promotion provider operation failed")
+		return "", protection.providerError("memory promotion provider operation failed", err)
 	}
 	defer stream.Close()
 
@@ -353,14 +359,14 @@ func runMemoryPromoteRequest(ctx context.Context, engine *engine.Engine, model, 
 			break
 		}
 		if err != nil {
-			return "", fmt.Errorf("memory promotion provider operation failed")
+			return "", protection.providerError("memory promotion provider operation failed", err)
 		}
 		switch ev.Type {
 		case core.EventTextDelta:
 			b.WriteString(ev.Text)
 		case core.EventError:
 			if ev.Err != nil {
-				return "", fmt.Errorf("memory promotion provider operation failed")
+				return "", protection.providerError("memory promotion provider operation failed", ev.Err)
 			}
 		}
 	}

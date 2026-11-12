@@ -199,7 +199,7 @@ func TestHighWaterMarkCalculation(t *testing.T) {
 
 func TestFitUpdatedRecentWithinBudget_ReturnsUnchangedWhenUnderHighWater(t *testing.T) {
 	current := strings.Repeat("x", 100)
-	got, err := fitUpdatedRecentWithinBudget(context.Background(), nil, "", current, 4000, 16000, 19200, false)
+	got, err := fitUpdatedRecentWithinBudget(context.Background(), nil, "", current, 4000, 16000, 19200, false, defaultProtection)
 	if err != nil {
 		t.Fatalf("fitUpdatedRecentWithinBudget: %v", err)
 	}
@@ -401,7 +401,7 @@ func TestCollectMemoryUpdateRecentInputOnlyLoadsUpdatedAgentSessions(t *testing.
 	}
 	defer memStore.Close()
 
-	input, err := collectMemoryUpdateRecentInput(ctx, memStore, sessStore, "jarvis", checkpoint, maxInputChars)
+	input, err := collectMemoryUpdateRecentInput(ctx, memStore, sessStore, "jarvis", checkpoint, maxInputChars, defaultProtection)
 	if err != nil {
 		t.Fatalf("collectMemoryUpdateRecentInput: %v", err)
 	}
@@ -449,7 +449,7 @@ func TestCollectMemoryUpdateRecentInputIncludesActiveSessions(t *testing.T) {
 	}
 	defer memStore.Close()
 
-	input, err := collectMemoryUpdateRecentInput(ctx, memStore, sessStore, "jarvis", checkpoint, DefaultUpdateRecentMaxInputChars)
+	input, err := collectMemoryUpdateRecentInput(ctx, memStore, sessStore, "jarvis", checkpoint, DefaultUpdateRecentMaxInputChars, defaultProtection)
 	if err != nil {
 		t.Fatalf("collectMemoryUpdateRecentInput: %v", err)
 	}
@@ -490,7 +490,7 @@ func TestCollectMemoryUpdateRecentInputDefersRecentlyUpdatedActiveSessions(t *te
 	}
 	defer memStore.Close()
 
-	input, err := collectMemoryUpdateRecentInput(ctx, memStore, sessStore, "jarvis", checkpoint, DefaultUpdateRecentMaxInputChars)
+	input, err := collectMemoryUpdateRecentInput(ctx, memStore, sessStore, "jarvis", checkpoint, DefaultUpdateRecentMaxInputChars, defaultProtection)
 	if err != nil {
 		t.Fatalf("collectMemoryUpdateRecentInput: %v", err)
 	}
@@ -598,7 +598,7 @@ func TestCollectMemoryUpdateRecentInputNoOpDoesNotLoadHistoricalSessions(t *test
 	}
 	defer memStore.Close()
 
-	input, err := collectMemoryUpdateRecentInput(ctx, memStore, sessStore, "jarvis", checkpoint, maxInputChars)
+	input, err := collectMemoryUpdateRecentInput(ctx, memStore, sessStore, "jarvis", checkpoint, maxInputChars, defaultProtection)
 	if err != nil {
 		t.Fatalf("collectMemoryUpdateRecentInput: %v", err)
 	}
@@ -641,7 +641,7 @@ func TestCollectMemoryUpdateRecentInputExhaustedAtInputCap(t *testing.T) {
 			}
 			defer memStore.Close()
 
-			input, err := collectMemoryUpdateRecentInput(context.Background(), memStore, sessStore, "jarvis", time.Time{}, maxInputChars)
+			input, err := collectMemoryUpdateRecentInput(context.Background(), memStore, sessStore, "jarvis", time.Time{}, maxInputChars, defaultProtection)
 			if err != nil {
 				t.Fatalf("collectMemoryUpdateRecentInput: %v", err)
 			}
@@ -681,7 +681,7 @@ func TestCollectMemoryUpdateRecentInputPagesOversizedSession(t *testing.T) {
 	offset := 0
 	for batch := 0; batch < len(messages); batch++ {
 		calls := sessStore.messageCalls["long"]
-		input, err := collectMemoryUpdateRecentInput(ctx, memStore, sessStore, "jarvis", time.Time{}, maxInputChars)
+		input, err := collectMemoryUpdateRecentInput(ctx, memStore, sessStore, "jarvis", time.Time{}, maxInputChars, defaultProtection)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -746,7 +746,7 @@ func TestCollectMemoryUpdateRecentInputSingleMessageBudget(t *testing.T) {
 				messages:     map[string][]session.Message{"long": {{Role: core.RoleAssistant, TextContent: strings.Repeat("界", 2000), Sequence: 7}}},
 				messageCalls: map[string]int{},
 			}
-			input, err := collectMemoryUpdateRecentInput(ctx, memStore, sessStore, "jarvis", time.Time{}, maxInputChars)
+			input, err := collectMemoryUpdateRecentInput(ctx, memStore, sessStore, "jarvis", time.Time{}, maxInputChars, defaultProtection)
 			if tc.wantError {
 				if err == nil {
 					t.Fatal("expected budget error")
@@ -790,7 +790,7 @@ func TestCollectMemoryUpdateRecentInputAcrossMessagePages(t *testing.T) {
 		summaries: []session.SessionSummary{{ID: "paged", Number: 1, Agent: "jarvis", Status: session.StatusComplete}},
 		messages:  map[string][]session.Message{"paged": messages}, messageCalls: map[string]int{},
 	}
-	input, err := collectMemoryUpdateRecentInput(ctx, memStore, sessStore, "jarvis", time.Time{}, maxInputChars)
+	input, err := collectMemoryUpdateRecentInput(ctx, memStore, sessStore, "jarvis", time.Time{}, maxInputChars, defaultProtection)
 	if err != nil {
 		t.Fatal(err)
 	}

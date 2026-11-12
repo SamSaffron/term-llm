@@ -2,6 +2,7 @@ package memory
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"os"
@@ -31,15 +32,19 @@ func TestNativeLookupsAndTaxonomySanitizeCompleteSources(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	get := &memoryGetFragmentTool{store: store, agent: "assistant", readBytes: 10}
-	search := &memorySearchFragmentsTool{store: store, agent: "assistant", readBytes: 10}
+	policy, err := newMemoryProtection(config.MemoryConfig{ExcludePaths: []string{"fragments/credentials/**"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	get := &memoryGetFragmentTool{store: store, agent: "assistant", readBytes: 10, protection: policy}
+	search := &memorySearchFragmentsTool{store: store, agent: "assistant", readBytes: 10, protection: policy}
 	for _, tc := range []struct {
 		tool core.Tool
 		args json.RawMessage
 	}{
 		{get, json.RawMessage(`{"path":"fragments/notes/legacy.md"}`)},
 		{search, json.RawMessage(`{"query":"needle"}`)},
-		{&memoryListFragmentsTool{store: store, agent: "assistant"}, json.RawMessage(`{}`)},
+		{&memoryListFragmentsTool{store: store, agent: "assistant", protection: policy}, json.RawMessage(`{}`)},
 	} {
 		out, err := tc.tool.Execute(ctx, tc.args)
 		if err != nil {
@@ -49,7 +54,7 @@ func TestNativeLookupsAndTaxonomySanitizeCompleteSources(t *testing.T) {
 			t.Fatal("clipped secret prefix or excluded path leaked")
 		}
 	}
-	taxonomy := (*memoryProtection)(nil).taxonomy([]memorydb.Fragment{{Path: "fragments/" + nativeSyntheticSecret + "/note.md"}, {Path: "fragments/credentials/excluded.md"}}, 1000)
+	taxonomy := policy.taxonomy([]memorydb.Fragment{{Path: "fragments/" + nativeSyntheticSecret + "/note.md"}, {Path: "fragments/credentials/excluded.md"}}, 1000)
 	if strings.Contains(taxonomy, "sk-synth") || strings.Contains(taxonomy, "credentials/") {
 		t.Fatal("taxonomy summarized an unsanitized path")
 	}
@@ -141,12 +146,12 @@ func TestNativeEvidenceSkipsPrivilegedRolesBeforeBudget(t *testing.T) {
 
 func TestNativeAnchoredRulesApplyBeforeCompositionAndClipping(t *testing.T) {
 	source := "BEGIN_PRIVATE/" + strings.Repeat("X", 150) + "/END"
-	cfg := config.MemoryConfig{SecretPatterns: []string{`^BEGIN_PRIVATE/[X]+/END$`}}
+	cfg := config.MemoryConfig{Secrets: config.MemorySecretsConfig{Patterns: []string{`^BEGIN_PRIVATE/[X]+/END$`}}}
 	p, err := newMemoryProtection(cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if p.fragment("fragments/notes/test.md", source) == nil || p.checkImage(memorydb.ImageRecord{Prompt: source}) == nil {
+	if p.fragment("fragments/notes/test.md", source) == nil || p.check(source) == nil {
 		t.Fatal("field composition bypassed anchored detector")
 	}
 	prompt := p.promotePrompt([]memorydb.Fragment{{Path: "fragments/notes/test.md", Content: source}}, source)
@@ -193,7 +198,7 @@ func TestNativeInsightFeatureStillPersistsSafeRules(t *testing.T) {
 
 func TestNativeAdditiveRulesSeeOriginalOverlappingFields(t *testing.T) {
 	source := "private-id=example; password=example"
-	p, err := newMemoryProtection(config.MemoryConfig{SecretPatterns: []string{regexp.QuoteMeta(source)}})
+	p, err := newMemoryProtection(config.MemoryConfig{Secrets: config.MemorySecretsConfig{Patterns: []string{regexp.QuoteMeta(source)}}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -203,7 +208,7 @@ func TestNativeAdditiveRulesSeeOriginalOverlappingFields(t *testing.T) {
 	if p.check(source) == nil {
 		t.Fatal("overlapping detector output accepted")
 	}
-	p, err = newMemoryProtection(config.MemoryConfig{SecretPatterns: []string{`private-id=`, regexp.QuoteMeta(source)}})
+	p, err = newMemoryProtection(config.MemoryConfig{Secrets: config.MemorySecretsConfig{Patterns: []string{`private-id=`, regexp.QuoteMeta(source)}}})
 	if err != nil || strings.Contains(p.sanitize(source), "example") {
 		t.Fatal("one configured rule hid another's original match")
 	}
@@ -218,7 +223,7 @@ func TestNativeInsightValidatesExactNormalizedFields(t *testing.T) {
 			provider := mockprovider.NewMockProvider("native").AddTextResponse(string(data))
 			opts, _ := nativeMineFixture(t, provider)
 			opts.PromptMaxTokens = 12000
-			cfg := &config.Config{Memory: config.MemoryConfig{SecretPatterns: []string{`^private-local-[0-9]+$`}}}
+			cfg := &config.Config{Memory: config.MemoryConfig{Secrets: config.MemorySecretsConfig{Patterns: []string{`^private-local-[0-9]+$`}}}}
 			ctx := context.Background()
 			store, err := opts.OpenStore()
 			if err != nil {
@@ -253,7 +258,7 @@ func TestNativeRecentOwnersCheckRawModelTextBeforeTrimming(t *testing.T) {
 			load := opts.LoadConfig
 			opts.LoadConfig = func() (*config.Config, error) {
 				cfg, err := load()
-				cfg.Memory.SecretPatterns = []string{`^ # Good\n\nprivate-local-[0-9]+ $`}
+				cfg.Memory.Secrets.Patterns = []string{`^ # Good\n\nprivate-local-[0-9]+ $`}
 				return cfg, err
 			}
 			ctx := context.Background()
@@ -301,5 +306,139 @@ func TestNativeRecentOwnersCheckRawModelTextBeforeTrimming(t *testing.T) {
 				t.Fatal("raw-model rejection changed recent file")
 			}
 		})
+	}
+}
+
+func TestFableImageFailuresRetainBoundaryButDoNotDropLaterRows(t *testing.T) {
+	opts, _ := nativeMineFixture(t, mockprovider.NewMockProvider("image-retry"))
+	ctx := context.Background()
+	store, err := opts.OpenStore()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	// Temporary fixture trigger forces exactly one image write to fail. No live DB.
+	db, err := sql.Open("sqlite", opts.DBPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if _, err := db.Exec(`CREATE TRIGGER fail_poison BEFORE INSERT ON memory_fragments WHEN NEW.path LIKE 'images/%poison%' BEGIN SELECT RAISE(FAIL,'synthetic image write failure'); END`); err != nil {
+		t.Fatal(err)
+	}
+	for _, prompt := range []string{"poison", "later safe"} {
+		if err := store.RecordImage(ctx, &memorydb.ImageRecord{Agent: "assistant", Prompt: prompt, OutputPath: "/synthetic/image.png", Provider: "fixture"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := db.Exec(`UPDATE generated_images SET created_at = '2026-01-02 03:04:05'`); err != nil {
+		t.Fatal(err)
+	}
+	count, err := opts.Env.mineGeneratedImages(ctx, store)
+	mark, _ := store.GetMeta(ctx, opts.Env.memoryImageMineMetaKey("assistant"))
+	if err == nil || count != 1 || mark != "" {
+		t.Fatal("failed timestamp group was crossed or later image starved")
+	}
+	if _, err := db.Exec(`DROP TRIGGER fail_poison`); err != nil {
+		t.Fatal(err)
+	}
+	count, err = opts.Env.mineGeneratedImages(ctx, store)
+	mark, _ = store.GetMeta(ctx, opts.Env.memoryImageMineMetaKey("assistant"))
+	if err != nil || count != 2 || mark == "" {
+		t.Fatal("failed image was not retried with original watermark")
+	}
+	// Include the exact timestamp boundary: a row created in that same second
+	// after a previous snapshot must not become permanently invisible.
+	boundary, err := time.Parse(time.RFC3339Nano, mark)
+	if err != nil {
+		t.Fatal(err)
+	}
+	images, err := store.ListImagesSince(ctx, "assistant", boundary)
+	if err != nil || len(images) != 2 {
+		t.Fatal("inclusive boundary replay lost tied image rows")
+	}
+	if err := store.RecordImage(ctx, &memorydb.ImageRecord{ID: "late-same-timestamp", Agent: "assistant", Prompt: "arrived after snapshot", OutputPath: "/synthetic/late.png", Provider: "fixture"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`UPDATE generated_images SET created_at = '2026-01-02 03:04:05' WHERE id='late-same-timestamp'`); err != nil {
+		t.Fatal(err)
+	}
+	count, err = opts.Env.mineGeneratedImages(ctx, store)
+	if err != nil || count != 3 {
+		t.Fatal("row arriving on checkpoint boundary was lost")
+	}
+
+}
+
+func TestFablePromoteCompactsOnceThenPreservesOldFile(t *testing.T) {
+	for _, fits := range []bool{false, true} {
+		t.Run(map[bool]string{false: "still-over", true: "fits"}[fits], func(t *testing.T) {
+			ctx := context.Background()
+			dir := t.TempDir()
+			agent := filepath.Join(dir, "agent")
+			if err := os.MkdirAll(filepath.Join(agent, "memory"), 0700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(agent, "agent.yaml"), []byte("name: fixture\ndescription: fixture\n"), 0600); err != nil {
+				t.Fatal(err)
+			}
+			recent := filepath.Join(agent, "memory", "recent.md")
+			if err := os.WriteFile(recent, []byte("known good"), 0600); err != nil {
+				t.Fatal(err)
+			}
+			store, err := memorydb.NewStore(memorydb.Config{Path: filepath.Join(dir, "memory.db")})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer store.Close()
+			if err := store.CreateFragment(ctx, &memorydb.Fragment{Agent: agent, Path: "fragments/fact.md", Content: "Safe fact"}); err != nil {
+				t.Fatal(err)
+			}
+			compact := strings.Repeat("long ", 100)
+			if fits {
+				compact = "Safe compact summary."
+			}
+			provider := mockprovider.NewMockProvider("compaction").AddTextResponse(strings.Repeat("long ", 100)).AddTextResponse(compact)
+			_, err = runMemoryPromoteFlow(ctx, testEnv("", ""), &config.Config{}, engine.NewEngine(provider, nil), store, memoryPromoteOptions{Agent: agent, RecentMaxBytes: 100})
+			if len(provider.RecordedRequests()) != 2 {
+				t.Fatal("expected exactly one compaction retry")
+			}
+			data, _ := os.ReadFile(recent)
+			meta, _ := store.GetMeta(ctx, memoryPromoteMetaKey(agent))
+			if fits {
+				if err != nil || string(data) != compact || meta == "" {
+					t.Fatal("valid compaction not persisted")
+				}
+			} else if !errors.Is(err, errRecentSize) || string(data) != "known good" || meta != "" {
+				t.Fatal("oversize result mutated old summary or watermark")
+			}
+		})
+	}
+}
+
+func TestFableImageFailureDoesNotPreventEmbeddingPhase(t *testing.T) {
+	opts, _ := nativeMineFixture(t, mockprovider.NewMockProvider("later-phase"))
+	opts.Embed = true
+	opts.EmbedProvider = "invalid-owner-test-provider"
+	ctx := context.Background()
+	store, err := opts.OpenStore()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	db, err := sql.Open("sqlite", opts.DBPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if _, err := db.Exec(`CREATE TRIGGER fail_images BEFORE INSERT ON memory_fragments WHEN NEW.path LIKE 'images/%' BEGIN SELECT RAISE(FAIL,'synthetic image failure'); END`); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.RecordImage(ctx, &memorydb.ImageRecord{Agent: "assistant", Prompt: "A safe image", OutputPath: "/synthetic/image.png", Provider: "fixture"}); err != nil {
+		t.Fatal(err)
+	}
+	err = Mine(opts)
+	if err == nil || !strings.Contains(err.Error(), "synthetic image failure") || !strings.Contains(err.Error(), "unknown embedding provider") {
+		t.Fatal("image failure prevented later independent phase or was hidden")
 	}
 }

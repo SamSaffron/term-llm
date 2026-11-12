@@ -1,10 +1,14 @@
 package memory
 
 import (
+	"context"
 	"errors"
 	"fmt"
+	"os"
 	"path"
-	"regexp"
+
+	"github.com/bmatcuk/doublestar/v4"
+	"github.com/samsaffron/term-llm/internal/llm/engine"
 	"strings"
 	"unicode/utf8"
 
@@ -16,27 +20,31 @@ import (
 
 var errMemorySafety = errors.New("memory content rejected by native safety validation")
 
-// memoryProtection is a compiled, additive-only data policy. A nil value still
-// applies the built-in detectors; neither environment variables nor config can
-// disable them. No policy field names executable code or a shell command.
-type memoryProtection struct{ additional []*regexp.Regexp }
+// memoryProtection is an immutable snapshot of trusted owner configuration.
+type memoryProtection struct {
+	redactor     *secrettext.Redactor
+	excludePaths []string
+}
 
+var defaultProtection = &memoryProtection{redactor: secrettext.Default}
+
+func protectionOrDefault(p *memoryProtection) *memoryProtection {
+	if p == nil {
+		return defaultProtection
+	}
+	return p
+}
 func newMemoryProtection(cfg config.MemoryConfig) (*memoryProtection, error) {
-	if len(cfg.SecretPatterns) > 32 {
-		return nil, errors.New("memory.secret_patterns exceeds 32 entries")
+	r, err := secrettext.New(cfg.Secrets.Disable, cfg.Secrets.Patterns)
+	if err != nil {
+		return nil, err
 	}
-	p := &memoryProtection{}
-	for i, pattern := range cfg.SecretPatterns {
-		if len(pattern) > 1024 {
-			return nil, fmt.Errorf("memory.secret_patterns entry %d exceeds 1024 bytes", i+1)
+	for i, glob := range cfg.ExcludePaths {
+		if _, err := doublestar.Match(glob, ""); err != nil {
+			return nil, fmt.Errorf("invalid memory.exclude_paths entry %d", i+1)
 		}
-		re, err := regexp.Compile(pattern)
-		if err != nil || re.MatchString("") {
-			return nil, fmt.Errorf("invalid memory.secret_patterns entry %d", i+1)
-		}
-		p.additional = append(p.additional, re)
 	}
-	return p, nil
+	return &memoryProtection{redactor: r, excludePaths: append([]string(nil), cfg.ExcludePaths...)}, nil
 }
 
 func (e Env) withProtection(cfg *config.Config) (Env, error) {
@@ -49,83 +57,81 @@ func (e Env) withProtection(cfg *config.Config) (Env, error) {
 }
 
 func (p *memoryProtection) sanitize(text string) string {
-	text = strings.ToValidUTF8(text, "")
-	// Evaluate every added detector against the original field, never against
-	// another detector's replacement. A match redacts the complete field. This
-	// conservative projection avoids an ordering-dependent regex/span framework.
-	if p != nil {
-		for _, re := range p.additional {
-			if re.MatchString(text) || re.MatchString(strings.TrimSpace(text)) {
-				return "[redacted]"
-			}
+	out, _ := p.redactor.Redact(strings.ToValidUTF8(text, ""))
+	return out
+}
+func (p *memoryProtection) check(text string) error {
+	if !utf8.ValidString(text) {
+		return errors.New("memory content is not valid UTF-8")
+	}
+	_, hits := p.redactor.Redact(text)
+	if len(hits) > 0 {
+		return fmt.Errorf("%w: %s; use credential locations instead of values, or correct owner policy", errMemorySafety, strings.Join(hits, ", "))
+	}
+	return nil
+}
+func (p *memoryProtection) excluded(fragPath string) bool {
+	fragPath = path.Clean(strings.TrimSpace(strings.ReplaceAll(fragPath, "\\", "/")))
+	for _, glob := range p.excludePaths {
+		matched, _ := doublestar.Match(glob, fragPath)
+		if matched {
+			return true
 		}
 	}
-	return secrettext.Redact(text)
+	return false
 }
 
-func (p *memoryProtection) check(text string) error {
-	if !utf8.ValidString(text) || p.sanitize(text) != text {
-		return errMemorySafety
+// Only secret checks belong here. Path/empty/size errors remain ordinary,
+// actionable model tool errors. Check original and exact persisted forms.
+func (p *memoryProtection) fragment(fragPath, content string) error {
+	normalized, err := validateFragmentPath(fragPath)
+	if err != nil {
+		return err
+	}
+	for _, field := range []string{fragPath, normalized, content, strings.TrimSpace(content)} {
+		if err := p.check(field); err != nil {
+			return err
+		}
 	}
 	return nil
 }
 
-func excludedMemoryPath(fragPath string) bool {
-	fragPath = path.Clean(strings.TrimSpace(strings.ReplaceAll(fragPath, "\\", "/")))
-	return strings.HasPrefix(fragPath, "fragments/credentials/") || strings.HasSuffix(fragPath, "/accounts-and-credentials.md")
-}
-
-func (p *memoryProtection) fragment(path, content string) error {
-	normalized, err := validateFragmentPath(path)
-	if err != nil {
-		return errMemorySafety
-	}
-	if excludedMemoryPath(normalized) || strings.TrimSpace(content) == "" || len(content) > 8192 {
-		return errMemorySafety
-	}
-	if err := p.check(path); err != nil {
-		return err
-	}
-	if err := p.check(normalized); err != nil {
-		return err
-	}
-	if err := p.check(content); err != nil {
-		return err
-	}
-	return p.check(strings.TrimSpace(content))
-}
-
-var invalidRecentLine = regexp.MustCompile(`(?im)^\s*(?:i (?:cannot|can't|won't|am unable)\b|sorry[,!]|error:|traceback\b|provider error\b|rate limit\b|unauthorized\b|as an ai\b)`)
+var errRecentSize = errors.New("recent summary exceeds byte budget after compaction")
 
 func (p *memoryProtection) recent(content string, maxBytes int) error {
-	if len(content) > maxBytes || maxBytes <= 0 || !strings.HasPrefix(content, "#") || strings.Contains(content, "```") || invalidRecentLine.MatchString(content) {
-		return errMemorySafety
+	if strings.TrimSpace(content) == "" {
+		return errors.New("recent summary is empty")
 	}
-	if err := p.check(content); err != nil {
-		return err
+	if maxBytes <= 0 || len(content) > maxBytes {
+		return errRecentSize
 	}
-	pendingDepth := 0
-	body := false
-	for _, line := range strings.Split(content, "\n") {
-		line = strings.TrimSpace(line)
-		if line == "" {
-			continue
-		}
-		if strings.HasPrefix(line, "#") {
-			depth := len(line) - len(strings.TrimLeft(line, "#"))
-			if pendingDepth != 0 && depth <= pendingDepth {
-				return errMemorySafety
-			}
-			pendingDepth = depth
-		} else if strings.Trim(line, "-*_> ") != "" {
-			body = true
-			pendingDepth = 0
-		}
+	return p.check(content)
+}
+
+// Unchecked provider output may contain secrets even when input was sanitized.
+// Keep useful diagnostics, redacting by the same owner policy; never retain an
+// unsafe error body in an unwrap chain. Cancellation identity is preserved.
+func (p *memoryProtection) providerError(operation string, err error) error {
+	if errors.Is(err, context.Canceled) {
+		return fmt.Errorf("%s: %w", operation, context.Canceled)
 	}
-	if !body || pendingDepth != 0 {
-		return errMemorySafety
+	if errors.Is(err, context.DeadlineExceeded) {
+		return fmt.Errorf("%s: %w", operation, context.DeadlineExceeded)
 	}
-	return nil
+	return fmt.Errorf("%s: %s", operation, p.sanitize(err.Error()))
+}
+
+// Raw diagnostics are an explicit owner optout only. Detectors-enabled runs
+// retain sanitized errors but suppress unvalidated model response logging.
+func (p *memoryProtection) prepareDebug(eng *engine.Engine, raw bool) bool {
+	if !p.redactor.Enabled() {
+		return raw
+	}
+	eng.SetDebugLogger(nil)
+	if raw {
+		fmt.Fprintln(os.Stderr, "memory: raw model debug suppressed while secret detectors are enabled; owner memory.secrets.disable: [all] with no patterns permits raw diagnostics")
+	}
+	return false
 }
 
 // Taxonomy reads only paths. Sanitize each entire path before directory names
@@ -133,7 +139,7 @@ func (p *memoryProtection) recent(content string, maxBytes int) error {
 func (p *memoryProtection) taxonomy(fragments []memorydb.Fragment, maxTokens int) string {
 	safe := make([]memorydb.Fragment, 0, len(fragments))
 	for _, frag := range fragments {
-		if excludedMemoryPath(frag.Path) {
+		if p.excluded(frag.Path) {
 			continue
 		}
 		frag.Path = p.sanitize(frag.Path)
@@ -167,7 +173,7 @@ func (p *memoryProtection) message(msg session.Message) session.Message {
 func (p *memoryProtection) promotePrompt(changed []memorydb.Fragment, existingRecent string) string {
 	safe := make([]memorydb.Fragment, 0, len(changed))
 	for _, frag := range changed {
-		if excludedMemoryPath(frag.Path) {
+		if p.excluded(frag.Path) {
 			continue
 		}
 		frag.Path = p.sanitize(frag.Path)
@@ -175,15 +181,6 @@ func (p *memoryProtection) promotePrompt(changed []memorydb.Fragment, existingRe
 		safe = append(safe, frag)
 	}
 	return p.sanitize(buildPromotePrompt(safe, p.sanitize(existingRecent)))
-}
-
-func (p *memoryProtection) checkImage(img memorydb.ImageRecord) error {
-	for _, field := range []string{img.Prompt, img.OutputPath, img.Provider, img.SessionID} {
-		if err := p.check(field); err != nil {
-			return err
-		}
-	}
-	return nil
 }
 
 // Check both the model's original fields and the exact normalized values used
@@ -204,4 +201,14 @@ func (p *memoryProtection) insight(item insightExtractionItem) (insightExtractio
 		}
 	}
 	return item, nil
+}
+
+func (p *memoryProtection) included(fragments []memorydb.Fragment) []memorydb.Fragment {
+	out := make([]memorydb.Fragment, 0, len(fragments))
+	for _, frag := range fragments {
+		if !p.excluded(frag.Path) {
+			out = append(out, frag)
+		}
+	}
+	return out
 }

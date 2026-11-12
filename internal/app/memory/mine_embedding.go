@@ -2,6 +2,7 @@ package memory
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -27,9 +28,9 @@ func (opts MineOptions) runMemoryEmbedPhase(ctx context.Context, cfg *config.Con
 	embedder, err := embedding.NewEmbeddingProvider(cfg, providerSpec)
 	if err != nil {
 		if strings.TrimSpace(opts.EmbedProvider) != "" {
-			return 0, err
+			return 0, protectionOrDefault(opts.protection).providerError("initialize embedding provider", err)
 		}
-		fmt.Fprintf(os.Stderr, "warning: embedding provider initialization failed (%v), skipping EMBED phase\n", err)
+		fmt.Fprintf(os.Stderr, "warning: embedding provider initialization failed (%v), skipping EMBED phase\n", protectionOrDefault(opts.protection).providerError("embedding", err))
 		return 0, nil
 	}
 
@@ -43,7 +44,7 @@ func (opts MineOptions) runMemoryEmbedPhase(ctx context.Context, cfg *config.Con
 	}
 	safeFragments := fragments[:0]
 	for _, frag := range fragments {
-		if !excludedMemoryPath(frag.Path) {
+		if !opts.protection.excluded(frag.Path) {
 			safeFragments = append(safeFragments, frag)
 		}
 	}
@@ -54,6 +55,7 @@ func (opts MineOptions) runMemoryEmbedPhase(ctx context.Context, cfg *config.Con
 	}
 
 	embeddedCount := 0
+	var failures []error
 	embedBatchSize := cfg.Embed.BatchSize
 	if embedBatchSize <= 0 {
 		embedBatchSize = 32
@@ -66,7 +68,7 @@ func (opts MineOptions) runMemoryEmbedPhase(ctx context.Context, cfg *config.Con
 		batch := fragments[i:end]
 		texts := make([]string, len(batch))
 		for j, frag := range batch {
-			texts[j] = opts.protection.sanitize(frag.Content)
+			texts[j] = protectionOrDefault(opts.protection).sanitize(frag.Content)
 		}
 
 		result, err := embedder.Embed(ctx, embedding.EmbedRequest{
@@ -75,7 +77,9 @@ func (opts MineOptions) runMemoryEmbedPhase(ctx context.Context, cfg *config.Con
 			TaskType: "RETRIEVAL_DOCUMENT",
 		})
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "warning: failed embedding batch starting at %d (provider details withheld)\n", i)
+			safeErr := protectionOrDefault(opts.protection).providerError("embedding batch", err)
+			failures = append(failures, safeErr)
+			fmt.Fprintf(os.Stderr, "warning: failed embedding batch starting at %d: %v\n", i, safeErr)
 			continue
 		}
 		for j, emb := range result.Embeddings {
@@ -91,5 +95,5 @@ func (opts MineOptions) runMemoryEmbedPhase(ctx context.Context, cfg *config.Con
 		}
 	}
 
-	return embeddedCount, nil
+	return embeddedCount, errors.Join(failures...)
 }

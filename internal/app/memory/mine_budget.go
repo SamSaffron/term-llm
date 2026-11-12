@@ -373,7 +373,7 @@ func (t *memorySearchFragmentsTool) Execute(ctx context.Context, args json.RawMe
 	}
 	safeResults := results[:0]
 	for i := range results {
-		if excludedMemoryPath(results[i].Path) {
+		if protectionOrDefault(t.protection).excluded(results[i].Path) {
 			continue
 		}
 		frag, err := t.store.GetFragment(ctx, t.agent, results[i].Path)
@@ -383,8 +383,8 @@ func (t *memorySearchFragmentsTool) Execute(ctx context.Context, args json.RawMe
 		if frag == nil {
 			continue
 		}
-		results[i].Snippet = t.protection.sanitize(frag.Content)
-		results[i].Path = t.protection.sanitize(frag.Path)
+		results[i].Snippet = protectionOrDefault(t.protection).sanitize(frag.Content)
+		results[i].Path = protectionOrDefault(t.protection).sanitize(frag.Path)
 		snippetLimit := memoryMineFragmentSnippetChars
 		if t.readBytes > 0 && t.readBytes < snippetLimit {
 			snippetLimit = t.readBytes
@@ -455,8 +455,8 @@ func (t *memoryListFragmentsTool) Execute(ctx context.Context, args json.RawMess
 	}
 	safePaths := paths[:0]
 	for _, path := range paths {
-		if !excludedMemoryPath(path) {
-			safePaths = append(safePaths, t.protection.sanitize(path))
+		if !protectionOrDefault(t.protection).excluded(path) {
+			safePaths = append(safePaths, protectionOrDefault(t.protection).sanitize(path))
 		}
 	}
 	paths = safePaths
@@ -510,8 +510,8 @@ func (t *memoryGetFragmentTool) Execute(ctx context.Context, args json.RawMessag
 		return core.ToolOutput{}, fmt.Errorf("parse memory_get_fragment args: %w", err)
 	}
 	fragPath := strings.TrimSpace(payload.Path)
-	if excludedMemoryPath(fragPath) {
-		return core.TextOutput(`{"found":false}`), nil
+	if protectionOrDefault(t.protection).excluded(fragPath) {
+		return core.TextOutput(`{"found":false,"excluded":true,"reason":"owner memory.exclude_paths"}`), nil
 	}
 	if fragPath == "" {
 		return core.ToolOutput{}, fmt.Errorf("path is required")
@@ -523,8 +523,8 @@ func (t *memoryGetFragmentTool) Execute(ctx context.Context, args json.RawMessag
 	if frag == nil {
 		return core.TextOutput(fmt.Sprintf("{\n  \"agent\": %q,\n  \"path\": %q,\n  \"found\": false\n}", t.agent, fragPath)), nil
 	}
-	content := t.protection.sanitize(frag.Content)
-	safePath := t.protection.sanitize(frag.Path)
+	content := protectionOrDefault(t.protection).sanitize(frag.Content)
+	safePath := protectionOrDefault(t.protection).sanitize(frag.Path)
 	readLimit := memoryMineFragmentReadChars
 	if t.readBytes > 0 && t.readBytes < readLimit {
 		readLimit = t.readBytes

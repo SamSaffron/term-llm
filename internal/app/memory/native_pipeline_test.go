@@ -6,7 +6,6 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -89,20 +88,20 @@ func TestNativeMineRejectionPreservesCursorAndAcceptedSources(t *testing.T) {
 }
 
 func TestNativeInvalidPolicyFailsBeforeProviderConstruction(t *testing.T) {
-	for _, pattern := range []string{"private-literal[", "a*", strings.Repeat("x", 1025)} {
+	for _, pattern := range []string{"private-literal[", "a*", ""} {
 		opts, _ := nativeMineFixture(t, mockprovider.NewMockProvider("native"))
 		load := opts.LoadConfig
 		opts.LoadConfig = func() (*config.Config, error) {
 			cfg, err := load()
-			cfg.Memory.SecretPatterns = []string{pattern}
+			cfg.Memory.Secrets.Patterns = []string{pattern}
 			return cfg, err
 		}
 		opts.ApplyAskProviderOverrides = func(*config.Config) error { t.Fatal("invalid policy reached provider configuration"); return nil }
-		if err := Mine(opts); err == nil || strings.Contains(err.Error(), pattern) {
+		if err := Mine(opts); err == nil || (pattern != "" && strings.Contains(err.Error(), pattern)) {
 			t.Fatal("invalid policy was accepted or leaked")
 		}
 	}
-	p, err := newMemoryProtection(config.MemoryConfig{SecretPatterns: []string{`private-local-[0-9]+`}})
+	p, err := newMemoryProtection(config.MemoryConfig{Secrets: config.MemorySecretsConfig{Patterns: []string{`private-local-[0-9]+`}}})
 	if err != nil || p.sanitize("private-local-123456") == "private-local-123456" || p.check("private-local-123456") == nil {
 		t.Fatal("declarative detector ineffective")
 	}
@@ -122,7 +121,7 @@ func TestNativeEmbeddingSanitizesWithoutDisablingFeature(t *testing.T) {
 	}))
 	defer server.Close()
 	opts, _ := nativeMineFixture(t, mockprovider.NewMockProvider("native"))
-	cfg := &config.Config{Memory: config.MemoryConfig{SecretPatterns: []string{`private-local-[0-9]+`}}, Embed: config.EmbedConfig{Provider: "ollama:fixture", Ollama: config.EmbedOllamaConfig{BaseURL: server.URL}}}
+	cfg := &config.Config{Memory: config.MemoryConfig{Secrets: config.MemorySecretsConfig{Patterns: []string{`private-local-[0-9]+`}}, ExcludePaths: []string{"fragments/credentials/**"}}, Embed: config.EmbedConfig{Provider: "ollama:fixture", Ollama: config.EmbedOllamaConfig{BaseURL: server.URL}}}
 	store, err := opts.OpenStore()
 	if err != nil {
 		t.Fatal(err)
@@ -143,7 +142,7 @@ func TestNativeEmbeddingSanitizesWithoutDisablingFeature(t *testing.T) {
 	}
 }
 
-func TestNativeImagesRejectBeforeWatermarkAndStillMineSafeImages(t *testing.T) {
+func TestNativeImagesRedactAndStillMineSafeImages(t *testing.T) {
 	for _, secret := range []bool{false, true} {
 		t.Run(map[bool]string{false: "safe", true: "secret"}[secret], func(t *testing.T) {
 			opts, _ := nativeMineFixture(t, mockprovider.NewMockProvider("native"))
@@ -155,37 +154,22 @@ func TestNativeImagesRejectBeforeWatermarkAndStillMineSafeImages(t *testing.T) {
 			defer store.Close()
 			prompt := "A safe landscape"
 			if secret {
-				prompt = "api_key: " + nativeSyntheticSecret
+				prompt = "A landscape " + nativeSyntheticSecret
 			}
 			if err := store.RecordImage(ctx, &memorydb.ImageRecord{Agent: "assistant", Prompt: prompt, OutputPath: "/synthetic/image.png", Provider: "fixture"}); err != nil {
 				t.Fatal(err)
 			}
 			count, err := opts.Env.mineGeneratedImages(ctx, store)
 			meta, _ := store.GetMeta(ctx, opts.Env.memoryImageMineMetaKey("assistant"))
-			if secret {
-				if !errors.Is(err, errMemorySafety) || count != 0 || meta != "" {
-					t.Fatal("unsafe image persisted or advanced watermark")
-				}
-			} else if err != nil || count != 1 || meta == "" {
-				t.Fatal("safe image feature disabled")
+			if err != nil || count != 1 || meta == "" {
+				t.Fatal("image did not make safe progress")
 			}
-		})
-	}
-}
+			fragments, _ := store.ListFragments(ctx, memorydb.ListOptions{Agent: "assistant"})
+			if len(fragments) != 1 || strings.Contains(fragments[0].Content, nativeSyntheticSecret) {
+				t.Fatal("image source not redacted")
+			}
 
-func TestNativeObsoleteExecutableEnvironmentNeverRuns(t *testing.T) {
-	dir := t.TempDir()
-	marker := filepath.Join(dir, "executed")
-	program := filepath.Join(dir, "not-a-policy")
-	if err := os.WriteFile(program, []byte("#!/bin/sh\ntouch '"+marker+"'\nexit 0\n"), 0700); err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv("TERM_LLM_MEMORY_CONTENT_GUARD", program)
-	if (*memoryProtection)(nil).check(nativeSyntheticSecret) == nil {
-		t.Fatal("inherited executable environment bypassed native protection")
-	}
-	if _, err := os.Stat(marker); !os.IsNotExist(err) {
-		t.Fatal("obsolete executable hook was invoked")
+		})
 	}
 }
 
@@ -202,7 +186,7 @@ func TestNativeFragmentRawAndStoredFormsBothChecked(t *testing.T) {
 			load := opts.LoadConfig
 			opts.LoadConfig = func() (*config.Config, error) {
 				cfg, err := load()
-				cfg.Memory.SecretPatterns = []string{`^ sensitive-value $`}
+				cfg.Memory.Secrets.Patterns = []string{`^ sensitive-value $`}
 				return cfg, err
 			}
 			ctx := context.Background()

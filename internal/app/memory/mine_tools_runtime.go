@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"path"
 	"sort"
 	"strings"
 	"sync"
@@ -18,6 +19,7 @@ type memoryExtractionResult struct {
 	Created       int
 	Updated       int
 	Skipped       int
+	Rejected      int
 	AffectedPaths []string
 	FinalText     string
 }
@@ -29,30 +31,49 @@ type memoryExtractionCollector struct {
 	skipped  int
 	affected []string
 	seen     map[string]struct{}
-	rejected bool
+	rejected int
+	pending  map[string]bool
 }
 
 func newMemoryExtractionCollector() *memoryExtractionCollector {
-	return &memoryExtractionCollector{seen: map[string]struct{}{}}
+	return &memoryExtractionCollector{seen: map[string]struct{}{}, pending: map[string]bool{}}
 }
 
-func (c *memoryExtractionCollector) rejectPolicy() {
+func writeKey(p string) string {
+	return path.Clean(strings.TrimSpace(strings.ReplaceAll(p, "\\", "/")))
+}
+func (c *memoryExtractionCollector) noteFailure(p string, secret bool) {
 	if c == nil {
 		return
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.rejected = true
+	if c.pending == nil {
+		c.pending = map[string]bool{}
+	}
+	c.pending[writeKey(p)] = c.pending[writeKey(p)] || secret
+	if secret {
+		c.rejected++
+	}
 }
-func (c *memoryExtractionCollector) policyFailed() bool {
+func (c *memoryExtractionCollector) pendingError() error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	return c.rejected
+	if len(c.pending) == 0 {
+		return nil
+	}
+	for _, secret := range c.pending {
+		if secret {
+			return fmt.Errorf("%w: %d unresolved write(s); batch cursor retained; retry a corrected write to the same path", errMemorySafety, len(c.pending))
+		}
+	}
+	return fmt.Errorf("%d unresolved memory write(s); batch cursor retained", len(c.pending))
 }
 
 func (c *memoryExtractionCollector) noteCreated(path string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	delete(c.pending, writeKey(path))
 	c.created++
 	c.addPath(path)
 }
@@ -60,8 +81,19 @@ func (c *memoryExtractionCollector) noteCreated(path string) {
 func (c *memoryExtractionCollector) noteUpdated(path string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	delete(c.pending, writeKey(path))
 	c.updated++
 	c.addPath(path)
+}
+
+// An exact already-stored correction is an accepted examined no-op, not a
+// missing fragment or a fictitious update. Still attribute the inspected range.
+func (c *memoryExtractionCollector) noteUnchanged(p string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	delete(c.pending, writeKey(p))
+	c.skipped++
+	c.addPath(p)
 }
 
 func (c *memoryExtractionCollector) noteSkipped() {
@@ -88,10 +120,11 @@ func (c *memoryExtractionCollector) result(finalText string) memoryExtractionRes
 		Created:       c.created,
 		Updated:       c.updated,
 		Skipped:       c.skipped,
+		Rejected:      c.rejected,
 		AffectedPaths: affected,
 		FinalText:     strings.TrimSpace(finalText),
 	}
-	if res.Created == 0 && res.Updated == 0 && res.Skipped == 0 {
+	if res.Created == 0 && res.Updated == 0 && res.Skipped == 0 && len(c.pending) == 0 {
 		res.Skipped = 1
 	}
 	return res
@@ -130,18 +163,20 @@ func (t *memoryCreateFragmentTool) Preview(args json.RawMessage) string {
 	return strings.TrimSpace(payload.Path)
 }
 
-func (t *memoryCreateFragmentTool) Execute(ctx context.Context, args json.RawMessage) (core.ToolOutput, error) {
+func (t *memoryCreateFragmentTool) Execute(ctx context.Context, args json.RawMessage) (out core.ToolOutput, err error) {
 	var payload struct {
 		Path    string `json:"path"`
 		Content string `json:"content"`
 		Reason  string `json:"reason"`
 	}
+	defer func() {
+		if err != nil {
+			t.collector.noteFailure(payload.Path, errors.Is(err, errMemorySafety))
+		}
+	}()
+
 	if err := json.Unmarshal(args, &payload); err != nil {
 		return core.ToolOutput{}, fmt.Errorf("parse memory_create_fragment args: %w", err)
-	}
-	if err := t.protection.fragment(payload.Path, payload.Content); err != nil {
-		t.collector.rejectPolicy()
-		return core.ToolOutput{}, err
 	}
 	fragPath, err := validateFragmentPath(payload.Path)
 	if err != nil {
@@ -153,6 +188,13 @@ func (t *memoryCreateFragmentTool) Execute(ctx context.Context, args json.RawMes
 	}
 	if len([]byte(content)) > 8192 {
 		return core.ToolOutput{}, fmt.Errorf("content exceeds 8192 bytes")
+	}
+	if protectionOrDefault(t.protection).excluded(fragPath) {
+		t.collector.noteSkipped()
+		return core.TextOutput("skipped: path excluded by owner memory.exclude_paths; do not relocate excluded material"), nil
+	}
+	if err := protectionOrDefault(t.protection).fragment(payload.Path, payload.Content); err != nil {
+		return core.ToolOutput{}, err
 	}
 	if !t.dryRun {
 		if err := t.store.CreateFragment(ctx, &memorydb.Fragment{Agent: t.agent, Path: fragPath, Content: content, Source: memorydb.DefaultSourceMine}); err != nil {
@@ -196,18 +238,20 @@ func (t *memoryUpdateFragmentTool) Preview(args json.RawMessage) string {
 	return strings.TrimSpace(payload.Path)
 }
 
-func (t *memoryUpdateFragmentTool) Execute(ctx context.Context, args json.RawMessage) (core.ToolOutput, error) {
+func (t *memoryUpdateFragmentTool) Execute(ctx context.Context, args json.RawMessage) (out core.ToolOutput, err error) {
 	var payload struct {
 		Path    string `json:"path"`
 		Content string `json:"content"`
 		Reason  string `json:"reason"`
 	}
+	defer func() {
+		if err != nil {
+			t.collector.noteFailure(payload.Path, errors.Is(err, errMemorySafety))
+		}
+	}()
+
 	if err := json.Unmarshal(args, &payload); err != nil {
 		return core.ToolOutput{}, fmt.Errorf("parse memory_update_fragment args: %w", err)
-	}
-	if err := t.protection.fragment(payload.Path, payload.Content); err != nil {
-		t.collector.rejectPolicy()
-		return core.ToolOutput{}, err
 	}
 	fragPath, err := validateFragmentPath(payload.Path)
 	if err != nil {
@@ -220,13 +264,31 @@ func (t *memoryUpdateFragmentTool) Execute(ctx context.Context, args json.RawMes
 	if len([]byte(content)) > 8192 {
 		return core.ToolOutput{}, fmt.Errorf("content exceeds 8192 bytes")
 	}
+	if protectionOrDefault(t.protection).excluded(fragPath) {
+		t.collector.noteSkipped()
+		return core.TextOutput("skipped: path excluded by owner memory.exclude_paths; do not relocate excluded material"), nil
+	}
+	if err := protectionOrDefault(t.protection).fragment(payload.Path, payload.Content); err != nil {
+		return core.ToolOutput{}, err
+	}
 	if !t.dryRun {
 		ok, err := t.store.UpdateFragment(ctx, t.agent, fragPath, content)
 		if err != nil {
 			return core.ToolOutput{}, err
 		}
 		if !ok {
-			return core.ToolOutput{}, fmt.Errorf("fragment %s does not exist", fragPath)
+			existing, err := t.store.GetFragment(ctx, t.agent, fragPath)
+			if err != nil {
+				return core.ToolOutput{}, err
+			}
+			if existing == nil {
+				return core.ToolOutput{}, fmt.Errorf("fragment %s does not exist", fragPath)
+			}
+			if existing.Content != content {
+				return core.ToolOutput{}, fmt.Errorf("fragment changed concurrently; inspect and retry")
+			}
+			t.collector.noteUnchanged(fragPath)
+			return core.TextOutput(fmt.Sprintf("unchanged %s; corrected proposal already matches stored content", fragPath)), nil
 		}
 	}
 	t.collector.noteUpdated(fragPath)
@@ -264,12 +326,10 @@ type memoryProtectedTool struct {
 
 func (t *memoryProtectedTool) Execute(ctx context.Context, args json.RawMessage) (core.ToolOutput, error) {
 	out, err := t.Tool.Execute(ctx, args)
-	if errors.Is(err, errMemorySafety) {
-		t.collector.rejectPolicy()
-	}
+
 	if err != nil {
 		return core.ToolOutput{}, err
 	}
-	out.Content = t.protection.sanitize(out.Content)
+	out.Content = protectionOrDefault(t.protection).sanitize(out.Content)
 	return out, nil
 }
