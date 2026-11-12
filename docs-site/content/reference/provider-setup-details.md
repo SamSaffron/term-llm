@@ -111,6 +111,9 @@ export PERPLEXITY_API_KEY=your-key
 
 # For Parallel search (used by search.provider: parallel)
 export PARALLEL_API_KEY=your-key
+
+# Optional: removes the keyless hourly cap (search.provider: keenable works without a key)
+export KEENABLE_API_KEY=your-key
 ```
 
 OpenAI API-key installs default to `gpt-6.1-sol`, with `gpt-6-luna` as the lightweight control-plane model:

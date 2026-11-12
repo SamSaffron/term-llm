@@ -303,6 +303,11 @@ func (c SearchConfig) ParallelKey() CredentialRef {
 	return Cred(c.Parallel.APIKey, "PARALLEL_API_KEY")
 }
 
+// KeenableKey returns the optional Keenable search credential.
+func (c SearchConfig) KeenableKey() CredentialRef {
+	return Cred(c.Keenable.APIKey, "KEENABLE_API_KEY")
+}
+
 // TavilyKey returns the Tavily search credential.
 func (c SearchConfig) TavilyKey() CredentialRef {
 	return Cred(c.Tavily.APIKey, "TAVILY_API_KEY")
