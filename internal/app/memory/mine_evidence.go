@@ -33,13 +33,40 @@ func (opts MineOptions) loadMessagesForMining(ctx context.Context, store session
 
 		for _, msg := range msgs {
 			nextSeq := msg.Sequence + 1
+			skip, stop, err := opts.messageScope(msg)
+			if err != nil {
+				return result, err
+			}
+			if stop {
+				result.UpperBoundary = true
+				result.Messages = all
+				result.NextOffset = currentSeq
+				return result, nil
+			}
+			if skip {
+				result.SkippedBefore++
+				currentSeq = nextSeq
+				continue
+			}
 			if excludedMemoryEvidenceRole(msg.Role) {
 				currentSeq = nextSeq
 				continue
 			}
 			msg = protectionOrDefault(opts.protection).message(msg)
 			candidateMessages := append(cloneMessages(all), msg)
-			fit, ok := opts.fitMessagesForPromptBudget(candidate, offset, nextSeq, candidateMessages, taxonomyMap)
+			if opts.hasMessageBounds() && !opts.boundedPromptFits(candidate, offset, nextSeq, candidateMessages, taxonomyMap) {
+				result.PromptBudgetHit = true
+				result.Messages = all
+				result.NextOffset = currentSeq
+				if len(all) == 0 {
+					return result, &memoryMessageBlockedError{msg.Sequence, "exceeds lossless prompt budget; increase --prompt-max-tokens"}
+				}
+				return result, nil
+			}
+			fit, ok := transcriptFitResult{Messages: candidateMessages}, true
+			if !opts.hasMessageBounds() {
+				fit, ok = opts.fitMessagesForPromptBudget(candidate, offset, nextSeq, candidateMessages, taxonomyMap)
+			}
 			if !ok {
 				result.PromptBudgetHit = true
 				result.Messages = all
@@ -47,6 +74,9 @@ func (opts MineOptions) loadMessagesForMining(ctx context.Context, store session
 				return result, nil
 			}
 			all = fit.Messages
+			if opts.hasMessageBounds() {
+				result.addEvidence(msg.Sequence)
+			}
 			currentSeq = nextSeq
 			result.TruncatedMessages = fit.TruncatedMessages
 			result.AssistantMessagesCut = fit.AssistantMessagesCut

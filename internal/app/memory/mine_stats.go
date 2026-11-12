@@ -21,6 +21,9 @@ type memoryPromptParts struct {
 }
 
 type memoryMineLoadResult struct {
+	SkippedBefore        int
+	UpperBoundary        bool
+	EvidenceRanges       []memoryEvidenceRange
 	Messages             []session.Message
 	NextOffset           int
 	TruncatedMessages    int
