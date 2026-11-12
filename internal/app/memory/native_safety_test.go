@@ -50,7 +50,7 @@ func TestNativeMemorySanitizesProviderInputAndDisablesRawDebug(t *testing.T) {
 	provider := mockprovider.NewMockProvider("native").AddTextResponse("done")
 	eng := engine.NewEngine(provider, engine.NewToolRegistry())
 	opts := MineOptions{Env: Env{Deps: Deps{DebugRaw: func() bool { return true }}}, ToolMaxTurns: 2}
-	if _, err := opts.runExtractionRequestWithSystem(context.Background(), eng, "extract", "api_key: "+nativeSyntheticSecret, nil); err != nil {
+	if _, err := opts.runExtractionRequestWithSystem(context.Background(), eng, "extract", defaultProtection.sanitize("api_key: "+nativeSyntheticSecret), nil); err != nil {
 		t.Fatal(err)
 	}
 	reqs := provider.RecordedRequests()

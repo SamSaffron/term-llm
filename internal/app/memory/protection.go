@@ -20,6 +20,15 @@ import (
 
 var errMemorySafety = errors.New("memory content rejected by native safety validation")
 
+// memoryDetectorRejection carries only stable detector IDs, never source text or
+// owner pattern literals. Keep it typed so batch diagnostics need not parse errors.
+type memoryDetectorRejection struct{ detectors []string }
+
+func (e *memoryDetectorRejection) Error() string {
+	return fmt.Sprintf("%v: %s; use credential locations instead of values, or correct owner policy", errMemorySafety, strings.Join(e.detectors, ", "))
+}
+func (e *memoryDetectorRejection) Unwrap() error { return errMemorySafety }
+
 // memoryProtection is an immutable snapshot of trusted owner configuration.
 type memoryProtection struct {
 	redactor     *secrettext.Redactor
@@ -66,7 +75,7 @@ func (p *memoryProtection) check(text string) error {
 	}
 	_, hits := p.redactor.Redact(text)
 	if len(hits) > 0 {
-		return fmt.Errorf("%w: %s; use credential locations instead of values, or correct owner policy", errMemorySafety, strings.Join(hits, ", "))
+		return &memoryDetectorRejection{detectors: hits}
 	}
 	return nil
 }
@@ -146,6 +155,15 @@ func (p *memoryProtection) taxonomy(fragments []memorydb.Fragment, maxTokens int
 		safe = append(safe, frag)
 	}
 	return buildTaxonomyMap(safe, maxTokens)
+}
+
+// candidate sanitizes provider-visible metadata without changing persistence IDs.
+func (p *memoryProtection) candidate(c memoryMineCandidate) memoryMineCandidate {
+	safeSession := *c.Session
+	safeSession.ID = p.sanitize(safeSession.ID)
+	c.Session = &safeSession
+	c.Agent = p.sanitize(c.Agent)
+	return c
 }
 
 // Tool summaries also contain source text. Copy before sanitizing so clipping

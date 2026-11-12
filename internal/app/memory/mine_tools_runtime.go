@@ -20,19 +20,30 @@ type memoryExtractionResult struct {
 	Updated       int
 	Skipped       int
 	Rejected      int
+	DetectorIDs   []string
 	AffectedPaths []string
 	FinalText     string
 }
 
+// rejectionSummary is safe for owner output: IDs originate in the detector
+// registry (or numbered custom rules), not model-proposed paths or content.
+func (r memoryExtractionResult) rejectionSummary() string {
+	if len(r.DetectorIDs) == 0 {
+		return fmt.Sprint(r.Rejected)
+	}
+	return fmt.Sprintf("%d (%s)", r.Rejected, strings.Join(r.DetectorIDs, ", "))
+}
+
 type memoryExtractionCollector struct {
-	mu       sync.Mutex
-	created  int
-	updated  int
-	skipped  int
-	affected []string
-	seen     map[string]struct{}
-	rejected int
-	pending  map[string]bool
+	mu        sync.Mutex
+	created   int
+	updated   int
+	skipped   int
+	affected  []string
+	seen      map[string]struct{}
+	rejected  int
+	pending   map[string]bool
+	detectors map[string]struct{}
 }
 
 func newMemoryExtractionCollector() *memoryExtractionCollector {
@@ -42,8 +53,9 @@ func newMemoryExtractionCollector() *memoryExtractionCollector {
 func writeKey(p string) string {
 	return path.Clean(strings.TrimSpace(strings.ReplaceAll(p, "\\", "/")))
 }
-func (c *memoryExtractionCollector) noteFailure(p string, secret bool) {
-	if c == nil {
+func (c *memoryExtractionCollector) noteFailure(p string, err error) {
+	// Ordinary model-correctable tool errors are not rejected evidence.
+	if c == nil || !errors.Is(err, errMemorySafety) {
 		return
 	}
 	c.mu.Lock()
@@ -51,9 +63,16 @@ func (c *memoryExtractionCollector) noteFailure(p string, secret bool) {
 	if c.pending == nil {
 		c.pending = map[string]bool{}
 	}
-	c.pending[writeKey(p)] = c.pending[writeKey(p)] || secret
-	if secret {
-		c.rejected++
+	c.pending[writeKey(p)] = true
+	c.rejected++
+	var rejection *memoryDetectorRejection
+	if errors.As(err, &rejection) {
+		if c.detectors == nil {
+			c.detectors = map[string]struct{}{}
+		}
+		for _, id := range rejection.detectors {
+			c.detectors[id] = struct{}{}
+		}
 	}
 }
 func (c *memoryExtractionCollector) pendingError() error {
@@ -62,12 +81,7 @@ func (c *memoryExtractionCollector) pendingError() error {
 	if len(c.pending) == 0 {
 		return nil
 	}
-	for _, secret := range c.pending {
-		if secret {
-			return fmt.Errorf("%w: %d unresolved write(s); batch cursor retained; retry a corrected write to the same path", errMemorySafety, len(c.pending))
-		}
-	}
-	return fmt.Errorf("%d unresolved memory write(s); batch cursor retained", len(c.pending))
+	return fmt.Errorf("%w: %d unresolved write(s); batch cursor retained; retry a corrected write to the same path", errMemorySafety, len(c.pending))
 }
 
 func (c *memoryExtractionCollector) noteCreated(path string) {
@@ -116,7 +130,13 @@ func (c *memoryExtractionCollector) result(finalText string) memoryExtractionRes
 	affected := make([]string, len(c.affected))
 	copy(affected, c.affected)
 	sort.Strings(affected)
+	ids := make([]string, 0, len(c.detectors))
+	for id := range c.detectors {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
 	res := memoryExtractionResult{
+		DetectorIDs:   ids,
 		Created:       c.created,
 		Updated:       c.updated,
 		Skipped:       c.skipped,
@@ -171,7 +191,7 @@ func (t *memoryCreateFragmentTool) Execute(ctx context.Context, args json.RawMes
 	}
 	defer func() {
 		if err != nil {
-			t.collector.noteFailure(payload.Path, errors.Is(err, errMemorySafety))
+			t.collector.noteFailure(payload.Path, err)
 		}
 	}()
 
@@ -202,7 +222,7 @@ func (t *memoryCreateFragmentTool) Execute(ctx context.Context, args json.RawMes
 		}
 	}
 	t.collector.noteCreated(fragPath)
-	return core.TextOutput(fmt.Sprintf("created %s", fragPath)), nil
+	return core.TextOutput(fmt.Sprintf("created %s", protectionOrDefault(t.protection).sanitize(fragPath))), nil
 }
 
 type memoryUpdateFragmentTool struct {
@@ -246,7 +266,7 @@ func (t *memoryUpdateFragmentTool) Execute(ctx context.Context, args json.RawMes
 	}
 	defer func() {
 		if err != nil {
-			t.collector.noteFailure(payload.Path, errors.Is(err, errMemorySafety))
+			t.collector.noteFailure(payload.Path, err)
 		}
 	}()
 
@@ -288,11 +308,11 @@ func (t *memoryUpdateFragmentTool) Execute(ctx context.Context, args json.RawMes
 				return core.ToolOutput{}, fmt.Errorf("fragment changed concurrently; inspect and retry")
 			}
 			t.collector.noteUnchanged(fragPath)
-			return core.TextOutput(fmt.Sprintf("unchanged %s; corrected proposal already matches stored content", fragPath)), nil
+			return core.TextOutput(fmt.Sprintf("unchanged %s; corrected proposal already matches stored content", protectionOrDefault(t.protection).sanitize(fragPath))), nil
 		}
 	}
 	t.collector.noteUpdated(fragPath)
-	return core.TextOutput(fmt.Sprintf("updated %s", fragPath)), nil
+	return core.TextOutput(fmt.Sprintf("updated %s", protectionOrDefault(t.protection).sanitize(fragPath))), nil
 }
 
 func registerMemoryExtractionTools(engine *engine.Engine, store *memorydb.Store, agent string, collector *memoryExtractionCollector, readBytes int, dryRun bool, protection *memoryProtection) ([]core.ToolSpec, func()) {
@@ -305,7 +325,6 @@ func registerMemoryExtractionTools(engine *engine.Engine, store *memorydb.Store,
 	}
 	specs := make([]core.ToolSpec, 0, len(tools))
 	for _, tool := range tools {
-		tool = &memoryProtectedTool{Tool: tool, protection: protection, collector: collector}
 		engine.RegisterTool(tool)
 		specs = append(specs, tool.Spec())
 	}
@@ -315,21 +334,4 @@ func registerMemoryExtractionTools(engine *engine.Engine, store *memorydb.Store,
 		}
 	}
 	return specs, cleanup
-}
-
-// Policy applies to every provider-bound tool result, not just the first turn.
-type memoryProtectedTool struct {
-	core.Tool
-	protection *memoryProtection
-	collector  *memoryExtractionCollector
-}
-
-func (t *memoryProtectedTool) Execute(ctx context.Context, args json.RawMessage) (core.ToolOutput, error) {
-	out, err := t.Tool.Execute(ctx, args)
-
-	if err != nil {
-		return core.ToolOutput{}, err
-	}
-	out.Content = protectionOrDefault(t.protection).sanitize(out.Content)
-	return out, nil
 }

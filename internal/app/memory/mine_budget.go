@@ -385,6 +385,7 @@ func (t *memorySearchFragmentsTool) Execute(ctx context.Context, args json.RawMe
 		}
 		results[i].Snippet = protectionOrDefault(t.protection).sanitize(frag.Content)
 		results[i].Path = protectionOrDefault(t.protection).sanitize(frag.Path)
+		results[i].Agent = protectionOrDefault(t.protection).sanitize(results[i].Agent)
 		snippetLimit := memoryMineFragmentSnippetChars
 		if t.readBytes > 0 && t.readBytes < snippetLimit {
 			snippetLimit = t.readBytes
@@ -396,8 +397,8 @@ func (t *memorySearchFragmentsTool) Execute(ctx context.Context, args json.RawMe
 	}
 	results = safeResults
 	response := map[string]any{
-		"query":   payload.Query,
-		"agent":   t.agent,
+		"query":   protectionOrDefault(t.protection).sanitize(payload.Query),
+		"agent":   protectionOrDefault(t.protection).sanitize(t.agent),
 		"results": results,
 	}
 	data, _ := json.MarshalIndent(response, "", "  ")
@@ -462,8 +463,8 @@ func (t *memoryListFragmentsTool) Execute(ctx context.Context, args json.RawMess
 	paths = safePaths
 
 	response := map[string]any{
-		"agent":  t.agent,
-		"prefix": prefix,
+		"agent":  protectionOrDefault(t.protection).sanitize(t.agent),
+		"prefix": protectionOrDefault(t.protection).sanitize(prefix),
 		"paths":  paths,
 	}
 	data, _ := json.MarshalIndent(response, "", "  ")
@@ -521,7 +522,7 @@ func (t *memoryGetFragmentTool) Execute(ctx context.Context, args json.RawMessag
 		return core.ToolOutput{}, err
 	}
 	if frag == nil {
-		return core.TextOutput(fmt.Sprintf("{\n  \"agent\": %q,\n  \"path\": %q,\n  \"found\": false\n}", t.agent, fragPath)), nil
+		return core.TextOutput(fmt.Sprintf("{\n  \"agent\": %q,\n  \"path\": %q,\n  \"found\": false\n}", protectionOrDefault(t.protection).sanitize(t.agent), protectionOrDefault(t.protection).sanitize(fragPath))), nil
 	}
 	content := protectionOrDefault(t.protection).sanitize(frag.Content)
 	safePath := protectionOrDefault(t.protection).sanitize(frag.Path)
@@ -533,7 +534,7 @@ func (t *memoryGetFragmentTool) Execute(ctx context.Context, args json.RawMessag
 		content = content[:readLimit] + "\n... [truncated]"
 	}
 	response := map[string]any{
-		"agent":   t.agent,
+		"agent":   protectionOrDefault(t.protection).sanitize(t.agent),
 		"path":    safePath,
 		"found":   true,
 		"content": content,

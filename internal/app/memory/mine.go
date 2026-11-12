@@ -310,7 +310,7 @@ func Mine(opts MineOptions) error {
 		}
 		visitResult.Attempted = true
 
-		promptParts := buildExtractionPromptParts(candidate, startOffset, loadResult.NextOffset, loadResult.Messages, taxonomyMap)
+		promptParts := buildExtractionPromptParts(protectionOrDefault(opts.protection).candidate(candidate), startOffset, loadResult.NextOffset, loadResult.Messages, taxonomyMap)
 		batchStats := opts.newMemoryExtractionStats(candidate, startOffset, loadResult.NextOffset, len(existing), loadResult, promptParts)
 		batchStart := time.Now()
 		extractionResult, err := opts.runExtractionRequest(ctx, engine, memStore, candidate.Agent, promptParts.Prompt, &batchStats)
@@ -328,7 +328,7 @@ func Mine(opts MineOptions) error {
 			batchErrors = append(batchErrors, err)
 			totalCreated += extractionResult.Created
 			totalUpdated += extractionResult.Updated
-			fmt.Fprintf(os.Stderr, "warning: session %s batch at offset %d incomplete; cursor retained; create=%d update=%d rejected=%d: %v\n", candidate.Session.ID, startOffset, extractionResult.Created, extractionResult.Updated, extractionResult.Rejected, err)
+			fmt.Fprintf(os.Stderr, "warning: session %s batch at offset %d incomplete; cursor retained; create=%d update=%d rejected=%s: %v\n", candidate.Session.ID, startOffset, extractionResult.Created, extractionResult.Updated, extractionResult.rejectionSummary(), err)
 			return visitResult, nil
 		}
 		batchStats.Duration = time.Since(batchStart)
@@ -354,8 +354,8 @@ func Mine(opts MineOptions) error {
 		totalUpdated += updated
 		totalSkipped += skipped
 
-		fmt.Printf("[%d/%d] #%d mined messages [%d,%d): create=%d update=%d skip=%d rejected=%d\n",
-			position, total, candidate.Summary.Number, startOffset, loadResult.NextOffset, created, updated, skipped, extractionResult.Rejected)
+		fmt.Printf("[%d/%d] #%d mined messages [%d,%d): create=%d update=%d skip=%d rejected=%s\n",
+			position, total, candidate.Summary.Number, startOffset, loadResult.NextOffset, created, updated, skipped, extractionResult.rejectionSummary())
 		if opts.ShowStats {
 			fmt.Printf("[%d/%d] #%d %s\n", position, total, candidate.Summary.Number, batchStats.oneLine())
 			summaryStats.add(batchStats)
@@ -721,8 +721,10 @@ func (opts MineOptions) runExtractionRequest(ctx context.Context, engine *engine
 	return collector.result(finalText), err
 }
 
+// runExtractionRequestWithSystem accepts prompts whose original fields have
+// already been sanitized. Never redact serialized JSON: escaped newlines change
+// detector boundaries and can consume unrelated evidence.
 func (opts MineOptions) runExtractionRequestWithSystem(ctx context.Context, engine *engine.Engine, systemPrompt, prompt string, stats extractionRequestStats, tools ...core.ToolSpec) (string, error) {
-	prompt = protectionOrDefault(opts.protection).sanitize(prompt)
 	rawDebug := protectionOrDefault(opts.protection).prepareDebug(engine, opts.debugRaw())
 	req := core.Request{
 		Model:           strings.TrimSpace(opts.Model),
@@ -736,7 +738,7 @@ func (opts MineOptions) runExtractionRequestWithSystem(ctx context.Context, engi
 	if len(tools) > 0 {
 		req.Tools = tools
 		req.ToolChoice = core.ToolChoice{Mode: core.ToolChoiceAuto}
-		req.ParallelToolCalls = false
+		req.ParallelToolCalls = true
 		req.MaxTurns = opts.ToolMaxTurns
 	}
 
@@ -1348,7 +1350,7 @@ func (opts MineOptions) runInsightExtractionPass(
 			ins.Content = protectionOrDefault(opts.protection).sanitize(ins.Content)
 		}
 		transcript := buildInsightTranscript(messages)
-		prompt := buildInsightExtractionPromptFromTranscript(candidate.Agent, transcript, existing)
+		prompt := buildInsightExtractionPromptFromTranscript(protectionOrDefault(opts.protection).sanitize(candidate.Agent), transcript, existing)
 		stats := newInsightExtractionStats(candidate, messages, transcript, len(existing), prompt)
 		start := time.Now()
 		raw, err := opts.runExtractionRequestWithSystem(ctx, engine, insightExtractionSystemPrompt, prompt, &stats)
