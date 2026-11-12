@@ -532,6 +532,7 @@ export class RunEngine {
   async send(options: SendOptions = {}): Promise<void> {
     const promptContent = this.composer.prompt.value.trim();
     const composerDraftId = this.composer.storageId();
+    const composerDraftRev = this.composer.draftRevision();
     const inputText = options.inputText ?? promptContent;
     const content = options.displayContent ?? inputText;
     const attachments = options.contentParts ? [] : [...this.composer.attachments.value];
@@ -637,7 +638,13 @@ export class RunEngine {
       lastMessageAt: Date.now(),
     }));
     if (!options.preserveComposer)
-      this.composer.clearSubmitted(sessionId, promptContent, attachments, composerDraftId);
+      this.composer.clearSubmitted(
+        sessionId,
+        promptContent,
+        attachments,
+        composerDraftId,
+        composerDraftRev,
+      );
     const run: ActiveRun = {
       responseId: `pending_${uuid()}`,
       sessionId,

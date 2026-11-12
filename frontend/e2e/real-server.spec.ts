@@ -138,6 +138,33 @@ test('prepares a selected file in the browser and sends its typed part to Go', a
   expect(durable).toContain('Inspect the prepared attachment');
 });
 
+test('sending an image with an edited caption leaves no phantom draft', async ({ page }) => {
+  await page.goto('./?new=1');
+  const input = page.getByRole('textbox', { name: 'Message' });
+  await input.fill('describe');
+  await page.locator('#fileInput').setInputFiles({
+    name: 'draft-regression.png',
+    mimeType: 'image/png',
+    buffer: Buffer.from(
+      'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4//8/AwAI/AL+KDvV3wAAAABJRU5ErkJggg==',
+      'base64',
+    ),
+  });
+  // Upload completion saves "describe"; finishing the caption does not save it again.
+  await expect(page.getByRole('button', { name: 'Send message' })).toBeEnabled({ timeout: 15_000 });
+  await input.fill('describe this picture');
+  await page.getByRole('button', { name: 'Send message' }).click();
+  await expect(page.getByRole('heading', { name: 'Debug Provider Output' }).last()).toBeVisible({
+    timeout: 15_000,
+  });
+  await expect(input).toHaveValue('');
+  await expect(page.getByRole('button', { name: /^Unsent draft:/ })).toHaveCount(0);
+  // Reload through New chat also verifies the saved draft, not just the empty composer.
+  await page.goto('./?new=1');
+  await expect(input).toHaveValue('');
+  await expect(page.getByRole('button', { name: 'Remove draft-regression.png' })).toHaveCount(0);
+});
+
 // Only the image GET is delayed; uploads, admission, and transcript hydration
 // still cross the real browser-to-Go boundary.
 test('keeps the local screenshot mounted until the saved image is fully loaded', async ({
