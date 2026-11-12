@@ -28,6 +28,9 @@ type MCPOptions struct {
 	Model             string
 	YoloMode          bool
 	ToolDiscovery     config.ToolDiscoveryConfig
+	// NoSampling installs no sampling handler, so servers cannot request model
+	// calls; locked conversations set it because sampling bypasses admission.
+	NoSampling bool
 }
 
 // EnableMCPServersWithFeedback initializes MCP servers with user feedback.
@@ -49,7 +52,7 @@ func EnableMCPServersWithFeedback(ctx context.Context, mcpFlag string, engine *e
 func enableLoadedServers(ctx context.Context, mcpManager *mcp.Manager, selection string, engine *engine.Engine, errWriter io.Writer, opts *MCPOptions) (*mcp.Manager, error) {
 	serverNames := ParseServerList(selection)
 	// Set up sampling handler if provider is available
-	if opts != nil && opts.Provider != nil {
+	if opts != nil && opts.Provider != nil && !opts.NoSampling {
 		mcpManager.SetSamplingProvider(opts.Provider, opts.Model, opts.YoloMode)
 	}
 

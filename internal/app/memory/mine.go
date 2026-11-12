@@ -685,7 +685,9 @@ func (opts MineOptions) buildMemoryMineCandidate(ctx context.Context, store sess
 	if err != nil {
 		return memoryMineCandidate{}, false, fmt.Errorf("get session %s: %w", summary.ID, err)
 	}
-	if sess == nil {
+	if sess == nil || sess.ModelPolicy.LockSession {
+		// Locked conversations never feed memory, even from stores that
+		// ignore the list filter.
 		return memoryMineCandidate{}, false, nil
 	}
 

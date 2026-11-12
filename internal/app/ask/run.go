@@ -105,6 +105,9 @@ func Run(ctx context.Context, args []string, opts Options, deps Dependencies) er
 	if err != nil {
 		return err
 	}
+	if err := appruntime.RefuseLockedDirectRun(nil, agent, "ask"); err != nil {
+		return err
+	}
 
 	bootstrap.InitThemeFromConfig(cfg)
 
@@ -206,6 +209,9 @@ func Run(ctx context.Context, args []string, opts Options, deps Dependencies) er
 		// The model was selected above; a resumed session only adds its persisted
 		// inherited rules and the rule of the agent it was created for.
 		askPolicy = appruntime.ModelPolicyForSession(sess, agent)
+		if err := appruntime.RefuseLockedDirectRun(sess, agent, "ask"); err != nil {
+			return err
+		}
 		agentName := ""
 		if agent != nil {
 			agentName = agent.Name

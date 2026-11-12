@@ -108,3 +108,26 @@ provider context. The previous v68 binary rejects the new marker for writes;
 read-only queries ignore the new fields. Stop older writers before upgrading;
 restore a backup to downgrade. Old binaries rewriting pairing grants drop their
 approver snapshots, so those devices need pairing again.
+
+## Locked conversation scope (schema 70)
+
+Migration 70 adds the `sessions_scope_lock_bu` trigger; it adds no columns and
+no row carries a lock after upgrade. A lock is the `lock_session` flag inside
+`sessions.model_policy`, written only by `scopedb.Admit` under one `BEGIN
+IMMEDIATE` reservation (`SQLiteStore.AdmitSessionScope`). Admission refuses an
+agent change, an unlocked runtime on a locked row, and locking a row that
+already has messages; it only ever appends (narrows) policy rules. A locked
+row without history and without a cwd or worktree adopts the runtime's
+workspace in the same transaction.
+
+The trigger makes every other writer fail closed: a locked row's lock flag
+cannot be cleared, its stored rules must remain an unchanged prefix of the new
+rules (compared rule by rule, not by count), its agent cannot change, and its cwd, worktree and an
+assigned project cannot change once messages exist. `Update` additionally
+leaves a locked `model_policy` untouched instead of applying a stale caller's
+policy. Branches copy the lock with the rest of the identity. Batch readers that
+must not see locked conversations pass `ListOptions.ExcludeScopeLocked`.
+
+The v69 binary rejects the v70 marker for read-write use, so it cannot bypass
+a lock; opened read-only it ignores the trigger and the `lock_session` field.
+Stop older writers before upgrading; downgrade by restoring a backup.

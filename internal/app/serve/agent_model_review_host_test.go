@@ -12,6 +12,7 @@ import (
 	"testing"
 
 	"github.com/samsaffron/term-llm/internal/agents"
+	appruntime "github.com/samsaffron/term-llm/internal/app/runtime"
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/llm/core"
 	"github.com/samsaffron/term-llm/internal/llm/engine"
@@ -66,21 +67,21 @@ func TestSessionModelPolicyMissingAgentVersusInvalidDefinition(t *testing.T) {
 	s := &serveServer{cfgRef: cfg}
 	persisted := modelpolicy.Policy{}.With("ancestor", []string{"debug:*"})
 	sess := &session.Session{Agent: dir, ModelPolicy: persisted}
-	policy, err := s.sessionModelPolicy(sess)
+	policy, err := appruntime.SessionModelPolicy(s.cfgRef, sess)
 	if err != nil || len(policy.Rules) != 2 {
 		t.Fatalf("valid agent = %+v, %v", policy, err)
 	}
 	if err := os.Remove(filepath.Join(dir, "agent.yaml")); err != nil {
 		t.Fatal(err)
 	}
-	policy, err = s.sessionModelPolicy(sess)
+	policy, err = appruntime.SessionModelPolicy(s.cfgRef, sess)
 	if err != nil || len(policy.Rules) != 1 {
 		t.Fatalf("deleted agent = %+v, %v", policy, err)
 	}
 	if err := os.WriteFile(filepath.Join(dir, "agent.yaml"), []byte("name: reviewer\nallowed_models: [\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.sessionModelPolicy(sess); err == nil {
+	if _, err := appruntime.SessionModelPolicy(s.cfgRef, sess); err == nil {
 		t.Fatal("invalid definition lifted agent policy")
 	}
 }

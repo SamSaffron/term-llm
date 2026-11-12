@@ -270,6 +270,9 @@ func runLoop(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
+	if err := appruntime.RefuseLockedDirectRun(nil, agent, "loop"); err != nil {
+		return err
+	}
 
 	// Apply provider overrides before resolving the prompt so it is built for
 	// the provider/model the loop will actually run.

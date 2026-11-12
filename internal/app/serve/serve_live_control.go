@@ -627,7 +627,7 @@ func (s *serveServer) newLiveControlProvider(ctx context.Context, sessionID stri
 		if sess == nil {
 			return nil, fmt.Errorf("live control session %q is unavailable", sessionID)
 		}
-		policy, err = s.sessionModelPolicy(sess)
+		policy, err = appruntime.SessionModelPolicy(s.cfgRef, sess)
 		if err != nil {
 			return nil, err
 		}

@@ -601,7 +601,7 @@ func (s *serveServer) runtimeForSideQuestion(ctx context.Context, sessionID stri
 		if !inMemory {
 			return nil, session.ErrNotFound
 		}
-		return rt, nil
+		return rt, appruntime.RefuseLockedAuxIf(rt.scopeLocked, "side questions")
 	}
 	meta, err := s.store.Get(ctx, sessionID)
 	if err != nil {
@@ -609,6 +609,8 @@ func (s *serveServer) runtimeForSideQuestion(ctx context.Context, sessionID stri
 	}
 	if meta == nil {
 		return nil, session.ErrNotFound
+	} else if err := appruntime.RefuseLockedAuxIf(meta.ModelPolicy.LockSession || (inMemory && rt.scopeLocked), "side questions"); err != nil {
+		return nil, err
 	}
 	if inMemory {
 		rt.sideQuestion.mu.Lock()

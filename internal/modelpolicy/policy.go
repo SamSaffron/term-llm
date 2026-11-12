@@ -17,6 +17,9 @@ type Rule struct {
 
 type Policy struct {
 	Rules []Rule `json:"rules,omitempty"`
+	// LockSession marks a conversation whose persisted policy and identity
+	// (agent and workspace) are fixed. A lock is never cleared by composition.
+	LockSession bool `json:"lock_session,omitempty"`
 }
 
 func (p Policy) With(agent string, allowed []string) Policy {
@@ -25,13 +28,13 @@ func (p Policy) With(agent string, allowed []string) Policy {
 		// parent snapshot over the same persisted ancestry) adds nothing.
 		return p
 	}
-	next := Policy{Rules: append([]Rule(nil), p.Rules...)}
+	next := Policy{Rules: append([]Rule(nil), p.Rules...), LockSession: p.LockSession}
 	next.Rules = append(next.Rules, Rule{Agent: agent, Allowed: append([]string(nil), allowed...)})
 	return next
 }
 
 func (p Policy) Append(other Policy) Policy {
-	out := Policy{Rules: append([]Rule(nil), p.Rules...)}
+	out := Policy{Rules: append([]Rule(nil), p.Rules...), LockSession: p.LockSession || other.LockSession}
 	for _, rule := range other.Rules {
 		out = out.With(rule.Agent, rule.Allowed)
 	}

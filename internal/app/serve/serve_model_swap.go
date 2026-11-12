@@ -203,6 +203,8 @@ func (s *serveServer) beginResponseModelSwap(ctx context.Context, sessionID stri
 	}
 	if previous == nil {
 		return nil, fmt.Errorf("session %q has no previous runtime", sessionID)
+	} else if err := appruntime.RefuseLockedAuxIf(previous.scopeLocked, "cross-model swaps"); err != nil {
+		return nil, err
 	}
 	// Hydrate recreated runtimes before snapshotting so handover and naive
 	// continuation start from the persisted pre-turn conversation.

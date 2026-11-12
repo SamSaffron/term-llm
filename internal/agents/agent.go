@@ -54,6 +54,8 @@ type Agent struct {
 	Model    string `yaml:"model,omitempty"`
 	// AllowedModels restricts this agent to provider:model or provider:* entries when set.
 	AllowedModels []string `yaml:"allowed_models,omitempty"`
+	// LockSession opts conversations into a durable, fixed policy and identity.
+	LockSession bool `yaml:"lock_session,omitempty"`
 
 	// Tool configuration
 	Tools ToolsConfig `yaml:"tools,omitempty"`
@@ -445,6 +447,9 @@ func (a *Agent) Validate() error {
 	if a.Name == "" {
 		return fmt.Errorf("agent name is required")
 	}
+	if a.LockSession && len(a.AllowedModels) == 0 {
+		return fmt.Errorf("lock_session requires an explicit allowed_models list")
+	}
 	for _, entry := range a.AllowedModels {
 		if !validAllowedModelEntry(entry) {
 			return fmt.Errorf("invalid allowed_models entry %q: expected provider:model or provider:*", entry)
@@ -665,6 +670,11 @@ func validateCustomTools(defs []CustomToolDef) error {
 		// Script must be a relative path
 		if filepath.IsAbs(def.Script) {
 			return fmt.Errorf("tools.custom %q: script must be a relative path (got %q)", def.Name, def.Script)
+		}
+		for key := range def.Env {
+			if IsReservedCustomToolEnv(key) {
+				return fmt.Errorf("tools.custom %q: env %q is reserved for host-provided session context", def.Name, key)
+			}
 		}
 		// Input schema, if provided, must have type: object at root
 		if def.Input != nil {

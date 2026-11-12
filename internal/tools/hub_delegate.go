@@ -306,6 +306,9 @@ func (t *HubDelegateTool) Execute(ctx context.Context, args json.RawMessage) (co
 	if strings.TrimSpace(a.Prompt) == "" {
 		return core.TextOutput(formatQueuedAgentError(ErrInvalidParams, "prompt is required")), nil
 	}
+	if core.LockedSessionFromContext(ctx) != "" || (t.modelPolicySource != nil && t.modelPolicySource().LockSession) {
+		return core.TextOutput(formatQueuedAgentError(ErrInvalidParams, "hub delegation is unavailable in locked sessions")), nil
+	}
 	if t.modelPolicySource != nil && t.modelPolicySource().Restricted() {
 		return core.TextOutput(formatQueuedAgentError(ErrInvalidParams, "hub delegation is unavailable to agents restricted by allowed_models")), nil
 	}

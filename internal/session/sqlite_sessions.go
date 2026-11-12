@@ -13,6 +13,7 @@ import (
 	"github.com/samsaffron/term-llm/internal/modelpolicy"
 	planpkg "github.com/samsaffron/term-llm/internal/plan"
 	"github.com/samsaffron/term-llm/internal/runtimeoutput"
+	"github.com/samsaffron/term-llm/internal/session/scopedb"
 )
 
 func (s *SQLiteStore) Create(ctx context.Context, sess *Session) error {
@@ -101,7 +102,7 @@ func (s *SQLiteStore) Create(ctx context.Context, sess *Session) error {
 		if s.hasModelPolicy {
 			modelPolicyCol = ", model_policy"
 			modelPolicyPlaceholder = ", ?"
-			modelPolicyArgs = []any{sessionModelPolicyJSON(sess.ModelPolicy)}
+			modelPolicyArgs = []any{scopedb.PolicyJSON(sess.ModelPolicy)}
 		}
 		pinOrderCol := ""
 		pinOrderPlaceholder := ""
@@ -277,9 +278,9 @@ func (s *SQLiteStore) Update(ctx context.Context, sess *Session) error {
 		// Once a session has a project, its execution snapshot is immutable. This
 		// database-side guard also prevents a stale full-row metadata update from
 		// racing a successful BindSessionWorkspace and restoring old paths.
-		cwdAssignment = "cwd = CASE WHEN COALESCE(project_id, '') <> '' THEN cwd ELSE ? END"
+		cwdAssignment = "cwd = CASE WHEN COALESCE(project_id, '') <> '' OR " + scopedb.FrozenWorkspaceSQL + " THEN cwd ELSE ? END"
 		if s.hasWorktreeDir {
-			worktreeDirClause = ", worktree_dir = CASE WHEN COALESCE(project_id, '') <> '' THEN worktree_dir ELSE ? END"
+			worktreeDirClause = ", worktree_dir = CASE WHEN COALESCE(project_id, '') <> '' OR " + scopedb.FrozenWorkspaceSQL + " THEN worktree_dir ELSE ? END"
 		}
 	}
 	goalClause := ""
@@ -288,7 +289,7 @@ func (s *SQLiteStore) Update(ctx context.Context, sess *Session) error {
 	}
 	modelPolicyClause := ""
 	if s.hasModelPolicy {
-		modelPolicyClause = ", model_policy = COALESCE(?, model_policy)"
+		modelPolicyClause = ", model_policy = CASE WHEN " + scopedb.LockedSQL + " THEN model_policy ELSE COALESCE(?, model_policy) END"
 	}
 	shareClause := ""
 	if s.hasShare {
@@ -298,7 +299,7 @@ func (s *SQLiteStore) Update(ctx context.Context, sess *Session) error {
 		UPDATE sessions SET name = ?, summary = ?, generated_short_title = ?, generated_long_title = ?, title_source = ?, title_generated_at = ?, title_basis_msg_seq = ?` +
 		titleSkippedAtClause + `,
 		       provider = ?, provider_key = ?, model = ?` + reasoningEffortClause + reasoningModeClause + `, mode = ?` + approvalModeClause + `, origin = ?,
-		       agent = CASE WHEN COALESCE(agent, '') <> '' AND COALESCE(?, '') = '' THEN agent ELSE ? END, ` + cwdAssignment + worktreeDirClause + `,
+		       agent = CASE WHEN (COALESCE(agent, '') <> '' AND COALESCE(?, '') = '') OR ` + scopedb.LockedSQL + ` THEN agent ELSE ? END, ` + cwdAssignment + worktreeDirClause + `,
 		       updated_at = ?, archived = ?, parent_id = ?, search = ?, tools = ?, mcp = ?,
 		       status = ?, tags = ?` + goalClause + shareClause + modelPolicyClause + `
 		WHERE id = ?`
@@ -342,7 +343,7 @@ func (s *SQLiteStore) Update(ctx context.Context, sess *Session) error {
 		args = append(args, shareJSONString(sess.Share))
 	}
 	if s.hasModelPolicy {
-		args = append(args, sessionModelPolicyJSON(sess.ModelPolicy))
+		args = append(args, scopedb.PolicyJSON(sess.ModelPolicy))
 	}
 	args = append(args, sess.ID)
 
@@ -355,6 +356,11 @@ func (s *SQLiteStore) Update(ctx context.Context, sess *Session) error {
 		return fmt.Errorf("session not found: %s", sess.ID)
 	}
 	return nil
+}
+
+// AdmitSessionScope validates and persists a locked session scope atomically.
+func (s *SQLiteStore) AdmitSessionScope(ctx context.Context, in scopedb.Admission) (modelpolicy.Policy, error) {
+	return scopedb.Admit(ctx, s.db, in, s.hasModelPolicy)
 }
 
 // UpdateGoal updates only the persisted goal state for a session.
@@ -849,6 +855,7 @@ func (s *SQLiteStore) List(ctx context.Context, opts ListOptions) ([]SessionSumm
 	} else if opts.ExcludeSubagents {
 		query += " AND s.parent_id IS NULL"
 	}
+	query += scopedb.ExcludeLockedClause(opts.ExcludeScopeLocked && s.hasModelPolicy)
 	if opts.Name != "" {
 		query += " AND s.name = ?"
 		args = append(args, opts.Name)
@@ -997,17 +1004,6 @@ func (s *SQLiteStore) List(ctx context.Context, opts ListOptions) ([]SessionSumm
 		results = append(results, sum)
 	}
 	return results, rows.Err()
-}
-
-func sessionModelPolicyJSON(policy modelpolicy.Policy) any {
-	if !policy.Restricted() {
-		return nil
-	}
-	encoded, err := json.Marshal(policy)
-	if err != nil {
-		return nil
-	}
-	return string(encoded)
 }
 
 // AddMessage adds a message to a session.

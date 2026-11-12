@@ -72,7 +72,7 @@ func (s *serveServer) sessionDirectory(ctx context.Context, q sessionDirectoryQu
 	case query != "":
 		matches, err := s.store.Search(ctx, session.SearchOptions{
 			Query: query, Limit: limit, Archived: q.IncludeArchived,
-			ProjectID: projectID, ExcludeSubagents: true,
+			ProjectID: projectID, ExcludeSubagents: true, ExcludeScopeLocked: true,
 		})
 		if err != nil {
 			return nil, fmt.Errorf("search sessions: %w", err)
@@ -123,7 +123,7 @@ func (s *serveServer) sessionDirectory(ctx context.Context, q sessionDirectoryQu
 		}
 		summaries, err := s.store.List(ctx, session.ListOptions{
 			IDs: ids, Limit: -1, Archived: true, SortByActivity: true,
-			ExcludeSubagents: true, ProjectID: projectID,
+			ExcludeSubagents: true, ProjectID: projectID, ExcludeScopeLocked: true,
 		})
 		if err != nil {
 			return nil, fmt.Errorf("list running sessions: %w", err)
@@ -143,7 +143,7 @@ func (s *serveServer) sessionDirectory(ctx context.Context, q sessionDirectoryQu
 	default:
 		summaries, err := s.store.List(ctx, session.ListOptions{
 			Limit: limit, Archived: q.IncludeArchived, SortByActivity: true,
-			ExcludeSubagents: true, ProjectID: projectID,
+			ExcludeSubagents: true, ProjectID: projectID, ExcludeScopeLocked: true,
 		})
 		if err != nil {
 			return nil, fmt.Errorf("list sessions: %w", err)

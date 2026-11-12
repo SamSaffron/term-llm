@@ -60,6 +60,11 @@ func SelectRunModel(cfg *config.Config, in ModelSelectionInput) (ModelSelection,
 	if in.Agent != nil {
 		policy = policy.With(agentName, in.Agent.AllowedModels)
 	}
+	if policy.LockSession || (in.Agent != nil && in.Agent.LockSession) {
+		// A locked conversation persists its complete effective chain, frozen
+		// against later provider allowlist widening.
+		policy = modelpolicy.Lock(cfg, policy)
+	}
 	if err := policy.CheckWithConfig(cfg, agentName, selected.Provider, selected.Model); err != nil {
 		return selected, policy, err
 	}
@@ -73,6 +78,7 @@ func ModelPolicyForSession(sess *session.Session, agent *agents.Agent) modelpoli
 	}
 	if agent != nil {
 		policy = policy.With(agent.Name, agent.AllowedModels)
+		policy.LockSession = policy.LockSession || agent.LockSession
 	}
 	return policy
 }

@@ -509,7 +509,7 @@ func listUpdateRecentSessions(ctx context.Context, sessStore session.Store, agen
 		seen[summary.ID] = struct{}{}
 	}
 
-	if current != nil {
+	if current != nil && !current.ModelPolicy.LockSession {
 		if _, exists := seen[current.ID]; !exists && sessionAgentOrDefault(current.Agent) == agentName && (updatedAtOrAfter.IsZero() || !current.UpdatedAt.Before(updatedAtOrAfter)) {
 			sessions = append(sessions, memoryUpdateRecentSession{
 				ID:        current.ID,

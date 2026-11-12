@@ -9,6 +9,7 @@ import (
 
 	"github.com/samsaffron/term-llm/internal/runtimeoutput"
 	"github.com/samsaffron/term-llm/internal/session/notificationdb"
+	"github.com/samsaffron/term-llm/internal/session/scopedb"
 	"github.com/samsaffron/term-llm/internal/sqliteutil"
 )
 
@@ -1369,6 +1370,7 @@ var migrations = []migration{
 	},
 	{version: 68, description: "durable notification turn ownership and fenced candidates", up: notificationdb.MigrateV68},
 	{version: 69, description: "display-only message authors and session starters", up: migrateAuthorsV69},
+	{version: 70, description: "immutable locked session scope", up: scopedb.MigrateV70},
 }
 
 // backfillProjectOrderV61 freezes the order the sidebar last showed projects
@@ -1722,7 +1724,7 @@ func initSchema(db *sql.DB) error {
 			if userTables != 0 {
 				return fmt.Errorf("unknown unversioned session schema: found %d unrelated tables; restore a backup or move the database aside to recreate it", userTables)
 			}
-			if _, err := tx.Exec(canonicalSessionSchema + notificationdb.SchemaV68 + authorSchemaV69); err != nil {
+			if _, err := tx.Exec(canonicalSessionSchema + notificationdb.SchemaV68 + authorSchemaV69 + scopedb.SchemaV70); err != nil {
 				return fmt.Errorf("bootstrap canonical session schema: %w", err)
 			}
 			if err := ensureCurrentSessionIndexes(tx); err != nil {

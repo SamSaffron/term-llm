@@ -54,6 +54,8 @@ Use version-named, immutable table SQL. Create the replacement table, copy an ex
 
 A process running an older binary concurrently with a new migrator is not granted write coordination beyond SQLite locking. Deploy one write-capable version at a time during these first marker transitions.
 
+- Session v70 adds only the `sessions_scope_lock_bu` trigger that freezes locked conversation identity. The v69 binary rejects v70 for read-write use; read-only it ignores the trigger and the `lock_session` policy field. Stop older writers before upgrading and restore a backup to downgrade.
+
 ## Errors and operations
 
 Migration errors should identify the store, observed and supported versions, migration version and description, and failed operation. Callback failures leave the previously committed marker safe. Lock acquisition uses the configured SQLite `busy_timeout`; expiry returns a retryable contextual error rather than spinning indefinitely.

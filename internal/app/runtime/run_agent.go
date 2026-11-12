@@ -33,7 +33,11 @@ func ResolveRunAgent(ctx context.Context, req runpkg.Request, cfg *config.Config
 			resume = runpkg.ParentModel{Provider: ResolveSessionProviderKey(cfg, sess), Model: sess.Model}
 		}
 	}
-	persisted := sess != nil && ((req.AgentName != "" && req.AgentName == sess.Agent) || (req.Resume && strings.TrimSpace(req.AgentName) == ""))
+	if err := CheckLockedSessionScope(sess, "", req.Cwd); err != nil {
+		return nil, inherited, resume, err
+	}
+	locked := sess != nil && sess.ModelPolicy.LockSession
+	persisted := sess != nil && ((req.AgentName != "" && req.AgentName == sess.Agent) || ((req.Resume || locked) && strings.TrimSpace(req.AgentName) == ""))
 	if persisted {
 		agent, err = LoadPersistedAgent(sess.Agent, cfg)
 	} else {
@@ -41,6 +45,17 @@ func ResolveRunAgent(ctx context.Context, req runpkg.Request, cfg *config.Config
 	}
 	if err != nil {
 		return nil, inherited, resume, err
+	}
+	// Progressive runs bypass per-turn scope admission.
+	lockedRun := modelpolicy.Policy{LockSession: inherited.LockSession || (agent != nil && agent.LockSession)}
+	if err := RefuseLockedProgressive(lockedRun, req.Progressive != nil); err != nil {
+		return nil, inherited, resume, err
+	}
+	if locked && !persisted {
+		// Compare resolved identities: a local agent persists its path.
+		if err := CheckLockedSessionScope(sess, agents.Reference(agent), ""); err != nil {
+			return nil, inherited, resume, err
+		}
 	}
 	if !persisted && strings.TrimSpace(req.AgentName) != "" && agent == nil {
 		return nil, inherited, resume, fmt.Errorf("agent %q not found", req.AgentName)

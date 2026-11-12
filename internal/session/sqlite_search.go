@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"fmt"
 
+	"github.com/samsaffron/term-llm/internal/session/scopedb"
 	"github.com/samsaffron/term-llm/internal/sqlitefts"
 )
 
@@ -66,6 +67,7 @@ func (s *SQLiteStore) Search(ctx context.Context, opts SearchOptions) ([]SearchR
 	if opts.ExcludeSubagents {
 		filterClause += " AND s.parent_id IS NULL"
 	}
+	filterClause += scopedb.ExcludeLockedClause(opts.ExcludeScopeLocked && s.hasModelPolicy)
 	if opts.ProjectID != "" {
 		if !s.hasProjectID {
 			return []SearchResult{}, nil

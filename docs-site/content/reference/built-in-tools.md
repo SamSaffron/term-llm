@@ -252,7 +252,11 @@ Custom tools run from the session working directory when the session is bound to
 | `timeout_seconds` | | Execution timeout in seconds (default 30, max 3600; an earlier parent deadline or cancellation still applies) |
 | `env` | | Extra environment variables to set when running the script |
 
-Scripts run with `TERM_LLM_AGENT_DIR` and `TERM_LLM_TOOL_NAME` set. Symlinks are resolved and containment-checked. Scripts cannot escape the agent directory. No approval prompt is shown; scripts in the agent directory are implicitly trusted.
+Scripts run with `TERM_LLM_AGENT_DIR` and `TERM_LLM_TOOL_NAME` set.
+
+`TERM_LLM_SESSION_ID`, `TERM_LLM_PRIVATE_SESSION` and `TERM_LLM_UPLOADS_JSON` are reserved for host-provided session context. They are always removed from the inherited environment, and an agent whose custom tool `env` sets one of them (in any letter case) fails validation. Only for a run the host admitted as a [locked conversation](/guides/agents/#locking-a-conversation) are `TERM_LLM_SESSION_ID` (the host's session ID) and `TERM_LLM_PRIVATE_SESSION=1` set; tool arguments from the model cannot set them. `TERM_LLM_UPLOADS_JSON` is never set. A script that needs session context should require `TERM_LLM_PRIVATE_SESSION=1` together with a non-empty session ID and refuse otherwise. `term-llm capabilities --json` reports `custom_tool_session_context` when this contract is available.
+
+Symlinks are resolved and containment-checked. Scripts cannot escape the agent directory. No approval prompt is shown; scripts in the agent directory are implicitly trusted.
 
 ### Tool Permissions
 

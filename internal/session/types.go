@@ -195,28 +195,29 @@ type SessionSummary struct {
 
 // ListOptions configures session listing.
 type ListOptions struct {
-	CreatedBy        string
-	IDs              []string              // Restrict to these stable session IDs (deduplicated by the store)
-	Name             string                // Filter by name
-	Provider         string                // Filter by provider
-	Model            string                // Filter by model
-	Mode             SessionMode           // Filter by mode (chat, ask, plan, exec)
-	Agent            string                // Filter by agent; empty persisted agents belong to "default"
-	Status           SessionStatus         // Filter by status
-	Tag              string                // Filter by tag (substring match)
-	Categories       []string              // Sidebar/web categories (all, chat, web, ask, plan, exec)
-	Limit            int                   // Max results (0 = use default, negative = unlimited)
-	Offset           int                   // Pagination offset
-	BeforeNumber     int64                 // Keyset cursor: only sessions with number < this value
-	SortByNumberDesc bool                  // Order by session number descending instead of activity sort
-	Archived         bool                  // Include archived sessions
-	SortByActivity   bool                  // Sort by last_message_at (web sidebar); defaults to last_user_message_at
-	ProjectID        string                // Restrict to one stable project ID
-	NoProject        bool                  // Restrict to legacy sessions with a null project ID
-	ProjectCursor    *ProjectSessionCursor // Group-bound keyset cursor for project sidebar paging
-	ParentID         string                // Restrict to direct child sessions of this parent
-	ExcludeSubagents bool                  // Hide machine-generated child-agent sessions
-	SidebarVisible   bool                  // Hide parentless terminal runs (ask/plan/exec) the web sidebar never shows
+	CreatedBy          string
+	IDs                []string              // Restrict to these stable session IDs (deduplicated by the store)
+	Name               string                // Filter by name
+	Provider           string                // Filter by provider
+	Model              string                // Filter by model
+	Mode               SessionMode           // Filter by mode (chat, ask, plan, exec)
+	Agent              string                // Filter by agent; empty persisted agents belong to "default"
+	Status             SessionStatus         // Filter by status
+	Tag                string                // Filter by tag (substring match)
+	Categories         []string              // Sidebar/web categories (all, chat, web, ask, plan, exec)
+	Limit              int                   // Max results (0 = use default, negative = unlimited)
+	Offset             int                   // Pagination offset
+	BeforeNumber       int64                 // Keyset cursor: only sessions with number < this value
+	SortByNumberDesc   bool                  // Order by session number descending instead of activity sort
+	Archived           bool                  // Include archived sessions
+	SortByActivity     bool                  // Sort by last_message_at (web sidebar); defaults to last_user_message_at
+	ProjectID          string                // Restrict to one stable project ID
+	NoProject          bool                  // Restrict to legacy sessions with a null project ID
+	ProjectCursor      *ProjectSessionCursor // Group-bound keyset cursor for project sidebar paging
+	ParentID           string                // Restrict to direct child sessions of this parent
+	ExcludeSubagents   bool                  // Hide machine-generated child-agent sessions
+	ExcludeScopeLocked bool                  // Omit sessions with a durable scope lock (privacy-sensitive batch readers)
+	SidebarVisible     bool                  // Hide parentless terminal runs (ask/plan/exec) the web sidebar never shows
 }
 
 // SearchSort selects the ordering of distinct session search results.
@@ -230,14 +231,15 @@ const (
 
 // SearchOptions configures session full-text search.
 type SearchOptions struct {
-	CreatedBy        string
-	Sort             SearchSort // Empty means relevance; date sorts use last message time (creation fallback)
-	Query            string     // Text query to search for
-	Categories       []string   // Sidebar/web categories (all, chat, web, ask, plan, exec)
-	Limit            int        // Max results (0 = use default)
-	Archived         bool       // Include archived sessions
-	ProjectID        string     // Restrict to one stable project ID
-	ExcludeSubagents bool       // Hide machine-generated child-agent sessions
+	CreatedBy          string
+	Sort               SearchSort // Empty means relevance; date sorts use last message time (creation fallback)
+	Query              string     // Text query to search for
+	Categories         []string   // Sidebar/web categories (all, chat, web, ask, plan, exec)
+	Limit              int        // Max results (0 = use default)
+	Archived           bool       // Include archived sessions
+	ProjectID          string     // Restrict to one stable project ID
+	ExcludeSubagents   bool       // Hide machine-generated child-agent sessions
+	ExcludeScopeLocked bool       // Omit sessions with a durable scope lock
 }
 
 // SearchResult represents a search match.

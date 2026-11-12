@@ -59,7 +59,7 @@ One line per root-module package, generated from package doc comments by `make d
 - `internal/app/upgrade` — implements `term-llm upgrade`, installing a release through internal/update.
 - `internal/app/uploads` — validates and reads first-party web attachments and resizes images for models.
 - `internal/app/usage` — implements `term-llm usage`: local token reports plus provider billing and limit checks.
-- `internal/app/version` — implements `term-llm version` over linker-injected build metadata.
+- `internal/app/version` — implements `term-llm version` and `term-llm capabilities` over build metadata.
 - `internal/appdata` — resolves term-llm's XDG data directory.
 - `internal/atomicfile` — replaces files atomically and flushes the containing directory where the platform supports it.
 - `internal/audio` — implements the text-to-speech providers behind `term-llm audio`.
@@ -180,6 +180,7 @@ One line per root-module package, generated from package doc comments by `make d
 - `internal/session` — owns durable sessions, messages, steering persistence and SQLite storage.
 - `internal/session/authordb` — owns the additive display-attribution schema and batched directory queries.
 - `internal/session/notificationdb` — implements durable logical-turn ownership and fenced notification delivery on the session SQLite transaction.
+- `internal/session/scopedb` — owns durable conversation scope locks: the immutable-identity trigger and atomic admission of locked session policies.
 - `internal/session/transcript` — adapts session writes to optional revision capabilities and identifies response-owned output.
 - `internal/session/transcriptprefix` — compares persisted transcript prefixes for replacement and compaction.
 - `internal/sessiontitle` — generates and validates short and long LLM session titles.

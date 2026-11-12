@@ -2482,7 +2482,7 @@ func (s *serveServer) handleSessionTitleRefine(w http.ResponseWriter, r *http.Re
 		return
 	}
 
-	policy, policyErr := s.sessionModelPolicy(sess)
+	policy, policyErr := appruntime.SessionModelPolicy(s.cfgRef, sess)
 	if policyErr != nil {
 		writeOpenAIError(w, http.StatusInternalServerError, "server_error", "title model policy unavailable: "+policyErr.Error())
 		return

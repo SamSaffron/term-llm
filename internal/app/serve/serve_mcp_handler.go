@@ -121,7 +121,7 @@ func (rt *serveRuntime) ensureMCPManagerLocked() error {
 		// later retry would skip setup and leave all deferred wrappers invisible.
 		rt.setMCPManager(mgr)
 	}
-	if rt.provider != nil {
+	if rt.provider != nil && !rt.scopeLocked { // locked: no sampling handler (bypasses admission)
 		rt.mcpManager.SetSamplingProvider(rt.provider, rt.defaultModel, rt.yoloEnabled())
 	}
 	return nil

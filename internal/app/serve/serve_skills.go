@@ -752,7 +752,7 @@ func (s *serveServer) serveSkillChildRunner(ctx context.Context, sessionID strin
 		if sess == nil {
 			return nil, fmt.Errorf("parent session %q is unavailable", sessionID)
 		}
-		policy, err := s.sessionModelPolicy(sess)
+		policy, err := appruntime.SessionModelPolicy(s.cfgRef, sess)
 		if err != nil {
 			return nil, err
 		}

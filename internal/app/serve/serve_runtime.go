@@ -53,6 +53,7 @@ type serveRuntime struct {
 	providerKey          string
 	modelPolicy          modelpolicy.Policy
 	modelPolicyConfig    *config.Config
+	scopeLocked          bool // fixed at construction (locks are never cleared); race-free read
 	// swapCandidate marks the runtime a model swap is installing. It runs a
 	// provider the session row does not name until its first turn persists, so
 	// it must survive a status poll in that window. Request handlers read it
@@ -1924,6 +1925,9 @@ func (rt *serveRuntime) runOnce(ctx context.Context, stateful bool, replaceHisto
 			return serveRunResult{}, fmt.Errorf("%w: %w", errServeSessionPersistence, ctxErr)
 		}
 		return serveRunResult{}, errServeSessionPersistence
+	}
+	if ctx, rt.modelPolicy, err = runtime.AdmitSessionScope(ctx, rt.store, &req, runtime.ScopeRun{Agent: rt.agentName, ProviderKey: runtimeProviderKey(rt), Model: rt.defaultModel, Workspace: rt.toolMgr.BaseDir(), Policy: rt.modelPolicy, Config: rt.modelPolicyConfig, Tools: rt.engine, Detached: !stateful && !persisted}); err != nil {
+		return serveRunResult{}, err
 	}
 	if persisted {
 		rt.persistStatus(ctx, req.SessionID, session.StatusActive)

@@ -133,12 +133,7 @@ func (t *CustomScriptTool) Execute(ctx context.Context, args json.RawMessage) (c
 	defer cancel()
 
 	// Build environment: inherit + agent-specific vars + per-tool env
-	env := os.Environ()
-	env = append(env, fmt.Sprintf("TERM_LLM_AGENT_DIR=%s", t.agentDir))
-	env = append(env, fmt.Sprintf("TERM_LLM_TOOL_NAME=%s", t.def.Name))
-	for k, v := range t.def.Env {
-		env = append(env, fmt.Sprintf("%s=%s", k, v))
-	}
+	env := customToolEnvironment(ctx, os.Environ(), t.agentDir, t.def)
 
 	stdout := newLimitedBuffer(t.limits.MaxBytes)
 	stderr := newLimitedBuffer(t.limits.MaxBytes)

@@ -226,6 +226,33 @@ Automatic auxiliary calls for a restricted session — titles, interrupt classif
 
 The guardian reviewer, memory batch commands, `sessions autotitle`, Telegram interrupt classification, and tools that call other services (`view_image` routing, `image_generate`, search) are configured by the operator and are not governed by the agent-level `allowed_models`. Provider-level restrictions still apply to their calls through text inference `providers`. The list governs term-llm's own model launches; it does not stop an agent from reaching another model through `shell` or HTTP. Restrict those with tool permissions.
 
+### Locking a conversation
+
+`lock_session: true` opts an agent's conversations into a durable scope. It is off by default and requires an explicit `allowed_models` list:
+
+```yaml
+name: private
+allowed_models: [debug:allowed]
+lock_session: true
+```
+
+When the serve runner (web UI, Responses API, jobs and child agents) first runs a conversation with this agent, it stores the complete effective model policy with the session before any history reaches a provider. That policy includes inherited rules, the agent's own rule, and that rule narrowed by the provider `allowed_models` in force at that moment. From then on:
+
+- The rules only narrow. Widening the agent definition or provider configuration later does not widen a locked conversation, and removing `lock_session` from the definition does not unlock it.
+- The conversation's agent cannot change, and its workspace (directory, worktree and assigned project) cannot change once it has messages. This applies after restarts, on resume, on branches (which keep the lock) and to any later writer: the session database rejects the change itself.
+- The runtime's current model, any requested model and any continuation checkpoint are checked against the merged stored policy before anything reaches a provider. The first admission binds the runtime's workspace to a conversation that has none, and a runtime bound to a different workspace is refused once the conversation has history.
+- In-place model and effort switches within the policy work. Operations that would send history outside per-turn admission are refused instead: side questions, branch path notes (summarized branch context), cross-model swaps (handover to another provider), manual compaction, switching a voice session to the conversation, `hub_delegate`, and MCP sampling (MCP servers cannot request model calls in a locked run, including through a configured sampling model override). Automatic compaction runs on the admitted model, and automatic titles and interrupt classification use only a model the stored policy allows. Provider debug logging is disabled for locked runs.
+- Child agents of a locked conversation are locked too. Their custom tools receive the child's own session ID, not the parent's.
+- `session_directory` (used by other agents) omits locked conversations and their transcript snippets.
+- Web search follows the locked agent's own `search` setting. A request or UI search toggle, or the host's `--search` default, cannot enable it, and without `search: true` the built-in `web_search` and `read_url` tools are neither offered nor callable in that run.
+- Locked conversations are skipped by memory mining, insights, memory freshening and `sessions autotitle`.
+- An existing unlocked conversation with history cannot be retrofitted; start a new conversation instead. A runtime that was not admitted as locked cannot serve a locked conversation.
+- Surfaces that do not use the serve runner's per-turn admission refuse locked agents and sessions instead of weakening the boundary: direct `ask`, `loop`, the interactive `chat` TUI (including `/resume` into a locked conversation and handover) and progressive job runs. Runs without durable session storage, such as `exec` without a stored session, are refused.
+
+Custom script tools in a locked run receive trusted [session context](/reference/built-in-tools/#custom-tools). Integrations can check for this support with `term-llm capabilities --json`, which prints `{"custom_tool_session_context":1,"session_scope_lock":1}`. Builds without the command or without a key do not support it.
+
+The lock governs term-llm's own model launches and conversation identity. It does not stop a tool from sending data elsewhere through `shell`, HTTP or an MCP server. Restrict those with tool permissions. Operator-configured services such as search, `view_image` routing and `image_generate` still follow their own configuration.
+
 ## Time grounding
 
 Time grounding is disabled unless an agent explicitly opts in:

@@ -21,6 +21,9 @@ func (s *serveServer) handleSessionRuntimeCompact(w http.ResponseWriter, r *http
 	if err != nil || sess == nil {
 		writeOpenAIError(w, http.StatusNotFound, "not_found_error", "session not found")
 		return
+	} else if err := appruntime.RefuseLockedAux(sess.ModelPolicy, "manual compactions"); err != nil {
+		writeOpenAIError(w, http.StatusConflict, "conflict_error", err.Error())
+		return
 	}
 	providerKey := strings.TrimSpace(sess.ProviderKey)
 	if providerKey == "" {

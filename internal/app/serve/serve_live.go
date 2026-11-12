@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
+	appruntime "github.com/samsaffron/term-llm/internal/app/runtime"
 	"github.com/samsaffron/term-llm/internal/app/serve/liveprogress"
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/linkeddevices"
@@ -1502,6 +1503,8 @@ func (s *serveServer) resolveLiveSwitchTarget(ctx context.Context, selector stri
 		// rejected target is also one the directory can never offer. A parented
 		// fork is not necessarily a subagent, so the message names both forms.
 		return liveSwitchTarget{}, fmt.Errorf("%w: chat session %s is a child session (subagent or fork) and cannot be driven by voice", errLiveSwitchInvalidTarget, sess.ID)
+	} else if err := appruntime.RefuseLockedAux(sess.ModelPolicy, "voice session switches"); err != nil {
+		return liveSwitchTarget{}, fmt.Errorf("%w: %w", errLiveSwitchInvalidTarget, err)
 	}
 	lastActivity := sess.UpdatedAt
 	if lastActivity.IsZero() {

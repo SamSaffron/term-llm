@@ -58,11 +58,13 @@ func listMemorySourceSessions(ctx context.Context, store session.Store, agent st
 		var beforeNumber int64
 		for {
 			page, err := store.List(ctx, session.ListOptions{
-				Agent:            agent,
-				Status:           status,
-				Limit:            pageSize,
-				BeforeNumber:     beforeNumber,
-				SortByNumberDesc: true,
+				Agent:  agent,
+				Status: status,
+				// Locked conversations never feed memory mining or insights.
+				ExcludeScopeLocked: true,
+				Limit:              pageSize,
+				BeforeNumber:       beforeNumber,
+				SortByNumberDesc:   true,
 			})
 			if err != nil {
 				return nil, err

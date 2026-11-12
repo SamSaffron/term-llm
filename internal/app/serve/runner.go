@@ -221,7 +221,7 @@ func (r *cmdRunner) resolveRunModel(ctx context.Context, req runpkg.Request) (*c
 		// describe the concrete fast target that was checked above.
 		cfg.ApplyOverrides(selected.Provider, selected.Model)
 	}
-	return cfg, agent, selected, runModelPolicies{Effective: effective, Inherited: inherited}, nil
+	return cfg, agent, selected, runModelPolicies{Effective: effective, Inherited: appruntime.PersistedRunPolicy(inherited, effective)}, nil
 }
 
 func (r *cmdRunner) prepare(ctx context.Context, req runpkg.Request, sink runpkg.EventSink) (*cmdRunEnvironment, error) {
@@ -410,6 +410,7 @@ func (r *cmdRunner) prepare(ctx context.Context, req runpkg.Request, sink runpkg
 		provider:            provider,
 		providerKey:         cfg.DefaultProvider,
 		modelPolicy:         policy,
+		scopeLocked:         policy.LockSession,
 		modelPolicyConfig:   cfg,
 		engine:              engine,
 		toolMgr:             toolMgr,
@@ -481,7 +482,7 @@ func (r *cmdRunner) prepare(ctx context.Context, req runpkg.Request, sink runpkg
 	if !borrowedEngine && preparedMCP.Active != "" {
 		mgr, err := preparedMCP.Enable(ctx, engine, r.errWriter(), &mcpstart.MCPOptions{
 			PolicyIdentity: agents.PolicyIdentity(agent), ImplicitSelection: !req.MCPExplicit,
-			Provider: provider, Model: modelName, YoloMode: yoloMode, ToolDiscovery: cfg.ToolDiscovery,
+			Provider: provider, Model: modelName, YoloMode: yoloMode, ToolDiscovery: cfg.ToolDiscovery, NoSampling: policy.LockSession,
 		})
 		if err != nil {
 			return nil, err

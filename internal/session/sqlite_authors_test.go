@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"reflect"
+	"slices"
 	"testing"
 
 	"github.com/samsaffron/term-llm/internal/llm/core"
@@ -140,7 +141,7 @@ func TestAuthorMigrationV69PreservationRollbackRetryAndSignature(t *testing.T) {
 	original := migrations
 	t.Cleanup(func() { migrations = original })
 	migrations = append([]migration(nil), original...)
-	last := len(migrations) - 1
+	last := slices.IndexFunc(migrations, func(m migration) bool { return m.version == 69 })
 	up := migrations[last].up
 	migrations[last].up = func(db schemaExecutor) error {
 		if err := up(db); err != nil {

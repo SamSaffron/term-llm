@@ -174,6 +174,8 @@ func (s *serveServer) generateBranchPathNote(ctx context.Context, sourceSessionI
 	sess, err := s.store.Get(ctx, sourceSessionID)
 	if err != nil || sess == nil {
 		return nil, http.StatusBadRequest, "branch source was not found"
+	} else if err := appruntime.RefuseLockedAux(sess.ModelPolicy, "branch path notes"); err != nil {
+		return nil, http.StatusConflict, err.Error() // admission locks a row before its first message
 	}
 	providerName := strings.TrimSpace(sess.ProviderKey)
 	if providerName == "" {

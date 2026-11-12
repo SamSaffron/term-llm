@@ -92,7 +92,9 @@ func (a App) Autotitle(cmd *cobra.Command, args []string) error {
 			fmt.Fprintf(cmd.ErrOrStderr(), "#%d load failed: %v\n", summary.Number, err)
 			continue
 		}
-		if sess == nil {
+		if sess == nil || sess.ModelPolicy.LockSession {
+			// The batch command uses the operator's fast model, not the
+			// session's locked policy; locked conversations are never sent.
 			continue
 		}
 		if a.AutotitleMinAge > 0 && time.Since(sess.UpdatedAt) < a.AutotitleMinAge {
