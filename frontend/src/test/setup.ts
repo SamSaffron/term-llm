@@ -1,7 +1,14 @@
 import '@testing-library/jest-dom/vitest';
 import 'fake-indexeddb/auto';
 import { act, cleanup, configure } from '@testing-library/preact';
+import { options } from 'preact';
 import { afterEach, vi } from 'vitest';
+
+// Effects scheduled outside act() otherwise leave Preact's rAF/fallback timer
+// alive even after act(cleanup): act drains effects, not an already scheduled
+// browser callback. Use a microtask for the test-only after-paint scheduler so
+// those callbacks finish before jsdom removes its animation-frame globals.
+options.requestAnimationFrame = queueMicrotask;
 
 // findBy*/waitFor default to 1 s, which cold lazy-chunk imports exceed when the
 // full suite saturates the CPU. Passing assertions still resolve immediately.
