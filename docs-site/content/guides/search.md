@@ -99,6 +99,10 @@ search:
   google:
     api_key: ${GOOGLE_SEARCH_API_KEY}
     cx: ${GOOGLE_SEARCH_CX}
+
+  keenable:
+    # api_key is optional; without it the keyless public endpoint is used
+    api_key: ${KEENABLE_API_KEY}
 ```
 
 Available external providers:
@@ -113,6 +117,7 @@ Available external providers:
 | Tavily | `TAVILY_API_KEY` | agent-oriented search |
 | Brave | `BRAVE_API_KEY` | independent index |
 | Google | `GOOGLE_SEARCH_API_KEY` + `GOOGLE_SEARCH_CX` | Custom Search |
+| Keenable | optional `KEENABLE_API_KEY` | works with no key (1,000 requests per hour per IP, see [rate limits](https://docs.keenable.ai/rate-limits)); a key removes the hourly cap (`provider: keenable`) |
 
 Available fetch providers:
 
