@@ -16,6 +16,38 @@ import (
 	"github.com/samsaffron/term-llm/internal/testutil"
 )
 
+func TestCodeModeHello(t *testing.T) {
+	manager, err := NewToolManager(&ToolConfig{Enabled: []string{CodeModeToolName}, Workspace: "none"}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer manager.ApprovalMgr.Close()
+	h := testutil.NewEngineHarness()
+	manager.Registry.RegisterWithEngine(h.Engine)
+	h.Provider.AddToolCall("hello-cell", CodeModeToolName, map[string]any{"code": `text("hello");`}).AddTextResponse("done")
+	const prompt = "Regression test: use the JavaScript script execution tool (spawn_script or code_mode, whichever is available) to execute exactly:\ntext(\"hello\");\nDo not merely print the code, and do not use the shell or modify files. Wait for completion if necessary and report the result."
+	_, err = h.Run(context.Background(), core.Request{Messages: []core.Message{core.UserText(prompt)}, Tools: manager.GetSpecs(), MaxTurns: 3})
+	if err != nil {
+		t.Fatal(err)
+	}
+	requests := h.Provider.RecordedRequests()
+	if len(requests) != 2 {
+		t.Fatalf("requests = %d, want 2", len(requests))
+	}
+	for _, m := range requests[1].Messages {
+		for _, p := range m.Parts {
+			if r := p.ToolResult; r != nil && r.ID == "hello-cell" {
+				if r.IsError || !strings.Contains(r.Content, `"status":"completed"`) || !strings.Contains(r.Content, `"hello"`) {
+					t.Fatalf("script failed: %+v", r)
+				}
+				t.Logf("code_mode executed text(\"hello\");: %s", r.Content)
+				return
+			}
+		}
+	}
+	t.Fatal("missing script tool result")
+}
+
 func TestCodeModeRequiresEngine(t *testing.T) {
 	tool, _ := ToolSpec(CodeModeToolName)
 	if tool.Name != CodeModeToolName {
