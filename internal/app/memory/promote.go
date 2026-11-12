@@ -1,7 +1,6 @@
 package memory
 
 import (
-	"bytes"
 	"context"
 	"fmt"
 	"io"
@@ -9,7 +8,6 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
-	"unicode/utf8"
 
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/llm"
@@ -23,7 +21,7 @@ const (
 	defaultInitialPromoteLookback = 7 * 24 * time.Hour
 
 	// estimatedCharsPerWord is used to derive a word target from the byte cap.
-	estimatedCharsPerWord = 4
+	estimatedCharsPerWord = 6
 
 	memoryPromoteSystemInstructionTemplate = `You are a memory curator. Given recently changed memory fragments and the current recent.md, produce an updated recent.md.
 
@@ -68,6 +66,11 @@ func Promote(opts PromoteOptions) error {
 		return err
 	}
 
+	env, err = env.withProtection(cfg)
+	if err != nil {
+		return err
+	}
+
 	if err := env.ApplyAskProviderOverrides(cfg); err != nil {
 		return err
 	}
@@ -98,6 +101,12 @@ func Promote(opts PromoteOptions) error {
 }
 
 func runMemoryPromoteFlow(ctx context.Context, env Env, cfg *config.Config, engine *engine.Engine, store *memorydb.Store, opts memoryPromoteOptions) (int, error) {
+	var err error
+	env, err = env.withProtection(cfg)
+	if err != nil {
+		return 0, err
+	}
+
 	agentName := strings.TrimSpace(opts.Agent)
 	if agentName == "" {
 		agentName = env.ResolveAgent("")
@@ -115,12 +124,27 @@ func runMemoryPromoteFlow(ctx context.Context, env Env, cfg *config.Config, engi
 	}
 
 	buildUpdatedRecent := func(changed []memorydb.Fragment, existingRecent string) (string, error) {
-		prompt := buildPromotePrompt(changed, existingRecent)
-		updatedRecent, err := runMemoryPromoteRequest(ctx, engine, strings.TrimSpace(opts.Model), prompt, maxWords, env.debugRaw())
+		prompt := env.protection.promotePrompt(changed, existingRecent)
+		updatedRecent, err := runMemoryPromoteRequest(ctx, engine, strings.TrimSpace(opts.Model), prompt, maxWords, env.debugRaw(), env.protection)
 		if err != nil {
 			return "", err
 		}
-		return truncatePromotedRecent(updatedRecent, maxBytes), nil
+		if err := env.protection.check(updatedRecent); err != nil {
+			return "", err
+		}
+		updatedRecent = strings.TrimSpace(updatedRecent)
+		updatedRecent, err = fitUpdatedRecentWithinBudget(ctx, engine, strings.TrimSpace(opts.Model), updatedRecent, maxWords, maxBytes, maxBytes, env.debugRaw(), env.protection)
+		if err != nil {
+			return "", err
+		}
+		if err := env.protection.check(updatedRecent); err != nil {
+			return "", err
+		}
+		updatedRecent = strings.TrimSpace(updatedRecent)
+		if err := env.protection.recent(updatedRecent, maxBytes); err != nil {
+			return "", err
+		}
+		return updatedRecent, nil
 	}
 
 	if opts.DryRun {
@@ -129,6 +153,7 @@ func runMemoryPromoteFlow(ctx context.Context, env Env, cfg *config.Config, engi
 		if err != nil {
 			return 0, err
 		}
+		changed = env.protection.included(changed)
 		if len(changed) == 0 {
 			if !opts.QuietNothing {
 				fmt.Println("Nothing to promote.")
@@ -157,6 +182,7 @@ func runMemoryPromoteFlow(ctx context.Context, env Env, cfg *config.Config, engi
 		if err != nil {
 			return err
 		}
+		changed = env.protection.included(changed)
 		if len(changed) == 0 {
 			if !opts.QuietNothing {
 				fmt.Println("Nothing to promote.")
@@ -308,7 +334,9 @@ func buildPromotePrompt(changed []memorydb.Fragment, existingRecent string) stri
 	return b.String()
 }
 
-func runMemoryPromoteRequest(ctx context.Context, engine *engine.Engine, model, prompt string, maxWords int, debugRaw bool) (string, error) {
+func runMemoryPromoteRequest(ctx context.Context, engine *engine.Engine, model, prompt string, maxWords int, debugRaw bool, protection *memoryProtection) (string, error) {
+	prompt = protection.sanitize(prompt)
+	debugRaw = protection.prepareDebug(engine, debugRaw)
 	sysInstruction := fmt.Sprintf(memoryPromoteSystemInstructionTemplate, maxWords)
 	req := core.Request{
 		Model:     strings.TrimSpace(model),
@@ -323,7 +351,7 @@ func runMemoryPromoteRequest(ctx context.Context, engine *engine.Engine, model, 
 
 	stream, err := engine.Stream(ctx, req)
 	if err != nil {
-		return "", err
+		return "", protection.providerError("memory promotion provider operation failed", err)
 	}
 	defer stream.Close()
 
@@ -334,37 +362,19 @@ func runMemoryPromoteRequest(ctx context.Context, engine *engine.Engine, model, 
 			break
 		}
 		if err != nil {
-			return "", err
+			return "", protection.providerError("memory promotion provider operation failed", err)
 		}
 		switch ev.Type {
 		case core.EventTextDelta:
 			b.WriteString(ev.Text)
 		case core.EventError:
 			if ev.Err != nil {
-				return "", ev.Err
+				return "", protection.providerError("memory promotion provider operation failed", ev.Err)
 			}
 		}
 	}
 
-	return strings.TrimSpace(b.String()), nil
-}
-
-func truncatePromotedRecent(content string, maxBytes int) string {
-	if maxBytes <= 0 {
-		return ""
-	}
-	raw := []byte(content)
-	if len(raw) <= maxBytes {
-		return content
-	}
-	trimmed := raw[:maxBytes]
-	if idx := bytes.LastIndexByte(trimmed, '\n'); idx > 0 {
-		trimmed = trimmed[:idx]
-	}
-	for len(trimmed) > 0 && !utf8.Valid(trimmed) {
-		trimmed = trimmed[:len(trimmed)-1]
-	}
-	return string(trimmed)
+	return b.String(), nil
 }
 
 func memoryPromoteMetaKey(agent string) string {

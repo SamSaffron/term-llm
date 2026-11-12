@@ -12,6 +12,7 @@ import (
 
 	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/providerspec"
+	"github.com/samsaffron/term-llm/internal/secrettext"
 	"github.com/samsaffron/term-llm/internal/tools"
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
@@ -27,6 +28,7 @@ type Page struct {
 func Pages(root *cobra.Command) []Page {
 	return []Page{
 		{"configuration.md", "configuration", configTable()},
+		{"configuration.md", "memory-detectors", memoryDetectorTable()},
 		{"built-in-tools.md", "tools", toolTable()},
 		{"providers-and-models.md", "providers", providerTable()},
 		{"provider-setup-details.md", "provider-setup", setupTable()},
@@ -270,4 +272,13 @@ func Sync(dir string, pages []Page, check bool) error {
 		}
 	}
 	return nil
+}
+
+func memoryDetectorTable() string {
+	var b strings.Builder
+	b.WriteString("| Detector | Description | Pattern |\n|---|---|---|\n")
+	for _, spec := range secrettext.BuiltinSpecs() {
+		fmt.Fprintf(&b, "| %s | %s | %s |\n", code(spec.Name), cell(spec.Description), cell(code(spec.Pattern)))
+	}
+	return b.String()
 }

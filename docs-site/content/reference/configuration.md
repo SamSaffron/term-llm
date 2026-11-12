@@ -48,6 +48,9 @@ The index below follows the canonical config schema. A dash means no default or 
 | `default_provider` | string | `openrouter` | — |
 | `provider_discovery` | string | `auto` | — |
 | `auto_compact` | boolean | `true` | — |
+| `memory.secrets.disable` | list of string | `[]` | Built-in memory secret detector names to disable; all disables every built-in |
+| `memory.secrets.patterns` | list of string | — | Additional RE2 secret patterns; matched spans are redacted |
+| `memory.exclude_paths` | list of string | `[]` | Fragment path globs excluded from automated memory processing |
 | `approval.default_mode` | string | — | — |
 | `guardian.backend` | string | `llm` | — |
 | `guardian.classify.provider` | string | — | — |
@@ -1446,3 +1449,29 @@ In an agent's `agent.yaml`, `spawn.max_depth` sets the number of levels **below 
 ### Host-scoped agents
 
 An agent bundle may set `workspace: none` to retain its execution directory without treating it as a primary workspace. This suppresses primary-workspace confirmation and `manage_workspace`, but does not remove independent read, write, shell, project, Guardian, or yolo authority.
+
+## Memory secret detectors
+
+Owner policy lives in `config.yaml`: `memory.secrets.disable`,
+`memory.secrets.patterns`, and `memory.exclude_paths`. Empty lists select defaults.
+Use `disable: [all]` to opt out, or combine it with patterns to replace the defaults.
+Detector names are stable. Multiple patterns with one name are disabled together.
+Custom patterns redact the full match; built-ins select credential value groups.
+See the [memory guide](/guides/memory/#native-content-protection) for semantics and limits.
+
+<!-- BEGIN GENERATED: memory-detectors -->
+| Detector | Description | Pattern |
+|---|---|---|
+| `provider-key` | Recognizable provider key prefixes | `\b(?:sk\|pk\|rk)-[A-Za-z0-9_-]{8,}\|\b(?:ghp\|gho\|ghu\|ghs\|ghr\|github_pat)_[A-Za-z0-9_]{8,}\|\bxox[abeoprs]-[A-Za-z0-9-]{8,}\|\bglpat-[A-Za-z0-9_-]{8,}\|\bAKIA[0-9A-Z]{12,}\|\bAIza[0-9A-Za-z_-]{20,}` |
+| `private-key` | PEM private-key blocks | `-----BEGIN (?:[A-Z0-9]+ )*PRIVATE KEY-----[\s\S]*?(?:-----END (?:[A-Z0-9]+ )*PRIVATE KEY-----\|$)` |
+| `auth-header` | Authorization header values | `(?i)\b(?:proxy-)?authorization["']?\s*[:=]\s*(?:"([^"]*)"\|'([^']*)'\|((?:(?:basic\|bearer\|token)\s+)?[^\s"',;}]+))` |
+| `cookie` | Cookie header values | `(?i)\b(?:set-)?cookie["']?\s*:\s*(?:"([^"]*)"\|'([^']*)'\|([^"'\n]+))` |
+| `cookie` | curl cookie arguments | `\bcurl\b[^\|;&amp;\n]*?\s-b\s+(?:"([^"]*)"\|'([^']*)'\|([^\s"']+))` |
+| `cli-user` | curl user credentials | `\bcurl\b[^\|;&amp;\n]*?\s(?:-u\|--user)(?:\s+\|=)(?:"([^"]*)"\|'([^']*)'\|([^\s"']+))` |
+| `cli-user` | User:password CLI arguments (numeric UID:GID is preserved) | `(?i)(?:^\|\s)--?user(?:name)?(?:\s+\|=)["']?([^\s"':]+:[^\s"']+)["']?` |
+| `url-userinfo` | URL userinfo credentials | `://([^/\s:@]+:[^/\s@]+)@` |
+| `url-param` | Credential-like URL parameters | `(?i)[?&amp;](?:api[_-]?key\|access_token\|auth_token\|token\|password\|secret)=([^&amp;#\s"']+)` |
+| `named-credential` | Credential assignments (may also match prose location notes) | `(?i)\b(?:api[ _-]?key\|(?:access\|auth\|refresh\|bearer\|bot)[ _-]?token\|client[ _-]?secret\|secret[ _-]?key\|private[ _-]?key\|password\|passwd)["'\`*]*\s*[:=]\s*(?:"([^"]*)"\|'([^']*)'\|\`([^\`]*)\`\|([^\r\n,;}&amp;]+))` |
+| `named-credential` | Credential CLI options | `(?i)(?:^\|\s)--(?:api[ _-]?key\|(?:access\|auth\|refresh\|bearer\|bot)[ _-]?token\|client[ _-]?secret\|secret[ _-]?key\|private[ _-]?key\|password\|passwd)(?:\s+\|=)(?:"([^"]*)"\|'([^']*)'\|([^\s"']+))` |
+| `bearer` | Bearer token-shaped values | `(?i)\bbearer\s+([A-Za-z0-9._~+/=-]{16,})` |
+<!-- END GENERATED: memory-detectors -->

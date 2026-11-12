@@ -44,6 +44,11 @@ func Consolidate(opts ConsolidateOptions) error {
 	if err != nil {
 		return err
 	}
+	env, err = env.withProtection(cfg)
+	if err != nil {
+		return err
+	}
+
 	if err := env.ApplyAskProviderOverrides(cfg); err != nil {
 		return err
 	}

@@ -173,6 +173,7 @@ One line per root-module package, generated from package doc comments by `make d
 - `internal/runboundary` — tracks the provider-complete and durably branchable prefixes of one active model run.
 - `internal/runtimeoutput` — routes application diagnostics away from a terminal owned by an interactive UI.
 - `internal/search` — implements the pluggable web search providers behind the web_search tool.
+- `internal/secrettext` — redacts recognizable credentials in outbound text.
 - `internal/serve` — owns serve platform adapters, the Telegram host and service wiring.
 - `internal/serve/http` — provides serve base-path normalization and streaming HTTP writes.
 - `internal/serveui` — embeds and serves the built web UI assets, manifests and index shell.

@@ -65,6 +65,11 @@ func UpdateRecent(opts UpdateRecentOptions) error {
 	if err != nil {
 		return err
 	}
+	env, err = env.withProtection(cfg)
+	if err != nil {
+		return err
+	}
+
 	if err := env.ApplyAskProviderOverrides(cfg); err != nil {
 		return err
 	}
@@ -101,12 +106,23 @@ func UpdateRecent(opts UpdateRecentOptions) error {
 			engine = env.NewEngine(provider, cfg)
 		}
 
-		updatedRecent, err := runMemoryUpdateRecentRequest(ctx, engine, reqModel, sessionSnippets, existingRecent, fragmentsText, opts.TargetTokens, targetChars, env.debugRaw())
+		updatedRecent, err := runMemoryUpdateRecentRequest(ctx, engine, reqModel, protectionOrDefault(env.protection).sanitize(sessionSnippets), protectionOrDefault(env.protection).sanitize(existingRecent), protectionOrDefault(env.protection).sanitize(fragmentsText), opts.TargetTokens, targetChars, env.debugRaw(), env.protection)
 		if err != nil {
 			return "", err
 		}
-		updatedRecent, err = fitUpdatedRecentWithinBudget(ctx, engine, reqModel, updatedRecent, opts.TargetTokens, targetChars, highWaterChars, env.debugRaw())
+		if err := protectionOrDefault(env.protection).check(updatedRecent); err != nil {
+			return "", err
+		}
+		updatedRecent = strings.TrimSpace(updatedRecent)
+		updatedRecent, err = fitUpdatedRecentWithinBudget(ctx, engine, reqModel, updatedRecent, opts.TargetTokens, targetChars, highWaterChars, env.debugRaw(), env.protection)
 		if err != nil {
+			return "", err
+		}
+		if err := protectionOrDefault(env.protection).check(updatedRecent); err != nil {
+			return "", err
+		}
+		updatedRecent = strings.TrimSpace(updatedRecent)
+		if err := protectionOrDefault(env.protection).recent(updatedRecent, highWaterChars); err != nil {
 			return "", err
 		}
 		return updatedRecent, nil
@@ -117,7 +133,7 @@ func UpdateRecent(opts UpdateRecentOptions) error {
 		if err != nil {
 			return err
 		}
-		input, err := collectMemoryUpdateRecentInput(ctx, store, sessStore, agentName, lastUpdatedRecentAt, opts.MaxInputChars)
+		input, err := collectMemoryUpdateRecentInput(ctx, store, sessStore, agentName, lastUpdatedRecentAt, opts.MaxInputChars, env.protection)
 		if err != nil {
 			return err
 		}
@@ -128,7 +144,7 @@ func UpdateRecent(opts UpdateRecentOptions) error {
 		if err != nil {
 			return err
 		}
-		fragmentsText, err := loadRecentFragmentsText(ctx, store, agentName, opts.FragmentChars)
+		fragmentsText, err := loadRecentFragmentsText(ctx, store, agentName, opts.FragmentChars, env.protection)
 		if err != nil {
 			return err
 		}
@@ -152,7 +168,7 @@ func UpdateRecent(opts UpdateRecentOptions) error {
 		// arrives during this run remains eligible for the next one.
 		nextUpdatedRecentAt := time.Now().UTC()
 
-		input, err := collectMemoryUpdateRecentInput(ctx, store, sessStore, agentName, lastUpdatedRecentAt, opts.MaxInputChars)
+		input, err := collectMemoryUpdateRecentInput(ctx, store, sessStore, agentName, lastUpdatedRecentAt, opts.MaxInputChars, env.protection)
 		if err != nil {
 			return err
 		}
@@ -166,7 +182,7 @@ func UpdateRecent(opts UpdateRecentOptions) error {
 			return nil
 		}
 
-		fragmentsText, err := loadRecentFragmentsText(ctx, store, agentName, opts.FragmentChars)
+		fragmentsText, err := loadRecentFragmentsText(ctx, store, agentName, opts.FragmentChars, env.protection)
 		if err != nil {
 			return err
 		}
@@ -254,13 +270,14 @@ func newMemoryUpdateRecentProvider(cfg *config.Config, modelOverride string) (co
 	return provider, modelOverride, nil
 }
 
-func runMemoryUpdateRecentRequest(ctx context.Context, engine *engine.Engine, model, sessionSnippets, existingRecent, fragmentsText string, targetTokens, targetChars int, debugRaw bool) (string, error) {
+func runMemoryUpdateRecentRequest(ctx context.Context, engine *engine.Engine, model, sessionSnippets, existingRecent, fragmentsText string, targetTokens, targetChars int, debugRaw bool, protection *memoryProtection) (string, error) {
+	debugRaw = protection.prepareDebug(engine, debugRaw)
 	req := core.Request{
 		Model:     strings.TrimSpace(model),
 		Ephemeral: true,
 		Messages: []core.Message{
 			core.SystemText(memoryUpdateRecentSystemPrompt(targetTokens, targetChars)),
-			core.UserText(memoryUpdateRecentUserPrompt(sessionSnippets, existingRecent, fragmentsText)),
+			core.UserText(protection.sanitize(memoryUpdateRecentUserPrompt(sessionSnippets, existingRecent, fragmentsText))),
 		},
 		MaxTurns: 1,
 		DebugRaw: debugRaw,
@@ -268,7 +285,7 @@ func runMemoryUpdateRecentRequest(ctx context.Context, engine *engine.Engine, mo
 
 	stream, err := engine.Stream(ctx, req)
 	if err != nil {
-		return "", err
+		return "", protection.providerError("recent-memory provider operation failed", err)
 	}
 	defer stream.Close()
 
@@ -279,32 +296,33 @@ func runMemoryUpdateRecentRequest(ctx context.Context, engine *engine.Engine, mo
 			break
 		}
 		if err != nil {
-			return "", err
+			return "", protection.providerError("recent-memory provider operation failed", err)
 		}
 		switch ev.Type {
 		case core.EventTextDelta:
 			b.WriteString(ev.Text)
 		case core.EventError:
 			if ev.Err != nil {
-				return "", ev.Err
+				return "", protection.providerError("recent-memory provider operation failed", ev.Err)
 			}
 		}
 	}
 
-	content := strings.TrimSpace(b.String())
-	if content == "" {
+	content := b.String()
+	if strings.TrimSpace(content) == "" {
 		return "", fmt.Errorf("update-recent generation returned empty text; recent.md and checkpoints are unchanged; retry the update")
 	}
 	return content, nil
 }
 
-func runMemoryCompactRecentRequest(ctx context.Context, engine *engine.Engine, model, candidateRecent string, targetTokens, targetChars int, debugRaw bool) (string, error) {
+func runMemoryCompactRecentRequest(ctx context.Context, engine *engine.Engine, model, candidateRecent string, targetTokens, targetChars int, debugRaw bool, protection *memoryProtection) (string, error) {
+	debugRaw = protection.prepareDebug(engine, debugRaw)
 	req := core.Request{
 		Model:     strings.TrimSpace(model),
 		Ephemeral: true,
 		Messages: []core.Message{
 			core.SystemText(memoryCompactRecentSystemPrompt(targetTokens, targetChars)),
-			core.UserText(memoryCompactRecentUserPrompt(candidateRecent)),
+			core.UserText(protection.sanitize(memoryCompactRecentUserPrompt(candidateRecent))),
 		},
 		MaxTurns: 1,
 		DebugRaw: debugRaw,
@@ -312,7 +330,7 @@ func runMemoryCompactRecentRequest(ctx context.Context, engine *engine.Engine, m
 
 	stream, err := engine.Stream(ctx, req)
 	if err != nil {
-		return "", err
+		return "", protection.providerError("recent-memory provider operation failed", err)
 	}
 	defer stream.Close()
 
@@ -323,38 +341,38 @@ func runMemoryCompactRecentRequest(ctx context.Context, engine *engine.Engine, m
 			break
 		}
 		if err != nil {
-			return "", err
+			return "", protection.providerError("recent-memory provider operation failed", err)
 		}
 		switch ev.Type {
 		case core.EventTextDelta:
 			b.WriteString(ev.Text)
 		case core.EventError:
 			if ev.Err != nil {
-				return "", ev.Err
+				return "", protection.providerError("recent-memory provider operation failed", ev.Err)
 			}
 		}
 	}
 
-	content := strings.TrimSpace(b.String())
-	if content == "" {
+	content := b.String()
+	if strings.TrimSpace(content) == "" {
 		return "", fmt.Errorf("update-recent compaction returned empty text; recent.md and checkpoints are unchanged; retry the update")
 	}
 	return content, nil
 }
 
-func fitUpdatedRecentWithinBudget(ctx context.Context, engine *engine.Engine, model, updatedRecent string, targetTokens, targetChars, highWaterChars int, debugRaw bool) (string, error) {
+func fitUpdatedRecentWithinBudget(ctx context.Context, engine *engine.Engine, model, updatedRecent string, targetTokens, targetChars, highWaterChars int, debugRaw bool, protection *memoryProtection) (string, error) {
 	if len([]byte(updatedRecent)) <= highWaterChars {
 		return updatedRecent, nil
 	}
 
-	compacted, err := runMemoryCompactRecentRequest(ctx, engine, model, updatedRecent, targetTokens, targetChars, debugRaw)
+	compacted, err := runMemoryCompactRecentRequest(ctx, engine, model, updatedRecent, targetTokens, targetChars, debugRaw, protection)
 	if err != nil {
 		return "", err
 	}
 	if len([]byte(compacted)) <= highWaterChars {
 		return compacted, nil
 	}
-	return truncatePromotedRecent(compacted, targetChars), nil
+	return "", errRecentSize
 }
 
 func memoryUpdateRecentSystemPrompt(targetTokens, targetChars int) string {
@@ -409,7 +427,7 @@ func memoryUpdateRecentUserPrompt(sessionSnippets, existingRecent, fragmentsText
 
 // loadRecentFragmentsText returns up to maxChars of fragment content for the given agent,
 // ordered by most recently created first (newest fragments first).
-func loadRecentFragmentsText(ctx context.Context, store *memorydb.Store, agentName string, maxChars int) (string, error) {
+func loadRecentFragmentsText(ctx context.Context, store *memorydb.Store, agentName string, maxChars int, protection *memoryProtection) (string, error) {
 	if maxChars <= 0 {
 		return "", nil
 	}
@@ -423,7 +441,11 @@ func loadRecentFragmentsText(ctx context.Context, store *memorydb.Store, agentNa
 
 	var b strings.Builder
 	for _, f := range fragments {
-		content := strings.TrimSpace(f.Content)
+		if protection.excluded(f.Path) {
+			continue
+		}
+		f.Path = protection.sanitize(f.Path)
+		content := strings.TrimSpace(protection.sanitize(f.Content))
 		if content == "" {
 			continue
 		}
@@ -521,7 +543,7 @@ type memoryUpdateRecentInput struct {
 	DeferredFrom time.Time
 }
 
-func collectMemoryUpdateRecentInput(ctx context.Context, store *memorydb.Store, sessStore session.Store, agentName string, updatedAtOrAfter time.Time, maxInputChars int) (memoryUpdateRecentInput, error) {
+func collectMemoryUpdateRecentInput(ctx context.Context, store *memorydb.Store, sessStore session.Store, agentName string, updatedAtOrAfter time.Time, maxInputChars int, protection *memoryProtection) (memoryUpdateRecentInput, error) {
 	current, err := sessStore.GetCurrent(ctx)
 	if err != nil {
 		return memoryUpdateRecentInput{}, fmt.Errorf("get current session: %w", err)
@@ -559,6 +581,7 @@ func collectMemoryUpdateRecentInput(ctx context.Context, store *memorydb.Store, 
 				return memoryUpdateRecentInput{}, fmt.Errorf("get messages for session %s: %w", sess.ID, err)
 			}
 			for _, msg := range messages {
+				msg.TextContent = protection.sanitize(msg.TextContent)
 				stop, appendErr := appendUpdateRecentMessage(&inputBuilder, maxInputChars, sess, &headerWritten, msg)
 				if appendErr != nil {
 					return memoryUpdateRecentInput{}, appendErr

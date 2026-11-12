@@ -45,6 +45,7 @@ type Env struct {
 	// DefaultDBPath is the default captured when Cobra bound --db.
 	DefaultDBPath string
 	DryRun        bool
+	protection    *memoryProtection
 	Deps
 }
 
