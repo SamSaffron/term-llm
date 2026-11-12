@@ -30,6 +30,7 @@ export async function steer(
   const value = (options.inputText ?? content).trim();
   const displayContent = (options.displayContent ?? value).trim();
   const attachments = options.contentParts ? [] : [...actions.composer.attachments.value];
+  const draftRevision = actions.composer.draftRevision();
   if (!session || (!value && !attachments.length && !options.contentParts?.length)) return;
   const blockedAttachment = attachments.find(
     (attachment) => attachment.status && attachment.status !== 'ready',
@@ -98,7 +99,7 @@ export async function steer(
       id,
     );
     if (options.preserveComposer) return;
-    actions.composer.clearSubmitted(session.id, value, attachments);
+    actions.composer.clearSubmitted(session.id, value, attachments, session.id, draftRevision);
   } catch (error) {
     actions.setSteering(
       actions.steering.value.map((candidate) =>

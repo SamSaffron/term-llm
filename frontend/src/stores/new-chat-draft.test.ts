@@ -192,6 +192,171 @@ describe('new chat draft', () => {
     },
   );
 
+  it.each(['describe', 'a caption that was replaced'])(
+    'clears a saved partial caption %j after sending',
+    async (savedText) => {
+      const store = setup([]);
+      store.endpoints.createResponse = vi.fn(async () => completedResponse('s9'));
+      store.newChat();
+      store.prompt.value = savedText;
+      store.attachments.value = [
+        {
+          id: 'picture-1',
+          name: 'photo.png',
+          type: 'image/png',
+          dataURL: 'data:image/png;base64,AA==',
+          status: 'ready',
+        },
+      ];
+      // Upload completion saves the caption as it stands, not what is eventually sent.
+      store.composer.persist();
+      store.prompt.value = 'describe this picture';
+
+      await store.send();
+
+      expect(store.composer.unsentNewChats.value).toEqual([]);
+      store.newChat();
+      expect(store.prompt.value).toBe('');
+      expect(store.attachments.value).toEqual([]);
+    },
+  );
+
+  it('preserves a newer caption saved while an image send is materializing', async () => {
+    const store = setup([]);
+    store.endpoints.createResponse = vi.fn(async () => completedResponse('s9'));
+    store.newChat();
+    store.prompt.value = 'saved partial';
+    store.attachments.value = [
+      {
+        id: 'picture-1',
+        name: 'photo.png',
+        type: 'image/png',
+        dataURL: 'data:image/png;base64,AA==',
+        status: 'ready',
+      },
+    ];
+    store.composer.persist();
+    store.prompt.value = 'describe this picture';
+    let materialize!: (part: Record<string, unknown>) => void;
+    vi.spyOn(store.composer, 'attachmentInput').mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          materialize = resolve;
+        }),
+    );
+
+    const sending = store.send();
+    store.prompt.value = 'a new unsent caption';
+    store.composer.persist();
+    materialize({ type: 'input_image', image_url: 'data:image/png;base64,AA==' });
+    await sending;
+
+    expect(store.prompt.value).toBe('a new unsent caption');
+    expect(store.composer.unsentNewChats.value).toEqual([
+      expect.objectContaining({ content: 'a new unsent caption', attachments: [] }),
+    ]);
+    store.newChat();
+    expect(store.prompt.value).toBe('a new unsent caption');
+  });
+
+  it.each(['send', 'steer'] as const)(
+    'clears a partial caption in an existing chat after %s',
+    async (operation) => {
+      const store = setup();
+      store.activeSessionId.value = 's1';
+      store.draftActive.value = false;
+      store.activeProjectId.value = 'p1';
+      store.endpoints.createResponse = vi.fn(async () => completedResponse('s1'));
+      store.endpoints.interrupt = vi.fn(async () => ({}));
+      store.prompt.value = 'describe';
+      store.attachments.value = [
+        {
+          id: 'picture-1',
+          name: 'photo.png',
+          type: 'image/png',
+          dataURL: 'data:image/png;base64,AA==',
+          status: 'ready',
+        },
+      ];
+      store.composer.persist();
+      store.prompt.value = 'describe this picture';
+
+      if (operation === 'send') await store.send();
+      else await store.steer(store.prompt.value);
+
+      expect(
+        readDrafts(store.storage, store.keys.draftMessages).find(
+          (draft) => draft.sessionId === 's1',
+        ),
+      ).toMatchObject({ content: '', attachments: [] });
+      // The clearing write must advance the composer's revision as well.
+      store.prompt.value = 'next message';
+      store.composer.persist();
+      expect(
+        readDrafts(store.storage, store.keys.draftMessages).find(
+          (draft) => draft.sessionId === 's1',
+        )?.content,
+      ).toBe('next message');
+      expect(store.toasts.value.filter((toast) => toast.kind === 'error')).toEqual([]);
+    },
+  );
+
+  it.each(['send', 'steer'] as const)(
+    "does not adopt another tab's revision while clearing %s",
+    async (operation) => {
+      const store = setup();
+      store.activeSessionId.value = 's1';
+      store.draftActive.value = false;
+      store.endpoints.createResponse = vi.fn(async () => completedResponse('s1'));
+      store.endpoints.interrupt = vi.fn(async () => ({}));
+      store.prompt.value = 'describe';
+      store.attachments.value = [
+        {
+          id: 'picture-1',
+          name: 'photo.png',
+          type: 'image/png',
+          dataURL: 'data:image/png;base64,AA==',
+          status: 'ready',
+        },
+      ];
+      store.composer.persist();
+      store.prompt.value = 'describe this picture';
+      let materialize!: (part: Record<string, unknown>) => void;
+      vi.spyOn(store.composer, 'attachmentInput').mockImplementation(
+        () =>
+          new Promise((resolve) => {
+            materialize = resolve;
+          }),
+      );
+
+      const sending = operation === 'send' ? store.send() : store.steer(store.prompt.value);
+      await vi.waitFor(() => expect(store.composer.attachmentInput).toHaveBeenCalledOnce());
+      const draft = readDrafts(store.storage, store.keys.draftMessages).find(
+        (entry) => entry.sessionId === 's1',
+      )!;
+      saveDraft(store.storage, store.keys.draftMessages, {
+        ...draft,
+        content: "another tab's unsent caption",
+      });
+      materialize({ type: 'input_image', image_url: 'data:image/png;base64,AA==' });
+      await sending;
+
+      store.prompt.value = 'local next message';
+      store.composer.persist();
+      expect(
+        readDrafts(store.storage, store.keys.draftMessages).find(
+          (entry) => entry.sessionId === 's1',
+        ),
+      ).toMatchObject({ content: "another tab's unsent caption", attachments: [] });
+      expect(store.toasts.value).toContainEqual(
+        expect.objectContaining({
+          kind: 'error',
+          message: expect.stringContaining('Draft conflict'),
+        }),
+      );
+    },
+  );
+
   it('lists an unsent draft only while it is not open in the composer', async () => {
     const store = setup();
     store.newChat();

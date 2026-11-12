@@ -297,11 +297,17 @@ export class ComposerStore {
     return Boolean(draft?.effort && (draft.content.trim() || draft.attachments?.length));
   }
 
+  /** Last revision this composer persisted or restored, sampled before sending. */
+  draftRevision(): number {
+    return this.currentDraftRev;
+  }
+
   clearSubmitted(
     sessionId: string,
     inputText: string,
     attachments: Attachment[],
     draftSessionId = sessionId,
+    submittedDraftRev?: number,
   ): void {
     const value = inputText.trim();
     const submittedIDs = new Set(
@@ -322,17 +328,27 @@ export class ComposerStore {
       const draft = readDrafts(this.services.storage, this.services.keys.draftMessages).find(
         (candidate) => candidate.sessionId === draftSessionId,
       );
-      if (draft)
-        saveDraft(this.services.storage, this.services.keys.draftMessages, {
+      if (draft) {
+        const drafts = saveDraft(this.services.storage, this.services.keys.draftMessages, {
           ...draft,
-          content: draft.content.trim() === value ? '' : draft.content,
-          // Preparation persists attachments before the caption is finished.
+          // Upload completion can save a partial caption. The revision sampled
+          // before sending identifies that stale text without erasing later edits.
+          content:
+            draft.content.trim() === value ||
+            (submittedDraftRev !== undefined && (draft.rev || 0) === submittedDraftRev)
+              ? ''
+              : draft.content,
           // Clear submitted IDs independently of text, preserving newer edits.
           attachments: (draft.attachments || []).filter(
             (attachment) => !attachment.id || !submittedIDs.has(attachment.id),
           ),
           updated: Date.now(),
         });
+        // Cleaning submitted attachment IDs must not adopt another tab's edit.
+        if (this.storageId() === draftSessionId && (draft.rev || 0) === this.currentDraftRev)
+          this.currentDraftRev =
+            drafts.find((entry) => entry.sessionId === draftSessionId)?.rev || 0;
+      }
     } catch {
       this.services.bumpDiagnostic('storageFailures');
     }
