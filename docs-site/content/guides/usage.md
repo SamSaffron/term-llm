@@ -87,17 +87,6 @@ See [Agents](/guides/agents/) for more details on creating and managing agents.
 
 ### Using Skills
 
-Skills inject task-specific context into any command without changing the model or provider:
-
-```bash
-term-llm ask --skills git "how to squash commits"   # use git skill
-term-llm chat --skills git,docker                   # combine multiple skills
-term-llm edit --skills refactoring -f main.go "refactor this"
-term-llm exec --skills devops "set up a cron job"
-```
-
-Use `--skills all` to load every available skill, or `--skills none` to suppress defaults.
-
 Manage skills with the `skills` subcommand:
 
 ```bash
