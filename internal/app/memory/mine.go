@@ -302,10 +302,21 @@ func Mine(opts MineOptions) error {
 
 		loadResult, err := opts.loadMessagesForMining(ctx, sessStore, candidate, startOffset, taxonomyMap)
 		if err != nil {
+			var blocked *memoryMessageBlockedError
+			if errors.As(err, &blocked) {
+				failedBatches++
+				batchErrors = append(batchErrors, fmt.Errorf("session %s: %w", candidate.Session.ID, err))
+				fmt.Fprintf(os.Stderr, "warning: session %s blocked: %v\n", candidate.Session.ID, blocked)
+				return visitResult, nil // No model call, so no extraction attempt used.
+			}
 			return visitResult, fmt.Errorf("load messages for session %s: %w", candidate.Session.ID, err)
 		}
 		opts.reportMessageScope(candidate.Summary.Number, loadResult)
 		if len(loadResult.Messages) == 0 || (opts.hasMessageBounds() && !hasTextEvidence(loadResult.Messages)) {
+			if opts.hasMessageBounds() && loadResult.SkippedBefore > 0 {
+				fmt.Printf("[%d/%d] #%d nothing in window; checkpoint unchanged\n", position, total, candidate.Summary.Number)
+				return visitResult, nil
+			}
 			if !env.DryRun && loadResult.NextOffset > startOffset {
 				if err := memStore.UpsertState(ctx, &memorydb.MiningState{SessionID: candidate.Session.ID, Agent: candidate.Agent, LastMinedOffset: loadResult.NextOffset, MinedAt: time.Now()}); err != nil {
 					return visitResult, err
@@ -666,7 +677,7 @@ func (opts MineOptions) memoryMineCutoff() time.Time {
 }
 
 func (opts MineOptions) buildMemoryMineCandidate(ctx context.Context, store session.Store, summary session.SessionSummary, currentID string, cutoff time.Time) (memoryMineCandidate, bool, error) {
-	if (!cutoff.IsZero() && summary.UpdatedAt.Before(cutoff)) || activeSessionMayBeWriting(summary, time.Now()) {
+	if (!opts.MessageSince.IsZero() && summary.UpdatedAt.Before(opts.MessageSince)) || (!cutoff.IsZero() && summary.UpdatedAt.Before(cutoff)) || activeSessionMayBeWriting(summary, time.Now()) {
 		return memoryMineCandidate{}, false, nil
 	}
 

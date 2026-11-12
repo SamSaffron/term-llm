@@ -3,7 +3,9 @@ package memory
 import (
 	"context"
 	"fmt"
+	"os"
 	"strings"
+	"time"
 
 	"github.com/samsaffron/term-llm/internal/llm/core"
 	"github.com/samsaffron/term-llm/internal/llm/engine"
@@ -14,6 +16,17 @@ import (
 // A range describes actual evidence supplied to extraction, not the raw cursor
 // interval (which may also contain deliberately skipped out-of-window messages).
 type memoryEvidenceRange struct{ Start, End int }
+
+// memoryMessageBlockedError is a session-local content refusal. Store/query
+// failures remain ordinary errors and can still abort the walk.
+type memoryMessageBlockedError struct {
+	Sequence int
+	Reason   string
+}
+
+func (e *memoryMessageBlockedError) Error() string {
+	return fmt.Sprintf("message at sequence %d %s; cursor retained", e.Sequence, e.Reason)
+}
 
 func (opts MineOptions) hasMessageBounds() bool {
 	return !opts.MessageSince.IsZero() || !opts.MessageBefore.IsZero()
@@ -37,7 +50,7 @@ func (opts MineOptions) messageScope(msg session.Message) (skip, stop bool, err 
 		return false, false, nil
 	}
 	if msg.CreatedAt.IsZero() {
-		return false, false, fmt.Errorf("message at sequence %d has no timestamp; cursor retained", msg.Sequence)
+		return false, false, &memoryMessageBlockedError{msg.Sequence, "has no timestamp"}
 	}
 	if !opts.MessageBefore.IsZero() && !msg.CreatedAt.Before(opts.MessageBefore) {
 		return false, true, nil
@@ -58,7 +71,11 @@ func (opts MineOptions) reportMessageScope(number int64, r memoryMineLoadResult)
 	if !opts.hasMessageBounds() {
 		return
 	}
-	fmt.Printf("#%d message scope: skipped_before=%d evidence_ranges=%v upper_boundary=%t next_offset=%d (later sequences unexamined at upper boundary)\n", number, r.SkippedBefore, r.EvidenceRanges, r.UpperBoundary, r.NextOffset)
+	suffix := ""
+	if r.UpperBoundary {
+		suffix = " (later sequences unexamined at upper boundary)"
+	}
+	fmt.Printf("#%d message scope: skipped_before=%d evidence_ranges=%v upper_boundary=%t next_offset=%d%s\n", number, r.SkippedBefore, r.EvidenceRanges, r.UpperBoundary, r.NextOffset, suffix)
 }
 
 func (opts MineOptions) boundedPromptFits(candidate memoryMineCandidate, start, end int, messages []session.Message, taxonomy string) bool {
@@ -70,9 +87,16 @@ func (opts MineOptions) extractionPrompt(candidate memoryMineCandidate, start in
 	parts := buildExtractionPromptParts(protectionOrDefault(opts.protection).candidate(candidate), start, r.NextOffset, r.Messages, taxonomy)
 	if opts.hasMessageBounds() {
 		// Explicitly distinguish raw checkpoint traversal from the actual evidence.
-		parts.Prompt += fmt.Sprintf("\nMessage evidence scope: since=%s (inclusive), before=%s (exclusive); Only timestamp-filtered evidence is supplied. The raw checkpoint range is not a claim all messages were mined.\n", opts.MessageSince, opts.MessageBefore)
+		parts.Prompt += fmt.Sprintf("\nMessage evidence scope: since=%s (inclusive), before=%s (exclusive); Only timestamp-filtered evidence is supplied. The raw checkpoint range is not a claim all messages were mined.\n", formatMessageBound(opts.MessageSince), formatMessageBound(opts.MessageBefore))
 	}
 	return parts
+}
+
+func formatMessageBound(t time.Time) string {
+	if t.IsZero() {
+		return "none"
+	}
+	return t.Format(time.RFC3339Nano)
 }
 
 func (opts MineOptions) recordExtractionSources(ctx context.Context, store *memorydb.Store, candidate memoryMineCandidate, start int, r memoryMineLoadResult, paths []string) {
@@ -83,8 +107,12 @@ func (opts MineOptions) recordExtractionSources(ctx context.Context, store *memo
 	for _, p := range paths {
 		for _, span := range ranges {
 			if err := store.AddFragmentSource(ctx, candidate.Agent, p, candidate.Session.ID, span.Start, span.End); err != nil {
-				// Do not echo model-proposed paths or arbitrary storage errors.
-				fmt.Printf("warning: record memory source failed for evidence range [%d,%d)\n", span.Start, span.End)
+				if !opts.hasMessageBounds() {
+					// Preserve the established default-mode diagnostics.
+					fmt.Fprintf(os.Stderr, "warning: record fragment source %s: %v\n", p, err)
+				} else {
+					fmt.Fprintf(os.Stderr, "warning: record memory source failed for evidence range [%d,%d)\n", span.Start, span.End)
+				}
 			}
 		}
 	}

@@ -2,7 +2,9 @@ package memory
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
+	"github.com/samsaffron/term-llm/internal/config"
 	"strings"
 	"testing"
 	"time"
@@ -133,13 +135,28 @@ func TestMessageWindowNativeMiningProvenanceAndEmptyBatch(t *testing.T) {
 			}
 			defer store.Close()
 			state, err := store.GetState(ctx, id)
-			if err != nil || state == nil || state.LastMinedOffset != len(msgs) {
+			if err != nil {
+				t.Fatal(err)
+			}
+			if empty {
+				if state != nil {
+					t.Fatal("old-only session checkpoint consumed without evidence")
+				}
+			} else if state == nil || state.LastMinedOffset != len(msgs) {
 				t.Fatal("raw cursor accounting failed")
 			}
 			reqs := provider.RecordedRequests()
 			if empty {
 				if len(reqs) != 0 {
 					t.Fatal("model invoked for out-of-scope-only session")
+				}
+				opts.MessageSince = at.Add(-2 * time.Hour)
+				if err := Mine(opts); err != nil {
+					t.Fatal(err)
+				}
+				state, err = store.GetState(ctx, id)
+				if err != nil || state == nil || state.LastMinedOffset != 1 || len(provider.RecordedRequests()) != 2 {
+					t.Fatal("widening did not mine old evidence without a reset")
 				}
 				return
 			}
@@ -173,5 +190,75 @@ func TestMessageWindowProviderUsageIsCacheAdditive(t *testing.T) {
 	stats.noteUsage(&core.Usage{InputTokens: 30, CachedInputTokens: 90, OutputTokens: 5, ProviderRawInputTokens: 120})
 	if stats.InputTokens+stats.CachedInputTokens != 220 || stats.OutputTokens != 12 || stats.ToolTurns != 2 {
 		t.Fatalf("wrong resubmitted-context accounting: %+v", stats)
+	}
+}
+
+func TestMessageWindowBlockedSessionDoesNotAbortMine(t *testing.T) {
+	for _, missing := range []bool{false, true} {
+		t.Run(map[bool]string{false: "oversized", true: "missing timestamp"}[missing], func(t *testing.T) {
+			at := time.Now().Add(-time.Hour)
+			provider := mockprovider.NewMockProvider("blocked").AddToolCall("good", "memory_create_fragment", map[string]string{"path": "fragments/later.md", "content": "Later safe fact"}).AddTextResponse("done")
+			opts, writer := nativeMineFixture(t, provider)
+			opts.MessageSince = at
+			opts.Limit = 1
+			opts.PromptMaxTokens = 2000
+			opts.Embed = true
+			opts.EmbedProvider = "invalid-owner-test-provider"
+			ctx := context.Background()
+			for _, id := range []string{"older-good", "newer-blocked"} {
+				if err := writer.Create(ctx, &session.Session{ID: id, Agent: "assistant", Status: session.StatusComplete}); err != nil {
+					t.Fatal(err)
+				}
+				text := "good evidence"
+				if id == "newer-blocked" {
+					text = strings.Repeat("oversized evidence ", 10000)
+				}
+				if err := writer.AddMessage(ctx, id, session.NewMessage(id, core.UserText(text), -1)); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if missing {
+				cfg := opts.SessionStoreConfig(&config.Config{})
+				db, err := sql.Open("sqlite", cfg.Path)
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer db.Close()
+				if _, err := db.Exec("UPDATE messages SET created_at='0001-01-01T00:00:00Z' WHERE session_id='newer-blocked'"); err != nil {
+					t.Fatal(err)
+				}
+			}
+			err := Mine(opts)
+			reason := "exceeds lossless prompt budget"
+			if missing {
+				reason = "has no timestamp"
+			}
+			if err == nil || !strings.Contains(err.Error(), reason) || !strings.Contains(err.Error(), "unknown embedding provider") {
+				t.Fatalf("blocked session aborted walk/phases or was hidden: %v", err)
+			}
+			store, err := opts.OpenStore()
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer store.Close()
+			blocked, _ := store.GetState(ctx, "newer-blocked")
+			good, _ := store.GetState(ctx, "older-good")
+			if blocked != nil || good == nil || good.LastMinedOffset != 1 {
+				t.Fatal("blocked cursor advanced or unrelated session starved")
+			}
+			frag, _ := store.GetFragment(ctx, "assistant", "fragments/later.md")
+			if frag == nil || len(provider.RecordedRequests()) != 2 {
+				t.Fatal("good session not actually extracted within limit1")
+			}
+		})
+	}
+}
+
+func TestMessageWindowScopeTextUsesUnboundedLabel(t *testing.T) {
+	at := time.Date(2026, 1, 2, 0, 0, 0, 0, time.FixedZone("offset", 11*60*60))
+	opts := MineOptions{MessageSince: at}
+	prompt := opts.extractionPrompt(memoryMineCandidate{Session: &session.Session{ID: "window"}}, 0, memoryMineLoadResult{}, "empty").Prompt
+	if !strings.Contains(prompt, "before=none") || strings.Contains(prompt, "0001-01-01") || !strings.Contains(prompt, "2026-01-02T00:00:00+11:00") {
+		t.Fatal("unset bound or timezone rendered misleadingly")
 	}
 }

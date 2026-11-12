@@ -58,22 +58,28 @@ term-llm memory mine --insights
 `--since` still filters **session update time**, not message dates. Use
 `--message-since` and/or `--message-before` (RFC3339 timestamps with timezone)
 when evidence itself must be time-bounded. The lower bound is inclusive and
-intentionally skips older messages, advancing the raw sequence checkpoint; these
-skips are counted explicitly, **not recorded as mined sources**. Choose the lower
-bound before mining: widening it later cannot recover evidence already passed by
-an existing checkpoint. Do not reset checkpoints to work around that.
+intentionally filters older messages. A batch that supplies no evidence and
+only skips old messages leaves its checkpoint unchanged, so a later wider window
+can still mine it. Sessions updated before the lower bound are pruned up front.
+If a batch does supply evidence after an old prefix, its raw checkpoint must pass
+that prefix: those skips are counted, **not recorded as mined sources**. Choose
+an affordable lower bound before processing straddling sessions, or leave those
+sessions untouched if their older evidence must remain available. Widening cannot
+recover a prefix already passed by a checkpoint; do not reset checkpoints.
 
 The exclusive upper bound is a **sequence barrier**: its message and every later
 sequence stay unread. Timestamps need not be ordered; later sequences may contain
 older in-window evidence, so an upper-bound stop is not proof that all in-window
 messages behind it were examined. A later invocation without that upper bound can
-resume safely. Missing/zero timestamps fail closed without advancing that batch.
+resume safely. Missing/zero timestamps fail closed for that session without advancing its batch;
+unrelated sessions and later phases continue, with a nonzero final status.
 Existing checkpoints are never rewound. Active-session quiet-period and child
 exclusions still apply.
 
 Message-bounded mode never clips messages to fit the initial prompt budget. It
 ends a batch before a message that would overflow; a single oversized message
-returns an actionable error with its checkpoint unchanged, so increase the budget
+is reported blocked without advancing its checkpoint or stalling other sessions,
+so increase the budget
 rather than silently losing its tail. Empty/role-only/out-of-window batches need
 no model call. Source links identify only actual supplied sequence spans, not the
 whole traversed checkpoint interval. `--stats` also reports usage on failed
@@ -81,6 +87,8 @@ extractions when the provider supplied it; missing usage is unknown, not zero.
 
 Message bounds apply to session fragment extraction. Image mining is skipped
 without changing its watermark, and combining bounds with `--insights` is rejected.
+A recurring job with message bounds therefore does **not** ingest generated images;
+its completed runs establish conversational coverage only, not image coverage.
 Embedding and promotion remain separate phases; use `--embed=false --promote never`
 for an extraction-only catchup. Lookup results can still consult existing memory;
 message bounds do not claim to date-filter the memory database itself.

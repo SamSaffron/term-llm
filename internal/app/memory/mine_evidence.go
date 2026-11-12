@@ -2,7 +2,6 @@ package memory
 
 import (
 	"context"
-	"fmt"
 	"strings"
 
 	"github.com/samsaffron/term-llm/internal/llm/core"
@@ -60,7 +59,7 @@ func (opts MineOptions) loadMessagesForMining(ctx context.Context, store session
 				result.Messages = all
 				result.NextOffset = currentSeq
 				if len(all) == 0 {
-					return result, fmt.Errorf("message at sequence %d exceeds lossless prompt budget; increase --prompt-max-tokens; cursor retained", msg.Sequence)
+					return result, &memoryMessageBlockedError{msg.Sequence, "exceeds lossless prompt budget; increase --prompt-max-tokens"}
 				}
 				return result, nil
 			}
