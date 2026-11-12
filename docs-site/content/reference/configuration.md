@@ -200,6 +200,7 @@ The index below follows the canonical config schema. A dash means no default or 
 | `search.brave.api_key` | string | — | — |
 | `search.google.api_key` | string | — | — |
 | `search.google.cx` | string | — | — |
+| `search.youcom.api_key` | string | — | — |
 | `classify.default_provider` | string | `typesafe` | — |
 | `classify.providers.typesafe.type` | string | — | — |
 | `classify.providers.typesafe.api_key` | string | — | — |
@@ -1021,6 +1022,9 @@ search:
 
   parallel:
     api_key: ${PARALLEL_API_KEY}
+
+  youcom:
+    api_key: ${YDC_API_KEY} # optional; keyless free tier without it
 
   tavily:
     api_key: ${TAVILY_API_KEY}
