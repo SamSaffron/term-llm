@@ -26,6 +26,8 @@ type MineOptions struct {
 	Env
 	Model             string
 	Since             time.Duration
+	MessageSince      time.Time
+	MessageBefore     time.Time
 	Limit             int
 	BatchSize         int
 	IncludeSubagents  bool
@@ -159,6 +161,9 @@ type transcriptMessage struct {
 // Mine mines complete and active sessions into memory fragments.
 func Mine(opts MineOptions) error {
 	env := opts.Env
+	if err := opts.validateMessageBounds(); err != nil {
+		return err
+	}
 	if opts.BatchSize <= 0 {
 		return fmt.Errorf("--batch-size must be > 0")
 	}
@@ -299,7 +304,8 @@ func Mine(opts MineOptions) error {
 		if err != nil {
 			return visitResult, fmt.Errorf("load messages for session %s: %w", candidate.Session.ID, err)
 		}
-		if len(loadResult.Messages) == 0 {
+		opts.reportMessageScope(candidate.Summary.Number, loadResult)
+		if len(loadResult.Messages) == 0 || (opts.hasMessageBounds() && !hasTextEvidence(loadResult.Messages)) {
 			if !env.DryRun && loadResult.NextOffset > startOffset {
 				if err := memStore.UpsertState(ctx, &memorydb.MiningState{SessionID: candidate.Session.ID, Agent: candidate.Agent, LastMinedOffset: loadResult.NextOffset, MinedAt: time.Now()}); err != nil {
 					return visitResult, err
@@ -310,19 +316,20 @@ func Mine(opts MineOptions) error {
 		}
 		visitResult.Attempted = true
 
-		promptParts := buildExtractionPromptParts(protectionOrDefault(opts.protection).candidate(candidate), startOffset, loadResult.NextOffset, loadResult.Messages, taxonomyMap)
+		promptParts := opts.extractionPrompt(candidate, startOffset, loadResult, taxonomyMap)
 		batchStats := opts.newMemoryExtractionStats(candidate, startOffset, loadResult.NextOffset, len(existing), loadResult, promptParts)
 		batchStart := time.Now()
 		extractionResult, err := opts.runExtractionRequest(ctx, engine, memStore, candidate.Agent, promptParts.Prompt, &batchStats)
 		if !env.DryRun {
 
-			for _, p := range extractionResult.AffectedPaths {
-				if srcErr := memStore.AddFragmentSource(ctx, candidate.Agent, p, candidate.Session.ID, startOffset, loadResult.NextOffset); srcErr != nil {
-					fmt.Fprintf(os.Stderr, "warning: record fragment source %s: %v\n", p, srcErr)
-				}
-			}
+			opts.recordExtractionSources(ctx, memStore, candidate, startOffset, loadResult, extractionResult.AffectedPaths)
 		}
+		batchStats.Duration = time.Since(batchStart)
 		if err != nil {
+			if opts.ShowStats {
+				fmt.Printf("[%d/%d] #%d failed %s\n", position, total, candidate.Summary.Number, batchStats.oneLine())
+				summaryStats.add(batchStats)
+			}
 			fragmentCache.invalidate(candidate.Agent)
 			failedBatches++
 			batchErrors = append(batchErrors, err)
@@ -331,7 +338,6 @@ func Mine(opts MineOptions) error {
 			fmt.Fprintf(os.Stderr, "warning: session %s batch at offset %d incomplete; cursor retained; create=%d update=%d rejected=%s: %v\n", candidate.Session.ID, startOffset, extractionResult.Created, extractionResult.Updated, extractionResult.rejectionSummary(), err)
 			return visitResult, nil
 		}
-		batchStats.Duration = time.Since(batchStart)
 
 		created, updated, skipped, affectedPaths := extractionResult.Created, extractionResult.Updated, extractionResult.Skipped, extractionResult.AffectedPaths
 
@@ -370,7 +376,9 @@ func Mine(opts MineOptions) error {
 		fmt.Println("No sessions eligible for memory mining.")
 	}
 
-	if env.DryRun {
+	if opts.hasMessageBounds() {
+		fmt.Println("Message-bounded mode: skipping image mining phase; image watermark unchanged.")
+	} else if env.DryRun {
 		fmt.Println("Dry run mode: skipping image mining phase.")
 	} else {
 		imageMined, err := env.mineGeneratedImages(ctx, memStore)

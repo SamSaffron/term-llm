@@ -993,6 +993,8 @@ Mine sessions into memory fragments
 | `--limit` | int | Maximum number of extraction attempts (0 = all) |
 | `--max-messages` | int | Maximum newly mined messages per session (0 = all) |
 | `--max-output-tokens` | int | Maximum output tokens for one extraction request |
+| `--message-before` | string | Stop before this RFC3339 timestamp (exclusive; retain boundary and later sequences) |
+| `--message-since` | string | Only mine messages at or after this RFC3339 timestamp (inclusive; never clips evidence) |
 | `--model` | string | Override model used for memory extraction |
 | `--promote-every` | duration | Minimum interval between auto-promote runs |
 | `--promote` | string | Promotion mode: auto\|always\|never |
