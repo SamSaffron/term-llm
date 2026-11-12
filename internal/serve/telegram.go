@@ -1300,8 +1300,8 @@ func (m *telegramSessionMgr) reconcileTelegramTranscript(ctx context.Context, se
 	// Carryover can contain an old system message, but those messages are
 	// excluded from this session's durable snapshot. Check only the slice that
 	// will actually be persisted before deciding whether to prepend it.
-	if m.settings.SystemPrompt != "" && includeSystemPrompt && !containsSystemMsg(currentHistory) {
-		replacementHistory = append(replacementHistory, core.SystemText(m.settings.SystemPrompt))
+	if prompt := m.sessionSystemPrompt(sess); prompt != "" && includeSystemPrompt && !containsSystemMsg(currentHistory) {
+		replacementHistory = append(replacementHistory, core.SystemText(prompt))
 	}
 	replacementHistory = append(replacementHistory, currentHistory...)
 	snapshot := make([]session.Message, 0, len(replacementHistory))

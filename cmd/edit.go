@@ -99,6 +99,7 @@ func init() {
 			Auto:          &editAuto,
 			Skills:        &editSkills,
 		})
+	editCmd.Flags().Lookup("skills").Usage = "Skill instructions: comma-separated names to preload, or 'none' (no skill discovery or declared capabilities)"
 
 	if err := editCmd.MarkFlagRequired("file"); err != nil {
 		panic(fmt.Sprintf("failed to mark file flag required: %v", err))
@@ -156,6 +157,8 @@ func runEdit(cmd *cobra.Command, args []string) error {
 	if editSystemMessage != "" {
 		cfg.Edit.Instructions = editSystemMessage
 	}
+	// Named --skills selections preload skill instructions into this prompt.
+	cfg.Edit.Instructions = appruntime.PreloadSkillInstructions(&cfg.Skills, editSkills, cfg.Edit.Instructions, cmd.ErrOrStderr())
 
 	initThemeFromConfig(cfg)
 

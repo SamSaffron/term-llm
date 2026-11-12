@@ -92,11 +92,12 @@ func newServeAgentRuntime(ctx context.Context, request serveRuntimeRequest, opts
 		approvalMode = *request.approvalMode
 	}
 	runner := &cmdRunner{baseCfg: opts.cfg, defaults: serveRuntimeRunnerDefaults(opts, request, approvalMode)}
+	runtimePlatform := runnerFirstNonEmpty(request.Platform, runpkg.PlatformWeb)
 	env, err := runner.prepare(ctx, runpkg.Request{
 		// Live session switching rejects child sessions in resolveLiveSwitchTarget;
 		// this factory therefore only prepares top-level runtimes. Subagents use
 		// the child runner path, which supplies Depth and RemainingDepth.
-		SessionID: request.SessionID, Cwd: request.RuntimeDir, Platform: runpkg.PlatformWeb,
+		SessionID: request.SessionID, Cwd: request.RuntimeDir, Platform: runtimePlatform,
 		AgentName: runtimeAgent, Provider: strings.TrimSpace(request.Provider), Model: strings.TrimSpace(request.Model), DeferSession: true,
 	}, nil)
 	if err != nil {
@@ -104,7 +105,6 @@ func newServeAgentRuntime(ctx context.Context, request serveRuntimeRequest, opts
 	}
 	runtime := env.runtime
 	runtime.toolMap = opts.toolMap
-	runtime.platform = "web"
 	runtime.sideProviderFactory = func(providerKey, model string) (core.Provider, error) {
 		if err := runtime.modelPolicy.CheckWithConfig(opts.cfg, runtime.agentName, providerKey, model); err != nil {
 			return nil, err

@@ -35,9 +35,10 @@ func (m *telegramSessionMgr) persistTurnStart(ctx context.Context, sess *telegra
 	if resume != nil || m.store == nil || sess.meta == nil {
 		return false, includeSystemPromptOnReconcile
 	}
-	if m.settings.SystemPrompt != "" && !sess.systemPromptPersisted {
+	systemPrompt := m.sessionSystemPrompt(sess)
+	if systemPrompt != "" && !sess.systemPromptPersisted {
 		includeSystemPromptOnReconcile = true
-		system := &session.Message{SessionID: sess.meta.ID, Role: core.RoleSystem, Parts: []core.Part{{Type: core.PartText, Text: m.settings.SystemPrompt}}, TextContent: m.settings.SystemPrompt, CreatedAt: time.Now(), Sequence: -1}
+		system := &session.Message{SessionID: sess.meta.ID, Role: core.RoleSystem, Parts: []core.Part{{Type: core.PartText, Text: systemPrompt}}, TextContent: systemPrompt, CreatedAt: time.Now(), Sequence: -1}
 		if m.runStoreOp(ctx, sess.meta.ID, "AddMessage(system)", func(storeCtx context.Context) error {
 			return m.store.AddMessage(storeCtx, sess.meta.ID, system)
 		}) {
@@ -95,8 +96,8 @@ func (m *telegramSessionMgr) prepareRequestHistory(sess *telegramSession, user c
 		history = sess.activeHistory
 	}
 	messages := make([]core.Message, 0, len(history)+3)
-	if m.settings.SystemPrompt != "" && !containsSystemMsg(history) {
-		messages = append(messages, core.SystemText(m.settings.SystemPrompt))
+	if prompt := m.sessionSystemPrompt(sess); prompt != "" && !containsSystemMsg(history) {
+		messages = append(messages, core.SystemText(prompt))
 	}
 	if sess.carryoverContext != "" {
 		label := sess.carryoverContextLabel

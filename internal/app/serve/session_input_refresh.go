@@ -180,10 +180,10 @@ type serveRuntimeRequest struct {
 	// swapCandidate marks the runtime a model swap is installing. Such a
 	// runtime deliberately runs a provider the session row does not name yet,
 	// so it must not be "corrected" back before its first turn persists.
-	swapCandidate                                 bool
-	SessionID, Provider, Model, Agent, RuntimeDir string
-	RefreshInputs                                 bool
-	Inputs                                        *SessionInputSelection
+	swapCandidate                                           bool
+	SessionID, Provider, Model, Agent, RuntimeDir, Platform string
+	RefreshInputs                                           bool
+	Inputs                                                  *SessionInputSelection
 }
 
 // A deliberate fresh-history replacement stages a new selection but keeps the

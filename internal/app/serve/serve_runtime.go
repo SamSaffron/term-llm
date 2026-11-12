@@ -36,7 +36,7 @@ type serveRuntime struct {
 	admittedActivity     atomic.Int32     // synchronous owners, including setup and between-turn gaps
 	retiredInputs        atomic.Bool      // obsolete after committed input replacement
 	settings             *SessionSettings // immutable construction settings, for idle refresh replacement only
-	agentSkills          string
+	serveRuntimeSkills                    // effective skill selection and runtime-owned directory setup
 	inputs               atomic.Pointer[SessionInputSelection]
 	mu                   sync.Mutex
 	goalMu               sync.Mutex

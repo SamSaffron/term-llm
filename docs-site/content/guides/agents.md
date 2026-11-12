@@ -23,6 +23,12 @@ term-llm chat @codebase
 term-llm ask --agent web-researcher "Find info about Go 1.24"
 ```
 
+## Agent skill defaults
+
+An agent's `skills` field uses the same selection syntax as [`--skills`](/guides/skills/#the---skills-flag): `skills: "git,docker"` preloads those skills' full instructions, while `skills: "git,+"` also keeps discovery enabled. An explicit CLI `--skills` selection takes precedence over the agent's default.
+
+**Compatibility note:** named agent lists now preload full skill bodies and admit their declared capabilities under the existing permissions, rather than merely prioritizing catalog metadata. This also applies when the agent runs as a child or job. Agents using `skills: "all"` retain discovery and on-demand activation; the global `skills.always_enabled` setting remains metadata-only.
+
 ## Built-in agents
 
 List them anytime with:

@@ -208,6 +208,7 @@ func runExec(cmd *cobra.Command, args []string) error {
 		SessionStore:       runtimeSessionStore,
 		MemoryPaths:        runtimeMemoryPaths,
 	})
+	// execSkills also reaches the runner so skill tools match these instructions.
 	execEnv, err := runner.Prepare(ctx, runpkg.Request{
 		Platform:                runpkg.PlatformExec,
 		DeferSession:            true,
@@ -217,6 +218,7 @@ func runExec(cmd *cobra.Command, args []string) error {
 		WriteDirs:               append([]string(nil), execWriteDirs...),
 		ShellAllow:              append([]string(nil), execShellAllow...),
 		MCP:                     execMCP,
+		Skills:                  execSkills,
 		MaxTurns:                execMaxTurns,
 		Search:                  execBoolPtr(execSearch),
 		NoSearch:                execNoSearch,
@@ -233,6 +235,13 @@ func runExec(cmd *cobra.Command, args []string) error {
 	}
 	defer execEnv.Close()
 	statsModel = execEnv.Request().Model
+	preloaded, preloadErr := execEnv.PreloadedSkillInstructions()
+	if preloadErr != nil {
+		fmt.Fprintf(cmd.ErrOrStderr(), "warning: skills preloading failed: %v\n", preloadErr)
+	}
+	if preloaded != "" {
+		instructions += "\n\n" + preloaded
+	}
 
 	for {
 		systemPrompt := prompt.SuggestSystemPrompt(shell, instructions, numSuggestions, execSearch)

@@ -5,17 +5,14 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"log"
 	"net/http"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
 
 	appruntime "github.com/samsaffron/term-llm/internal/app/runtime"
 	codemodetool "github.com/samsaffron/term-llm/internal/codemode/tool"
-	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/samsaffron/term-llm/internal/llm/core"
 	"github.com/samsaffron/term-llm/internal/restart"
 	runpkg "github.com/samsaffron/term-llm/internal/run"
@@ -242,106 +239,6 @@ func (s *serveServer) sessionForProjectDiscovery(ctx context.Context, sess *sess
 		resolved.WorktreeDir = ""
 	}
 	return &resolved, nil
-}
-
-func (s *serveServer) skillsForServeSession(sess *session.Session) *skills.Setup {
-	var skillsConfig *config.SkillsConfig
-	if s.skillsConfig != nil {
-		skillsConfig = s.skillsConfig
-	} else if s.cfgRef != nil {
-		skillsConfig = &s.cfgRef.Skills
-	}
-	if skillsConfig != nil && sess != nil {
-		dir := strings.TrimSpace(sess.WorktreeDir)
-		if dir == "" {
-			dir = strings.TrimSpace(sess.CWD)
-		}
-		if dir == "" {
-			// An empty directory resolves relative to the process working directory,
-			// which is not a stable identity to share across sessions.
-			return SetupSkillsInDir(skillsConfig, "", "", io.Discard, dir)
-		}
-		cacheKey := filepath.Clean(dir)
-		now := time.Now()
-		s.skillsCacheMu.Lock()
-		cached, found := s.skillsByDir[cacheKey]
-		if found && now.Sub(cached.discovered) >= serveSkillsCacheTTL {
-			delete(s.skillsByDir, cacheKey)
-			found = false
-		}
-		s.skillsCacheMu.Unlock()
-		if found && cached.setup != nil {
-			return cached.setup
-		}
-
-		// Discovery can touch multiple filesystem roots; do not serialize cold
-		// scans for unrelated sessions under the cache mutex.
-		setup := SetupSkillsInDir(skillsConfig, "", "", io.Discard, dir)
-		if setup == nil {
-			return nil
-		}
-		s.skillsCacheMu.Lock()
-		defer s.skillsCacheMu.Unlock()
-		if cached, found = s.skillsByDir[cacheKey]; found && time.Since(cached.discovered) < serveSkillsCacheTTL && cached.setup != nil {
-			return cached.setup
-		}
-		if s.skillsByDir == nil {
-			s.skillsByDir = make(map[string]serveSkillsCacheEntry)
-		}
-		if len(s.skillsByDir) >= 32 {
-			var oldestKey string
-			var oldestTime time.Time
-			for existing, entry := range s.skillsByDir {
-				if oldestKey == "" || entry.discovered.Before(oldestTime) {
-					oldestKey = existing
-					oldestTime = entry.discovered
-				}
-			}
-			delete(s.skillsByDir, oldestKey)
-		}
-		s.skillsByDir[cacheKey] = serveSkillsCacheEntry{setup: setup, discovered: time.Now()}
-		return setup
-	}
-	return s.skillsSetup
-}
-
-func (s *serveServer) configureRuntimeSkillsForDir(rt *serveRuntime, dir string) {
-	if s == nil || rt == nil || strings.TrimSpace(dir) == "" {
-		return
-	}
-	setup := s.skillsForServeSession(&session.Session{CWD: dir})
-	if rt.engine != nil && rt.toolMgr != nil {
-		RegisterSkillToolWithEngine(rt.engine, rt.toolMgr, setup)
-	}
-	rt.mu.Lock()
-	configureRuntimeSkillsMetadataLocked(rt, setup)
-	rt.mu.Unlock()
-}
-
-// configureRuntimeSkillsForDirLocked updates a runtime already pinned by
-// lockIdleMetadataMutation, which holds rt.mu until its release function runs.
-func (s *serveServer) configureRuntimeSkillsForDirLocked(rt *serveRuntime, dir string) {
-	if s == nil || rt == nil || strings.TrimSpace(dir) == "" {
-		return
-	}
-	setup := s.skillsForServeSession(&session.Session{CWD: dir})
-	if rt.engine != nil && rt.toolMgr != nil {
-		RegisterSkillToolWithEngine(rt.engine, rt.toolMgr, setup)
-	}
-	configureRuntimeSkillsMetadataLocked(rt, setup)
-}
-
-func configureRuntimeSkillsMetadataLocked(rt *serveRuntime, setup *skills.Setup) {
-	if selected := rt.inputs.Load(); selected != nil {
-		rt.systemPrompt = selected.Prompt
-		return
-	}
-	basePrompt := rt.baseSystemPrompt
-	if basePrompt == "" {
-		basePrompt = rt.systemPrompt
-		rt.baseSystemPrompt = basePrompt
-	}
-	rt.systemPrompt = InjectSkillsMetadata(basePrompt, setup)
 }
 
 type serveSkillInvokeRequest struct {

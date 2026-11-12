@@ -14,12 +14,12 @@ Skills are portable instruction bundles that provide specialized knowledge for s
 ### Using Skills
 
 ```bash
-term-llm ask --skills git,+ "how to squash commits" # prioritize git metadata
-term-llm chat --skills git,docker,+                # prioritize multiple skills
-term-llm edit --skills refactoring,+ -f main.go "refactor this"
+term-llm ask --skills git "how to squash commits"    # preload the git skill
+term-llm chat --skills git,docker                    # preload several skills
+term-llm ask --skills git,+ "how to squash commits"  # preload git, keep discovery
 ```
 
-The `,+` suffix keeps model-driven discovery and activation enabled while prioritizing the named skills in prompt metadata. It does not load their full instructions; the model loads those by calling `activate_skill`.
+Naming skills without `+` injects their full instructions into the starting prompt and disables model-driven discovery and activation for that run. The `,+` suffix keeps discovery and activation enabled for other skills while still preloading the named ones. `--skills all` is not a preload of every skill: it enables discovery and on-demand `activate_skill` calls instead.
 
 ### Managing Skills
 
@@ -222,7 +222,7 @@ skills:
   include_project_skills: true    # Discover from .skills/ in project tree
   allow_project_script_tools: false # Project skill-declared scripts are disabled by default
   include_ecosystem_paths: true   # Discover from ~/.claude/skills/, ~/.codex/skills/, etc.
-  always_enabled: []              # Always include these skills in metadata
+  always_enabled: []              # Pin skill metadata in the catalog
   never_auto: []                  # Require explicit --skills or activate_skill call
 ```
 
@@ -235,7 +235,7 @@ skills:
 | `include_project_skills` | `true` | Scan `.skills/` directories from CWD up to the repo root. |
 | `allow_project_script_tools` | `false` | Allow project skill-declared script tools to execute without approval. Always allowed in yolo mode. |
 | `include_ecosystem_paths` | `true` | Also scan `.claude/skills/`, `.codex/skills/`, `.gemini/skills/`, `.cursor/skills/` at both project and user scope. |
-| `always_enabled` | `[]` | Skills that are always included in metadata, even if they would exceed the budget. |
+| `always_enabled` | `[]` | Pin these skills in catalog metadata, even when metadata budgets or visibility limits would otherwise omit them; this does not preload their bodies. |
 | `never_auto` | `[]` | Skills excluded from auto-discovery metadata. They can still be activated with explicit `activate_skill` calls when model invocation is enabled. |
 
 ### The `--skills` flag
@@ -244,26 +244,27 @@ The `--skills` flag overrides config for a single invocation:
 
 | Value | Effect |
 |-------|--------|
-| `--skills git` | Enable skills system, but disable all model-driven discovery and activation, including `git` |
-| `--skills git,docker` | Same: model-driven discovery and activation are disabled for all skills |
-| `--skills git,+` | Prioritize `git` in metadata and enable model-driven discovery and activation for eligible skills |
-| `--skills all` | Enable all skills with auto-invoke |
+| `--skills git` | Preload `git`'s full instructions into the starting prompt; model-driven discovery and activation are disabled |
+| `--skills git,docker` | Preload each named skill; model-driven discovery and activation stay disabled |
+| `--skills git,+` | Preload `git` and keep model-driven discovery and activation for eligible skills |
+| `--skills all` | Enable discovery and on-demand activation of eligible skills; `always_enabled` still pins catalog metadata but no configured skill bodies are injected |
 | `--skills none` | Disable skills entirely for this command |
 
-Bare-name lists set `always_enabled`, but that list does not bypass disabled model invocation. User-invocable skills remain available through slash commands. With `,+`, named skills are prioritized only if they are eligible for model discovery (not in `never_auto` and not marked `disable-model-invocation`).
+A named list preloads only the explicitly named skills for that invocation and replaces the catalog-priority list for that run. The global `always_enabled` setting remains metadata-only; its configured pins are not retained by a named-list override. Bare names disable model-driven discovery and activation, while user-invocable skills remain available through slash commands. With `,+`, discovery remains available for eligible skills (not those in `never_auto` or marked `disable-model-invocation`). `--skills all` preserves the configured catalog pins but injects no configured skill bodies; `--skills none` disables skills.
 
 ### How auto-loading works
 
 When `skills.enabled` is `true`, this happens at startup:
 
 1. The registry scans all search paths (project-local, user, ecosystem) and discovers available skills
-2. Skills in `never_auto` are excluded from the metadata list
-3. The remaining skills are truncated to fit `max_visible_skills` and `metadata_budget_tokens` (skills in `always_enabled` are never truncated)
-4. An `<available_skills>` XML block is injected into the system prompt with skill names and descriptions
-5. The `activate_skill` tool is registered. When the model calls it, the full skill body is loaded and returned
-6. If there are more skills than shown, the `search_skills` tool is also registered and a hint is added to the system prompt telling the model to use it
+2. Skills explicitly named with `--skills` are preloaded: their full bodies are injected into the starting prompt. `always_enabled` only pins catalog metadata and does not preload bodies
+3. Skills in `never_auto` are excluded from the metadata list
+4. The remaining skills are truncated to fit `max_visible_skills` and `metadata_budget_tokens`; preloaded skills are not affected by these limits
+5. When model invocation is enabled, an `<available_skills>` XML block is injected into the system prompt with skill names and descriptions
+6. The `activate_skill` tool is registered. When the model calls it, the full skill body is loaded and returned
+7. If there are more skills than shown, the `search_skills` tool is also registered and a hint is added to the system prompt telling the model to use it
 
-When `auto_invoke` is `false`, model-facing skill metadata and model activation are disabled, but user-invocable skills remain available through slash completion and `/skills run`.
+When `auto_invoke` is `false`, model-facing skill metadata and model activation are disabled. Explicitly named preloads still inject their bodies; `always_enabled` only pins catalog metadata. User-invocable skills remain available through slash completion and `/skills run`.
 
 ### Skill Tools
 

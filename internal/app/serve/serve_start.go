@@ -184,11 +184,8 @@ func runServeWith(parentCtx context.Context, deps serveDeps, opts *Options, args
 		return err
 	}
 
-	// Setup skills once for this serve process. The <available_skills> XML is
-	// injected here into settings.SystemPrompt so that both the web serveRuntime
-	// and the Telegram serveSettings pick it up correctly. Per-session engine
-	// registration (activate_skill tool) still happens inside the factory via
-	// newServeEngineWithTools.
+	// Shared discovery is catalog-only. Each runner retains its agent selection
+	// and owns preload admission/rendering for its engine and workspace.
 	agentSkills := ""
 	if agent != nil {
 		agentSkills = agent.Skills
@@ -271,17 +268,6 @@ func runServeWith(parentCtx context.Context, deps serveDeps, opts *Options, args
 	if hasJobs && strings.TrimSpace(opts.Agent) != "" {
 		fmt.Fprintln(deps.Stderr, "warning: --agent is ignored for --platform jobs; set llm runner_config.agent_name per job definition")
 	}
-
-	// Build the serve.Settings used by non-web platforms. Resolved settings feed
-	// the platform while raw flags remain the defaults for its generic runner.
-	serveSettings := composeServePlatformSettings(servePlatformCompositionOptions{
-		cfg: cfg, flags: *opts, resolved: settings, debugRaw: deps.DebugRaw,
-		forceExternalSearch: forceExternalSearch, agentName: agentName,
-		platformMessages: agentPlatformMsgs, store: store, agentOwner: agentOwner,
-		approval: resolvedApproval, approvalErrWriter: approvalErrWriter,
-		sessionStore: deps.SessionStore, memoryPaths: deps.MemoryPaths,
-		newRunner: deps.RunnerFactory, newRuntime: factory,
-	})
 
 	// Instantiate non-web platforms.
 	platforms, err := composeServePlatforms(platformNames, cfg, deps.PlatformFactory)
@@ -497,7 +483,16 @@ func runServeWith(parentCtx context.Context, deps serveDeps, opts *Options, args
 		if err != nil {
 			return err
 		}
-		settings := serveSettings
+		settings := composeServePlatformSettings(servePlatformCompositionOptions{
+			cfg: cfg, flags: *opts, resolved: settings, debugRaw: deps.DebugRaw,
+			forceExternalSearch: forceExternalSearch, agentName: agentName,
+			platformMessages: agentPlatformMsgs, store: store, agentOwner: agentOwner,
+			approval: resolvedApproval, approvalErrWriter: approvalErrWriter,
+			sessionStore: deps.SessionStore, memoryPaths: deps.MemoryPaths,
+			newRunner: deps.RunnerFactory, newRuntime: func(ctx context.Context) (*serveRuntime, error) {
+				return runtimeFactory(ctx, serveRuntimeRequest{Platform: p.Name()})
+			},
+		})
 		settings.Ready = composeServePlatformReady(startingDone, deps.PlatformReady)
 		wg.Add(1)
 		go func(p platform.Platform) {

@@ -677,6 +677,7 @@ func SetupSkillsInDir(cfg *config.SkillsConfig, skillsFlag string, agentSkills s
 		PromptMetadataSuppressed:       promptMetadataSuppressed,
 		PromptMetadataSuppressionKnown: true,
 		ProjectDir:                     projectDir,
+		PreloadNames:                   appruntime.ApplySkillsFlag(&config.SkillsConfig{}, effectiveFlag).AlwaysEnabled,
 	})
 	if err != nil {
 		fmt.Fprintf(errWriter, "warning: skills initialization failed: %v\n", err)
@@ -722,17 +723,8 @@ func RegisterSkillToolWithEngine(engine *engine.Engine, toolMgr *tools.ToolManag
 	// runtime paths, where the filter has a defined lifetime and is restored.
 	if toolMgr != nil {
 		skillTool.SetOnToolsActivated(func(defs []skills.SkillToolDef, skillDir string) {
-			if err := toolMgr.Registry.RegisterSkillTools(defs, skillDir); err != nil {
+			if err := tools.RegisterSkillScriptTools(engine, toolMgr, defs, skillDir); err != nil {
 				runtimeoutput.Printf("warning: skill tools registration failed: %v\n", err)
-				return
-			}
-			// Register the newly added tools with the engine so the LLM can call them.
-			// AddDynamicTool queues the spec for injection into the active agentic loop
-			// so the LLM sees the tools immediately on the very next turn.
-			for _, def := range defs {
-				if tool, ok := toolMgr.Registry.Get(def.Name); ok {
-					engine.AddDynamicTool(tool)
-				}
 			}
 		})
 	}
@@ -746,32 +738,27 @@ func RegisterSkillToolWithEngine(engine *engine.Engine, toolMgr *tools.ToolManag
 	// overflow, while still letting the model search the catalog on demand.
 	searchTool := tools.NewSearchSkillsTool(skillsSetup.Registry)
 	engine.Tools().Register(searchTool)
+	if err := tools.PreloadSkillCapabilities(engine, toolMgr, skillsSetup); err != nil {
+		runtimeoutput.Printf("warning: skills preloading failed: %v\n", err)
+	}
 }
 
-// InjectSkillsMetadata appends <available_skills> metadata to instructions when available.
+// InjectSkillsMetadata appends explicit skill instructions and discovery metadata when available.
 func InjectSkillsMetadata(instructions string, skillsSetup *skills.Setup) string {
 	if skillsSetup == nil {
 		return instructions
 	}
-	if strings.Contains(instructions, "<available_skills>") {
-		return instructions
-	}
-	if suppressed, known := skillsSetup.PromptMetadataSuppressed(); suppressed || (!known && skills.CheckAgentsMdForSkills()) {
-		return instructions
-	}
-	if err := skillsSetup.EnsurePromptMetadata(); err != nil {
-		runtimeoutput.Printf("warning: skills metadata generation failed: %v\n", err)
-		return instructions
-	}
-	if !skillsSetup.HasSkillsXML() {
+	instructions = skillsSetup.RefreshPreloadedInstructions(instructions)
+	addition := skillsSetup.PromptAdditions(instructions)
+	if addition == "" {
 		return instructions
 	}
 
 	head, insights := splitTrailingInsightsBlock(instructions)
 	if strings.TrimSpace(head) != "" {
-		head += "\n\n" + skillsSetup.XML
+		head += "\n\n" + addition
 	} else {
-		head = skillsSetup.XML
+		head = addition
 	}
 	if insights != "" {
 		return head + "\n\n" + insights

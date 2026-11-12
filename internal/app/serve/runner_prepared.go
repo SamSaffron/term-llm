@@ -45,6 +45,11 @@ func (r *cmdRunner) CheckAgentModel(ctx context.Context, req runpkg.Request) err
 // Request returns the prepared provider request by value.
 func (p *cmdRunEnvironment) Request() core.Request { return p.llmReq }
 
+// PreloadedSkillInstructions returns the prepared run's explicitly selected bodies, without its discovery catalog.
+func (p *cmdRunEnvironment) PreloadedSkillInstructions() (string, error) {
+	return p.runtime.skillsSetup.PreloadedInstructions()
+}
+
 // Engine returns the prepared engine without transferring its ownership.
 func (p *cmdRunEnvironment) Engine() *engine.Engine { return p.engine }
 

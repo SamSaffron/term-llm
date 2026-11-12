@@ -20,6 +20,7 @@ type Setup struct {
 	HasOverflow bool     // True when more skills exist than are shown (populated lazily)
 
 	alwaysEnabled        []string
+	preloadNames         []string
 	metadataBudgetTokens int
 	maxVisibleSkills     int
 	preloadedSkills      []*Skill // Primed startup catalog reused for first prompt metadata build
@@ -29,10 +30,22 @@ type Setup struct {
 
 	metadataOnce sync.Once
 	metadataErr  error
+
+	preloadOnce        sync.Once
+	preloadMu          sync.RWMutex
+	preloadActivations []*Activation
+	preloadRenderings  map[string]struct{}
+	preloadXML         string
+	preloadBaseErr     error
+	preloadErr         error
 }
 
 // SetupOptions controls optional startup behavior for NewSetupWithOptions.
 type SetupOptions struct {
+	// PreloadNames explicitly selects per-run instruction bodies and capabilities.
+	// Unlike config AlwaysEnabled (catalog pinning), this bypasses discovery filters.
+	PreloadNames []string
+
 	// PromptMetadataSuppressed means the caller already has <available_skills>
 	// metadata from another source (for example AGENTS.md). In that case setup only
 	// verifies that at least one skill exists so activate_skill/search_skills can be
@@ -78,6 +91,7 @@ func NewSetupWithOptions(cfg *config.SkillsConfig, opts SetupOptions) (*Setup, e
 	setup := &Setup{
 		Registry:                       registry,
 		alwaysEnabled:                  append([]string(nil), cfg.AlwaysEnabled...),
+		preloadNames:                   append([]string(nil), opts.PreloadNames...),
 		metadataBudgetTokens:           cfg.MetadataBudgetTokens,
 		maxVisibleSkills:               cfg.MaxVisibleSkills,
 		promptMetadataSuppressed:       opts.PromptMetadataSuppressed,

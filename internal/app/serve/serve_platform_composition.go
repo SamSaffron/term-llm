@@ -88,7 +88,7 @@ func composeServePlatformSessionFactory(factory func(context.Context) (*serveRun
 		return &platform.SessionRuntime{
 			Engine: runtime.engine, Provider: runtime.provider,
 			ProviderName: runtime.provider.Name(), ModelName: runtime.defaultModel,
-			Cleanup: runtime.Close,
+			SystemPrompt: &runtime.systemPrompt, Cleanup: runtime.Close,
 		}, nil
 	}
 }

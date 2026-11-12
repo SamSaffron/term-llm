@@ -266,8 +266,6 @@ func Run(ctx context.Context, args []string, opts Options, deps Dependencies) er
 		outputTool = appruntime.RegisterAgentOutputTool(agent.OutputTool, toolMgr, engine)
 	}
 
-	appserve.RegisterSkillToolWithEngine(engine, toolMgr, skillsSetup)
-
 	// Initialize MCP servers if any (after session settings are applied)
 	var mcpManager *mcp.Manager
 	if preparedMCP.Active != "" {
@@ -290,6 +288,10 @@ func Run(ctx context.Context, args []string, opts Options, deps Dependencies) er
 		}
 	}
 
+	appserve.RegisterSkillToolWithEngine(engine, toolMgr, skillsSetup)
+	if selectedInputs == nil {
+		settings.SystemPrompt = appserve.InjectSkillsMetadata(settings.SystemPrompt, skillsSetup)
+	}
 	preparedConversation, err := prepareAskConversation(ctx, cfg, provider, agent, store, sess, sessionID, resuming, settings, inputTicket, baseInputPrompt, preparedInput.Message, resolvedApproval.Mode)
 	if err != nil {
 		return err

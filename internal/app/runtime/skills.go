@@ -13,8 +13,8 @@ import (
 //   - "" (empty): use config defaults
 //   - "none": disable skills entirely
 //   - "all" or "*": enable all skills with auto mode
-//   - "skill1,skill2": explicit skills only (disables auto-discovery for injection)
-//   - "skill1,+": explicit skills + auto-discovery
+//   - "skill1,skill2": preload named instructions (disables model discovery)
+//   - "skill1,+": preload named instructions + model discovery
 func ApplySkillsFlag(cfg *config.SkillsConfig, flag string) *config.SkillsConfig {
 	if flag == "" {
 		return cfg

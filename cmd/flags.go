@@ -346,9 +346,9 @@ func AddAutoFlag(cmd *cobra.Command, dest *bool) {
 }
 
 // AddSkillsFlag adds the --skills flag with completion
-// Values: "all" or "*" to enable all, "none" to disable, skill names (comma-separated), or skill,+ for explicit + auto
+// Values: "all" or "*" for discovery, "none" to disable, names to preload, or name,+ to preload with discovery.
 func AddSkillsFlag(cmd *cobra.Command, dest *string) {
-	cmd.Flags().StringVar(dest, "skills", "", "Skills mode: 'all'/'*' to enable all, 'none' to disable, names (comma-separated), or 'name,+' for explicit + auto")
+	cmd.Flags().StringVar(dest, "skills", "", "Skills: names to preload, 'name,+' to preload with discovery, 'all'/'*' for discovery, or 'none' to disable")
 	if err := cmd.RegisterFlagCompletionFunc("skills", SkillsFlagCompletion); err != nil {
 		panic("failed to register skills completion: " + err.Error())
 	}

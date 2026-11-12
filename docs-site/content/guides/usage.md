@@ -90,13 +90,15 @@ See [Agents](/guides/agents/) for more details on creating and managing agents.
 Skills inject task-specific context into any command without changing the model or provider:
 
 ```bash
-term-llm ask --skills git "how to squash commits"   # use git skill
-term-llm chat --skills git,docker                   # combine multiple skills
-term-llm edit --skills refactoring -f main.go "refactor this"
-term-llm exec --skills devops "set up a cron job"
+term-llm ask --skills git "how to squash commits"   # preload the git skill
+term-llm chat --skills git,docker                   # preload two skills
+term-llm edit --skills refactoring -f main.go "refactor this" # instruction-only preload
+term-llm exec --skills devops "set up a cron job"   # reuse the prepared runner
 ```
 
-Use `--skills all` to load every available skill, or `--skills none` to suppress defaults.
+Explicitly named skills are preloaded in full for `ask`, `chat`, `serve`, and runner-backed commands; these surfaces register declared skill tools and code modules subject to existing permissions. In `edit`, a named selection supplies instructions only—there is no skill discovery or capability runtime, so do not use it for discovery or refactoring workflows that depend on discovered capabilities. In `exec`, named preloads reuse the prepared runner; discovery is useful only when optional tools are available, and by default `exec` forces `suggest_commands`.
+
+Append `,+` to a named selection to keep discovery on, for example `term-llm chat --skills git,docker,+`. `--skills all` enables discovery while preserving `always_enabled` catalog metadata, but injects no configured skill bodies. `--skills none` disables skills.
 
 Manage skills with the `skills` subcommand:
 
@@ -234,7 +236,7 @@ Changing sessions, compacting, handing over, or switching models pauses the curr
 | `--file` | `-f` | File(s) to include as context (supports globs, line ranges, 'clipboard') |
 | `--auto-pick` | `-a` | Auto-execute the best suggestion without prompting (exec only) |
 | `--agent` | `-a` | Use a specific agent (ask/chat only; see also `@agent` syntax) |
-| `--skills` | | Skills mode: all, none, or comma-separated names |
+| `--skills` | | Skills: names to preload (append `+` to keep discovery), `all`, or `none` |
 | `--max N` | `-n N` | Limit to N options in the selection UI |
 | `--search` | `-s` | Enable web search and page reading (see [Search](/guides/search/) for providers) |
 | `--native-search` | | Use provider's native search (override config) |

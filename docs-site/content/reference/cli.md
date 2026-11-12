@@ -129,7 +129,7 @@ Ask a question and stream the answer
 | `--resume, -r` | string | Continue a session (empty for most recent, or session ID) |
 | `--search, -s` | bool | Enable web search for current information |
 | `--shell-allow` | stringArray | Shell command patterns to allow (repeatable, glob syntax) |
-| `--skills` | string | Skills mode: 'all'/'*' to enable all, 'none' to disable, names (comma-separated), or 'name,+' for explicit + auto |
+| `--skills` | string | Skills: names to preload, 'name,+' to preload with discovery, 'all'/'*' for discovery, or 'none' to disable |
 | `--stop-when` | string | Progressive stop condition: done or timeout (defaults to done in progressive mode) |
 | `--system-message, -m` | string | System message/instructions for the LLM (overrides config) |
 | `--text, -t` | bool | Output plain text instead of rendered markdown |
@@ -244,7 +244,7 @@ Start an interactive chat session
 | `--resume, -r` | string | Resume session (empty for most recent, or session ID) |
 | `--search, -s` | bool | Enable web search for current information |
 | `--shell-allow` | stringArray | Shell command patterns to allow (repeatable, glob syntax) |
-| `--skills` | string | Skills mode: 'all'/'*' to enable all, 'none' to disable, names (comma-separated), or 'name,+' for explicit + auto |
+| `--skills` | string | Skills: names to preload, 'name,+' to preload with discovery, 'all'/'*' for discovery, or 'none' to disable |
 | `--system-message, -m` | string | System message/instructions for the LLM (overrides config) |
 | `--text` | bool | Disable markdown rendering (plain text output) |
 | `--tools` | string | Enable local tools (comma-separated, or 'all'): spawn_script (includes wait_script,cancel_script),read_file,write_file,edit_file,shell,grep,glob,view_image,show_media,image_generate,ask_user,spawn_agent (includes wait_agent,continue_agent,cancel_agent,list_agents),queue_agent,wait_for_jobs |
@@ -509,7 +509,7 @@ Edit files using AI assistance
 | `--provider, -p` | string | Override provider, optionally with model (e.g., openai:gpt-4o) |
 | `--read-dir` | stringArray | Directories for read_file/grep/glob/view_image tools (repeatable) |
 | `--shell-allow` | stringArray | Shell command patterns to allow (repeatable, glob syntax) |
-| `--skills` | string | Skills mode: 'all'/'*' to enable all, 'none' to disable, names (comma-separated), or 'name,+' for explicit + auto |
+| `--skills` | string | Skill instructions: comma-separated names to preload, or 'none' (no skill discovery or declared capabilities) |
 | `--system-message, -m` | string | System message/instructions for the LLM (overrides config) |
 | `--tools` | string | Enable local tools (comma-separated, or 'all'): spawn_script (includes wait_script,cancel_script),read_file,write_file,edit_file,shell,grep,glob,view_image,show_media,image_generate,ask_user,spawn_agent (includes wait_agent,continue_agent,cancel_agent,list_agents),queue_agent,wait_for_jobs |
 | `--write-dir` | stringArray | Directories for write_file/edit_file tools (repeatable) |
@@ -552,7 +552,7 @@ Translate natural language to CLI commands
 | `--read-dir` | stringArray | Directories for read_file/grep/glob/view_image tools (repeatable) |
 | `--search, -s` | bool | Enable web search for current information |
 | `--shell-allow` | stringArray | Shell command patterns to allow (repeatable, glob syntax) |
-| `--skills` | string | Skills mode: 'all'/'*' to enable all, 'none' to disable, names (comma-separated), or 'name,+' for explicit + auto |
+| `--skills` | string | Skills: names to preload, 'name,+' to preload with discovery, 'all'/'*' for discovery, or 'none' to disable |
 | `--system-message, -m` | string | System message/instructions for the LLM (overrides config) |
 | `--tools` | string | Enable local tools (comma-separated, or 'all'): spawn_script (includes wait_script,cancel_script),read_file,write_file,edit_file,shell,grep,glob,view_image,show_media,image_generate,ask_user,spawn_agent (includes wait_agent,continue_agent,cancel_agent,list_agents),queue_agent,wait_for_jobs |
 | `--write-dir` | stringArray | Directories for write_file/edit_file tools (repeatable) |

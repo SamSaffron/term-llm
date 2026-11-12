@@ -19,6 +19,7 @@ type SessionRuntime struct {
 	ProviderName string
 	ModelName    string
 	Cleanup      func()
+	SystemPrompt *string // Rendered per-session prompt; nil falls back to platform defaults.
 }
 
 // Settings holds per-platform runtime settings derived from CLI flags and config.

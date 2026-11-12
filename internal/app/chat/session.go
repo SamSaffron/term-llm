@@ -357,13 +357,12 @@ func (r *chatInvocation) buildChatSessionRuntime(ctx context.Context, launch cha
 	}
 	skillsSetup := appserve.SetupSkillsInDir(&cfg.Skills, r.opts.Skills, agentSkills, warnings, runtimeDir)
 
+	appserve.RegisterSkillToolWithEngine(engine, toolMgr, skillsSetup)
 	// Store resolved instructions in config for chat TUI
 	cfg.Chat.Instructions = appserve.InjectSkillsMetadata(settings.SystemPrompt, skillsSetup)
 	if selectedInputs != nil {
 		cfg.Chat.Instructions = selectedInputs.Prompt
 	}
-
-	appserve.RegisterSkillToolWithEngine(engine, toolMgr, skillsSetup)
 
 	// Direct isolated skills use the generic child runner even when the current
 	// agent does not expose the model-facing spawn_agent tool.

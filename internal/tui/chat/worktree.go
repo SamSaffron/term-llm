@@ -374,11 +374,12 @@ func (m *Model) applyRuntimeDirectory(dir, worktreeDir string) error {
 		}
 	}
 
+	oldContext := m.runtimeSystemContext
+	candidate.applySkills(m.engine, m.toolMgr)
 	prompt := candidate.SystemPrompt
 	if m.systemPromptOverridden {
 		prompt = m.systemPromptOverride
 	}
-	oldContext := m.runtimeSystemContext
 	var oldMessage *session.Message
 	m.messagesMu.Lock()
 	for i := range m.messages {
@@ -400,9 +401,6 @@ func (m *Model) applyRuntimeDirectory(dir, worktreeDir string) error {
 		}
 	}
 	m.messagesMu.Unlock()
-	if candidate.ApplySkills != nil {
-		candidate.ApplySkills(m.engine, m.toolMgr)
-	}
 	m.SetSkillsSetup(candidate.Skills)
 	m.runtimeSystemContext = candidate
 	if m.config != nil && !m.systemPromptOverridden {

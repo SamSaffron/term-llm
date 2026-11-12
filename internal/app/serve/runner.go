@@ -266,6 +266,7 @@ func (r *cmdRunner) prepare(ctx context.Context, req runpkg.Request, sink runpkg
 	if r.defaults.RestoreAgentSkills != nil {
 		agentSkills = *r.defaults.RestoreAgentSkills
 	}
+	agentSkills = runnerFirstNonEmpty(req.Skills, agentSkills)
 	var preparedMCP *mcpstart.PreparedSelection
 	if req.Engine == nil {
 		preparedMCP, err = mcpstart.PrepareSelection(agents.PolicyIdentity(agent), settings.MCP, req.MCPExplicit, r.errWriter(), r.defaults.LoadMCPConfig)
@@ -279,8 +280,8 @@ func (r *cmdRunner) prepare(ctx context.Context, req runpkg.Request, sink runpkg
 		settings.SystemPrompt = strings.TrimSpace(settings.SystemPrompt) + "\n\n" + suffix
 	}
 	baseSystemPrompt := appendChildSkillSystemContext(settings.SystemPrompt, req.ChildSkill)
-	skillsSetup := SetupSkillsInDir(&cfg.Skills, req.Skills, agentSkills, r.errWriter(), settings.BaseDir)
-	settings.SystemPrompt = InjectSkillsMetadata(baseSystemPrompt, skillsSetup)
+	skillsSetup := SetupSkillsInDir(&cfg.Skills, "", agentSkills, r.errWriter(), settings.BaseDir)
+	settings.SystemPrompt = baseSystemPrompt
 	if req.Engine != nil {
 		settings.SystemPrompt = req.SystemMessage
 	} else if r.defaults.Inputs != nil {
@@ -374,6 +375,9 @@ func (r *cmdRunner) prepare(ctx context.Context, req runpkg.Request, sink runpkg
 			appruntime.RegisterAgentOutputTool(agent.OutputTool, toolMgr, engine)
 		}
 	}
+	if req.Engine == nil && r.defaults.Inputs == nil {
+		settings.SystemPrompt = InjectSkillsMetadata(baseSystemPrompt, skillsSetup)
+	}
 	if err := applyChildSkillRuntime(engine, toolMgr, req.ChildSkill); err != nil {
 		return nil, err
 	}
@@ -406,7 +410,7 @@ func (r *cmdRunner) prepare(ctx context.Context, req runpkg.Request, sink runpkg
 		spawnRunner:         spawnRunner,
 		agentOwner:          r.defaults.AgentOwner,
 		settings:            &settings,
-		agentSkills:         agentSkills,
+		serveRuntimeSkills:  serveRuntimeSkills{agentSkills: agentSkills, skillsDir: settings.BaseDir, skillsSetup: skillsSetup},
 		provider:            provider,
 		providerKey:         cfg.DefaultProvider,
 		modelPolicy:         policy,

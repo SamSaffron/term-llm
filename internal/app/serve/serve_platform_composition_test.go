@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -96,7 +97,7 @@ func TestComposeServePlatformSessionFactoryMapsAndPreservesCleanup(t *testing.T)
 	provider := &compositionCleanupProvider{name: "composition-provider"}
 	eng := engine.NewEngine(provider, nil)
 	factory := composeServePlatformSessionFactory(func(context.Context) (*serveRuntime, error) {
-		return &serveRuntime{engine: eng, provider: provider, defaultModel: "composition-model"}, nil
+		return &serveRuntime{engine: eng, provider: provider, defaultModel: "composition-model", systemPrompt: "<preloaded_skills>rendered</preloaded_skills>"}, nil
 	})
 	sessionRuntime, err := factory(context.Background())
 	if err != nil {
@@ -104,6 +105,9 @@ func TestComposeServePlatformSessionFactoryMapsAndPreservesCleanup(t *testing.T)
 	}
 	if sessionRuntime.Engine != eng || sessionRuntime.Provider != provider || sessionRuntime.ProviderName != provider.Name() || sessionRuntime.ModelName != "composition-model" {
 		t.Fatalf("session runtime = %#v", sessionRuntime)
+	}
+	if sessionRuntime.SystemPrompt == nil || *sessionRuntime.SystemPrompt != "<preloaded_skills>rendered</preloaded_skills>" {
+		t.Fatalf("platform did not receive runtime-rendered skills: %#v", sessionRuntime.SystemPrompt)
 	}
 	sessionRuntime.Cleanup()
 	if got := provider.cleanups.Load(); got != 1 {
@@ -239,6 +243,11 @@ serve:
 	if err := os.WriteFile(filepath.Join(configDir, "config.yaml"), []byte(configBody), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	agentsDir := filepath.Join(configDir, "agents")
+	writeAgentCatalogTestAgent(t, agentsDir, "platform-agent", "name: platform-agent\nskills: none\n")
+	if err := os.WriteFile(filepath.Join(agentsDir, "platform-agent", "system.md"), []byte("You are on {{platform}}."), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
@@ -249,6 +258,7 @@ serve:
 	opts.AuthMode, opts.BasePath = "bearer", "/ui"
 	opts.DisableWidgets, opts.DisableExtensions, opts.NoProjects = true, true, true
 	opts.Tools = "queue_agent,wait_for_jobs,live_settings"
+	opts.Agent = "platform-agent"
 	opts.Search, opts.NoSearch, opts.Debug = false, true, true
 
 	results := make(chan compositionRootResult, 1)
@@ -290,6 +300,10 @@ serve:
 	if result.runtime == nil || result.runtime.Engine == nil || result.runtime.Provider == nil || result.runtime.ProviderName == "" || result.runtime.ModelName != "debug" {
 		cancel()
 		t.Fatalf("production session runtime = %#v", result.runtime)
+	}
+	if result.runtime.SystemPrompt == nil || !strings.Contains(*result.runtime.SystemPrompt, "You are on telegram.") || strings.Contains(*result.runtime.SystemPrompt, "You are on web.") {
+		cancel()
+		t.Fatalf("Telegram runtime used wrong platform prompt: %v", result.runtime.SystemPrompt)
 	}
 	if result.settings.Store == nil || runnerOptions.Store != result.settings.Store || runnerOptions.AgentOwner == nil {
 		cancel()
