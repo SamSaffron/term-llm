@@ -203,17 +203,6 @@
   margin: 17px 0 4px;
 }
 
-.activity-help {
-  margin-top: 12px;
-  color: #6b7280;
-  font-size: 12px;
-}
-
-.activity-help summary {
-  cursor: pointer;
-  padding-block: 8px;
-}
-
 .activity-back {
   display: inline-flex;
   gap: 6px;

@@ -1,3 +1,4 @@
+import type { CoreCodeModeCellSummary } from '../api/generated/types';
 import type { ActivitySnapshot, StatsChild } from '../api/endpoints';
 
 export const activityChild = (patch: Partial<StatsChild> = {}): StatsChild => ({
@@ -28,5 +29,18 @@ export const activitySnapshot = (patch: Partial<ActivitySnapshot> = {}): Activit
   jobs_availability: 'available',
   agents_partial: false,
   jobs_partial: false,
+  ...patch,
+});
+
+export const activityCell = (
+  patch: Partial<CoreCodeModeCellSummary> = {},
+): CoreCodeModeCellSummary => ({
+  cell_id: 'cm_script',
+  status: 'running',
+  live: true,
+  started_at: 1000,
+  elapsed_ms: 2000,
+  has_more_output: false,
+  unsettled_calls: 0,
   ...patch,
 });

@@ -601,6 +601,10 @@ term-llm ask --provider cursor-bin "Explain this code"
 
 Authenticate with the companion CLI first. See the [provider inventory](/reference/providers-and-models/#credentials) for credential sources and the [CLI wire debugging guide](/guides/debugging/#audit-cli-provider-wire-traffic) for diagnosing subprocess behavior. A locally installed CLI still sends inference to its service; it is not local model hosting.
 
+`agy-bin` sends prompts over streaming JSON stdin, not command-line arguments, so large text is not subject to the operating system's per-argument limit. It also preserves oversized prompts in its private session home and restores their exact text through the compatibility proxy before model generation, avoiding agy's own user-text truncation. These private prompt artifacts remain available for native resumes and expire with the session home. Model context limits still apply; a missing or corrupt required artifact causes an error rather than silently losing text.
+
+Each persisted session, including a subagent continued with `continue_agent`, resumes its own explicit agy conversation ID when the saved history and native conversation database are available. Temporary script-cell context does not invalidate that history. Missing/incompatible state or edited history starts a new native conversation with the saved transcript instead; `--debug` reports the continuation mode, reason, message counts, and prompt size without logging prompt content. Sessions saved before the stable-history boundary format upgrade require a one-time transcript fallback.
+
 ### Mistral Vibe CLI
 
 `vibe-bin` runs the Mistral Vibe CLI's ACP server (`vibe-acp`) so requests draw on the Vibe subscription the CLI is signed in with rather than a Mistral API key. Install Mistral Vibe and sign in once on the machine that runs term-llm:

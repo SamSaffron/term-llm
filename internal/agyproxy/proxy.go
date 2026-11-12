@@ -60,6 +60,7 @@ type Server struct {
 	upstreamCA    string
 	requireMCP    bool
 	artifactRoot  string
+	promptRoot    string
 	filtered      atomic.Int64
 	connections   map[net.Conn]struct{}
 	running       bool
@@ -161,6 +162,14 @@ func (s *Server) SetRequireMCP(required bool) {
 func (s *Server) SetArtifactRoot(root string) {
 	s.mu.Lock()
 	s.artifactRoot = strings.TrimSpace(root)
+	s.mu.Unlock()
+}
+
+// SetPromptRoot configures the private provider home containing prompts staged
+// with StagePrompt. It is independent of the tool artifact trust boundary.
+func (s *Server) SetPromptRoot(home string) {
+	s.mu.Lock()
+	s.promptRoot = strings.TrimSpace(home)
 	s.mu.Unlock()
 }
 
@@ -343,6 +352,7 @@ func (s *Server) forward(w http.ResponseWriter, req *http.Request) {
 	s.mu.Lock()
 	transport := s.transport
 	artifactRoot := s.artifactRoot
+	promptRoot := s.promptRoot
 	requireMCP := s.requireMCP
 	s.mu.Unlock()
 	if transport == nil {
@@ -365,7 +375,7 @@ func (s *Server) forward(w http.ResponseWriter, req *http.Request) {
 			http.Error(w, "agy tool-filter proxy rejected oversized request", http.StatusBadGateway)
 			return
 		}
-		filtered, verified, err := processGenerationRequest(body, artifactRoot, requireMCP, maxRequestBody)
+		filtered, verified, err := processGenerationRequestWithPrompts(body, artifactRoot, promptRoot, requireMCP, maxRequestBody)
 		if err != nil {
 			http.Error(w, "agy tool-filter proxy rejected request: "+err.Error(), http.StatusBadGateway)
 			return
@@ -503,6 +513,7 @@ func (s *Server) Stop(ctx context.Context) error {
 	s.upstreamProxy = ""
 	s.upstreamCA = ""
 	s.artifactRoot = ""
+	s.promptRoot = ""
 	s.connections = nil
 	s.mu.Unlock()
 	for _, conn := range connections {

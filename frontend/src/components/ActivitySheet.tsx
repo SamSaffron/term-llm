@@ -5,7 +5,6 @@ import { Icon } from './Icon';
 import { Overlay } from './Overlay';
 import { ActivityJobDetailView } from './ActivityJobDetailView';
 import './activity.css';
-import { ScriptCells } from './ScriptCells';
 
 function LifecycleIcon({ name }: { name: string }) {
   return (
@@ -102,7 +101,6 @@ export function ActivitySheet({ onClose }: { onClose: () => void }) {
             {uncertain ? '· May be incomplete or out of date · ' : '· '}This conversation and its
             children
           </p>
-          {Boolean(snapshot?.cells?.length) && <ScriptCells key={scope} sessionId={scope} />}
           <div class="activity-list">
             {(['agent', 'job'] as const).map((kind) => {
               const group = rows.filter((row) => row.kind === kind);
@@ -191,17 +189,6 @@ export function ActivitySheet({ onClose }: { onClose: () => void }) {
               This is a bounded snapshot; some related activity may not be included.
             </p>
           )}
-          <details class="activity-help">
-            <summary>Usage &amp; timing</summary>
-            {snapshot?.jobs_availability === 'restricted' && (
-              <p class="activity-notice">Job activity is restricted on this device.</p>
-            )}
-            <p class="activity-notice">
-              Tokens include input, output, cache reads and cache writes. Job token usage is
-              unavailable. Time is elapsed wall-clock; ~ marks historical estimates that may include
-              gaps after resume.
-            </p>
-          </details>
         </>
       )}
     </Overlay>

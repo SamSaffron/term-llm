@@ -1805,47 +1805,48 @@ test('multi-user attribution bylines, facepiles and persisted author filter', as
   await expect(page.getByRole('radio', { name: 'Started by me', exact: true })).toBeChecked();
 });
 
-test('idle script cells expose mobile-safe per-cell cancel, approval and Stop all', async ({
-  page,
-}) => {
+test('Activity shows agents and jobs without scripts or usage help', async ({ page }) => {
   await mockAPI(page);
-  const cells = [
-    {
-      cell_id: 'cm_first',
-      status: 'awaiting_approval',
-      live: true,
-      started_at: Date.now(),
-      elapsed_ms: 2500,
-      has_more_output: false,
-      unsettled_calls: 0,
-    },
-    {
-      cell_id: 'cm_second',
-      status: 'running',
-      live: true,
-      started_at: Date.now(),
-      elapsed_ms: 2500,
-      has_more_output: true,
-      unsettled_calls: 0,
-    },
-  ];
-  let approvals = [
-    {
-      approval_id: 'appr_cell',
-      cell_id: 'cm_first',
-      title: 'Read Access Request',
-      path: '/owned/test.txt',
-      options: [{ index: 0, label: 'Allow once', description: 'One read only' }],
-    },
-  ];
-  const cancellations: Array<string | undefined> = [];
+  let scriptRequests = 0;
+  await page.route('**/v1/sessions/s1/code-cells', (route) => {
+    scriptRequests++;
+    return route.fulfill({ json: { cells: [], pending_approvals: [] } });
+  });
   await page.route('**/v1/sessions/s1/activity', (route) =>
     route.fulfill({
       json: {
         session_id: 's1',
-        cells,
-        agents: [],
-        jobs: [],
+        cells: [
+          {
+            cell_id: 'cm_running',
+            status: 'running',
+            live: true,
+            started_at: Date.now(),
+            elapsed_ms: 2500,
+            has_more_output: false,
+            unsettled_calls: 0,
+          },
+          {
+            cell_id: 'cm_done',
+            status: 'completed',
+            live: false,
+            started_at: Date.now(),
+            elapsed_ms: 1000,
+            has_more_output: true,
+            unsettled_calls: 0,
+          },
+        ],
+        agents: [
+          {
+            session_id: 'child',
+            parent_session_id: 's1',
+            title: 'Fix navigation',
+            agent: 'developer',
+            state: 'active',
+            live: true,
+          },
+        ],
+        jobs: [{ job_id: 'job', run_id: 'run', title: 'Report', status: 'running' }],
         agents_availability: 'available',
         jobs_availability: 'available',
         agents_partial: false,
@@ -1853,42 +1854,20 @@ test('idle script cells expose mobile-safe per-cell cancel, approval and Stop al
       },
     }),
   );
-  await page.route('**/v1/sessions/s1/code-cells', (route) =>
-    route.fulfill({ json: { cells, pending_approvals: approvals } }),
-  );
-  await page.route('**/v1/sessions/s1/code-cells/cancel', async (route) => {
-    const body = route.request().postDataJSON() as { cell_id?: string };
-    cancellations.push(body.cell_id);
-    for (const cell of cells)
-      if (!body.cell_id || body.cell_id === cell.cell_id) {
-        cell.live = false;
-        cell.status = 'cancelled';
-      }
-    await route.fulfill({ json: { cells } });
-  });
-  await page.route('**/v1/sessions/s1/approval', async (route) => {
-    approvals = [];
-    cells[0].status = 'running';
-    await route.fulfill({ json: { status: 'accepted' } });
-  });
   await page.goto('./chat/s1');
   await expect(page.locator('#startupSplash')).toBeHidden();
-  await page.getByRole('button', { name: /^Activity: 2 active/ }).click();
-  const scripts = page.getByRole('region', { name: 'Scripts', exact: true });
-  await expect(scripts.getByText('Scripts (2/8)')).toBeVisible();
-  await expect(scripts.getByText(/Needs approval/)).toBeVisible();
-  await scripts.getByRole('button', { name: 'Allow once' }).click();
-  await expect(scripts.getByText(/Needs approval/)).toBeHidden();
-  const cancel = scripts.getByRole('button', { name: 'Cancel script cm_second' });
-  expect(
-    await cancel.evaluate((element) => element.getBoundingClientRect().height),
-  ).toBeGreaterThanOrEqual(44);
-  await cancel.click();
-  await expect(scripts.getByText('Scripts (1/8)')).toBeVisible();
-  await scripts.getByRole('button', { name: 'Stop all scripts' }).click();
-  await expect(scripts.getByText('Scripts (0/8)')).toBeVisible();
-  expect(cancellations).toEqual(['cm_second', undefined]);
-  expect(await scripts.evaluate((element) => element.scrollWidth <= element.clientWidth)).toBe(
-    true,
-  );
+  const trigger = page.getByRole('button', { name: 'Activity: 2 active', exact: true });
+  await trigger.click();
+  const dialog = page.getByRole('dialog', { name: 'Activity', exact: true });
+  await expect(dialog.getByRole('region', { name: 'Agents', exact: true })).toBeVisible();
+  await expect(dialog.getByRole('region', { name: 'Jobs', exact: true })).toBeVisible();
+  await expect(dialog.getByRole('region', { name: 'Scripts', exact: true })).toHaveCount(0);
+  await expect(dialog.getByText('cm_running')).toHaveCount(0);
+  await expect(dialog.getByText('cm_done')).toHaveCount(0);
+  await expect(dialog.getByText('Usage & timing')).toHaveCount(0);
+  await expect(dialog.getByText(/Tokens include/)).toHaveCount(0);
+  expect(scriptRequests).toBe(0);
+  await dialog.getByRole('button', { name: 'Close Activity', exact: true }).click();
+  await expect(dialog).toBeHidden();
+  await expect(trigger).toHaveAttribute('aria-expanded', 'false');
 });

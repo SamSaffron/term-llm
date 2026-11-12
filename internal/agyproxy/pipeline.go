@@ -33,6 +33,10 @@ func decodeGenerationRequest(body []byte) (map[string]any, error) {
 // path. A zero size limit is used by the standalone filtering wrapper, whose
 // callers historically supplied their own transport limits.
 func processGenerationRequest(body []byte, artifactRoot string, requireMCP bool, sizeLimit int) ([]byte, bool, error) {
+	return processGenerationRequestWithPrompts(body, artifactRoot, "", requireMCP, sizeLimit)
+}
+
+func processGenerationRequestWithPrompts(body []byte, artifactRoot, promptRoot string, requireMCP bool, sizeLimit int) ([]byte, bool, error) {
 	if sizeLimit > 0 && len(body) > sizeLimit {
 		return nil, false, errors.New("oversized generation request")
 	}
@@ -44,7 +48,11 @@ func processGenerationRequest(body []byte, artifactRoot string, requireMCP bool,
 	if !ok {
 		return nil, false, errors.New("generation request missing request object")
 	}
-	expanded := expandAgyArtifacts(request, strings.TrimSpace(artifactRoot))
+	promptsExpanded, err := expandStagedPrompts(request, strings.TrimSpace(promptRoot))
+	if err != nil {
+		return nil, false, err
+	}
+	expanded := expandAgyArtifacts(request, strings.TrimSpace(artifactRoot)) || promptsExpanded
 	// Check the expanded size BEFORE filtering; removed declarations must not
 	// hide an oversized expansion. Count the exact Marshal size without a
 	// second serialization or an intermediate expanded request buffer.

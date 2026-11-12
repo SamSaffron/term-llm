@@ -27,7 +27,12 @@ export class ChildSessionStore {
   readonly activitySessionId = signal('');
   readonly activity = signal<ActivitySnapshot | null>(null);
   readonly activityStale = signal(false);
-  readonly activityActive = computed(() => activeExecutionCount(this.activity.value) > 0);
+  // Scripts stay out of the Activity UI but still need timely background reconciliation.
+  readonly activityActive = computed(
+    () =>
+      activeExecutionCount(this.activity.value) > 0 ||
+      Boolean(this.activity.value?.cells?.some((cell) => cell.live)),
+  );
   private activityEtag = '';
   private activityRequest: AbortController | null = null;
   private activityGeneration = 0;

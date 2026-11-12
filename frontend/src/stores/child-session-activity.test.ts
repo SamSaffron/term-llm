@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { ActivitySnapshot } from '../api/endpoints';
 import type { AppStoreServices } from './app-store-services';
-import { activityChild, activitySnapshot } from '../test/activity-fixtures';
+import { activityCell, activityChild, activitySnapshot } from '../test/activity-fixtures';
 import { testSession } from './store-test-fixtures';
 import { ChildSessionStore } from './child-session-store';
 
@@ -23,6 +23,17 @@ function harness() {
 }
 
 describe('ChildSessionStore activity snapshot', () => {
+  it('keeps background reconciliation active for scripts hidden from the Activity dialog', () => {
+    const { store } = harness();
+    store.activity.value = activitySnapshot({ agents: [], cells: [activityCell()] });
+    expect(store.activityActive.value).toBe(true);
+    store.activity.value = activitySnapshot({
+      agents: [],
+      cells: [activityCell({ live: false, status: 'completed' })],
+    });
+    expect(store.activityActive.value).toBe(false);
+  });
+
   it('scopes each drill-down to its own subtree, hides leaf work, and restores parent scope on Back', async () => {
     const { store, endpoints } = harness();
     endpoints.sessionActivity.mockImplementation(async (id) =>

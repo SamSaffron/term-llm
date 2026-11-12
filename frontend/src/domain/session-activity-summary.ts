@@ -1,6 +1,6 @@
 import type { ActivitySnapshot } from '../api/endpoints';
 
-/** Count executions, not state labels: live registry membership is authoritative. */
+/** Count visible agent and job executions; live registry membership is authoritative. */
 export function activeExecutionCount(snapshot: ActivitySnapshot | null): number {
   const executions = new Set<string>();
   for (const child of snapshot?.agents || []) {
@@ -12,9 +12,6 @@ export function activeExecutionCount(snapshot: ActivitySnapshot | null): number 
       executions.add(
         job.session_id ? `session:${job.session_id}` : `job:${job.job_id}:${job.run_id}`,
       );
-  }
-  for (const cell of snapshot?.cells || []) {
-    if (cell.live) executions.add(`cell:${cell.cell_id}`);
   }
   return executions.size;
 }

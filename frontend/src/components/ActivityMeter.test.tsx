@@ -3,7 +3,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { StoreContext } from '../app/context';
 import { AppStore } from '../stores/app-store';
 import { testConfig } from '../stores/store-test-fixtures';
-import { activityChild, activitySnapshot } from '../test/activity-fixtures';
+import { activityCell, activityChild, activitySnapshot } from '../test/activity-fixtures';
 import { ActivityGlyph, ActivityMeter } from './ActivityMeter';
 import { ActivitySheet } from './ActivitySheet';
 
@@ -23,6 +23,40 @@ function mount(children: preact.ComponentChildren) {
 }
 
 describe('native ActivityMeter', () => {
+  it.each([true, false])('hides script-only activity when scripts are live=%s', (live) => {
+    setup();
+    store.childSessionStore.activity.value = activitySnapshot({
+      agents: [],
+      cells: [activityCell({ live, status: live ? 'running' : 'completed' })],
+    });
+    mount(<ActivityMeter />);
+    expect(screen.queryByRole('button', { name: /^Activity:/ })).toBeNull();
+  });
+
+  it('counts and shows only agents and jobs without fetching script controls', async () => {
+    setup();
+    const scripts = vi.spyOn(store.endpoints, 'scriptCells');
+    store.childSessionStore.activity.value = activitySnapshot({
+      cells: [
+        activityCell(),
+        activityCell({ cell_id: 'cm_done', live: false, status: 'completed' }),
+      ],
+      jobs: [{ job_id: 'job', run_id: 'run', title: 'Report', status: 'running' }],
+    });
+    mount(<ActivityMeter />);
+    fireEvent.click(screen.getByRole('button', { name: 'Activity: 2 active' }));
+    const dialog = await screen.findByRole('dialog', { name: 'Activity' });
+    expect(dialog).toHaveTextContent('2 active');
+    expect(within(dialog).getByRole('region', { name: 'Agents' })).toBeVisible();
+    expect(within(dialog).getByRole('region', { name: 'Jobs' })).toBeVisible();
+    expect(within(dialog).queryByRole('region', { name: 'Scripts' })).toBeNull();
+    expect(dialog).not.toHaveTextContent('cm_script');
+    expect(dialog).not.toHaveTextContent('cm_done');
+    expect(dialog).not.toHaveTextContent('Usage & timing');
+    expect(dialog).not.toHaveTextContent('Tokens include');
+    expect(scripts).not.toHaveBeenCalled();
+  });
+
   it('keeps bounded-history chats hidden without known activity and terminal history idle', async () => {
     setup();
     store.childSessionStore.activity.value = activitySnapshot({ agents: [], jobs_partial: true });
@@ -128,8 +162,7 @@ describe('native ActivitySheet', () => {
     expect(screen.getByText('actual-job-model · Job')).toBeInTheDocument();
     expect(screen.getByText(/Job activity is unavailable/)).toBeInTheDocument();
     expect(screen.getByText(/bounded snapshot/)).toBeInTheDocument();
-    expect(container.querySelector('details:not(.activity-help)')).toBeNull();
-    expect(container.querySelector('.activity-help')).not.toHaveAttribute('open');
+    expect(container.querySelector('details')).toBeNull();
     expect(screen.getByRole('button', { name: /Remote report/ })).toBeInTheDocument();
     expect(screen.queryByText(/Advanced/)).toBeNull();
   });

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { activityChild, activitySnapshot } from '../test/activity-fixtures';
+import { activityCell, activityChild, activitySnapshot } from '../test/activity-fixtures';
 import { activityRows, agentMetrics, statePresentation, taskLabel } from './session-activity';
 
 describe('native session activity presentation', () => {
@@ -89,7 +89,7 @@ describe('native session activity presentation', () => {
 });
 
 describe('authoritative execution counting', () => {
-  it('counts only live non-skill agents, deduplicates local job sessions, and ignores durable state handoffs', async () => {
+  it('counts only live agents and jobs, deduplicates local sessions, and ignores scripts and durable state handoffs', async () => {
     const { activeExecutionCount } = await import('./session-activity');
     const snapshot = activitySnapshot({
       agents: [
@@ -108,6 +108,7 @@ describe('authoritative execution counting', () => {
         { job_id: 'j', run_id: 'r2', title: 'Remote execution', status: 'queued' },
       ],
     });
+    snapshot.cells = [activityCell()];
     expect(activeExecutionCount(snapshot)).toBe(2);
     expect(activityRows(snapshot).find((row) => row.key === 'agent:child')?.active).toBe(true);
     expect(activityRows(snapshot).find((row) => row.key === 'agent:queued')?.active).toBe(false);

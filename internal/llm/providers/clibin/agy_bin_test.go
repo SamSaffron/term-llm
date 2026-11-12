@@ -66,9 +66,14 @@ func TestAgyBuildArgs(t *testing.T) {
 	p := NewAgyBinProvider("gemini-3.6-flash-high", nil)
 	args := p.buildArgs(core.Request{}, "")
 	joined := strings.Join(args, " ")
-	for _, want := range []string{"--dangerously-skip-permissions", "--disable-slash-commands", "--output-format stream-json", "--agent " + agyAgentName, "--model gemini-3.6-flash-high"} {
+	for _, want := range []string{"--dangerously-skip-permissions", "--disable-slash-commands", "--input-format stream-json", "--output-format stream-json", "--agent " + agyAgentName, "--model gemini-3.6-flash-high"} {
 		if !strings.Contains(joined, want) {
 			t.Fatalf("args %q missing %q", joined, want)
+		}
+	}
+	for _, arg := range args {
+		if arg == "--print" || strings.HasPrefix(arg, "--print=") {
+			t.Fatalf("args %q put prompt transport on argv", joined)
 		}
 	}
 	if strings.Contains(joined, "--print-timeout") {
@@ -153,27 +158,31 @@ func TestAgyProxyVerificationFailureResetsResumedState(t *testing.T) {
 	}
 }
 
-func TestAgyMessagesForResumedRequest(t *testing.T) {
+func TestAgyPlanResumedRequest(t *testing.T) {
 	p := NewAgyBinProvider("", nil)
 	p.conversationID = "conversation-1"
 	p.messagesSent = 2
 	messages := []core.Message{core.SystemText("system"), core.UserText("first"), core.AssistantText("answer"), core.UserText("second")}
 	p.transcriptHash, _ = agyTranscriptHash(messages[:p.messagesSent])
-	got, err := p.messagesForRequest(core.Request{Messages: messages})
+	plan, err := p.planTurn(core.Request{Messages: messages}, "")
 	if err != nil {
 		t.Fatal(err)
 	}
+	if plan.Mode != agyTurnNative || plan.ResumeID != "conversation-1" || plan.SentCount != len(messages) {
+		t.Fatalf("resume plan = %+v", plan)
+	}
+	got := plan.Messages
 	if len(got) != 1 || got[0].Role != core.RoleUser || got[0].Parts[0].Text != "second" {
 		t.Fatalf("resume messages = %#v, want only the new user message", got)
 	}
 
 	p.messagesSent = len(messages) + 1
-	got, err = p.messagesForRequest(core.Request{Messages: messages})
+	plan, err = p.planTurn(core.Request{Messages: messages}, "")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(got) != len(messages) || p.conversationID != "" || p.messagesSent != 0 || p.transcriptHash != "" {
-		t.Fatalf("truncated transcript did not reset resume state: messages=%d state=(%q,%d,%q)", len(got), p.conversationID, p.messagesSent, p.transcriptHash)
+	if plan.Mode != agyTurnFallback || len(plan.Messages) != len(messages) || p.conversationID != "" || p.messagesSent != 0 || p.transcriptHash != "" {
+		t.Fatalf("truncated transcript did not reset resume state: mode=%s messages=%d state=(%q,%d,%q)", plan.Mode, len(plan.Messages), p.conversationID, p.messagesSent, p.transcriptHash)
 	}
 
 	p.conversationID = "conversation-2"
@@ -181,12 +190,12 @@ func TestAgyMessagesForResumedRequest(t *testing.T) {
 	p.transcriptHash, _ = agyTranscriptHash(messages[:p.messagesSent])
 	diverged := append([]core.Message(nil), messages...)
 	diverged[1] = core.UserText("edited first message")
-	got, err = p.messagesForRequest(core.Request{Messages: diverged})
+	plan, err = p.planTurn(core.Request{Messages: diverged}, "")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(got) != len(diverged) || p.conversationID != "" {
-		t.Fatalf("diverged transcript did not reset continuation: messages=%d conversation=%q", len(got), p.conversationID)
+	if plan.Mode != agyTurnFallback || len(plan.Messages) != len(diverged) || p.conversationID != "" {
+		t.Fatalf("diverged transcript did not reset continuation: mode=%s messages=%d conversation=%q", plan.Mode, len(plan.Messages), p.conversationID)
 	}
 }
 

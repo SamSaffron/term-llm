@@ -261,7 +261,8 @@ type Request struct {
 	// the latest user turn when building a server-state continuation suffix.
 	IncludeDeveloperInContinuation bool
 	Messages                       []Message
-	ApprovalTranscriptPrefix       []Message // Optional policy-review-only evidence prepended to tool approval transcripts; never sent to providers.
+	ProviderConversation           *ProviderConversation `json:"-"` // Stable provider-facing history and request-only context for native continuation.
+	ApprovalTranscriptPrefix       []Message             // Optional policy-review-only evidence prepended to tool approval transcripts; never sent to providers.
 	Tools                          []ToolSpec
 	ToolChoice                     ToolChoice
 	LastTurnToolChoice             *ToolChoice // If set, force this tool choice on the last agentic turn

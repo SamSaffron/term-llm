@@ -90,6 +90,6 @@ it('shows per-session capacity, approval and terminal states with independent ca
     ),
   );
   expect(activeExecutionCount(activitySnapshot({ agents: [], cells: snapshot.cells || [] }))).toBe(
-    2,
+    0,
   );
 });

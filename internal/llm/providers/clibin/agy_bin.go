@@ -1,9 +1,7 @@
 package clibin
 
 import (
-	"bufio"
 	"context"
-	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -19,7 +17,6 @@ import (
 	"github.com/samsaffron/term-llm/internal/agyproxy"
 	"github.com/samsaffron/term-llm/internal/cliwire"
 	"github.com/samsaffron/term-llm/internal/mcphttp"
-	"github.com/samsaffron/term-llm/internal/procutil"
 	"github.com/samsaffron/term-llm/internal/runtimeoutput"
 )
 
@@ -45,6 +42,7 @@ type AgyBinProvider struct {
 	conversationID         string
 	messagesSent           int
 	transcriptHash         string
+	fallbackReason         string
 	stateMu                sync.Mutex
 	agyBinary              string
 	versionCheckedBinary   string
@@ -61,7 +59,10 @@ type AgyBinProvider struct {
 // agyBinStateFormat versions persisted resume state. Conversations recorded
 // before term-llm ran agy as the custom term-llm agent with eager bridge tools
 // (format 0) hold call_mcp_tool/view_file history and must not be resumed.
-const agyBinStateFormat = 1
+// Format 2 counts and hashes the stable ProviderConversation transcript rather
+// than the transiently augmented request; format 1 counts cannot be
+// reinterpreted because they included request-only turn context.
+const agyBinStateFormat = 2
 
 type agyBinProviderState struct {
 	Format         int    `json:"format,omitempty"`
@@ -190,6 +191,17 @@ func (p *AgyBinProvider) resetConversationLocked() {
 	p.conversationID = ""
 	p.messagesSent = 0
 	p.transcriptHash = ""
+	p.fallbackReason = ""
+}
+
+// dropResumeLocked clears native continuation but retains the bounded reason so
+// the next turn's diagnostic explains the transcript fallback even though the
+// original failure had no request context to log.
+func (p *AgyBinProvider) dropResumeLocked(reason string) {
+	p.conversationID = ""
+	p.messagesSent = 0
+	p.transcriptHash = ""
+	p.fallbackReason = reason
 }
 
 func (p *AgyBinProvider) ExportProviderState() ([]byte, bool) {
@@ -231,16 +243,30 @@ func (p *AgyBinProvider) ImportProviderState(data []byte) error {
 		return fmt.Errorf("decode agy-bin provider state: restore home: %w", err)
 	}
 	conversationDB := filepath.Join(home, ".gemini", "antigravity-cli", "conversations", state.ConversationID+".db")
-	if _, err := os.Stat(conversationDB); !existed || err != nil || state.Format != agyBinStateFormat {
+	reason := ""
+	switch {
+	case state.Format != agyBinStateFormat:
+		reason = agyStateReasonOldFormat
+	case !existed:
+		reason = agyStateReasonMissingHome
+	default:
+		if _, statErr := os.Stat(conversationDB); statErr != nil {
+			reason = agyStateReasonMissingDatabase
+		}
+	}
+	if reason != "" {
 		state.ConversationID = ""
 		state.MessagesSent = 0
 		state.TranscriptHash = ""
+		runtimeoutput.Debug("agy-bin session state did not restore native continuation",
+			"reason", reason, "state_format", state.Format, "current_format", agyBinStateFormat)
 	}
 
 	p.agyHome = home
 	p.conversationID = state.ConversationID
 	p.messagesSent = state.MessagesSent
 	p.transcriptHash = state.TranscriptHash
+	p.fallbackReason = reason
 	p.touchAgyHome()
 	p.gcAgyHomes()
 	return nil
@@ -279,11 +305,8 @@ func (p *AgyBinProvider) Stream(ctx context.Context, req core.Request) (core.Str
 				_ = os.RemoveAll(ephemeralHome)
 			}
 		}()
-		messages, err := p.messagesForRequest(req)
-		if err != nil {
-			return err
-		}
-		transcriptHash, err := agyTranscriptHash(req.Messages)
+		workspaceDir := agyWorkspaceDir(req.WorkingDir)
+		plan, err := p.planTurn(req, workspaceDir)
 		if err != nil {
 			return err
 		}
@@ -317,87 +340,23 @@ func (p *AgyBinProvider) Stream(ctx context.Context, req core.Request) (core.Str
 			return fmt.Errorf("start agy native-tool isolation: %w", err)
 		}
 		p.isolation.BeginTurn(exposeBridge)
-		workspaceDir := agyWorkspaceDir(req.WorkingDir)
-		prompt := buildAgyPrompt(messages, workspaceDir)
-		if strings.TrimSpace(prompt) == "" {
-			return errors.New("build agy-bin prompt: no user-visible content")
-		}
-		resumeID := ""
-		if !req.Ephemeral {
-			resumeID = p.conversationID
-		}
-		state, err := p.runCommand(ctx, p.buildArgs(req, resumeID), prompt, workspaceDir, resumeID, req.Debug || req.DebugRaw, send, exposeBridge)
+		state, err := p.runCommand(ctx, p.buildArgs(req, plan.ResumeID), plan.Prompt, workspaceDir, plan.ResumeID, req.Debug || req.DebugRaw, send, exposeBridge)
 		if err != nil {
-			if resumeID != "" && errors.Is(err, errAgyConversationMismatch) {
-				p.resetConversationLocked()
-			}
+			p.invalidateResumeAfterFailedTurn(req, plan, err)
 			return err
 		}
-		if err := p.requireFilteredGeneration(resumeID); err != nil {
+		if err := p.requireFilteredGeneration(plan.ResumeID); err != nil {
 			return err
 		}
 		if !req.Ephemeral && state.conversationID != "" {
 			p.conversationID = state.conversationID
-			p.messagesSent = len(req.Messages)
-			p.transcriptHash = transcriptHash
+			p.messagesSent = plan.SentCount
+			p.transcriptHash = plan.TranscriptHash
+			p.fallbackReason = ""
 			p.touchAgyHome()
 		}
 		return send.Send(core.Event{Type: core.EventDone})
 	}), nil
-}
-
-func (p *AgyBinProvider) requireFilteredGeneration(resumeID string) error {
-	if p.isolation.FilteredGenerations() > 0 {
-		return nil
-	}
-	if strings.TrimSpace(resumeID) != "" {
-		// agy may already have committed the submitted delta to its durable DB.
-		// Reset the local boundary so a retry starts a fresh conversation with the
-		// complete term-llm transcript instead of duplicating that delta on resume.
-		p.resetConversationLocked()
-	}
-	return errors.New("agy did not route generation through the term-llm tool-filter proxy; refusing unverified turn")
-}
-
-func (p *AgyBinProvider) messagesForRequest(req core.Request) ([]core.Message, error) {
-	if req.Ephemeral || p.conversationID == "" {
-		return req.Messages, nil
-	}
-	if p.messagesSent > len(req.Messages) {
-		runtimeoutput.Warn("agy-bin resume message boundary exceeded request transcript; resetting conversation state",
-			"messages_sent", p.messagesSent, "request_messages", len(req.Messages))
-		p.resetConversationLocked()
-		return req.Messages, nil
-	}
-	prefixHash, err := agyTranscriptHash(req.Messages[:p.messagesSent])
-	if err != nil {
-		return nil, err
-	}
-	if p.transcriptHash == "" || prefixHash != p.transcriptHash {
-		runtimeoutput.Warn("agy-bin request transcript diverged from resumed conversation; resetting conversation state",
-			"messages_sent", p.messagesSent)
-		p.resetConversationLocked()
-		return req.Messages, nil
-	}
-	if p.messagesSent == len(req.Messages) {
-		return nil, errors.New("agy-bin resumed session has no new messages to send")
-	}
-	if p.messagesSent > 0 {
-		messages := grokResumeMessages(req.Messages[p.messagesSent:])
-		if len(messages) == 0 {
-			return nil, errors.New("agy-bin resumed session has no new messages to send")
-		}
-		return messages, nil
-	}
-	return req.Messages, nil
-}
-
-func agyTranscriptHash(messages []core.Message) (string, error) {
-	data, err := json.Marshal(core.WithoutMessageAuthors(messages))
-	if err != nil {
-		return "", fmt.Errorf("hash agy-bin transcript: %w", err)
-	}
-	return fmt.Sprintf("%x", sha256.Sum256(data)), nil
 }
 
 func agyWorkspaceDir(configured string) string {
@@ -430,10 +389,13 @@ func buildAgyPrompt(messages []core.Message, workspaceDir string) string {
 }
 
 func (p *AgyBinProvider) buildArgs(req core.Request, resumeID string) []string {
+	// Prompt content never travels on argv: the complete assembled prompt is one
+	// NDJSON user event on stdin (see agy_bin_transport.go), which avoids the
+	// per-argument E2BIG limit for large transcripts.
 	// No --print-timeout: the whole inline tool loop runs inside one agy
 	// process, so a wall-clock cap would abort long agentic turns. Context
 	// cancellation stops agy instead.
-	args := []string{"--dangerously-skip-permissions", "--disable-slash-commands", "--output-format", "stream-json", "--agent", agyAgentName}
+	args := []string{"--dangerously-skip-permissions", "--disable-slash-commands", "--input-format", "stream-json", "--output-format", "stream-json", "--agent", agyAgentName}
 	model := strings.TrimSpace(core.ChooseModel(req.Model, p.model))
 	if model != "" {
 		args = append(args, "--model", model)
@@ -442,128 +404,6 @@ func (p *AgyBinProvider) buildArgs(req core.Request, resumeID string) []string {
 		args = append(args, "--conversation", resumeID)
 	}
 	return args
-}
-
-func (p *AgyBinProvider) runCommand(ctx context.Context, args []string, prompt, workspaceDir, expectedConversationID string, debug bool, send eventSender, exposeBridge bool) (*agyStreamState, error) {
-	// Keep agy out of the real workspace so it cannot auto-load workspace-local
-	// agents, rules, or MCP configuration. The term-llm agent has no default
-	// prompt sections, so the model never sees this neutral directory; the
-	// prompt names workspaceDir instead.
-	neutralCWD := filepath.Join(p.agyHome, "cwd")
-	fullArgs := append(append(append([]string{}, args...), "--print"), prompt)
-	if debug {
-		runtimeoutput.Printf("[agy-bin] starting agy with model %q\n", core.ChooseModel("", p.model))
-	}
-	runCtx, cancel := context.WithCancel(ctx)
-	defer cancel()
-	cmd, err := newCLICommand(runCtx, p.agyBinary, fullArgs, neutralCWD)
-	if err != nil {
-		return nil, fmt.Errorf("prepare agy command: %w", err)
-	}
-	cmd.Env = forceCLIWireEnvironment(p.buildCommandEnv(), p.isolation.Environment())
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		return nil, fmt.Errorf("get agy stdout: %w", err)
-	}
-	stderr, err := cmd.StderrPipe()
-	if err != nil {
-		return nil, fmt.Errorf("get agy stderr: %w", err)
-	}
-	owned, err := procutil.PrepareCommand(cmd)
-	if err != nil {
-		return nil, fmt.Errorf("prepare agy process: %w", err)
-	}
-	if err := owned.Start(); err != nil {
-		owned.Close()
-		return nil, fmt.Errorf("start agy command: %w", err)
-	}
-	defer owned.Close()
-	lineCh := make(chan string, 64)
-	scanErrCh := make(chan error, 1)
-	stderrDone := make(chan struct{})
-	var stderrMu, stdoutMu sync.Mutex
-	var stderrTail, stdoutTail []string
-	redact := p.diagnosticRedactor(prompt)
-	go func() {
-		defer close(lineCh)
-		sc := bufio.NewScanner(stdout)
-		sc.Buffer(make([]byte, 64<<10), 16<<20)
-		for sc.Scan() {
-			line := sc.Text()
-			recordCLITailLine(&stdoutMu, &stdoutTail, redact(line), agyStdoutTailMaxLines)
-			select {
-			case lineCh <- line:
-			case <-runCtx.Done():
-				scanErrCh <- runCtx.Err()
-				return
-			}
-		}
-		scanErr := sc.Err()
-		if scanErr != nil {
-			cancel()
-		}
-		scanErrCh <- scanErr
-	}()
-	go func() {
-		defer close(stderrDone)
-		_ = drainCLIDiagnosticLines(stderr, func(rawLine string) {
-			line := redact(rawLine)
-			if debug {
-				runtimeoutput.Printf("[agy stderr] %s\n", line)
-			}
-			recordCLITailLine(&stderrMu, &stderrTail, line, agyStderrTailMaxLines)
-		})
-	}()
-	bridge := &cliTurnBridge{toolReqCh: make(chan cliToolRequest, 64), done: make(chan struct{})}
-	if exposeBridge {
-		p.cliToolBridgeState.activate(bridge, send.ch)
-		defer p.cliToolBridgeState.deactivate(bridge)
-	}
-	defer close(bridge.done)
-	expectedConversationID = strings.TrimSpace(expectedConversationID)
-	state := &agyStreamState{
-		conversationID:         expectedConversationID,
-		expectedConversationID: expectedConversationID,
-	}
-	dispatchErr := p.dispatchEvents(runCtx, lineCh, bridge.toolReqCh, send, state)
-	if dispatchErr != nil {
-		cancel()
-	}
-	scanErr := <-scanErrCh
-	if scanErr != nil {
-		cancel()
-	}
-	<-stderrDone
-	waitErr := owned.Wait()
-	if scanErr != nil && !errors.Is(scanErr, context.Canceled) {
-		return nil, fmt.Errorf("read agy output: %w", scanErr)
-	}
-	if dispatchErr != nil {
-		return nil, dispatchErr
-	}
-	if scanErr != nil {
-		return nil, fmt.Errorf("read agy output: %w", scanErr)
-	}
-	if waitErr != nil {
-		return nil, p.commandError(waitErr, snapshotCLITail(&stderrMu, stderrTail), snapshotCLITail(&stdoutMu, stdoutTail))
-	}
-	if state.providerErr != nil {
-		return nil, state.providerErr
-	}
-	if !state.sawResult {
-		return nil, errors.New("agy command ended without a result event")
-	}
-	if !state.sawText && state.fallbackText != "" {
-		if err := send.Send(core.Event{Type: core.EventTextDelta, Text: state.fallbackText}); err != nil {
-			return nil, err
-		}
-	}
-	if state.usage != nil {
-		if err := send.Send(core.Event{Type: core.EventUsage, Use: state.usage}); err != nil {
-			return nil, err
-		}
-	}
-	return state, nil
 }
 
 func (p *AgyBinProvider) dispatchEvents(ctx context.Context, lineCh <-chan string, toolReqCh <-chan cliToolRequest, send eventSender, state *agyStreamState) error {
@@ -628,6 +468,10 @@ func handleAgyStreamLine(line string, send eventSender, state *agyStreamState) e
 				detail = "agy returned status " + message.Result.Status
 			}
 			state.providerErr = errors.New(detail)
+			// A terminal error may leave the CLI waiting for more work. End the
+			// turn now; the dispatcher cancels and reaps the owned process tree
+			// instead of blocking on stdout EOF.
+			return state.providerErr
 		}
 	}
 	return nil

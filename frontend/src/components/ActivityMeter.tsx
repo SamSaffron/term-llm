@@ -75,8 +75,7 @@ export function ActivityMeter() {
   const scope = children.activitySessionId.value;
   const hasRows =
     children.activity.value?.agents?.some((child) => child.kind !== 'skill_run') ||
-    !!children.activity.value?.jobs?.length ||
-    !!children.activity.value?.cells?.length;
+    !!children.activity.value?.jobs?.length;
   const count = activeExecutionCount(children.activity.value);
   const uncertain = activityUncertain(children.activity.value, children.activityStale.value);
   const unknown = activityStatusUnknown(children.activity.value, children.activityStale.value);

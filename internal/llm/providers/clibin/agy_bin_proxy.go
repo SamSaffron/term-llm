@@ -40,14 +40,18 @@ func (i *agyProxyToolIsolation) SetUpstream(proxyURL, caPath string) {
 }
 
 func (i *agyProxyToolIsolation) EnsureStarted(agyHome string) error {
+	// Spill-file rehydration stays rooted at agy's private brain directory;
+	// staged oversized prompts use the provider home's separate private store.
 	artifactRoot := filepath.Join(agyHome, ".gemini", "antigravity-cli", "brain")
 	if i.server != nil {
 		i.server.SetArtifactRoot(artifactRoot)
+		i.server.SetPromptRoot(agyHome)
 		return nil
 	}
 	server := &agyproxy.Server{}
 	server.SetUpstream(i.upstreamProxy, i.upstreamCA)
 	server.SetArtifactRoot(artifactRoot)
+	server.SetPromptRoot(agyHome)
 	proxyURL, caPath, err := server.Start()
 	if err != nil {
 		return err
