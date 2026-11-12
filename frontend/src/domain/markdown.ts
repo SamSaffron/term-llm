@@ -2,7 +2,7 @@ import DOMPurify from 'dompurify';
 import { marked, Renderer } from 'marked';
 import { findStableMarkdownBoundary, isInCodeBlockFast } from './markdown-streaming';
 
-import { escapeHTML, externalLink, markdownHooks } from './markdown-hooks';
+import { escapeHTML, externalLink, markdownHooks, scrollableTable } from './markdown-hooks';
 import { audioMediaHTML, trustedPublishedMediaURL } from './audio-media';
 
 marked.use({ gfm: true, breaks: true, ...markdownHooks });
@@ -19,6 +19,65 @@ function protectMath(source: string): { source: string; values: string[] } {
     },
   );
   return { source: protectedSource, values };
+}
+
+// A table column can't be narrower than its longest unbreakable text. Long tokens
+// (paths, URLs, hashes) get optional break points (<wbr>, which copies as nothing),
+// so their column can narrow to one chunk instead of the whole token, while words
+// stay whole. Short hyphenated runs (IDs, dates) are kept on one line instead, so a
+// narrow column doesn't wrap "T-101" at its hyphen. Only printable ASCII runs count:
+// tokens are ASCII, and cutting other text could split a character (an emoji) in half.
+const TABLE_RUN = /[!-~]+/g;
+const TABLE_TOKEN_LENGTH = 20;
+const TABLE_TOKEN_CHUNK = 20;
+// The token's own boundaries: after a separator, hyphen or underscore (never inside
+// "//"), before a dot, and at camelCase humps.
+const TABLE_TOKEN_BOUNDARY = /(?<=[/?&#=_-])(?!\/)|(?<=[a-z\d])(?=\.)|(?<=[a-z])(?=[A-Z])/;
+
+function tableTokenPieces(token: string): string[] {
+  const pieces: string[] = [];
+  // Prefer the token's own boundaries, then split what is still long into even chunks.
+  for (const segment of token.split(TABLE_TOKEN_BOUNDARY)) {
+    const count = Math.ceil(segment.length / TABLE_TOKEN_CHUNK);
+    const size = Math.ceil(segment.length / count);
+    for (let start = 0; start < segment.length; start += size)
+      pieces.push(segment.slice(start, start + size));
+  }
+  return pieces;
+}
+
+function addTableTokenBreaks(cell: Element): void {
+  const doc = cell.ownerDocument;
+  const walker = doc.createTreeWalker(cell, NodeFilter.SHOW_TEXT);
+  const nodes: Text[] = [];
+  while (walker.nextNode()) nodes.push(walker.currentNode as Text);
+  for (const node of nodes) {
+    // Math is matched as text when it is typeset later; a break inside would stop that.
+    if (/\\\(|\\\[|\$\$/.test(node.data)) continue;
+    const runs = [...node.data.matchAll(TABLE_RUN)].filter(
+      ([run]) => run.length >= TABLE_TOKEN_LENGTH || run.includes('-'),
+    );
+    if (!runs.length) continue;
+    const fragment = doc.createDocumentFragment();
+    let last = 0;
+    for (const match of runs) {
+      fragment.append(node.data.slice(last, match.index));
+      if (match[0].length < TABLE_TOKEN_LENGTH) {
+        const keep = doc.createElement('span');
+        keep.className = 'markdown-table-nowrap';
+        keep.textContent = match[0];
+        fragment.append(keep);
+      } else {
+        tableTokenPieces(match[0]).forEach((piece, index) => {
+          if (index) fragment.append(doc.createElement('wbr'));
+          fragment.append(piece);
+        });
+      }
+      last = match.index + match[0].length;
+    }
+    fragment.append(node.data.slice(last));
+    node.replaceWith(fragment);
+  }
 }
 
 export function sanitizeMarkdownHTML(
@@ -42,11 +101,12 @@ export function sanitizeMarkdownHTML(
     FORBID_ATTR: ['style', 'srcdoc', 'onerror', 'onload'],
     ALLOW_UNKNOWN_PROTOCOLS: false,
   });
-  if (!/<ol\b/i.test(sanitized)) return sanitized;
+  if (!/<(?:ol|table)\b/i.test(sanitized)) return sanitized;
 
   // Only add trusted layout values after sanitization; model-provided styles stay forbidden.
   const root = document.createElement('template');
   root.innerHTML = sanitized;
+  for (const cell of root.content.querySelectorAll('th, td')) addTableTokenBreaks(cell);
   for (const list of root.content.querySelectorAll('ol')) {
     const items = [...list.children].filter(
       (child): child is HTMLLIElement => child.tagName === 'LI',
@@ -80,6 +140,7 @@ function mediaRenderer(
 ): Renderer {
   const renderer = new Renderer();
   renderer.link = externalLink;
+  renderer.table = scrollableTable;
   const defaultImage = renderer.image.bind(renderer);
   renderer.image = function (token) {
     const prefix = 'term-llm-media://';

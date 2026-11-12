@@ -683,22 +683,36 @@
   text-align: left;
 }
 
+/* Columns size to their content; a table wider than the message scrolls in its own box. */
+.markdown-table-scroll {
+  margin: 0.6rem 0;
+  overflow-x: auto;
+  overscroll-behavior-x: contain;
+}
+
 .markdown-body table {
   width: 100%;
-  max-width: 100%;
-  table-layout: fixed;
   border-collapse: collapse;
   margin: 0.6rem 0;
   font-size: 0.9rem;
+}
+
+.markdown-table-scroll > table {
+  margin: 0;
 }
 
 .markdown-body th,
 .markdown-body td {
   border-bottom: 1px solid var(--border);
   padding: 0.5rem 0.75rem 0.5rem 0;
-  overflow-wrap: anywhere;
+  overflow-wrap: break-word;
   text-align: left;
   vertical-align: top;
+}
+
+/* The renderer marks short hyphenated runs in cells (IDs, dates) to stay on one line. */
+.markdown-table-nowrap {
+  white-space: nowrap;
 }
 
 /* Tables use row rules only; the header is set off by weight and a stronger rule. */

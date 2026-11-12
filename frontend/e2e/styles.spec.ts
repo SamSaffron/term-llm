@@ -15,6 +15,18 @@ function stylesheet(path: string): string {
 const css = stylesheet(resolve(import.meta.dirname, '../src/styles/app.css'));
 if (/@import\b/.test(css)) throw new Error('Unsupported CSS import in browser style fixture');
 
+// The production Markdown renderer as a page script, exposed as `markdownFixture`.
+function markdownRenderer(): string {
+  return buildSync({
+    entryPoints: [resolve(import.meta.dirname, '../src/domain/markdown.ts')],
+    bundle: true,
+    write: false,
+    format: 'iife',
+    globalName: 'markdownFixture',
+    external: ['./rich-highlight', './rich-katex'],
+  }).outputFiles[0].text;
+}
+
 test('conversation text uses a readable 16px base on desktop and mobile', async ({ page }) => {
   await page.setContent(`<meta name="viewport" content="width=device-width, initial-scale=1">
     <article class="message user"><div class="message-body">Explain typography.</div></article>
@@ -42,14 +54,7 @@ test('conversation text uses a readable 16px base on desktop and mobile', async 
 test('ordered list markers fit inside assistant messages on desktop and mobile', async ({
   page,
 }) => {
-  const renderer = buildSync({
-    entryPoints: [resolve(import.meta.dirname, '../src/domain/markdown.ts')],
-    bundle: true,
-    write: false,
-    format: 'iife',
-    globalName: 'markdownFixture',
-    external: ['./rich-highlight', './rich-katex'],
-  }).outputFiles[0].text;
+  const renderer = markdownRenderer();
   const items = Array.from({ length: 20 }, (_, index) => `<li>Element ${index + 1}</li>`).join('');
   await page.setContent(`<meta name="viewport" content="width=device-width, initial-scale=1">
     <article class="message assistant"><div class="message-body"><div class="markdown-body"></div></div></article>`);
@@ -110,6 +115,70 @@ test('ordered list markers fit inside assistant messages on desktop and mobile',
       }
       expect(await page.evaluate(() => document.documentElement.scrollWidth - innerWidth)).toBe(0);
     }
+  }
+});
+
+test('Markdown tables size columns to content, break long tokens and scroll when wide', async ({
+  page,
+}) => {
+  await page.setContent(`<meta name="viewport" content="width=device-width, initial-scale=1">
+    <article class="message assistant"><div class="message-body"><div class="markdown-body"></div></div></article>`);
+  await page.addScriptTag({ content: markdownRenderer() });
+  await page.evaluate(() => {
+    const fixture = (
+      window as unknown as { markdownFixture: { renderMarkdown: (source: string) => string } }
+    ).markdownFixture;
+    document.querySelector('.markdown-body')!.innerHTML = fixture.renderMarkdown(`
+| ID | Status | Summary |
+| --- | --- | --- |
+| T-101 | Done | Let the sessions sidebar be resized so long chat titles stay readable on wide screens |
+
+| File | Link |
+| --- | --- |
+| \`frontend/src/components/conversation/transcript/MarkdownTableScrollContainer.tsx\` | https://example.com/builds/2026-11-11/artifacts/frontend-bundle-report.html |
+| Build hash | sha256:9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08 |
+
+| Model | Provider | Context window | Input per million | Output per million | Median first token | Tool calls | Vision | Notes |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| alpha-large | Example Cloud | 1,000,000 tokens | $3.00 | $15.00 | 820 ms | Parallel | Yes | Best for long refactors |`);
+  });
+  await page.addStyleTag({ content: css });
+  for (const width of [390, 1440]) {
+    await page.setViewportSize({ width, height: 900 });
+    const [tickets, files, models] = await page
+      .locator('.markdown-table-scroll')
+      .evaluateAll((boxes) =>
+        boxes.map((box) => {
+          const lines = (cell: Element) => {
+            const range = document.createRange();
+            range.selectNodeContents(cell);
+            return new Set([...range.getClientRects()].map((rect) => Math.round(rect.top))).size;
+          };
+          return {
+            overflow: box.scrollWidth - box.clientWidth,
+            columns: [...box.querySelectorAll('th')].map((th) => th.getBoundingClientRect().width),
+            // A cell holding one word or ID (no spaces, no break points) belongs on one line.
+            splitWords: [...box.querySelectorAll('th, td')]
+              .filter((cell) => !cell.querySelector('wbr') && !/\s/.test(cell.textContent!.trim()))
+              .filter((cell) => lines(cell) > 1)
+              .map((cell) => cell.textContent),
+          };
+        }),
+      );
+    const context = `${width}px viewport`;
+    expect(
+      await page.evaluate(() => document.documentElement.scrollWidth - innerWidth),
+      context,
+    ).toBe(0);
+    expect(tickets.overflow, context).toBeLessThanOrEqual(1);
+    expect(tickets.columns[0], `${context}: the ID column hugs its content`).toBeLessThan(
+      tickets.columns[2] / 3,
+    );
+    expect(files.overflow, `${context}: paths, links and hashes wrap`).toBeLessThanOrEqual(1);
+    expect(models.overflow > 1, `${context}: only a table too wide to fit scrolls`).toBe(
+      width < 768,
+    );
+    for (const table of [tickets, files, models]) expect(table.splitWords, context).toEqual([]);
   }
 });
 

@@ -154,16 +154,7 @@ func (c *Connection) call(ctx context.Context, method string, params, result any
 
 	select {
 	case reply := <-response:
-		if reply.err != nil {
-			return reply.err
-		}
-		if result == nil || len(reply.result) == 0 || bytes.Equal(reply.result, []byte("null")) {
-			return nil
-		}
-		if err := json.Unmarshal(reply.result, result); err != nil {
-			return fmt.Errorf("decode ACP %s response: %w", method, err)
-		}
-		return nil
+		return decodeCallResult(method, reply, result)
 	case <-ctx.Done():
 		if c.removePending(id) {
 			go func() {
@@ -174,11 +165,31 @@ func (c *Connection) call(ctx context.Context, method string, params, result any
 		}
 		return ctx.Err()
 	case <-c.done:
+		// dispatchLoop delivers every response read before EOF ahead of closing
+		// done, so both cases can be ready at once. Prefer the queued reply.
+		select {
+		case reply := <-response:
+			return decodeCallResult(method, reply, result)
+		default:
+		}
 		if err := c.Err(); err != nil {
 			return err
 		}
 		return io.EOF
 	}
+}
+
+func decodeCallResult(method string, reply callResult, result any) error {
+	if reply.err != nil {
+		return reply.err
+	}
+	if result == nil || len(reply.result) == 0 || bytes.Equal(reply.result, []byte("null")) {
+		return nil
+	}
+	if err := json.Unmarshal(reply.result, result); err != nil {
+		return fmt.Errorf("decode ACP %s response: %w", method, err)
+	}
+	return nil
 }
 
 // Notify sends an ACP notification.
