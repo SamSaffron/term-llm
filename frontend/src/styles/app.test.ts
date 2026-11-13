@@ -406,8 +406,10 @@ describe('diff review styles', () => {
     expect(appCSS).toMatch(/\.diff-comment-affordance\s*\{[^}]*height: 1\.15rem;/s);
   });
 
-  it('sizes every file action glyph consistently', () => {
-    expect(appCSS).toMatch(/\.diff-action-btn svg\s*\{[^}]*width: 19px;[^}]*height: 19px;/s);
+  it('uses the shared glyph size for file actions instead of an overridden legacy size', () => {
+    expect(preactOverrides).toMatch(
+      /\.diff-action-btn svg,[^{]*\{[^}]*width: 1\.05rem;[^}]*height: 1\.05rem;/s,
+    );
   });
 
   it('anchors comment cards to code without pinning hunk text to the action column', () => {
