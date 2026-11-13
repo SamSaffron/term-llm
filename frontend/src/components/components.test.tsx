@@ -2611,6 +2611,107 @@ describe('Preact-owned chat surfaces', () => {
     expect(timestamp).toHaveAttribute('title');
   });
 
+  it.each(['diff', 'truncated', 'image', 'empty', 'error'] as const)(
+    'admits an unloaded diff copy before loading, without substituting %s content',
+    async (outcome) => {
+      const store = createStore();
+      store.diff.value = {
+        ...store.diff.peek(),
+        open: true,
+        sessionId: 's1',
+        files: [{ path: 'unloaded.txt', status: 'modify', additions: 1, deletions: 1 }],
+      };
+      let finish!: (data: Record<string, unknown>) => void;
+      let fail!: (error: Error) => void;
+      store.endpoints.fileDiff = vi.fn(
+        () =>
+          new Promise<Record<string, unknown>>((resolve, reject) => {
+            finish = resolve;
+            fail = reject;
+          }),
+      );
+      const toast = vi.spyOn(store, 'toast');
+      let blob!: Promise<Blob>;
+      vi.stubGlobal(
+        'ClipboardItem',
+        class {
+          constructor(data: Record<string, Promise<Blob>>) {
+            blob = data['text/plain'];
+          }
+        },
+      );
+      const write = vi.fn(() => blob.then(() => undefined));
+      const writeText = vi.fn();
+      vi.stubGlobal('navigator', { clipboard: { write, writeText } });
+      try {
+        render(
+          <StoreContext.Provider value={store}>
+            <DiffSidebar />
+          </StoreContext.Provider>,
+        );
+        const button = screen.getByRole('button', { name: 'Copy diff for unloaded.txt' });
+        fireEvent.click(button);
+        expect(write).toHaveBeenCalledOnce();
+        expect(store.endpoints.fileDiff).toHaveBeenCalledOnce();
+        expect(button).not.toHaveClass('copied');
+        await act(async () => {
+          if (outcome === 'error') fail(new Error('load failed'));
+          else
+            finish({
+              diff: outcome === 'empty' ? '' : 'complete diff',
+              truncated: outcome === 'truncated',
+              image: outcome === 'image',
+            });
+        });
+        if (outcome === 'diff') {
+          await waitFor(() => expect(button).toHaveClass('copied'));
+          expect((await blob).size).toBeGreaterThan(0);
+          expect(toast).not.toHaveBeenCalled();
+        } else {
+          expect(button).not.toHaveClass('copied');
+          await waitFor(() => expect(toast).toHaveBeenCalledWith(expect.any(Error), 'error'));
+          await expect(blob).rejects.toThrow();
+        }
+        expect(writeText).not.toHaveBeenCalled();
+      } finally {
+        store.dispose();
+        vi.unstubAllGlobals();
+      }
+    },
+  );
+
+  it('does not copy a cached truncated patch as though it were complete', async () => {
+    const store = createStore();
+    store.diff.value = {
+      ...store.diff.peek(),
+      open: true,
+      sessionId: 's1',
+      files: [
+        {
+          path: 'partial.txt',
+          status: 'modify',
+          additions: 1,
+          deletions: 0,
+          truncated: true,
+          patch: 'incomplete patch',
+        },
+      ],
+    };
+    const copy = vi.spyOn(clipboard, 'copyText');
+    const pendingCopy = vi.spyOn(clipboard, 'copyPendingText');
+    const toast = vi.spyOn(store, 'toast');
+    render(
+      <StoreContext.Provider value={store}>
+        <DiffSidebar />
+      </StoreContext.Provider>,
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Copy diff for partial.txt' }));
+    expect(copy).not.toHaveBeenCalled();
+    expect(pendingCopy).not.toHaveBeenCalled();
+    expect(toast).toHaveBeenCalledWith(expect.any(Error), 'error');
+    store.dispose();
+  });
+
   it('uses aligned SVG diff actions and transient copied state', async () => {
     vi.useFakeTimers();
     const descriptor = Object.getOwnPropertyDescriptor(navigator, 'clipboard');
@@ -5928,6 +6029,42 @@ describe('Preact-owned chat surfaces', () => {
     await waitFor(() => expect(input.style.height).toBe('auto'));
     expect(store.send).toHaveBeenCalledOnce();
   });
+
+  it.each([{ isComposing: true }, { isComposing: false, keyCode: 229 }])(
+    'leaves the prompt and completions untouched during IME confirmation (%j)',
+    async (composition) => {
+      const store = createStore();
+      // Model send's observable clearing, without invoking a provider/network.
+      store.send = vi.fn(async () => {
+        store.prompt.value = '';
+      });
+      render(
+        <StoreContext.Provider value={store}>
+          <Composer />
+        </StoreContext.Provider>,
+      );
+      const input = screen.getByRole('textbox', { name: 'Message' });
+      await userEvent.type(input, '日本語');
+      fireEvent.keyDown(input, { key: 'Enter', ...composition });
+      expect(store.send).not.toHaveBeenCalled();
+      expect(input).toHaveValue('日本語');
+      fireEvent.keyDown(input, { key: 'Enter' });
+      expect(store.send).toHaveBeenCalledOnce();
+      await waitFor(() => expect(input).toHaveValue(''));
+      await userEvent.type(input, '/co');
+      const selected = input.getAttribute('aria-activedescendant');
+      for (const key of ['ArrowDown', 'ArrowUp', 'Enter', 'Tab', 'Escape']) {
+        fireEvent.keyDown(input, { key, ...composition });
+        expect(input).toHaveValue('/co');
+        expect(input).toHaveAttribute('aria-activedescendant', selected);
+        expect(screen.getByRole('listbox')).toBeInTheDocument();
+      }
+      fireEvent.keyDown(input, { key: 'Enter' });
+      expect(input).toHaveValue('/commit ');
+      expect(store.send).toHaveBeenCalledOnce();
+      store.dispose();
+    },
+  );
 
   it('offers slash and mention completions through an accessible listbox', async () => {
     const store = createStore();

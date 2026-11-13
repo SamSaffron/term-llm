@@ -1231,11 +1231,6 @@
     border-color 0.15s ease;
 }
 
-.diff-action-btn svg {
-  width: 19px;
-  height: 19px;
-}
-
 .diff-markdown-toggle.active {
   --icon-state-fill-opacity: 0.3;
 

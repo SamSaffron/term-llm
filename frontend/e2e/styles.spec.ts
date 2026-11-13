@@ -27,6 +27,32 @@ function markdownRenderer(): string {
   }).outputFiles[0].text;
 }
 
+test('diff action glyphs retain shared desktop sizing and their touch override', async ({
+  page,
+}) => {
+  await page.setContent(`<meta name="viewport" content="width=device-width, initial-scale=1">
+    <button class="icon-btn"><svg aria-hidden="true"></svg></button>
+    <div class="diff-file-row"><div class="diff-file-actions">
+      <button class="diff-action-btn"><svg aria-hidden="true"></svg></button>
+    </div></div>`);
+  await page.addStyleTag({ content: css });
+  const touch = await page.evaluate(() => matchMedia('(hover: none), (pointer: coarse)').matches);
+  for (const width of [360, 1440]) {
+    await page.setViewportSize({ width, height: 900 });
+    const sizes = await page.evaluate(() => {
+      const size = (selector: string) => {
+        const style = getComputedStyle(document.querySelector(selector)!);
+        return { width: parseFloat(style.width), height: parseFloat(style.height) };
+      };
+      return { shared: size('.icon-btn svg'), action: size('.diff-action-btn svg') };
+    });
+    expect(sizes.shared.width).toBeCloseTo(16.8, 1);
+    expect(sizes.shared.height).toBeCloseTo(16.8, 1);
+    expect(sizes.action.width).toBeCloseTo(touch ? 17 : sizes.shared.width, 1);
+    expect(sizes.action.height).toBeCloseTo(touch ? 17 : sizes.shared.height, 1);
+  }
+});
+
 test('conversation text uses a readable 16px base on desktop and mobile', async ({ page }) => {
   await page.setContent(`<meta name="viewport" content="width=device-width, initial-scale=1">
     <article class="message user"><div class="message-body">Explain typography.</div></article>

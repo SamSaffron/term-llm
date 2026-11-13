@@ -350,8 +350,59 @@ describe('LiveCall', () => {
     call.dispose();
   });
 
+  // Deterministic Safari ordering model, not a hardware/autoplay proof.
+  it.each(['grant', 'deny'] as const)(
+    'does not wait for a parked early resume when microphone permission is %s',
+    async (permission) => {
+      const context = new FakeAudioContext();
+      context.state = 'suspended';
+      let rejectEarly!: (error: Error) => void;
+      context.resume.mockImplementationOnce(
+        () =>
+          new Promise<void>((_resolve, reject) => {
+            rejectEarly = reject;
+          }),
+      );
+      // The post-capture resume may also park; cancellation must still own the mic.
+      context.resume.mockImplementation(() => new Promise<void>(() => {}));
+      const track = mediaTrack();
+      Object.defineProperty(navigator, 'mediaDevices', {
+        configurable: true,
+        value: {
+          getUserMedia: vi.fn(async () => {
+            if (permission === 'deny') throw new DOMException('blocked', 'NotAllowedError');
+            return mediaStream(track);
+          }),
+        },
+      });
+      vi.stubGlobal('AudioContext', FakeAudioContext);
+      vi.stubGlobal('AudioWorkletNode', FakeWorkletNode);
+      const call = new LiveCall(vi.fn(), vi.fn(), {
+        transport: 'http_pcm',
+        createAudioContext: () => context as unknown as AudioContext,
+      });
+      void call.start('session-parked');
+      // Flush only already queued promises: never release the parked resume.
+      await Promise.resolve();
+      await Promise.resolve();
+      const phase = call.snapshot.phase;
+      await call.stop();
+      rejectEarly(new Error('Context closed after cancellation'));
+      await Promise.resolve();
+      if (permission === 'grant') {
+        expect(phase).toBe('connecting');
+        expect(track.stop).toHaveBeenCalledOnce();
+      } else {
+        expect(phase).toBe('failed');
+      }
+      expect(context.close).toHaveBeenCalledOnce();
+      call.dispose();
+    },
+  );
+
   it('closes preactivated PCM audio when stopped during the permission prompt', async () => {
     const context = new FakeAudioContext();
+    context.resume.mockImplementation(() => new Promise<void>(() => {}));
     const track = mediaTrack();
     let grantPermission: ((stream: MediaStream) => void) | undefined;
     const permission = new Promise<MediaStream>((resolve) => {
@@ -1024,66 +1075,74 @@ describe('LiveCall', () => {
     call.dispose();
   });
 
-  it('resumes PCM audio after microphone permission and later route interruptions', async () => {
-    vi.stubGlobal('AudioContext', FakeAudioContext);
-    vi.stubGlobal('AudioWorkletNode', FakeWorkletNode);
-    vi.stubGlobal('WebSocket', FakePCMWebSocket);
-    const context = new FakeAudioContext();
-    const socket = new FakePCMWebSocket();
-    const capture = new FakeWorkletNode();
-    const playback = new FakeWorkletNode();
-    context.resume.mockImplementation(async () => {
-      context.state = 'running';
-    });
-    Object.defineProperty(navigator, 'mediaDevices', {
-      configurable: true,
-      value: {
-        getUserMedia: vi.fn(async () => {
-          context.state = 'suspended';
-          return mediaStream();
+  it.each(['parked', 'rejected'] as const)(
+    'resumes PCM audio after a %s early resume, microphone permission and later route interruptions',
+    async (early) => {
+      vi.stubGlobal('AudioContext', FakeAudioContext);
+      vi.stubGlobal('AudioWorkletNode', FakeWorkletNode);
+      vi.stubGlobal('WebSocket', FakePCMWebSocket);
+      const context = new FakeAudioContext();
+      const socket = new FakePCMWebSocket();
+      const capture = new FakeWorkletNode();
+      const playback = new FakeWorkletNode();
+      context.resume.mockImplementation(async () => {
+        context.state = 'running';
+      });
+      context.resume.mockImplementationOnce(() =>
+        early === 'parked'
+          ? new Promise<void>(() => {})
+          : Promise.reject(new Error('Not yet unlocked')),
+      );
+      Object.defineProperty(navigator, 'mediaDevices', {
+        configurable: true,
+        value: {
+          getUserMedia: vi.fn(async () => {
+            context.state = 'suspended';
+            return mediaStream();
+          }),
+        },
+      });
+      const call = new LiveCall(
+        async () => ({
+          live_id: 'resume',
+          session_id: 'session',
+          transport: 'websocket_pcm',
+          audio_url: '/audio',
         }),
-      },
-    });
-    const call = new LiveCall(
-      async () => ({
-        live_id: 'resume',
-        session_id: 'session',
-        transport: 'websocket_pcm',
-        audio_url: '/audio',
-      }),
-      async (id) => ({ live_id: id, status: 'ended' }),
-      {
-        transport: 'websocket_pcm',
-        createAudioContext: () => context as unknown as AudioContext,
-        createWebSocket: () => socket as unknown as WebSocket,
-        createAudioWorkletNode: workletFactory(capture, playback),
-        captureModuleURL: '/capture.js',
-      },
-    );
-    const starting = call.start('session');
-    await vi.waitFor(() => expect(socket.onopen).not.toBeNull());
-    socket.open();
-    await starting;
-    expect(context.resume).toHaveBeenCalledTimes(2);
-    let finish!: () => void;
-    context.resume.mockImplementation(
-      () =>
-        new Promise<void>((resolve) => {
-          finish = resolve;
-        }),
-    );
-    context.state = 'suspended';
-    const audio = context as unknown as AudioContext;
-    audio.onstatechange?.call(audio, new Event('statechange'));
-    socket.message(new Int16Array([1, 2]).buffer);
-    socket.message(new Int16Array([3, 4]).buffer);
-    expect(context.resume).toHaveBeenCalledTimes(3);
-    await call.stop();
-    expect(audio.onstatechange).toBeNull();
-    finish();
-    await Promise.resolve();
-    expect(call.snapshot.phase).toBe('ended');
-  });
+        async (id) => ({ live_id: id, status: 'ended' }),
+        {
+          transport: 'websocket_pcm',
+          createAudioContext: () => context as unknown as AudioContext,
+          createWebSocket: () => socket as unknown as WebSocket,
+          createAudioWorkletNode: workletFactory(capture, playback),
+          captureModuleURL: '/capture.js',
+        },
+      );
+      const starting = call.start('session');
+      await vi.waitFor(() => expect(socket.onopen).not.toBeNull());
+      socket.open();
+      await starting;
+      expect(context.resume).toHaveBeenCalledTimes(2);
+      let finish!: () => void;
+      context.resume.mockImplementation(
+        () =>
+          new Promise<void>((resolve) => {
+            finish = resolve;
+          }),
+      );
+      context.state = 'suspended';
+      const audio = context as unknown as AudioContext;
+      audio.onstatechange?.call(audio, new Event('statechange'));
+      socket.message(new Int16Array([1, 2]).buffer);
+      socket.message(new Int16Array([3, 4]).buffer);
+      expect(context.resume).toHaveBeenCalledTimes(3);
+      await call.stop();
+      expect(audio.onstatechange).toBeNull();
+      finish();
+      await Promise.resolve();
+      expect(call.snapshot.phase).toBe('ended');
+    },
+  );
 
   it('streams Hub-safe HTTP PCM, serializes bounded microphone batches, and aborts on stop', async () => {
     const track = mediaTrack();
