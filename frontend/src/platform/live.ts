@@ -323,7 +323,9 @@ export class LiveCall {
 
     try {
       const pcmTransport = this.transport === 'websocket_pcm' || this.transport === 'http_pcm';
-      const audioReady = pcmTransport ? this.preparePCMAudioContext() : null;
+      // Try to unlock during the gesture, but Safari may park this promise
+      // until capture starts. The post-capture resume in startPCM is authoritative.
+      if (pcmTransport) void this.preparePCMAudioContext().catch(() => undefined);
       const mediaRequest = navigator.mediaDevices.getUserMedia({
         audio: {
           channelCount: 1,
@@ -332,18 +334,7 @@ export class LiveCall {
           autoGainControl: true,
         },
       });
-      let stream: MediaStream;
-      if (audioReady) {
-        const [audioResult, mediaResult] = await Promise.allSettled([audioReady, mediaRequest]);
-        if (mediaResult.status === 'rejected') throw mediaResult.reason;
-        if (audioResult.status === 'rejected') {
-          this.stopStream(mediaResult.value);
-          throw audioResult.reason;
-        }
-        stream = mediaResult.value;
-      } else {
-        stream = await mediaRequest;
-      }
+      const stream = await mediaRequest;
       if (!this.current(generation)) {
         this.stopStream(stream);
         return null;

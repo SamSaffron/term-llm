@@ -35,6 +35,10 @@ The chat smoke runs mocked specs with `TERM_LLM_SMOKE_WORKERS` workers (default 
 
 The chat smoke uses HTTP transport only.
 
+For native macOS Safari clipboard, toggle hit-target, and composer keyboard checks,
+see [the actual Safari smoke](e2e/safari/README.md). It uses a locally bundled
+production-component fixture and a Python stdlib W3C client, not Linux WebKit.
+
 `scripts/check_frontend_network_policy.sh` fails closed unless `git grep` can scan production sources (tracked and untracked) and enforces transport ownership for `fetch`, browser fetch aliases, XHR, EventSource, WebSocket, and beacon calls. Raw transports are allowed only under `src/api`. The fixed chat baseline and the last generated results live in `payload-baseline.json` and `payload-final.json`; `payload-report.md` explains inclusion rules and deltas. Those results are a historical record; the measurement script that produced them has been removed.
 
 ## Lint configuration

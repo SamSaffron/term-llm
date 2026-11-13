@@ -1267,6 +1267,9 @@ function ConversationComposer() {
               }
             }}
             onKeyDown={(event) => {
+              // Safari can end composition before the confirming keydown, while
+              // still reporting legacy IME keyCode 229. Guard every action first.
+              if (event.isComposing || event.keyCode === 229) return;
               if (completions.length && ['ArrowDown', 'ArrowUp'].includes(event.key)) {
                 event.preventDefault();
                 setCompletionIndex(
@@ -1309,7 +1312,6 @@ function ConversationComposer() {
                 setDismissed(`${store.prompt.value}\u0000${cursor}`);
                 return;
               }
-              if (event.isComposing) return;
               if (event.key === 'Escape' && (accepted || transitioning)) {
                 event.preventDefault();
                 if (!event.repeat && canRush) void store.rush();

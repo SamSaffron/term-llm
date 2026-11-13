@@ -16,7 +16,7 @@ import {
   linesFromHunks,
   unifiedPatchForFile,
 } from '../domain/diff';
-import { copyText } from '../platform/clipboard';
+import { copyPendingText, copyText } from '../platform/clipboard';
 import { rebaseHubAssetURL } from '../app/config';
 import { planSummary } from '../domain/plan';
 import { Icon } from './Icon';
@@ -381,9 +381,9 @@ function DiffAction({
     event.preventDefault();
     event.stopPropagation();
     try {
-      const text = await value();
+      const text = value();
       if (!text) return;
-      await copyText(text);
+      await (typeof text === 'string' ? copyText(text) : copyPendingText(text));
       setCopied(true);
       if (timer.current !== undefined) clearTimeout(timer.current);
       timer.current = window.setTimeout(() => {
@@ -575,21 +575,25 @@ function File({
       clearDraft(key);
     },
   );
-  const patch = async () => {
+  const patch = () => {
+    if (file.truncated) throw new Error('The complete diff is unavailable to copy.');
     if (file.lines || file.patch) return unifiedPatchForFile(file);
-    const data = await store.endpoints.fileDiff(
-      store.activeSessionId.peek(),
-      file.path,
-      store.diff.peek().scope,
-      0,
-      file.snapshotSeq || 0,
-    );
-    if (data.image || data.truncated) return '';
-    return unifiedPatchForFile({
-      ...file,
-      lines: linesFromHunks(data.hunks),
-      patch: String(data.diff || data.patch || ''),
-    });
+    return store.endpoints
+      .fileDiff(
+        store.activeSessionId.peek(),
+        file.path,
+        store.diff.peek().scope,
+        0,
+        file.snapshotSeq || 0,
+      )
+      .then((data) => {
+        if (data.image || data.truncated) return '';
+        return unifiedPatchForFile({
+          ...file,
+          lines: linesFromHunks(data.hunks),
+          patch: String(data.diff || data.patch || ''),
+        });
+      });
   };
   const toggle = () => {
     store.diff.value = {

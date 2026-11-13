@@ -10,6 +10,7 @@
 .toggle-switch-input {
   position: absolute;
   inset: 0;
+
   /* WebKit keeps a native checkbox at its intrinsic 12px even with inset: 0,
      leaving most of the switch unclickable; size it explicitly. */
   width: 100%;

@@ -62,3 +62,25 @@ export async function copyText(
     previous?.focus({ preventScroll: true });
   }
 }
+
+/** Admit an async text copy during the click, before its data is available. */
+export async function copyPendingText(
+  text: Promise<string>,
+  doc: Document = document,
+  nav: Navigator = navigator,
+): Promise<void> {
+  const validated = text.then((value) => {
+    // An unavailable/image/truncated diff must never replace the clipboard with
+    // an empty string (or a URL/error placeholder).
+    if (!value) throw new Error('No text is available to copy.');
+    return value;
+  });
+  if (!nav.clipboard?.write || typeof ClipboardItem === 'undefined') {
+    return copyText(await validated, doc, nav);
+  }
+  const blob = validated.then((value) => new Blob([value], { type: 'text/plain' }));
+  // A denied write or throwing constructor need not consume the data promise.
+  void blob.catch(() => {});
+  // No await before write: WebKit needs the original click's user gesture.
+  return nav.clipboard.write([new ClipboardItem({ 'text/plain': blob })]);
+}
