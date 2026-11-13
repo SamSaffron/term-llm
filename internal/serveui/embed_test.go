@@ -212,7 +212,10 @@ func TestProductionBundleSizeBudgets(t *testing.T) {
 		// The /agents command, its catalog endpoint and lazy loader: measured
 		// 538.0/158.13 kB. Keep the raw cap; add 300 bytes of gzip allowance.
 		// The modal and CSS stay separately bounded below.
-		"dist/app.js":           {raw: 538_500, gzip: 158_450},
+		// Display-only user Markdown reuses the shared renderer, with an isolated
+		// HTML/image policy: measured 538.71/158.65 kB raw/Go level-6 gzip.
+		// Allow 500 raw/400 gzip bytes more, without resetting the ~1% cushion.
+		"dist/app.js":           {raw: 539_000, gzip: 158_850},
 		"dist/chunks/Panels.js": {raw: 32_000, gzip: 11_000},
 		// Panel splitting adds a shared-import edge to Lightbox: measured 8.03/3.21 kB.
 		// Pausing transcript media while a video is open brings it to 8.16/3.27 kB.

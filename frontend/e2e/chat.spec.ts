@@ -638,6 +638,43 @@ test('sends through public composer UI and reduces a streamed response', async (
   ).toBe(true);
 });
 
+test('formats sent user Markdown and wraps links without changing the submitted source', async ({
+  page,
+}) => {
+  await open(page);
+  const url = `https://meta.discourse.org/?query=${'long'.repeat(60)}`;
+  const code = 'example '.repeat(80).trim();
+  const source = `this is a test \`test\` ${url}\nnext line\n\n- one\n- two\n\n\`\`\`text\n${code}\n\`\`\``;
+  const submitted = page.waitForRequest(
+    (request) => request.method() === 'POST' && request.url().endsWith('/v1/responses'),
+  );
+  await page.getByRole('textbox', { name: 'Message' }).fill(source);
+  await page.getByRole('button', { name: 'Send message' }).click();
+  expect((await submitted).postDataJSON().input[0].content).toBe(source);
+  const body = page.locator('.message.user .markdown-body').last();
+  await expect(body.locator('p > code')).toHaveText('test');
+  await expect(body.getByRole('link')).toHaveAttribute('href', url);
+  await expect(body.locator('br')).toHaveCount(1);
+  await expect(body.locator('li')).toHaveCount(2);
+  await expect(body.locator('pre code')).toHaveText(code);
+  const dimensions = await body.evaluate((element) => {
+    const bubble = element.closest('.message-body')!;
+    const pre = element.querySelector('pre')!;
+    return {
+      bubbleWidth: bubble.clientWidth,
+      bubbleScrollWidth: bubble.scrollWidth,
+      preWidth: pre.clientWidth,
+      preScrollWidth: pre.scrollWidth,
+      firstMargin: getComputedStyle(element.firstElementChild!).marginTop,
+      lastMargin: getComputedStyle(element.lastElementChild!).marginBottom,
+    };
+  });
+  expect(dimensions.bubbleScrollWidth).toBeLessThanOrEqual(dimensions.bubbleWidth + 1);
+  expect(dimensions.preScrollWidth).toBeGreaterThan(dimensions.preWidth);
+  expect(dimensions.firstMargin).toBe('0px');
+  expect(dimensions.lastMargin).toBe('0px');
+});
+
 test('keeps running controls while a response transport reconnects', async ({ page }) => {
   const requests = await open(page, '', { holdStream: true });
   await page.getByRole('textbox', { name: 'Message' }).fill('Long request');

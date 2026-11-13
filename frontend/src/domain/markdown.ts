@@ -1,11 +1,31 @@
 import DOMPurify from 'dompurify';
-import { marked, Renderer } from 'marked';
+import { marked, Marked, Renderer } from 'marked';
 import { findStableMarkdownBoundary, isInCodeBlockFast } from './markdown-streaming';
 
 import { escapeHTML, externalLink, markdownHooks, scrollableTable } from './markdown-hooks';
 import { audioMediaHTML, trustedPublishedMediaURL } from './audio-media';
 
 marked.use({ gfm: true, breaks: true, ...markdownHooks });
+
+// User prompts are Markdown, not HTML documents. Keep pasted tags visible and
+// turn images into explicit links so displaying history never fetches user media.
+const userMarkdown = new Marked(markdownHooks, {
+  gfm: true,
+  breaks: true,
+  tokenizer: { html: () => undefined, tag: () => undefined },
+  renderer: {
+    html: ({ text }) => escapeHTML(text),
+    image: externalLink,
+  },
+  walkTokens(this: Marked, token) {
+    if (token.type !== 'link' || !token.tokens) return;
+    // A linked badge should keep its outer destination, not create nested links.
+    this.walkTokens(token.tokens, (child) => {
+      if (child.type === 'image')
+        Object.assign(child, { type: 'text', text: child.text || child.href, tokens: undefined });
+    });
+  },
+});
 
 // Keep math delimiters intact until the optional KaTeX pass. Placeholders are
 // escaped text, never HTML, so sanitizer policy remains authoritative.
@@ -176,13 +196,18 @@ function mediaRenderer(
   return renderer;
 }
 
-export function renderMarkdown(source: string, resolveMedia?: MarkdownMediaResolver): string {
+export function renderMarkdown(
+  source: string,
+  resolveMedia?: MarkdownMediaResolver,
+  variant: 'chat' | 'user' = 'chat',
+): string {
   const math = protectMath(source || '');
   const audioCards = new Map<string, string>();
-  const options = resolveMedia
-    ? { async: false as const, renderer: mediaRenderer(resolveMedia, audioCards) }
-    : { async: false as const };
-  let rendered = marked.parse(math.source, options) as string;
+  const options =
+    resolveMedia && variant === 'chat'
+      ? { async: false as const, renderer: mediaRenderer(resolveMedia, audioCards) }
+      : { async: false as const };
+  let rendered = (variant === 'user' ? userMarkdown : marked).parse(math.source, options) as string;
   rendered = rendered.replace(/TERM_LLM_MATH_(\d+)_TOKEN/g, (_match, index: string) =>
     escapeHTML(math.values[Number(index)] || ''),
   );

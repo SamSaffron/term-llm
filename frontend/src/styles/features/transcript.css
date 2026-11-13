@@ -221,12 +221,13 @@
   padding-block: 0.15rem;
 }
 
-/* Without the card, a reply's first and last blocks keep no outer margin, so its
-   buttons sit just under the text. */
+/* Keep outer block margins out of bubble padding and reply action spacing. */
+.message.user .message-body > .markdown-body > :first-child,
 .message.assistant .message-body > .markdown-body > :first-child {
   margin-top: 0;
 }
 
+.message.user .message-body > .markdown-body > :last-child,
 .message.assistant .message-body > .markdown-body > :last-child {
   margin-bottom: 0;
 }

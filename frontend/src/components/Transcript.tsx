@@ -1408,6 +1408,8 @@ const MessageRow = memo(function MessageRow({
               resolveMedia={resolveMedia}
               onMedia={media}
             />
+          ) : message.role === 'user' ? (
+            <Markdown value={message.content} variant="user" />
           ) : (
             <div class="message-text">{message.content}</div>
           ))}

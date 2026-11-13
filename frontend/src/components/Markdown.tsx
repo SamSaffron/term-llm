@@ -31,7 +31,7 @@ interface MarkdownProps {
   rebase?: (value: string) => string;
   resolveMedia?: MarkdownMediaResolver;
   onMedia?: (source: string, type: 'image' | 'video') => void;
-  variant?: 'chat' | 'document';
+  variant?: 'chat' | 'document' | 'user';
   renderedHTML?: string;
   documentPolicy?: (root: HTMLElement) => void;
 }
@@ -536,13 +536,18 @@ export function Markdown({
   useLayoutEffect(() => {
     const element = root.current;
     if (!element) return;
-    if (variant === 'document') {
+    if (variant !== 'chat') {
       renderer.current?.cancelPending();
-      return prepareContent(element, renderValue, renderedHTML || '', (prepared) => {
-        documentPolicy?.(prepared);
-        addVideoLinkIcons(prepared);
-        addCodeCopyButtons(prepared);
-      });
+      return prepareContent(
+        element,
+        renderValue,
+        variant === 'user' ? renderMarkdown(renderValue, undefined, 'user') : renderedHTML || '',
+        (prepared) => {
+          documentPolicy?.(prepared);
+          addVideoLinkIcons(prepared);
+          addCodeCopyButtons(prepared);
+        },
+      );
     }
     renderer.current ||= new AssistantStreamRenderer(element, rebase, resolveMedia);
     renderer.current.setRebase(rebase);

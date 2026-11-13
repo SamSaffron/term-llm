@@ -1,4 +1,4 @@
-import { Renderer, type MarkedExtension } from 'marked';
+import { Renderer, type MarkedExtension, type Tokens } from 'marked';
 
 export const escapeHTML = (value: unknown): string =>
   String(value || '')
@@ -8,11 +8,14 @@ export const escapeHTML = (value: unknown): string =>
     .replace(/"/g, '&quot;')
     .replace(/'/g, '&#39;');
 
-export const externalLink: Renderer['link'] = function (this: Renderer, { href, title, tokens }) {
-  const label = this.parser.parseInline(tokens);
+export function externalLink(
+  this: Renderer,
+  { href, title, tokens }: Pick<Tokens.Link, 'href' | 'title' | 'tokens'>,
+): string {
+  const label = this.parser.parseInline(tokens) || escapeHTML(href);
   const safeTitle = title ? ` title="${escapeHTML(title)}"` : '';
   return `<a href="${escapeHTML(href)}"${safeTitle} target="_blank" rel="noopener noreferrer">${label}</a>`;
-};
+}
 
 // Wide tables scroll sideways inside their own box instead of being clipped by
 // the message, so columns can size to their content.
