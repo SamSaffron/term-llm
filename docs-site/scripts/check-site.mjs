@@ -26,6 +26,14 @@ console.log(`✓ All ${providerNames.length} built-in providers have credentials
 
 const site = path.resolve(fileURLToPath(new URL("../../.cache/docs-site/", import.meta.url)));
 const results = fileURLToPath(new URL("../test-results/", import.meta.url));
+const clientMetadataSource = await readFile(new URL("../static/oauth/client.json", import.meta.url), "utf8");
+assert.equal(await readFile(path.join(site, "oauth/client.json"), "utf8"), clientMetadataSource, "Docs build must preserve the OAuth client metadata document unchanged");
+const clientMetadata = JSON.parse(clientMetadataSource);
+assert.equal(clientMetadata.client_id, "https://term-llm.com/oauth/client.json");
+assert.equal(clientMetadata.application_type, "native");
+assert.equal(clientMetadata.token_endpoint_auth_method, "none");
+assert.deepEqual(clientMetadata.redirect_uris, ["http://127.0.0.1/callback"]);
+
 await mkdir(results, { recursive: true });
 const types = { ".html": "text/html", ".css": "text/css", ".js": "text/javascript", ".json": "application/json", ".png": "image/png", ".webp": "image/webp", ".svg": "image/svg+xml", ".wasm": "application/wasm" };
 const server = createServer(async (request, response) => {
@@ -44,6 +52,12 @@ const origin = `http://127.0.0.1:${server.address().port}`;
 const browser = await chromium.launch();
 const errors = [];
 try {
+  const clientResponse = await fetch(`${origin}/oauth/client.json`, { redirect: "manual" });
+  assert.equal(clientResponse.status, 200);
+  assert.equal(clientResponse.headers.get("content-type"), "application/json");
+  assert.deepEqual(await clientResponse.json(), clientMetadata);
+  console.log("✓ Public native OAuth client metadata survives the docs build and is served as JSON");
+
   const context = await browser.newContext({ viewport: { width: 1440, height: 1000 }, colorScheme: "light", permissions: ["clipboard-read", "clipboard-write"] });
   const page = await context.newPage();
   page.setDefaultTimeout(10000);

@@ -15,7 +15,6 @@ import (
 	"strings"
 	"sync"
 	"time"
-	"unicode"
 
 	sdkauth "github.com/modelcontextprotocol/go-sdk/auth"
 	"github.com/modelcontextprotocol/go-sdk/oauthex"
@@ -23,12 +22,11 @@ import (
 )
 
 const (
-	flowLifetime       = 10 * time.Minute
-	refreshExpirySkew  = 5 * time.Minute
-	refreshTimeout     = 30 * time.Second
-	metadataTimeout    = 15 * time.Second
-	preflightTimeout   = 15 * time.Second
-	maximumSafeErrSize = 300
+	flowLifetime      = 10 * time.Minute
+	refreshExpirySkew = 5 * time.Minute
+	refreshTimeout    = 30 * time.Second
+	metadataTimeout   = 15 * time.Second
+	preflightTimeout  = 15 * time.Second
 )
 
 type callbackResult struct {
@@ -86,7 +84,7 @@ func DefaultCoordinator() *Coordinator {
 	return defaultCoordinator
 }
 
-// Handler constructs the SDK v1.7 authorization handler used by ordinary MCP
+// Handler constructs the SDK v1.8 authorization handler used by ordinary MCP
 // connections. Its fetcher is deliberately non-interactive.
 func (c *Coordinator) Handler(endpoint string, options Options) (sdkauth.OAuthHandler, error) {
 	return c.newHandler(endpoint, options, "http://127.0.0.1/callback", false, nil)
@@ -179,8 +177,9 @@ func (c *Coordinator) newHandler(endpoint string, options Options, redirectURL s
 		// re-authorizations keep one registration. An interactive flow must
 		// present a redirect URI compatible with that registration: exact
 		// match, or RFC 8252 loopback redirects that differ only by port.
-		// Otherwise fall back to dynamic registration for the new redirect.
-		if interactive == nil || redirectCompatible(stored.Config.RedirectURL, redirectURL) {
+		// Otherwise select a new identity for the redirect. A stored built-in
+		// identity must recheck AS capabilities and retain its issuer pin.
+		if interactive == nil || (stored.Config.ClientID != builtinClientIDMetadataURL && redirectCompatible(stored.Config.RedirectURL, redirectURL)) {
 			clientID, clientSecret, issuer = stored.Config.ClientID, stored.Config.ClientSecret, stored.Issuer
 		}
 	}
@@ -202,6 +201,7 @@ func (c *Coordinator) newHandler(endpoint string, options Options, redirectURL s
 		}
 	}
 	handlerConfig.NewTokenSource = func(ctx context.Context, cfg *oauth2.Config, token *oauth2.Token) (oauth2.TokenSource, error) {
+		cfg = builtinPublicClientConfig(cfg)
 		resolvedIssuer := callbackIssuer
 		if resolvedIssuer == "" {
 			resolvedIssuer = inferIssuer(cfg.Endpoint.AuthURL)
@@ -244,15 +244,24 @@ func (c *Coordinator) newHandler(endpoint string, options Options, redirectURL s
 	if scopesConfigured && stored != nil {
 		configuredScopes = unionScopeStrings(configuredScopes, stored.Config.Scopes)
 	}
+	var interactiveConfig *sdkauth.AuthorizationCodeHandlerConfig
+	var expectedBuiltinIssuer string
+	if interactive != nil {
+		interactiveConfig = handlerConfig
+		if options.ClientID == "" && options.ClientIDMetadataURL == "" && stored != nil && stored.Config.ClientID == builtinClientIDMetadataURL {
+			expectedBuiltinIssuer = stored.Issuer
+		}
+	}
 	return &scopeOAuthHandler{
-		OAuthHandler: handler,
-		scopes:       configuredScopes,
-		discoverAll:  !scopesConfigured,
-		background:   interactive == nil,
+		expectedBuiltinIssuer: expectedBuiltinIssuer,
+		interactiveConfig:     interactiveConfig,
+		OAuthHandler:          handler,
+		scopes:                configuredScopes,
+		discoverAll:           !scopesConfigured,
+		background:            interactive == nil,
 		invalidateToken: func(req *http.Request) error {
 			return c.invalidateRejectedToken(canonical, req, persistentSource)
 		},
-		client: client,
 	}, nil
 }
 
@@ -262,7 +271,9 @@ type scopeOAuthHandler struct {
 	discoverAll     bool
 	background      bool
 	invalidateToken func(*http.Request) error
-	client          *http.Client
+	// Only Start uses this config, in its single runFlow goroutine.
+	interactiveConfig     *sdkauth.AuthorizationCodeHandlerConfig
+	expectedBuiltinIssuer string
 }
 
 func (h *scopeOAuthHandler) Authorize(ctx context.Context, req *http.Request, resp *http.Response) error {
@@ -274,12 +285,17 @@ func (h *scopeOAuthHandler) Authorize(ctx context.Context, req *http.Request, re
 		return h.OAuthHandler.Authorize(ctx, req, resp)
 	}
 	scopes := h.scopes
-	if h.discoverAll {
-		metadataCtx, cancel := context.WithTimeout(ctx, metadataTimeout)
-		discovered, discoveryErr := discoverAuthorizationServerScopes(metadataCtx, req.URL.String(), challenges, h.client)
-		cancel()
-		if discoveryErr == nil {
-			scopes = unionScopeStrings(scopes, discovered)
+	if h.interactiveConfig != nil {
+		handler, metadata, err := prepareInteractiveHandler(ctx, req.URL.String(), h.expectedBuiltinIssuer, challenges, h.interactiveConfig)
+		if err != nil {
+			if resp.Body != nil {
+				_ = resp.Body.Close()
+			}
+			return err
+		}
+		h.OAuthHandler = handler
+		if h.discoverAll && metadata != nil {
+			scopes = unionScopeStrings(scopes, metadata.ScopesSupported)
 		}
 	}
 	if len(scopes) == 0 {
@@ -359,72 +375,6 @@ func (h *scopeOAuthHandler) authorizeBackground(req *http.Request, resp *http.Re
 		}
 	}
 	return ErrAuthenticationRequired
-}
-
-type protectedResourceMetadataCandidate struct {
-	url      string
-	resource string
-}
-
-func discoverAuthorizationServerScopes(ctx context.Context, resourceURL string, challenges []oauthex.Challenge, client *http.Client) ([]string, error) {
-	if client == nil {
-		client = http.DefaultClient
-	}
-	metadataURL := ""
-	for _, challenge := range challenges {
-		if challenge.Scheme == "bearer" && challenge.Params["resource_metadata"] != "" {
-			metadataURL = challenge.Params["resource_metadata"]
-			break
-		}
-	}
-	candidates := protectedResourceMetadataCandidates(metadataURL, resourceURL)
-	var metadata *oauthex.ProtectedResourceMetadata
-	for _, candidate := range candidates {
-		resolved, err := oauthex.GetProtectedResourceMetadata(ctx, candidate.url, candidate.resource, client)
-		if err == nil && resolved != nil {
-			metadata = resolved
-			break
-		}
-	}
-
-	authorizationServer := ""
-	if metadata != nil && len(metadata.AuthorizationServers) > 0 {
-		authorizationServer = metadata.AuthorizationServers[0]
-	} else {
-		// Compatibility with the 2025-03-26 authorization flow: the MCP
-		// endpoint's origin doubles as the authorization server.
-		u, err := url.Parse(resourceURL)
-		if err != nil {
-			return nil, err
-		}
-		u.Path, u.RawPath, u.RawQuery, u.Fragment = "", "", "", ""
-		authorizationServer = u.String()
-	}
-	serverMetadata, err := sdkauth.GetAuthServerMetadata(ctx, authorizationServer, client)
-	if err != nil || serverMetadata == nil {
-		return nil, err
-	}
-	return unionScopeStrings(nil, serverMetadata.ScopesSupported), nil
-}
-
-func protectedResourceMetadataCandidates(metadataURL, resourceURL string) []protectedResourceMetadataCandidate {
-	var candidates []protectedResourceMetadataCandidate
-	if metadataURL != "" {
-		candidates = append(candidates, protectedResourceMetadataCandidate{url: metadataURL, resource: resourceURL})
-	}
-	u, err := url.Parse(resourceURL)
-	if err != nil {
-		return candidates
-	}
-	metadata := *u
-	metadata.Path = "/.well-known/oauth-protected-resource/" + strings.TrimLeft(u.Path, "/")
-	metadata.RawPath, metadata.RawQuery, metadata.Fragment = "", "", ""
-	candidates = append(candidates, protectedResourceMetadataCandidate{url: metadata.String(), resource: resourceURL})
-	metadata.Path = "/.well-known/oauth-protected-resource"
-	rootResource := *u
-	rootResource.Path, rootResource.RawPath, rootResource.RawQuery, rootResource.Fragment = "", "", "", ""
-	candidates = append(candidates, protectedResourceMetadataCandidate{url: metadata.String(), resource: rootResource.String()})
-	return candidates
 }
 
 func unionScopeStrings(left, right []string) []string {
@@ -593,7 +543,7 @@ func (c *Coordinator) CompleteCallback(state, code, issuer, oauthError string) (
 
 	result := callbackResult{code: code, state: state, iss: issuer}
 	if oauthError != "" {
-		result.err = fmt.Errorf("authorization was denied")
+		result.err = newCallbackError(oauthError)
 	} else if code == "" {
 		result.err = fmt.Errorf("authorization callback did not include a code")
 	}
@@ -1020,37 +970,4 @@ func cloneToken(token *oauth2.Token) *oauth2.Token {
 	}
 	copy := *token
 	return &copy
-}
-
-func safeError(err error) string {
-	if err == nil {
-		return ""
-	}
-	if errors.Is(err, ErrAuthenticationRequired) {
-		return "sign-in required"
-	}
-	if errors.Is(err, ErrRefreshRejected) {
-		return "stored authorization expired or was revoked; sign in again"
-	}
-	if errors.Is(err, context.DeadlineExceeded) {
-		return "authorization expired"
-	}
-	if errors.Is(err, context.Canceled) {
-		return "authorization canceled"
-	}
-	var retrieveErr *oauth2.RetrieveError
-	if errors.As(err, &retrieveErr) {
-		return "authorization server rejected the token request"
-	}
-	text := strings.Map(func(r rune) rune {
-		if unicode.IsControl(r) {
-			return -1
-		}
-		return r
-	}, err.Error())
-	text = strings.TrimSpace(text)
-	if len(text) > maximumSafeErrSize {
-		text = text[:maximumSafeErrSize] + "…"
-	}
-	return text
 }
