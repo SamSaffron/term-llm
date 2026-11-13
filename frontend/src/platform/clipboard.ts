@@ -80,7 +80,20 @@ export async function copyPendingText(
   }
   const blob = validated.then((value) => new Blob([value], { type: 'text/plain' }));
   // A denied write or throwing constructor need not consume the data promise.
-  void blob.catch(() => {});
-  // No await before write: WebKit needs the original click's user gesture.
-  return nav.clipboard.write([new ClipboardItem({ 'text/plain': blob })]);
+  let dataFailed = false;
+  let dataError: unknown;
+  void blob.catch((error: unknown) => {
+    dataFailed = true;
+    dataError = error;
+  });
+  try {
+    // No await before write: WebKit needs the original click's user gesture.
+    return await nav.clipboard.write([new ClipboardItem({ 'text/plain': blob })]);
+  } catch (error) {
+    // WebKit maps rejected item data to a generic permission error. Preserve a
+    // known data failure, but never wait for data after an actual denied write.
+    if (dataFailed && error instanceof DOMException && error.name === 'NotAllowedError')
+      throw dataError;
+    throw error;
+  }
 }

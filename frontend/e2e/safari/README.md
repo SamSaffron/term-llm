@@ -2,8 +2,11 @@
 
 This is a focused fixture, **not the full application**. It bundles the production
 `DiffSidebar`/`DiffAction`, clipboard helpers, `Composer`, `ToggleSwitch`, and their
-CSS. Only the store's provider/server boundaries are replaced. The fixture is not
-included in the shipped chat or Hub entry points.
+CSS. Only the store's provider/server boundaries are replaced. A fixture-only
+observer forwards `clipboard.write` synchronously to the real native API and
+records successful completion durably; it never substitutes clipboard data or
+permission behavior. The fixture is not included in the shipped chat or Hub entry
+points.
 
 ## Build and run
 
@@ -38,16 +41,20 @@ input sources, install anything, or start permanent services. It deliberately
 **overwrites the clipboard** with known fixture text. `--verify-pasteboard` uses
 `pbpaste` to check exact bytes and requires the same desktop user/pasteboard as
 Safari. Without it, success means the native clipboard write promise fulfilled,
-not independently verified clipboard contents. Preserve the emitted JSON and
-record the macOS/Safari versions. An existing compatible fixture server can be
-selected with `--fixture-url` instead of `--fixture-dir`.
+not independently verified clipboard contents. The runner emits JSON on success
+or failure, retaining completed checks and environment information. Primary
+failures and cleanup errors are reported separately; either gives a nonzero exit.
+Preserve the emitted JSON and record the macOS/Safari versions. An existing
+compatible fixture server can be selected with `--fixture-url` instead of
+`--fixture-dir`.
 
 ## Automated checks
 
 - Trusted W3C element click on a direct text copy, as a positive control.
 - Trusted click on the production unloaded-file copy action, with its diff
-  response delayed **six seconds**, followed by the production copied feedback.
-  Optional exact pasteboard checks verify both sentinel and complete patch bytes.
+  response delayed **six seconds**, waiting for durable native write completion
+  rather than polling the production's transient 700 ms copied class. Optional
+  exact pasteboard checks verify both sentinel and complete patch bytes.
 - Actual mouse pointer actions at all four production toggle wrapper corners,
   protecting the explicitly sized invisible checkbox hit target.
 - Synthetic Safari-shaped `keydown` events (`isComposing: false`, `keyCode: 229`)
@@ -72,7 +79,10 @@ approval. Record any unavailable prerequisite as untested.
 2. In the full app, copy an unloaded collapsed diff, an already loaded diff, and
    a path. Check pasted bytes, no duplicate fetch for loaded data, and copied
    feedback. Image/truncated/failed diffs must not overwrite existing clipboard
-   content with an empty string, URL, error, or incomplete patch.
+   content with an empty string, URL, error, or incomplete patch. This intentionally
+   includes **truncated worktree patches already cached with partial lines**:
+   copying now rejects with an error instead of reporting success with a partial
+   patch. Obtain the complete diff before copying it.
 3. For a configured PCM voice backend, start from a cold/new chat and delayed
    startup; grant or deny microphone permission, cancel while permission/resume
    is pending, then retry. The mic must stop on cancel/failure. Confirm audio can

@@ -43,7 +43,16 @@ store.diff.value = {
   sessionId: 'smoke',
   files: [{ path: 'smoke.txt', status: 'modify', additions: 1, deletions: 1 }],
 };
-const audit = { sends: 0, errors: [] as string[], direct: '', requests: 0 };
+const audit = { sends: 0, errors: [] as string[], direct: '', requests: 0, writes: 0 };
+// Observe the real native write without moving its invocation out of the click.
+// Keep completion durable: the production copied class lasts only 700 ms.
+const nativeWrite = navigator.clipboard?.write?.bind(navigator.clipboard);
+if (nativeWrite) {
+  navigator.clipboard.write = (items) =>
+    nativeWrite(items).then(() => {
+      audit.writes++;
+    });
+}
 Object.assign(window, { safariSmoke: audit });
 store.toast = (error) => {
   audit.errors.push(String(error));

@@ -98,6 +98,42 @@ describe('pending text clipboard', () => {
     },
   );
 
+  it.each(['empty', 'fetch'] as const)(
+    'preserves %s failure when WebKit maps rejected item data to NotAllowedError',
+    async (kind) => {
+      const native = nativeClipboard();
+      native.write.mockImplementation(() =>
+        native.blob().then(
+          () => undefined,
+          () => {
+            throw new DOMException('The request is not allowed', 'NotAllowedError');
+          },
+        ),
+      );
+      const failure = new Error('Diff request failed: 500');
+      const text = kind === 'empty' ? Promise.resolve('') : Promise.reject(failure);
+      const copy = copyPendingText(text, document, native.nav);
+      if (kind === 'empty') await expect(copy).rejects.toThrow('No text is available');
+      else await expect(copy).rejects.toBe(failure);
+      expect(native.writeText).not.toHaveBeenCalled();
+    },
+  );
+
+  it('returns immediate permission denial without waiting for pending data or its late rejection', async () => {
+    const native = nativeClipboard();
+    const denied = new DOMException('Permission denied', 'NotAllowedError');
+    native.write.mockRejectedValue(denied);
+    let reject!: (error: Error) => void;
+    const text = new Promise<string>((_resolve, fail) => {
+      reject = fail;
+    });
+    await expect(copyPendingText(text, document, native.nav)).rejects.toBe(denied);
+    reject(new Error('Later data failure'));
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(native.writeText).not.toHaveBeenCalled();
+  });
+
   it.each(['constructor', 'write'] as const)(
     'observes abandoned data on %s failure without falling back',
     async (kind) => {

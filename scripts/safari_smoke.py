@@ -7,6 +7,7 @@ import json
 import subprocess
 import threading
 import time
+import urllib.error
 import urllib.parse
 import urllib.request
 
@@ -43,8 +44,13 @@ class Driver:
             self.url + path, data=data, method=method,
             headers={"Content-Type": "application/json"},
         )
-        with urllib.request.urlopen(request, timeout=30) as response:
-            value = json.load(response)["value"]
+        try:
+            with urllib.request.urlopen(request, timeout=30) as response:
+                value = json.load(response)["value"]
+        except urllib.error.HTTPError as error:
+            raise RuntimeError("WebDriver HTTP %s: %s" % (
+                error.code, error.read().decode("utf-8", errors="replace"),
+            )) from error
         if isinstance(value, dict) and "error" in value:
             raise RuntimeError(value)
         return value
@@ -84,12 +90,13 @@ class Driver:
 
 
 def run(driver, url, verify_pasteboard):
-    created = driver.request("POST", "/session", {
-        "capabilities": {"alwaysMatch": {"browserName": "safari"}},
-    })
-    driver.session = created["sessionId"]
-    result = {"capabilities": created.get("capabilities"), "checks": []}
+    result = {"status": "failed", "checks": [], "clipboardBytesVerified": False}
     try:
+        created = driver.request("POST", "/session", {
+            "capabilities": {"alwaysMatch": {"browserName": "safari"}},
+        })
+        driver.session = created["sessionId"]
+        result["capabilities"] = created.get("capabilities")
         driver.call("POST", "/window/rect", {"width": 1100, "height": 900})
         driver.call("POST", "/url", {"url": url})
         driver.wait("return !!window.safariSmoke")
@@ -103,10 +110,11 @@ def run(driver, url, verify_pasteboard):
         driver.hover('.diff-file-row')
         driver.click('[aria-label="Copy diff for smoke.txt"]')
         driver.wait("return window.safariSmoke.requests === 1")
-        driver.wait("return document.querySelector('[aria-label=\"Copy diff for smoke.txt\"]').classList.contains('copied')")
+        driver.wait("return window.safariSmoke.writes === 1")
         assert not driver.js("return window.safariSmoke.errors"), driver.js("return window.safariSmoke.errors")
         if verify_pasteboard:
             assert subprocess.check_output(["pbpaste"], text=True) == PATCH
+            result["clipboardBytesVerified"] = True
         result["checks"].append("trusted unloaded diff copy after 6s network delay")
 
         # Actual pointer actions at all four wrapper corners; no DOM .click().
@@ -155,11 +163,23 @@ def run(driver, url, verify_pasteboard):
         assert driver.js("return window.safariSmoke.sends") == 1
         result["checks"].append("synthetic keyCode229 guard + real Enter send/completion")
         result["audit"] = driver.js("return window.safariSmoke")
-        result["clipboardBytesVerified"] = verify_pasteboard
         result["limits"] = ["No native OS IME, microphone/hardware, iOS or full-app coverage."]
-        return result
+        result["status"] = "passed"
+    except Exception as error:
+        result["error"] = "%s: %s" % (type(error).__name__, error)
+        if driver.session:
+            try:
+                result["audit"] = driver.js("return window.safariSmoke")
+            except Exception as diagnostic_error:
+                result["diagnosticError"] = str(diagnostic_error)
     finally:
-        driver.request("DELETE", "/session/" + driver.session)
+        if driver.session:
+            try:
+                driver.request("DELETE", "/session/" + driver.session)
+            except Exception as error:
+                result.setdefault("cleanupErrors", []).append(str(error))
+                result["status"] = "failed"
+    return result
 
 
 def main():
@@ -171,6 +191,7 @@ def main():
     parser.add_argument("--verify-pasteboard", action="store_true", help="Compare exact bytes using macOS pbpaste (same desktop user)")
     args = parser.parse_args()
     server = None
+    result = {"status": "failed", "checks": []}
     try:
         url = args.fixture_url
         if args.fixture_dir:
@@ -178,12 +199,20 @@ def main():
             server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), handler)
             threading.Thread(target=server.serve_forever, daemon=True).start()
             url = "http://127.0.0.1:%d/" % server.server_port
-        print(json.dumps(run(Driver(args.driver_url), url, args.verify_pasteboard), indent=2))
+        result = run(Driver(args.driver_url), url, args.verify_pasteboard)
+    except Exception as error:
+        result["error"] = "%s: %s" % (type(error).__name__, error)
     finally:
         if server:
-            server.shutdown()
-            server.server_close()
+            for cleanup in (server.shutdown, server.server_close):
+                try:
+                    cleanup()
+                except Exception as error:
+                    result.setdefault("cleanupErrors", []).append(str(error))
+                    result["status"] = "failed"
+    print(json.dumps(result, indent=2))
+    return 0 if result["status"] == "passed" else 1
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())
