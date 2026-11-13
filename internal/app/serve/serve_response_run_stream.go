@@ -510,7 +510,7 @@ func (s *serveServer) streamResponseRunEvents(ctx context.Context, w http.Respon
 			return
 		}
 		pingMu.Lock()
-		writeErr := writeStoredResponseEvent(w, ev)
+		writeErr := run.writeForegroundSafeEvent(ctx, w, ev)
 		flusher.Flush()
 		pingMu.Unlock()
 		if writeErr != nil {
@@ -523,7 +523,7 @@ func (s *serveServer) streamResponseRunEvents(ctx context.Context, w http.Respon
 		pingMu.Lock()
 		var replayErr error
 		for _, ev := range replay {
-			if replayErr = writeStoredResponseEvent(w, ev); replayErr != nil {
+			if replayErr = run.writeForegroundSafeEvent(ctx, w, ev); replayErr != nil {
 				break
 			}
 		}
@@ -559,7 +559,7 @@ func (s *serveServer) streamResponseRunEvents(ctx context.Context, w http.Respon
 			// high token rates (~100 events/sec during streaming).
 			pingMu.Lock()
 			closed := false
-			writeErr := writeStoredResponseEvent(w, ev)
+			writeErr := run.writeForegroundSafeEvent(ctx, w, ev)
 		drainLoop:
 			for writeErr == nil {
 				select {
@@ -568,7 +568,7 @@ func (s *serveServer) streamResponseRunEvents(ctx context.Context, w http.Respon
 						closed = true
 						break drainLoop
 					}
-					writeErr = writeStoredResponseEvent(w, next)
+					writeErr = run.writeForegroundSafeEvent(ctx, w, next)
 				default:
 					break drainLoop
 				}

@@ -491,14 +491,17 @@ func (m *agentManager) wait(ctx context.Context, e *agentEntry, budget time.Dura
 	}
 	timer := time.NewTimer(budget)
 	defer timer.Stop()
-	select {
-	case <-e.done:
-		return true
-	case <-timer.C:
-		return false
-	case <-ctx.Done():
-		return false
-	}
+	settled, err := core.WithCodeModeWait(ctx, func() (bool, error) {
+		select {
+		case <-e.done:
+			return true, nil
+		case <-timer.C:
+			return false, nil
+		case <-ctx.Done():
+			return false, ctx.Err()
+		}
+	})
+	return settled && err == nil
 }
 
 func (m *agentManager) detachInitial(e *agentEntry) {

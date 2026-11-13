@@ -15,9 +15,9 @@ import (
 
 const Name = codemode.LegacyToolName
 
-const callableContract = `Tools: await tools[exactName](args); list Object.keys(tools); inspect text(await describeTools([name])). Normal approvals apply.
-Results: native {text,isError,timedOut,content?}; MCP {content,structuredContent?,isError?}. Check flags; bridge failures throw. Await calls; parallelize only independent work.
-settleInOrder(promises): yields {index,status,value|reason} in completion order; break does not cancel calls—await remaining work.
+const callableContract = `Tools: await tools[exactName](args); Object.keys(tools) lists admitted names only; describeTools([name]) gives schemas. Normal approvals apply. Client tools expire with their foreground binding.
+Results: native {text,isError,timedOut,content?}; MCP {content,structuredContent?,isError?}. Check flags; failures throw. Await calls.
+settleInOrder(promises): async {index,status,value|reason}; break does not cancel calls—await remaining work.
 `
 
 const checkedExample = `Example (read_file admitted): const r = await tools.read_file({path:'README.md'}); if (r.isError || r.timedOut) throw Error(r.text); text(r.text);`

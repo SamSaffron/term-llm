@@ -154,6 +154,7 @@ func (r *responseRun) appendEventLocked(event string, payload map[string]any, te
 		}
 	}
 	if terminal {
+		r.revokeClientToolLeaseLocked("originating response ended")
 		payload["ended_at"] = r.endedAt
 		payload["final_rev"] = r.finalRev
 		payload["durable_handoff"] = r.durableHandoff

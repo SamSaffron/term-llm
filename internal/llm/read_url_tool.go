@@ -360,3 +360,13 @@ func isBlockedReadURLIP(ip net.IP) bool {
 		ip.IsUnspecified() ||
 		ip.IsMulticast()
 }
+
+// CodeModeExposure retains the same URL validation and fetch bounds in scripts.
+func (*ReadURLTool) CodeModeExposure() core.CodeModeExposure {
+	return core.CodeModeExposure{Allowed: true}
+}
+
+// ToolOrigin identifies the trusted local implementation, not its public spelling.
+func (*ReadURLTool) ToolOrigin() core.ToolOrigin {
+	return core.ToolOrigin{Class: core.ToolOriginWeb, ID: "read_url"}
+}

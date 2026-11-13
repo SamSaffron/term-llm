@@ -128,23 +128,21 @@ type liveSession struct {
 	// afterwards, so they need no lock.
 	delegationMode    string
 	delegationContext string
-	// clientDelegations holds the newest liveClientDelegationHistoryLimit
-	// delegations this call published to its client, in publish order, so a result
-	// can be matched, a replay compared, and a shutdown can unblock waiters.
+	// clientDelegations retains bounded rounds for replay and shutdown.
 	clientDelegations []*liveClientDelegation
-	// clientTools are the page tools the client declared for this call, offered
-	// to every delegated turn; clientToolRequests are the rounds of those tools'
-	// calls published back to it, kept like clientDelegations.
-	clientTools        []json.RawMessage
-	clientToolRequests []*liveClientToolRequest
-	events             []liveSessionEvent
-	eventHead          int
-	nextSequence       int
-	subscribers        map[int]chan liveSessionEvent
-	subscriberDropped  map[int]bool
-	nextSubscriber     int
-	diagnosticLast     time.Time
-	diagnosticReports  int
+	// clientTools and clientToolRequests retain page offers and published rounds.
+	clientTools          []json.RawMessage
+	clientToolRequests   []*liveClientToolRequest
+	clientToolLeases     core.ClientToolLeaseRegistry
+	clientToolGeneration uint64
+	events               []liveSessionEvent
+	eventHead            int
+	nextSequence         int
+	subscribers          map[int]chan liveSessionEvent
+	subscriberDropped    map[int]bool
+	nextSubscriber       int
+	diagnosticLast       time.Time
+	diagnosticReports    int
 }
 
 func newLiveSession(id, sessionID string) *liveSession {
@@ -213,10 +211,7 @@ func (l *liveSession) appendEventLocked(eventType string, data map[string]any) {
 	}
 	if eventType == liveEventEnded {
 		l.ended = true
-		// A terminal stream is terminal for the device too. The provider can end a
-		// call with no host teardown running (a hangup, a provider error), and a
-		// waiter left behind then holds the controller's delegation loop until its
-		// timeout while the check above silently swallows its resends.
+		// A terminal stream also ends device waiters and foreground leases.
 		l.abandonClientWaitersLocked()
 	}
 	for id, subscriber := range l.subscribers {
@@ -226,6 +221,7 @@ func (l *liveSession) appendEventLocked(eventType string, data map[string]any) {
 			// Make the SSE handler reconnect and replay from its last
 			// acknowledged sequence rather than silently losing events.
 			l.subscriberDropped[id] = true
+			l.revokeClientToolLeasesLocked("live event owner overflowed", id)
 			close(subscriber)
 			delete(l.subscribers, id)
 		}
@@ -257,6 +253,9 @@ func (l *liveSession) subscribe(after int) ([]liveSessionEvent, int, <-chan live
 	id := l.nextSubscriber
 	l.nextSubscriber++
 	ch := make(chan liveSessionEvent, liveSubscriberBuffer)
+	if len(l.subscribers) > 0 {
+		l.revokeClientToolLeasesLocked("live event owner became ambiguous", -1)
+	}
 	l.subscribers[id] = ch
 	return replay, id, ch, false
 }
@@ -264,6 +263,7 @@ func (l *liveSession) subscribe(after int) ([]liveSessionEvent, int, <-chan live
 func (l *liveSession) unsubscribe(id int) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
+	l.revokeClientToolLeasesLocked("live event owner disconnected", id)
 	if ch, ok := l.subscribers[id]; ok {
 		delete(l.subscribers, id)
 		close(ch)
@@ -377,15 +377,14 @@ func (l *liveSession) closeSubscribers() {
 		delete(l.subscribers, id)
 		close(ch)
 	}
-	// Teardown can reach here with no live.ended ever published — a call removed
-	// before its controller started — so this is not redundant with the abandon in
-	// appendEventLocked. Entries stay behind so a late POST is refused, not absorbed.
+	// Teardown may precede live.ended; retain entries to refuse late results.
 	l.abandonClientWaitersLocked()
 }
 
 // abandonClientWaitersLocked releases every host waiter blocked on the client —
 // delegations and page tool calls alike — because the call has ended.
 func (l *liveSession) abandonClientWaitersLocked() {
+	l.revokeClientToolLeasesLocked("live call ended", -1)
 	for _, entry := range l.clientDelegations {
 		entry.abandonLocked()
 	}
@@ -833,7 +832,7 @@ func (s *serveServer) handleLiveSessionEvents(w http.ResponseWriter, r *http.Req
 		return
 	}
 	writeEvent := func(event liveSessionEvent) bool {
-		return writeLiveSessionEvent(w, flushController, event)
+		return !record.clientToolEventDeliverable(event) || writeLiveSessionEvent(w, flushController, event)
 	}
 	for _, event := range replay {
 		if !writeEvent(event) {
@@ -1455,6 +1454,7 @@ func (s *serveServer) rebindLiveSession(record *liveSession, target liveSwitchTa
 	}
 	delete(s.liveByChat, previous)
 	s.liveByChat[targetID] = record.id
+	record.revokeClientToolLeasesLocked("live session owner changed", -1)
 	record.sessionID = targetID
 	record.lastActivity = time.Now()
 	// Publish inside the same critical section so two racing rebinds cannot emit

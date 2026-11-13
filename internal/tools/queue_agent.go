@@ -322,7 +322,7 @@ func (t *WaitForJobsTool) Spec() core.ToolSpec {
 	}
 }
 
-func (t *WaitForJobsTool) Execute(ctx context.Context, args json.RawMessage) (core.ToolOutput, error) {
+func (t *WaitForJobsTool) execute(ctx context.Context, args json.RawMessage) (core.ToolOutput, error) {
 	var a WaitForJobsArgs
 	if err := json.Unmarshal(args, &a); err != nil {
 		return queuedAgentErrorOutput(formatQueuedAgentError(ErrInvalidParams, fmt.Sprintf("failed to parse arguments: %v", err))), nil

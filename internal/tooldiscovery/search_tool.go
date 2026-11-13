@@ -186,7 +186,7 @@ func (p *Planner) activate(runID string, input searchInput) (loaded []mcp.Catalo
 	byOriginal := make(map[string][]string)
 	byQualified := make(map[string][]string)
 	for _, tool := range snapshot.Tools {
-		if !engine.IsToolAllowed(tool.Name) {
+		if !p.catalogueToolAvailable(engine, tool) {
 			continue
 		}
 		byName[tool.Name] = tool
@@ -261,7 +261,7 @@ func (p *Planner) activate(runID string, input searchInput) (loaded []mcp.Catalo
 	if latest != nil {
 		latestByName = make(map[string]mcp.CatalogTool, len(latest.Tools))
 		for _, tool := range latest.Tools {
-			if engine.IsToolAllowed(tool.Name) {
+			if p.catalogueToolAvailable(engine, tool) {
 				latestByName[tool.Name] = tool
 			}
 		}
@@ -368,9 +368,13 @@ func (p *Planner) activate(runID string, input searchInput) (loaded []mcp.Catalo
 	}
 
 	for _, tool := range newTools {
+		// Catalogue sync owns registration. Activation must never replace an
+		// unrelated occupant or report a schema whose binding is not installed.
+		if !p.catalogueToolAvailable(engine, tool) {
+			unavailable = append(unavailable, tool.Name)
+			continue
+		}
 		delete(state.evicted, tool.Name)
-		wrapper := mcp.NewCatalogMCPTool(p.manager, tool)
-		engine.Tools().RegisterDeferred(wrapper)
 		state.lastUsed++
 		state.active[tool.Name] = activeToolState{
 			SchemaHash:  tool.SchemaHash,
@@ -454,4 +458,14 @@ func qualifiedToolNames(tool mcp.CatalogTool) []string {
 	add(tool.Namespace, tool.ChildName)
 	add(tool.Server, tool.OriginalName)
 	return keys
+}
+
+// CodeModeExposure keeps the per-run planner exception out of cell ceilings.
+func (*SearchTool) CodeModeExposure() core.CodeModeExposure {
+	return core.CodeModeExposure{Reason: "run_scoped_discovery"}
+}
+
+// ToolOrigin identifies the trusted local implementation, not its public spelling.
+func (*SearchTool) ToolOrigin() core.ToolOrigin {
+	return core.ToolOrigin{Class: core.ToolOriginPlanner, ID: "tool_search"}
 }

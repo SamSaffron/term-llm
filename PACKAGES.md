@@ -97,6 +97,7 @@ One line per root-module package, generated from package doc comments by `make d
 - `internal/filelock` — takes cross-process advisory file locks on shared state files.
 - `internal/fileprivacy` — owns owner-only filesystem policy for application state: private file/directory modes, permission checks, and atomic private-file creation.
 - `internal/filetrack` — records file changes made by agent tools so sessions can expose a cumulative diff (baseline = file state at first touch in a session).
+- `internal/filetrack/shellscope` — performs bounded filesystem and Git inspection for shell file-change tracking without granting permission or attributing authored work.
 - `internal/formatutil` — provides dependency-light shared display formatting.
 - `internal/gitcommit` — provides the host-owned Git transaction used by native commit workflows.
 - `internal/gitdiff` — exposes structured staged and working-tree changes for the web Changes panel.

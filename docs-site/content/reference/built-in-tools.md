@@ -18,52 +18,58 @@ term-llm exec --tools read_file,write_file,edit_file,shell,grep,glob,view_image
 ### Available Tools
 
 <!-- BEGIN GENERATED: tools -->
-| Tool | Description | Permission policy | Default enabled | Aliases |
-|---|---|---|---|---|
-| `code_mode` | Run JavaScript to compose tools or activated skill modules. | `execute` | false | — |
-| `spawn_script` | Run async JavaScript in fresh QuickJS (function body, no fences). | `execute` | false | — |
-| `wait_script` | Wait for a code cell created by spawn_script and return output not yet observed by a previous spawn_script/wait_script/cancel_script response. | `execute` | false | — |
-| `cancel_script` | Explicitly cancel_script a code cell created by spawn_script. | `execute` | false | — |
-| `read_file` | Read file contents. | `read` | true | — |
-| `write_file` | Create or overwrite a file with the specified content. | `edit` | true | — |
-| `edit_file` | Edit a file. | `edit` | true | — |
-| `unified_diff` | Apply file edits using unified diff format. | `edit` | true | — |
-| `shell` | Execute a shell command. | `execute` | true | — |
-| `grep` | Search file contents using regex patterns (RE2 syntax). | `search` | true | — |
-| `glob` | Find files by glob pattern (supports ** for recursive matching). | `search` | true | — |
-| `view_image` | View and analyze an image file. | `read` | true | — |
-| `show_media` | Register an existing image, video, or audio so it can be placed in your response. | `image` | true | `show_image` |
-| `image_generate` | Generate an image from a text prompt. | `image` | true | — |
-| `ask_user` | Present questions to the user and gather their responses. | `interactive` | true | — |
-| `spawn_agent` | Spawn a sub-agent to handle a specific task autonomously. | `agent` | true | — |
-| `wait_agent` | Wait for agents without cancelling them; returns their current status. | `agent` | true | — |
-| `continue_agent` | Steer a running agent or resume a stopped agent with a fresh turn budget. | `agent` | true | — |
-| `cancel_agent` | Cancel an agent and its active descendants; it may be resumed later. | `agent` | true | — |
-| `list_agents` | List agents belonging to this parent session, including interrupted agents from earlier processes. | `agent` | true | — |
-| `queue_agent` | Spawn a sub-agent as a background jobs-v2 LLM job and return immediately. | `agent` | true | — |
-| `wait_for_jobs` | Wait for one or more queued jobs-v2 agent jobs to finish and return their results. | `agent` | true | — |
-| `run_agent_script` | Execute a script bundled with the current agent. | `execute` | true | — |
-| `initiate_handover` | Initiate a handover to another agent. | `agent` | true | — |
-| `hub_delegate` | Delegate a task to another term-llm node via the Hub. | `agent` | true | — |
-| `hub_check_delegation` | Check (and by default wait for) hub delegations started with hub_delegate, returning their status and final responses. | `agent` | true | — |
-| `manage_workspace` | Manage session-scoped local workspaces. | `session_state` | false | — |
-| `update_plan` | Publish the complete current execution plan. | `session_state` | false | — |
-| `live_settings` | Inspect this term-llm live call's model, current voice and supported voices. | `session_state` | false | — |
-| `ui_get_source` | Inspect stock web UI source on demand. | `read` | false | — |
-| `ui_extensions` | Inspect or reload the running web process's extension directory, enabled order and config/CLI provenance. | `session_state` | false | — |
-| `ui_activate_extensions` | Activate completed web extension edits: rescan the configured enabled list and request automatic browser reload when responses finish and drafts are clear. | `session_state` | false | — |
-| `show_image` | Display an image to the user via terminal (icat). | `image` | false | — |
-| `activate_skill` | Activate a skill to load its specialized instructions and capabilities. | `skill` | false | — |
-| `search_skills` | Search for skills by keyword. | `skill` | false | — |
-| `live_new_session` | Start a brand-new, empty conversation and bind this live voice call to it. | `session_state` | false | — |
-| `live_switch_session` | Bind the current live voice call to a different existing chat session. | `session_state` | false | — |
-| `session_directory` | List or search this term-llm instance's chat sessions. | `read` | false | — |
-| `create_goal` | Create or replace the persistent objective for this session. | `session_state` | false | — |
-| `update_goal` | Mark the persistent session goal complete or blocked after satisfying the required audit. | `session_state` | false | — |
-| `get_goal` | Get the persistent objective and budget state for this session. | `read` | false | — |
-| `update_progress` | Persist the current best-so-far state as a JSON object without ending the run. | `session_state` | false | — |
-| `finalize_progress` | Persist the final best-so-far state as a JSON object and finish the run. | `session_state` | false | — |
+| Tool | Description | Permission policy | Default enabled | Script exposure | Aliases |
+|---|---|---|---|---|---|
+| `code_mode` | Run JavaScript to compose tools or activated skill modules. | `execute` | false | Direct only: `script_lifecycle` | — |
+| `spawn_script` | Run async JavaScript in fresh QuickJS (function body, no fences). | `execute` | false | Direct only: `script_lifecycle` | — |
+| `wait_script` | Wait for a code cell created by spawn_script and return output not yet observed by a previous spawn_script/wait_script/cancel_script response. | `execute` | false | Direct only: `script_lifecycle` | — |
+| `cancel_script` | Explicitly cancel_script a code cell created by spawn_script. | `execute` | false | Direct only: `script_lifecycle` | — |
+| `read_file` | Read file contents. | `read` | true | Allowed when bound | — |
+| `write_file` | Create or overwrite a file with the specified content. | `edit` | true | Allowed when bound | — |
+| `edit_file` | Edit a file. | `edit` | true | Allowed when bound | — |
+| `unified_diff` | Apply file edits using unified diff format. | `edit` | true | Allowed when bound | — |
+| `shell` | Execute a shell command. | `execute` | true | Allowed when bound | — |
+| `grep` | Search file contents using regex patterns (RE2 syntax). | `search` | true | Allowed when bound | — |
+| `glob` | Find files by glob pattern (supports ** for recursive matching). | `search` | true | Allowed when bound | — |
+| `view_image` | View and analyze an image file. | `read` | true | Allowed when bound | — |
+| `show_media` | Register an existing image, video, or audio so it can be placed in your response. | `image` | true | Allowed when bound | `show_image` |
+| `image_generate` | Generate an image from a text prompt. | `image` | true | Allowed when bound | — |
+| `ask_user` | Present questions to the user and gather their responses. | `interactive` | true | Direct only: `foreground_interaction` | — |
+| `spawn_agent` | Spawn a sub-agent to handle a specific task autonomously. | `agent` | true | Allowed when bound | — |
+| `wait_agent` | Wait for agents without cancelling them; returns their current status. | `agent` | true | Allowed when bound | — |
+| `continue_agent` | Steer a running agent or resume a stopped agent with a fresh turn budget. | `agent` | true | Allowed when bound | — |
+| `cancel_agent` | Cancel an agent and its active descendants; it may be resumed later. | `agent` | true | Allowed when bound | — |
+| `list_agents` | List agents belonging to this parent session, including interrupted agents from earlier processes. | `agent` | true | Allowed when bound | — |
+| `queue_agent` | Spawn a sub-agent as a background jobs-v2 LLM job and return immediately. | `agent` | true | Allowed when bound | — |
+| `wait_for_jobs` | Wait for one or more queued jobs-v2 agent jobs to finish and return their results. | `agent` | true | Allowed when bound | — |
+| `run_agent_script` | Execute a script bundled with the current agent. | `execute` | true | Allowed when bound | — |
+| `initiate_handover` | Initiate a handover to another agent. | `agent` | true | Direct only: `runtime_handover` | — |
+| `hub_delegate` | Delegate a task to another term-llm node via the Hub. | `agent` | true | Direct only: `hub_binding_unreviewed` | — |
+| `hub_check_delegation` | Check (and by default wait for) hub delegations started with hub_delegate, returning their status and final responses. | `agent` | true | Direct only: `hub_binding_unreviewed` | — |
+| `manage_workspace` | Manage session-scoped local workspaces. | `session_state` | false | Direct only: `authority_mutation` | — |
+| `update_plan` | Publish the complete current execution plan. | `session_state` | false | Allowed when bound | — |
+| `live_settings` | Inspect this term-llm live call's model, current voice and supported voices. | `session_state` | false | Direct only: `runtime_mutation` | — |
+| `ui_get_source` | Inspect stock web UI source on demand. | `read` | false | Allowed when bound | — |
+| `ui_extensions` | Inspect or reload the running web process's extension directory, enabled order and config/CLI provenance. | `session_state` | false | Direct only: `extension_lifecycle` | — |
+| `ui_activate_extensions` | Activate completed web extension edits: rescan the configured enabled list and request automatic browser reload when responses finish and drafts are clear. | `session_state` | false | Direct only: `extension_lifecycle` | — |
+| `show_image` | Display an image to the user via terminal (icat). | `image` | false | Allowed when bound | — |
+| `activate_skill` | Activate a skill to load its specialized instructions and capabilities. | `skill` | false | Direct only: `instruction_mutation` | — |
+| `search_skills` | Search for skills by keyword. | `skill` | false | Allowed when bound | — |
+| `live_new_session` | Start a brand-new, empty conversation and bind this live voice call to it. | `session_state` | false | Direct only: `session_ownership` | — |
+| `live_switch_session` | Bind the current live voice call to a different existing chat session. | `session_state` | false | Direct only: `session_ownership` | — |
+| `session_directory` | List or search this term-llm instance's chat sessions. | `read` | false | Direct only: `live_control_directory` | — |
+| `create_goal` | Create or replace the persistent objective for this session. | `session_state` | false | Direct only: `host_tracked_mutation` | — |
+| `update_goal` | Mark the persistent session goal complete or blocked after satisfying the required audit. | `session_state` | false | Direct only: `host_tracked_mutation` | — |
+| `get_goal` | Get the persistent objective and budget state for this session. | `read` | false | Allowed when bound | — |
+| `update_progress` | Persist the current best-so-far state as a JSON object without ending the run. | `session_state` | false | Direct only: `host_tracked_mutation` | — |
+| `finalize_progress` | Persist the final best-so-far state as a JSON object and finish the run. | `session_state` | false | Direct only: `finishing_tool` | — |
 <!-- END GENERATED: tools -->
+
+Script exposure is separate from permission policy and default enablement. An
+allowed tool appears in a script only when it is enabled, permitted and its host
+binding is available. Direct-only tools remain usable through ordinary calls.
+Incoming MCP and foreground client tools are separate surfaces; see the
+[code-mode guide](/guides/code-mode/) for their admission and lifetime rules.
 
 Commands run by the `shell` tool in a session see that session's ID as `TERM_LLM_SESSION_ID`. It replaces an inherited value and an `env` override of the same name.
 

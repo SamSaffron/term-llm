@@ -148,3 +148,9 @@ func GetMCPToolSpecs(manager *Manager) []core.ToolSpec {
 	}
 	return specs
 }
+
+// CodeModeExposure is independent of remote names and untrusted annotations.
+// Admission and dispatch still validate exact catalogue identity and live policy.
+func (*MCPTool) CodeModeExposure() core.CodeModeExposure {
+	return core.CodeModeExposure{Allowed: true}
+}

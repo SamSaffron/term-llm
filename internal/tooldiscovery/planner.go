@@ -90,6 +90,7 @@ type Planner struct {
 	manager        *mcp.Manager
 	engine         *engine.Engine
 	engineMu       sync.RWMutex
+	registrationMu sync.Mutex
 	mode           Mode
 	strategy       Strategy
 	threshold      int
@@ -103,7 +104,7 @@ type Planner struct {
 	fallbackUsed  map[string]bool
 	searchAllowed map[string]bool
 	stateClock    uint64
-	registered    map[string]string
+	registered    map[string]*mcp.MCPTool
 	warnedAlways  map[string]uint64
 }
 
@@ -158,45 +159,13 @@ func NewPlanner(cfg config.ToolDiscoveryConfig, manager *mcp.Manager, engine *en
 		runStrategies:  make(map[string]Strategy),
 		fallbackUsed:   make(map[string]bool),
 		searchAllowed:  make(map[string]bool),
-		registered:     make(map[string]string),
+		registered:     make(map[string]*mcp.MCPTool),
 		warnedAlways:   make(map[string]uint64),
 	}
 	planner.syncCatalogue(snapshot)
 	manager.SetCatalogueChangeHandler(planner.handleCatalogueEvent)
 	engine.SetToolSurfacePlanner(planner)
 	return planner, nil
-}
-
-// AttachEngine moves planner delivery/registry wiring to a replacement engine
-// while preserving durable session activation state.
-func (p *Planner) AttachEngine(engine *engine.Engine) {
-	if p == nil || engine == nil {
-		return
-	}
-	p.engineMu.Lock()
-	oldEngine := p.engine
-	if oldEngine == engine {
-		p.engineMu.Unlock()
-		return
-	}
-	p.engine = engine
-	p.engineMu.Unlock()
-
-	p.mu.Lock()
-	oldRegistered := make([]string, 0, len(p.registered))
-	for name := range p.registered {
-		oldRegistered = append(oldRegistered, name)
-	}
-	p.registered = make(map[string]string)
-	p.mu.Unlock()
-	if oldEngine != nil && oldEngine.ClearToolSurfacePlanner(p) {
-		for _, name := range oldRegistered {
-			oldEngine.UnregisterTool(name)
-		}
-		oldEngine.UnregisterTool(ToolSearchName)
-	}
-	p.syncCatalogue(p.manager.CatalogueSnapshot())
-	engine.SetToolSurfacePlanner(p)
 }
 
 func (p *Planner) currentEngine() *engine.Engine {
@@ -214,58 +183,6 @@ func (p *Planner) handleCatalogueEvent(event mcp.CatalogueEvent) {
 		return
 	}
 	p.syncCatalogue(event.Snapshot)
-}
-
-func (p *Planner) syncCatalogue(snapshot *mcp.CatalogueSnapshot) {
-	if snapshot == nil {
-		return
-	}
-	engine := p.currentEngine()
-	if engine == nil {
-		return
-	}
-	current := make(map[string]mcp.CatalogTool, len(snapshot.Tools))
-	for _, tool := range snapshot.Tools {
-		current[tool.Name] = tool
-		engine.Tools().RegisterDeferred(mcp.NewCatalogMCPTool(p.manager, tool))
-	}
-
-	p.mu.Lock()
-	for name := range p.registered {
-		if _, ok := current[name]; !ok {
-			engine.UnregisterTool(name)
-		}
-	}
-	for _, state := range p.sessions {
-		for name := range state.evicted {
-			if _, exists := current[name]; !exists {
-				delete(state.evicted, name)
-			}
-		}
-		for name, active := range state.active {
-			tool, exists := current[name]
-			if !exists {
-				delete(state.active, name)
-				if _, sent := state.sent[name]; sent {
-					state.resetRequired = "active MCP tool was removed from the catalogue"
-				}
-				continue
-			}
-			if active.SchemaHash != tool.SchemaHash {
-				active.SchemaHash = tool.SchemaHash
-				state.active[name] = active
-				if _, sent := state.sent[name]; sent {
-					state.resetRequired = "an active MCP tool schema changed"
-				}
-			}
-		}
-	}
-	p.registered = make(map[string]string, len(current))
-	for name, tool := range current {
-		p.registered[name] = tool.SchemaHash
-	}
-	p.mu.Unlock()
-	p.index.replace(snapshot.Tools, snapshot.Generation)
 }
 
 func (p *Planner) stateKey(sessionID, runID string) string {
@@ -337,12 +254,7 @@ func (p *Planner) restoreNativeHistory(req *core.Request, key string) {
 	if snapshot == nil || engine == nil {
 		return
 	}
-	current := make(map[string]mcp.CatalogTool, len(snapshot.Tools))
-	for _, tool := range snapshot.Tools {
-		if engine.IsToolAllowed(tool.Name) {
-			current[tool.Name] = tool
-		}
-	}
+	current := p.authorizedCatalogueTools(engine, snapshot.Tools)
 	p.mu.Lock()
 	state := p.stateLocked(key)
 	evicted := make(map[string]bool, len(state.evicted))
@@ -531,16 +443,6 @@ func initialToolNameSet(specs []core.ToolSpec) map[string]bool {
 	return names
 }
 
-func authorizedCatalogueTools(engine *engine.Engine, tools []mcp.CatalogTool) map[string]mcp.CatalogTool {
-	authorized := make(map[string]mcp.CatalogTool, len(tools))
-	for _, tool := range tools {
-		if engine.IsToolAllowed(tool.Name) {
-			authorized[tool.Name] = tool
-		}
-	}
-	return authorized
-}
-
 func (p *Planner) selectRunStrategy(runID string, strategy Strategy, strategyReason string) (Strategy, string) {
 	p.mu.Lock()
 	if selected := p.runStrategies[runID]; selected != "" {
@@ -627,33 +529,6 @@ func buildToolSurfaceSelection(authorized map[string]mcp.CatalogTool, activeTool
 	}
 }
 
-func (p *Planner) applyToolSurfaceSelection(req *core.Request, engine *engine.Engine, snapshot *mcp.CatalogueSnapshot, initialToolNames map[string]bool, base []core.ToolSpec, resolved Mode, strategy Strategy, selection toolSurfaceSelection) {
-	req.Tools = append(base, selection.activeSpecs...)
-	req.NativeToolDiscovery = nil
-	if resolved == ModeDeferred && selection.deferredCount > 0 && strategy == StrategyPortable {
-		searchTool := &SearchTool{planner: p}
-		engine.Tools().RegisterDeferred(searchTool)
-		req.Tools = append(req.Tools, searchTool.Spec())
-	} else if resolved == ModeDeferred && strategy == StrategyNative {
-		req.NativeToolDiscovery = &core.NativeToolDiscoveryRequest{Search: (&SearchTool{planner: p}).Spec()}
-	}
-	if resolved == ModeDeferred && selection.deferredCount > 0 {
-		ensureDeferredToolSearchInstruction(req, snapshot, selection.serverDetails)
-	}
-	toolsAdded := false
-	for _, spec := range req.Tools {
-		if !initialToolNames[spec.Name] {
-			toolsAdded = true
-			break
-		}
-	}
-	if len(req.Tools) == 0 && req.NativeToolDiscovery == nil {
-		req.ToolChoice = core.ToolChoice{}
-	} else if req.ToolChoice.Mode == "" && (toolsAdded || req.NativeToolDiscovery != nil) {
-		req.ToolChoice = core.ToolChoice{Mode: core.ToolChoiceAuto}
-	}
-}
-
 func (p *Planner) selectSurface(provider core.Provider, req *core.Request, key, runID string, beginning bool) (string, error) {
 	snapshot := p.manager.CatalogueSnapshot()
 	if snapshot == nil {
@@ -670,7 +545,7 @@ func (p *Planner) selectSurface(provider core.Provider, req *core.Request, key, 
 	if engine == nil {
 		return "", fmt.Errorf("tool discovery engine is unavailable")
 	}
-	authorized := authorizedCatalogueTools(engine, snapshot.Tools)
+	authorized := p.authorizedCatalogueTools(engine, snapshot.Tools)
 	strategy, strategyReason, err := p.resolveStrategy(provider, req.Model)
 	if err != nil {
 		return "", err
@@ -784,7 +659,11 @@ func (p *Planner) selectSurface(provider core.Provider, req *core.Request, key, 
 
 	base := removeMCPAndSearch(req.Tools, snapshot.Tools)
 	selection := buildToolSurfaceSelection(authorized, state.active, resolved, strategy)
-	p.applyToolSurfaceSelection(req, engine, snapshot, initialToolNames, base, resolved, strategy, selection)
+	if err := p.applyToolSurfaceSelection(req, engine, snapshot, initialToolNames, base, resolved, strategy, selection); err != nil {
+		p.searchAllowed[runID] = false
+		p.mu.Unlock()
+		return "", err
+	}
 
 	resetReason := state.resetRequired
 	if resetReason == "" {
@@ -898,6 +777,9 @@ func (p *Planner) ResolveNativeToolDiscovery(_ context.Context, runID string, ca
 	}
 	for _, name := range names {
 		tool := selected[name]
+		if !p.catalogueToolAvailable(p.currentEngine(), tool) {
+			return core.ToolDiscoveryOutput{}, fmt.Errorf("selected MCP tool %q no longer has its authorised execution binding", name)
+		}
 		output.Tools = append(output.Tools, core.DiscoveredTool{Spec: tool.ToolSpec(), SchemaHash: tool.SchemaHash})
 	}
 	return output, nil
@@ -1054,7 +936,7 @@ func (p *Planner) ResolveProviderToolCall(runID string, call core.ToolCall) (cor
 			continue
 		}
 		loaded, ok := active[tool.Name]
-		if !ok || loaded.SchemaHash != tool.SchemaHash || !engine.IsToolAllowed(tool.Name) {
+		if !ok || loaded.SchemaHash != tool.SchemaHash || !p.catalogueToolAvailable(engine, tool) {
 			return call, fmt.Errorf("native namespace child %q/%q is not loaded and authorised", call.Namespace, call.ChildName)
 		}
 		if _, ok := engine.Tools().Get(tool.Name); !ok {
@@ -1076,16 +958,13 @@ func (p *Planner) CanActivateDeferredTool(name string) bool {
 	if engine == nil || !engine.IsToolAllowed(name) {
 		return false
 	}
-	if _, ok := engine.Tools().Get(name); !ok {
-		return false
-	}
 	snapshot := p.manager.CatalogueSnapshot()
 	if snapshot == nil {
 		return false
 	}
 	for _, tool := range snapshot.Tools {
 		if tool.Name == name {
-			return true
+			return p.catalogueToolAvailable(engine, tool)
 		}
 	}
 	return false
@@ -1100,7 +979,7 @@ func (p *Planner) AllowsPlannerTool(runID, name string) bool {
 	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	return p.runs[runID] != "" && p.searchAllowed[runID]
+	return p.runs[runID] != "" && p.searchAllowed[runID] && p.searchToolInstalled(p.currentEngine())
 }
 
 func (p *Planner) ResetSession(sessionID string) {
@@ -1151,7 +1030,7 @@ func (p *Planner) ActiveToolSpecs(sessionID string) []core.ToolSpec {
 	specs := make([]core.ToolSpec, 0, len(active))
 	for _, tool := range snapshot.Tools {
 		toolState, ok := active[tool.Name]
-		if !ok || toolState.SchemaHash != tool.SchemaHash || !engine.IsToolAllowed(tool.Name) {
+		if !ok || toolState.SchemaHash != tool.SchemaHash || !p.catalogueToolAvailable(engine, tool) {
 			continue
 		}
 		specs = append(specs, tool.ToolSpec())

@@ -2,11 +2,9 @@ package serve
 
 import (
 	"context"
-	"crypto/sha256"
 	"errors"
-	"fmt"
+	"io"
 	"net/http"
-	"strings"
 	"sync"
 	"time"
 
@@ -18,92 +16,62 @@ import (
 // provider waits; the page posts its answer back to this response only.
 const typedClientToolTimeout = 120 * time.Second
 
-type typedClientToolAnswer struct {
-	name      string
-	arguments string
-	output    string
-	done      chan struct{}
-	answered  bool
-}
-
 type typedClientToolRunner struct {
-	run      *responseRun
-	runtime  *serveRuntime
-	names    map[string]bool
-	mu       sync.Mutex
-	pending  map[string]*typedClientToolAnswer
-	answered map[string][sha256.Size]byte
-	calls    int
+	run     *responseRun
+	runtime *serveRuntime
+	names   map[string]bool
+	specs   []core.ToolSpec
+	lease   *core.ClientToolLease // nil until a reliable host lifecycle is attached
+	mu      sync.Mutex
+	mailbox *core.ClientToolMailbox
 }
 
 func (r *typedClientToolRunner) OwnsClientTool(name string) bool { return r.names[name] }
 
-func (r *typedClientToolRunner) RunClientTool(ctx context.Context, call core.ToolCall) (core.ToolOutput, error) {
-	if !r.names[call.Name] {
-		return core.ToolOutput{}, fmt.Errorf("client tool %q was not offered", call.Name)
+func (r *typedClientToolRunner) ClientToolLease() *core.ClientToolLease {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.lease
+}
+
+func (r *typedClientToolRunner) clientMailbox() *core.ClientToolMailbox {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.mailbox == nil {
+		r.mailbox = core.NewClientToolMailbox(r.names, liveClientToolInlineCallLimit, typedClientToolTimeout, r.publishClientTool)
 	}
+	return r.mailbox
+}
+
+func (r *typedClientToolRunner) publishClientTool(ctx context.Context, call core.ToolCall) error {
+	payload := map[string]any{"call_id": call.ID, "name": call.Name, "arguments": string(call.Arguments)}
+	if core.ClientToolCallLease(ctx) != nil {
+		payload["foreground_only"] = true
+	}
+	r.run.mu.Lock()
+	defer r.run.mu.Unlock()
+	if r.run.status != "in_progress" || r.run.cancelRequested {
+		return errors.New("originating response ended before client publication")
+	}
+	if err := core.BeginClientToolDispatch(ctx); err != nil {
+		return err
+	}
+	return r.run.appendEventLocked("response.client_tool.requested", payload, false)
+}
+
+func (r *typedClientToolRunner) RunClientTool(ctx context.Context, call core.ToolCall) (core.ToolOutput, error) {
 	if r.runtime != nil {
 		defer r.runtime.pauseForInteractiveWait()()
 	}
-	args := string(call.Arguments)
-	if strings.TrimSpace(args) == "" {
-		args = "{}"
-	}
-	answer := &typedClientToolAnswer{name: call.Name, arguments: args, done: make(chan struct{})}
-	r.mu.Lock()
-	if r.pending == nil {
-		r.pending = make(map[string]*typedClientToolAnswer)
-	}
-	if r.calls >= liveClientToolInlineCallLimit {
-		r.mu.Unlock()
-		return core.ToolOutput{}, fmt.Errorf("stopped after %d device tool calls", liveClientToolInlineCallLimit)
-	}
-	if _, exists := r.answered[call.ID]; exists {
-		r.mu.Unlock()
-		return core.ToolOutput{}, fmt.Errorf("duplicate client tool call %q", call.ID)
-	}
-	if _, exists := r.pending[call.ID]; exists {
-		r.mu.Unlock()
-		return core.ToolOutput{}, fmt.Errorf("duplicate client tool call %q", call.ID)
-	}
-	r.pending[call.ID] = answer
-	r.calls++
-	r.mu.Unlock()
-	defer func() { r.mu.Lock(); delete(r.pending, call.ID); r.mu.Unlock() }()
-	if err := r.run.appendEvent("response.client_tool.requested", map[string]any{"call_id": call.ID, "name": call.Name, "arguments": args}); err != nil {
-		return core.ToolOutput{}, fmt.Errorf("request client tool: %w", err)
-	}
-	timer := time.NewTimer(typedClientToolTimeout)
-	defer timer.Stop()
-	select {
-	case <-answer.done:
-		return core.TextOutput(answer.output), nil
-	case <-timer.C:
-		return core.ToolOutput{}, errors.New("the device did not run its tool in time")
-	case <-ctx.Done():
-		return core.ToolOutput{}, ctx.Err()
-	}
+	return r.clientMailbox().RunClientTool(ctx, call)
 }
 
 func (r *typedClientToolRunner) pendingSnapshot() []map[string]string {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	calls := make([]map[string]string, 0, len(r.pending))
-	for callID, answer := range r.pending {
-		if !answer.answered {
-			calls = append(calls, map[string]string{"call_id": callID, "name": answer.name, "arguments": answer.arguments})
-		}
-	}
-	return calls
+	return r.clientMailbox().RecoveryPending()
 }
 
 func (s *serveServer) typedClientToolRunner(runtime *serveRuntime, tools []core.ToolSpec) func(string) core.ClientToolRunner {
-	names := make(map[string]bool)
-	for _, tool := range tools {
-		if strings.HasPrefix(tool.Name, "webmcp__") {
-			names[tool.Name] = true
-		}
-	}
+	names, specs := core.ClientToolSpecsWithPrefix(tools, "webmcp__")
 	if len(names) == 0 {
 		return nil
 	}
@@ -112,11 +80,41 @@ func (s *serveServer) typedClientToolRunner(runtime *serveRuntime, tools []core.
 		if !ok {
 			return nil
 		}
-		runner := &typedClientToolRunner{run: run, runtime: runtime, names: names}
+		runner := &typedClientToolRunner{run: run, runtime: runtime, names: names, specs: specs}
 		run.mu.Lock()
 		run.typedClientTools = runner
 		run.mu.Unlock()
 		return runner
+	}
+}
+
+// typedForegroundClientToolRunner pins the ORIGINAL streaming POST, not any
+// later replay subscriber. Returning/disconnecting that stream irreversibly
+// revokes its leases even when the host response and a script survive it.
+func (s *serveServer) typedForegroundClientToolRunner(ctx context.Context, runtime *serveRuntime, tools []core.ToolSpec, enabled bool) (context.Context, func(string) core.ClientToolRunner, func()) {
+	if !enabled {
+		return ctx, nil, func() {}
+	}
+	factory := s.typedClientToolRunner(runtime, tools)
+	if factory == nil {
+		return ctx, nil, func() {}
+	}
+	foreground := core.NewClientToolForeground(ctx, "typed_"+randomSuffix())
+	return foreground.Context(ctx), func(responseID string) core.ClientToolRunner {
+		runner, ok := factory(responseID).(*typedClientToolRunner)
+		if !ok {
+			return nil
+		}
+		runner.mu.Lock()
+		runner.lease = foreground.Bind(responseID, runner.run.sessionID, runner.specs)
+		runner.mu.Unlock()
+		return runner
+	}, foreground.Close
+}
+
+func (r *responseRun) revokeClientToolLeaseLocked(reason string) {
+	if r.clientToolLease != nil {
+		r.clientToolLease.Revoke(reason)
 	}
 }
 
@@ -148,39 +146,26 @@ func (s *serveServer) handleTypedClientToolResult(w http.ResponseWriter, r *http
 		writeOpenAIError(w, http.StatusNotFound, "invalid_request_error", "client tool call not found")
 		return
 	}
-	runner.mu.Lock()
-	answer := runner.pending[callID]
-	if answer == nil {
-		output, answered := runner.answered[callID]
-		runner.mu.Unlock()
-		if answered && output == sha256.Sum256([]byte(body.Output)) {
-			writeJSON(w, http.StatusOK, map[string]any{"ok": true, "duplicate": true})
-			return
-		}
-		if answered {
-			writeOpenAIError(w, http.StatusConflict, "conflict_error", "client tool already answered differently")
-			return
-		}
-		writeOpenAIError(w, http.StatusNotFound, "invalid_request_error", "client tool call not found")
-		return
-	}
-	if answer.answered {
-		same := answer.output == body.Output
-		runner.mu.Unlock()
-		if !same {
-			writeOpenAIError(w, http.StatusConflict, "conflict_error", "client tool already answered differently")
-			return
-		}
+	switch runner.clientMailbox().Answer(callID, body.Output) {
+	case core.ClientToolAnswerAccepted:
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+	case core.ClientToolAnswerDuplicate:
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "duplicate": true})
-		return
+	case core.ClientToolAnswerConflict:
+		writeOpenAIError(w, http.StatusConflict, "conflict_error", "client tool already answered differently")
+	default:
+		writeOpenAIError(w, http.StatusNotFound, "invalid_request_error", "client tool call not found")
 	}
-	answer.output = body.Output
-	answer.answered = true
-	if runner.answered == nil {
-		runner.answered = make(map[string][sha256.Size]byte)
+}
+
+func (r *responseRun) writeForegroundSafeEvent(ctx context.Context, w io.Writer, event responseRunEvent) error {
+	if event.Event == "response.client_tool.requested" {
+		r.mu.Lock()
+		lease := r.clientToolLease
+		r.mu.Unlock()
+		if !core.ClientToolEventDeliverable(ctx, event.Data, lease) {
+			return nil
+		}
 	}
-	runner.answered[callID] = sha256.Sum256([]byte(body.Output))
-	close(answer.done)
-	runner.mu.Unlock()
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+	return writeStoredResponseEvent(w, event)
 }

@@ -751,13 +751,13 @@ func TestCodeModeCanceledObserverRetainsOutputAndAudit(t *testing.T) {
 func TestCodeModeControlToolsRequireDirectEngineContext(t *testing.T) {
 	e := newCodeEngine()
 	calls := 0
-	e.RegisterTool(codeTestTool{name: codemode.ExecToolName, run: func(ctx context.Context, _ json.RawMessage) (core.ToolOutput, error) {
+	e.RegisterTool(lifecycleCodeTestTool{codeTestTool{name: codemode.ExecToolName, run: func(ctx context.Context, _ json.RawMessage) (core.ToolOutput, error) {
 		calls++
 		if core.CodeModeControllerFromContext(ctx) == nil {
 			return core.ToolOutput{}, fmt.Errorf("missing engine controller")
 		}
 		return core.TextOutput("ok"), nil
-	}})
+	}}})
 	outcome := e.executeSingleToolCallOutcome(context.Background(), core.ToolCall{ID: "call-direct", Name: codemode.ExecToolName, Arguments: json.RawMessage(`{}`)}, corestream.Sender{}, false, false)
 	if outcome.err != nil || calls != 1 {
 		t.Fatalf("direct control execution: %+v calls=%d", outcome.err, calls)

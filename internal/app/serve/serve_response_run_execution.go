@@ -65,6 +65,16 @@ func (s *serveServer) executeResponseRun(runCtx context.Context, releaseReload, 
 	var clientToolRunner core.ClientToolRunner
 	if options.clientToolRunner != nil {
 		clientToolRunner = options.clientToolRunner(respID)
+		if provider, ok := clientToolRunner.(core.ClientToolLeaseProvider); ok {
+			run.mu.Lock()
+			run.clientToolLease = provider.ClientToolLease()
+			run.mu.Unlock()
+			if done, ok := clientToolRunner.(interface{ ResponseClientToolsDone() }); ok {
+				defer done.ResponseClientToolsDone()
+			} else if lease := provider.ClientToolLease(); lease != nil {
+				defer lease.Revoke("originating response execution ended")
+			}
+		}
 		runCtx = core.ContextWithClientToolRunner(runCtx, clientToolRunner)
 	}
 

@@ -594,6 +594,7 @@ func (r *responseRun) requestCancel() (context.CancelFunc, bool) {
 	if cancel == nil && !r.cancelRequested {
 		return nil, false
 	}
+	r.revokeClientToolLeaseLocked("originating response cancelled")
 	r.cancelRequested = true
 	r.cancel = nil
 	return cancel, true

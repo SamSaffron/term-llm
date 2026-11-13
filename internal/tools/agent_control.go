@@ -253,9 +253,11 @@ func (t *agentControlTool) continueRun(ctx context.Context, parent string, a age
 	if t.spawn.RemainingDepth() < 1 {
 		return agentControlError("spawn depth budget exhausted (this agent may spawn 0 more levels)")
 	}
-	m.mu.Lock()
-	runner, depth := m.runner, m.depth
-	m.mu.Unlock()
+	// Continuation uses this control's configured runner and depth, not mutable
+	// manager fields: a script cell binds a frozen view of the shared service and
+	// a later host rewiring must not retarget it.
+	policy := t.spawn.snapshotLocalSpawnPolicy()
+	runner, depth := policy.runner, policy.depth
 	if runner == nil {
 		return agentControlError("agent runner unavailable")
 	}
@@ -280,9 +282,7 @@ func (t *agentControlTool) continueRun(ctx context.Context, parent string, a age
 }
 
 func (t *agentControlTool) steer(record session.AgentRun, e *agentEntry, a agentControlArgs) core.ToolOutput {
-	e.manager.mu.Lock()
-	runner := e.manager.runner
-	e.manager.mu.Unlock()
+	runner := t.steerRunner(e)
 	continuation, ok := runner.(AgentContinuation)
 	if !ok {
 		return agentControlError("runner does not support steering")
@@ -307,4 +307,26 @@ func agentControlError(message string) core.ToolOutput {
 	out := core.TextOutput(message)
 	out.IsError = true
 	return out
+}
+
+// steerRunner selects the runner that owns the live child engine. A cell-bound
+// view shares its child manager but freezes the admitted runner, so it must
+// steer through that runner even if the host rewires the live tool. Controls
+// from an unrelated manager still steer through the child's owning manager.
+func (t *agentControlTool) steerRunner(e *agentEntry) SpawnAgentRunner {
+	var bound SpawnAgentRunner
+	if t.spawn != nil {
+		bound = t.spawn.snapshotLocalSpawnPolicy().runner
+	}
+	var owner SpawnAgentRunner
+	e.manager.mu.Lock()
+	owner = e.manager.runner
+	e.manager.mu.Unlock()
+	if t.spawn != nil && t.spawn.manager == e.manager && bound != nil {
+		return bound
+	}
+	if owner != nil {
+		return owner
+	}
+	return bound
 }

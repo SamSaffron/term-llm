@@ -1056,10 +1056,8 @@ func appendResponsePassthroughTools(serverTools []core.ToolSpec, passthroughTool
 }
 
 func (s *serveServer) streamResponses(ctx context.Context, w http.ResponseWriter, runtime *serveRuntime, stateful bool, replaceHistory bool, inputMessages []core.Message, llmReq core.Request, sessionID string, previousResponseID string, resetResponseIDsOnSuccess bool, modelSwap *responseModelSwapExecution, idempotencyKey, idempotencyScope, requestFingerprint string, firstParty bool, onDone, onAdmissionDone func()) bool {
-	var runner func(string) core.ClientToolRunner
-	if firstParty {
-		runner = s.typedClientToolRunner(runtime, llmReq.Tools)
-	}
+	ctx, runner, closeForeground := s.typedForegroundClientToolRunner(ctx, runtime, llmReq.Tools, firstParty)
+	defer closeForeground()
 	return s.streamResponseRun(ctx, w, runtime, stateful, replaceHistory, inputMessages, llmReq, sessionID, startResponseRunOptions{
 		clientToolRunner:          runner,
 		previousResponseID:        previousResponseID,

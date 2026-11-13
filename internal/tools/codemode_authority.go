@@ -43,6 +43,7 @@ func (p *ToolPermissions) clone() *ToolPermissions {
 func (r *LocalToolRegistry) captureCodeModeAuthority(_ context.Context, ref core.CodeModeCellRef, names []string, binder func(core.CodeModeCellRef) CodeModePrompts) (core.CodeModeAuthority, error) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
+	names = r.ownedCodeModeNames(ref, names)
 	permissions := r.permissions.clone()
 	approval := r.approval.CloneForAgentRun(ref.SessionID)
 	approval.permissions = permissions
@@ -69,9 +70,28 @@ func (r *LocalToolRegistry) captureCodeModeAuthority(_ context.Context, ref core
 		approval.SharedShellPromptUIFunc = prompts.SharedShell
 	}
 	shadow := &LocalToolRegistry{config: r.config.snapshot(), permissions: permissions, approval: approval, limits: r.limits, appConfig: r.appConfig, grepReranker: r.grepReranker, memoryStore: r.memoryStore, agent: r.agent, sessionID: ref.SessionID, fileRecorder: r.fileRecorder, mediaPublisher: r.mediaPublisher, collaborativeShellController: r.collaborativeShellController, shellRoutingMode: r.shellRoutingMode, tools: map[string]core.Tool{}}
+	// Configured services (shared child registry, jobs client, plan controller,
+	// skill catalogue, script source) are frozen before any name is considered.
+	// A missing service denies only its affected tool; scoped effects never fall
+	// back to a mutable live instance.
+	bindings := r.captureCodeModeBindingsLocked(shadow, names)
+	bindings.bindCodeModeServices(shadow, names)
 	for _, name := range names {
+		if _, bound := shadow.tools[name]; bound {
+			continue
+		}
+		if IsCodeModeTool(name) || codeModeBindingManagedName(name) {
+			continue
+		}
 		d := lookupBuiltin(name)
-		if d == nil || d.nonLocal || IsCodeModeTool(name) {
+		if d == nil {
+			// Custom agent, skill or other locally registered script tool.
+			if original, ok := r.tools[name]; ok {
+				shadow.tools[name] = bindCodeModeScriptTool(original, shadow)
+			}
+			continue
+		}
+		if d.nonLocal {
 			continue
 		}
 		tool := d.construct(shadow)

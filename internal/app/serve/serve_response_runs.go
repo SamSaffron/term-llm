@@ -112,6 +112,7 @@ type responseRunResolvedInteraction struct {
 type responseRun struct {
 	agentEvents             []session.AgentRun // immutable host-offered lifecycle generations
 	typedClientTools        *typedClientToolRunner
+	clientToolLease         *core.ClientToolLease
 	reloadContinuation      *webRunContinuation
 	settled                 chan struct{}
 	rushStateful            bool

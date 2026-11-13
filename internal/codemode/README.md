@@ -63,3 +63,31 @@ sets merge atomically, with last-successful-committer wins on the same key.
 
 The explicit synchronous compatibility lane remains mutually exclusive with async
 cells in one engine, so it cannot bypass session concurrency or memory limits.
+
+## Tool exposure and host bindings
+
+Script exposure is independent of permission kind. Concrete tools declare
+`core.CodeModeExposureProvider`; unknown tools are direct-only. Builtin policy
+lives in tool descriptors, while the engine enforces finishing and script-lifecycle
+invariants, admitted identity and live permission narrowing for every call.
+`Object.keys(tools)` enumerates the cell ceiling, not every directly callable tool.
+
+Configured agent lifecycle services must retain the original runner and child
+registry; controls must not be reconstructed before spawn exists. Plan updates use
+the host's session controller. Jobs preserve trusted notification origins and run
+identity. Custom/skill tools preserve source, trust and permission bindings. The
+same registry/control services may be shared; the cell cannot widen parent policy
+or borrow a later request's identity.
+
+Client tools are not globally registered server tools. Foreground composition
+requires immutable offered schemas, a scoped inline runner and a revocable host
+lease. Binding expiry only ends client access, not independent server calls. Never
+fall back from an expired client name to a same-named server tool. Calls that may
+have reached a device retain uncertain-effect semantics. See the code-mode guide
+for the supported surface and lifecycle contract.
+
+All CLI provider MCP bridges enqueue `EventToolCall` and await the engine's result;
+the legacy `SetToolExecutor` callback is not their live execution path. Keep that
+boundary: direct calls need engine policy/controller context just as scripts do.
+Public `serve mcp` exports remain a curated separate surface, not a way to expose
+script lifecycle without an owning engine.

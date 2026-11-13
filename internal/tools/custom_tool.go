@@ -3,6 +3,8 @@ package tools
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -22,6 +24,34 @@ import (
 // validCustomToolNameRE matches valid custom tool names.
 var validCustomToolNameRE = regexp.MustCompile(`^[a-z][a-z0-9_]*$`)
 
+// reservedCustomToolNames are engine-owned surfaces. A custom script registered
+// under one of these names would hijack provider/planner routing rather than add
+// a new tool.
+var reservedCustomToolNames = map[string]string{
+	core.WebSearchToolName:       "web search provider",
+	core.ReadURLToolName:         "URL reader",
+	"tool_search":                "deferred tool discovery",
+	core.SuggestCommandsToolName: "structured command suggestions",
+}
+
+// validateCustomToolName rejects names that cannot safely identify a local
+// script tool. It does not grant execution: source/trust checks still apply.
+func validateCustomToolName(name string) error {
+	if !validCustomToolNameRE.MatchString(name) {
+		return fmt.Errorf("custom tool %q: name must match ^[a-z][a-z0-9_]*$", name)
+	}
+	if core.IsWebMCPToolName(name) {
+		return fmt.Errorf("custom tool %q: %q is reserved for client/WebMCP tools", name, core.WebMCPToolPrefix)
+	}
+	if reserved, ok := reservedCustomToolNames[name]; ok {
+		return fmt.Errorf("custom tool %q is reserved for the %s", name, reserved)
+	}
+	if ValidToolName(name) {
+		return fmt.Errorf("custom tool %q collides with a built-in tool name", name)
+	}
+	return nil
+}
+
 // CustomScriptTool implements llm.Tool for a script-backed custom tool
 // declared in agent.yaml under tools.custom.
 type CustomScriptTool struct {
@@ -29,6 +59,10 @@ type CustomScriptTool struct {
 	agentDir   string
 	limits     OutputLimits
 	toolConfig *ToolConfig
+
+	// origin overrides the default custom-agent provenance. Skill activation
+	// paths set ToolOriginSkill; an empty value means an agent.yaml custom tool.
+	origin core.ToolOrigin
 }
 
 // scriptToolErrorOutput preserves the structured diagnostic text while marking
@@ -48,6 +82,58 @@ func newCustomScriptTool(def agents.CustomToolDef, agentDir string, limits Outpu
 		limits:     limits,
 		toolConfig: optionalToolConfig(toolConfigs),
 	}
+}
+
+// SetToolOrigin overrides the default agent custom-tool provenance. Skill
+// activation paths use this so skill-over-custom replacement is an explicit
+// origin transition rather than an accidental same-class overwrite.
+func (t *CustomScriptTool) SetToolOrigin(origin core.ToolOrigin) *CustomScriptTool {
+	if t == nil {
+		return nil
+	}
+	t.origin = origin
+	return t
+}
+
+// ToolOrigin identifies the agent definition directory or the class-level skill
+// origin that owns this script. It is independent of the provider-visible name.
+func (t *CustomScriptTool) ToolOrigin() core.ToolOrigin {
+	if t == nil {
+		return core.ToolOrigin{}
+	}
+	origin := t.origin
+	if origin.Class == "" {
+		origin.Class = core.ToolOriginCustomAgent
+	}
+	// Agent custom tools are scoped to their definition directory. Skill tools
+	// share the skill-origin class so activating another skill can replace a
+	// same-named script; the local/engine scoped restore keeps the prior binding.
+	if origin.ID == "" && origin.Class == core.ToolOriginCustomAgent && t.agentDir != "" {
+		origin.ID = filepath.Clean(t.agentDir)
+	}
+	return origin
+}
+
+// ToolBindingID is stable for the same declared script tool and source directory,
+// and changes when either changes. File-content changes are not observed here.
+func (t *CustomScriptTool) ToolBindingID() string {
+	if t == nil {
+		return ""
+	}
+	sourceDir := ""
+	if t.agentDir != "" {
+		sourceDir = filepath.Clean(t.agentDir)
+	}
+	raw, err := json.Marshal(struct {
+		Origin    core.ToolOrigin
+		SourceDir string
+		Def       agents.CustomToolDef
+	}{Origin: t.ToolOrigin(), SourceDir: sourceDir, Def: t.def})
+	if err != nil {
+		return ""
+	}
+	sum := sha256.Sum256(raw)
+	return hex.EncodeToString(sum[:])
 }
 
 // Spec returns the tool spec for the LLM.
@@ -337,19 +423,20 @@ func (r *LocalToolRegistry) RegisterCustomTools(defs []agents.CustomToolDef, age
 	return r.registerCustomTools(defs, agentDir, nil)
 }
 
-func (r *LocalToolRegistry) registerCustomTools(defs []agents.CustomToolDef, agentDir string, wrap func(*CustomScriptTool) core.Tool) error {
+func (r *LocalToolRegistry) registerCustomTools(defs []agents.CustomToolDef, agentDir string, wrap func(*CustomScriptTool) core.Tool, origins ...core.ToolOrigin) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	for _, def := range defs {
-		// Validate name format (belt-and-suspenders; agent.Validate() also checks this)
-		if !validCustomToolNameRE.MatchString(def.Name) {
-			return fmt.Errorf("custom tool %q: name must match ^[a-z][a-z0-9_]*$", def.Name)
-		}
+	var origin core.ToolOrigin
+	if len(origins) > 0 {
+		origin = origins[0]
+	}
 
-		// Check for collision with built-in tool names.
-		if ValidToolName(def.Name) {
-			return fmt.Errorf("custom tool %q collides with a built-in tool name", def.Name)
+	for _, def := range defs {
+		// Validate name format and reserved engine-owned surfaces (belt and
+		// suspenders; agent.Validate() only checks the format).
+		if err := validateCustomToolName(def.Name); err != nil {
+			return err
 		}
 
 		// Warn if the script doesn't exist yet (non-fatal — may be created later)
@@ -361,6 +448,9 @@ func (r *LocalToolRegistry) registerCustomTools(defs []agents.CustomToolDef, age
 		}
 
 		tool := newCustomScriptTool(def, agentDir, r.limits, r.config)
+		if !origin.IsZero() {
+			tool.SetToolOrigin(origin)
+		}
 		if wrap != nil {
 			r.tools[def.Name] = wrap(tool)
 		} else {

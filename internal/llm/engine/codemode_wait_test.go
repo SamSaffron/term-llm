@@ -2,6 +2,7 @@ package engine
 
 import (
 	"context"
+	"sync"
 	"testing"
 	"time"
 
@@ -12,7 +13,9 @@ func TestCodeModeZeroMaxWaitPollsWithoutCancellation(t *testing.T) {
 	e := newCodeEngine()
 	defer e.CloseCodeMode()
 	release := make(chan struct{})
-	defer close(release)
+	var releaseOnce sync.Once
+	unblock := func() { releaseOnce.Do(func() { close(release) }) }
+	defer unblock()
 	started := make(chan struct{}, 1)
 	e.RegisterTool(codeModeBlockingTool(started, release))
 	ctx, cancel := context.WithTimeout(asyncCodeContext("poll", "exec"), 2*time.Second)
@@ -40,6 +43,14 @@ func TestCodeModeZeroMaxWaitPollsWithoutCancellation(t *testing.T) {
 	active := e.codeModeSessions.lookup(first.CellID, "poll")
 	if active == nil {
 		t.Fatal("poll ended the active cell")
+	}
+	// The production teardown deliberately does not wait for external calls.
+	// This fixture owns its blocker, so settle its bridge before the next test
+	// changes package-wide compaction environment callbacks.
+	unblock()
+	final := awaitCodeModeTerminal(t, e, ctx, polled)
+	if final.Status != "completed" {
+		t.Fatalf("released poll fixture did not settle: %+v", final)
 	}
 }
 

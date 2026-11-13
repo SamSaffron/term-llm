@@ -139,3 +139,10 @@ func TestSearchToolPreviewPrefersExactNames(t *testing.T) {
 		t.Fatalf("Preview() = %q, want %q", preview, want)
 	}
 }
+
+func TestSearchToolCodeModeExposureDirectOnly(t *testing.T) {
+	tool := &SearchTool{}
+	if exposure := tool.CodeModeExposure(); exposure.Allowed || exposure.Reason != "run_scoped_discovery" {
+		t.Fatalf("planner exception must not become a script grant: %+v", exposure)
+	}
+}

@@ -316,7 +316,7 @@ func (e *Engine) executeSingleToolCallOutcome(ctx context.Context, call core.Too
 		}
 	}
 
-	if ok && ((!nestedExecution(ctx) && !e.toolCallAllowed(ctx, call.Name)) || (nestedExecution(ctx) && !e.IsToolAllowed(call.Name))) {
+	if ok && !isCodeModeClientTool(tool) && ((!nestedExecution(ctx) && !e.toolCallAllowed(ctx, call.Name)) || (nestedExecution(ctx) && !e.IsToolAllowed(call.Name))) {
 		errMsg := fmt.Sprintf("Error: tool '%s' is not in the active skill's allowed-tools list", call.Name)
 		env.debugToolResult(debug, call.ID, call.Name, errMsg)
 		sendToolExecEndFor(ctx, send, core.Event{Type: core.EventToolExecEnd, ParentToolCallID: nestedParent(ctx), ToolCallID: call.ID, ToolName: call.Name, ToolInfo: e.getToolPreview(call), ToolSuccess: false})

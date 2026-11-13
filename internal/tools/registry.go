@@ -14,6 +14,7 @@ import (
 	"github.com/samsaffron/term-llm/internal/llm/core"
 	"github.com/samsaffron/term-llm/internal/llm/engine"
 	"github.com/samsaffron/term-llm/internal/modelpolicy"
+	"github.com/samsaffron/term-llm/internal/runtimeoutput"
 	"github.com/samsaffron/term-llm/internal/session"
 	"github.com/samsaffron/term-llm/internal/skills"
 )
@@ -320,7 +321,6 @@ func stringSliceContains(values []string, needle string) bool {
 
 // RegisterWithEngine registers all enabled tools with the LLM engine.
 func (r *LocalToolRegistry) RegisterWithEngine(eng *engine.Engine) {
-	eng.SetCodeModeDirectOnly(codeModeDirectOnlyTools())
 	eng.SetCodeModeAuthorityCapture(func(ctx context.Context, ref core.CodeModeCellRef, names []string) (core.CodeModeAuthority, error) {
 		return r.captureCodeModeAuthority(ctx, ref, names, nil)
 	})
@@ -328,7 +328,9 @@ func (r *LocalToolRegistry) RegisterWithEngine(eng *engine.Engine) {
 	defer r.mu.RUnlock()
 
 	for _, tool := range r.tools {
-		eng.RegisterTool(tool)
+		if err := eng.RegisterTool(tool); err != nil {
+			runtimeoutput.Warn("tool registration rejected", "tool", tool.Spec().Name, "error", err.Error())
+		}
 	}
 	if lifecycle, ok := r.fileRecorder.(engine.FileTrackingRunLifecycle); ok {
 		eng.SetFileTrackingRunLifecycle(lifecycle)
@@ -725,11 +727,11 @@ func (r *LocalToolRegistry) RegisterSkillTools(defs []skills.SkillToolDef, skill
 	}
 
 	if userInstalled || (r.appConfig != nil && r.appConfig.Skills.AllowProjectScriptTools) {
-		return r.RegisterCustomTools(agentDefs, skillDir)
+		return r.registerCustomTools(agentDefs, skillDir, nil, core.ToolOrigin{Class: core.ToolOriginSkill})
 	}
 	return r.registerCustomTools(agentDefs, skillDir, func(tool *CustomScriptTool) core.Tool {
 		return skills.GateProjectScriptTool(tool, r.approval.YoloEnabled)
-	})
+	}, core.ToolOrigin{Class: core.ToolOriginSkill})
 }
 
 // RestoreSkillTools removes tools registered for a skill turn and restores any

@@ -48,14 +48,36 @@ Policy, transport, cancellation and size failures reject with stable `code`,
 after dispatch does **not** mean the action had no effects. Never blindly retry an
 unknown outcome: observe or reconcile first. Approvals, Guardian, workspace/file
 policy, session identity and ordinary accounting still apply to child tools.
-Recursive code mode, client passthrough, planner exceptions, activation/discovery,
-interactive prompts, spawning/jobs and authority/lifecycle controls are direct-only.
+Script exposure is declared separately from tool permissions. `Object.keys(tools)`
+lists the callable names admitted to this cell; it is not the complete direct-tool
+catalogue. Undeclared tools are direct-only. Enabling code mode never enables other
+tools or grants permissions.
+
+Agent orchestration (`spawn_agent`, `wait_agent`, `continue_agent`, `cancel_agent`,
+`list_agents`), durable jobs (`queue_agent`, `wait_for_jobs`), `update_plan`,
+`search_skills` and `run_agent_script` can be composed when enabled and bound by the
+host. They retain the same parent ownership, depth, model policy, workspace and
+concurrency restrictions as direct calls. Cancelling a script does not itself mean
+that independently started children or jobs were cancelled: reconcile the returned
+handles, and use explicit lifecycle tools. Host Stop/shutdown rules still apply.
+
+Recursive script controls, finishing/output tools, handovers, `ask_user`,
+`manage_workspace`, live settings/session switching, skill activation, UI extension
+lifecycle, hub delegation, and goal/progress mutations remain direct-only.
+`tool_search` is also direct-only: its special permission and schema activation
+belong to a provider run. Use it before starting a cell, or inspect already admitted
+schemas with `describeTools`. Incoming authorized MCP tools can be called even if
+their schemas are deferred from the provider's initial tool list. Discovery and
+MCP annotations do not grant authority.
 A cell freezes its tool/schema ceiling, then rechecks current policy and catalogue
 on every call. Local tools capture their original cwd, permissions and approval
 scope. Later turns cannot retarget that cwd or widen the cell by enabling yolo;
 tightened approval modes and explicit additional-workspace revocations still apply.
-Non-local MCP/skill-script tools keep their registered host instances and native
-permission/lifetime rules; the VM does not snapshot external service state.
+MCP tools retain their native server permission/lifetime rules; the VM does not
+snapshot external service state. Custom/skill scripts retain their admitted source
+directory, definition and permission scope, not a frozen copy of executable file
+bytes. Edits within that admitted directory are observed as with direct execution;
+changing the registered source/binding or removing a tool requires a new cell.
 Idle approval requests remain visible and wait on the original cell's cancellation
 context. A new response reconnects presentation only, never authority or ownership.
 Terminal chat serializes its single foreground dialog; cell cancellation dismisses
@@ -64,6 +86,48 @@ yolo cannot auto-answer a cell that was admitted under prompt mode. One-shot `as
 also binds native approval programs and terminal flush/restoration to the cell's
 context; command/runtime teardown still ends its cells. Activation/import never grants tools. Schema changes reject with
 `schema_changed`, inviting rediscovery in a new cell.
+
+### Agent composition
+
+Native tools return the native envelope; agent business results are JSON text in
+`text`, not a fabricated `agent_id` field on the envelope:
+
+```js
+const responses = await Promise.all([
+  tools.spawn_agent({agent_name: 'developer', prompt: 'Inspect the parser', wait: 0}),
+  tools.spawn_agent({agent_name: 'developer', prompt: 'Inspect the tests', wait: 0}),
+]);
+const ids = responses.map(r => {
+  if (r.isError || r.timedOut) throw Error(r.text);
+  const child = JSON.parse(r.text);
+  if (!child.agent_id) throw Error(r.text);
+  return child.agent_id;
+});
+const result = await tools.wait_agent({agent_ids: ids, max_wait: 60});
+if (result.isError || result.timedOut) throw Error(result.text);
+text(result.text);
+```
+
+An error in one branch does not undo work already started in another branch. Await
+and reconcile all dispatched calls; never automatically replay an uncertain spawn.
+
+### Foreground client tools
+
+Client/device/WebMCP tools are distinct from incoming server MCP tools. Script
+access requires an explicitly offered schema and a scoped inline client runner
+whose host can revoke the originating foreground binding. A passthrough tool that
+can only be answered in a later client request is not automatically script-callable.
+
+The host pins client access to the originating response/client. When that binding
+ends, later client calls fail closed; another response, reconnection or
+`wait_script` cannot rebind them. Server-owned tools in the same cell may continue.
+An observation timeout alone does not expire a still-active foreground binding.
+Calls rejected before dispatch have `outcome: "not_dispatched"`; device actions
+already dispatched without acknowledgement may have `outcome: "outcome_unknown"`
+and must not be replayed. Each foreground lease has a fixed 128-call anti-replay
+budget across its cells; exhausting it is not transient and cannot be repaired by
+retrying the call in the same binding. Transport support is deliberately fail-closed:
+a tool schema alone does not promise a safe client lifetime.
 
 ### Script diagnostics
 

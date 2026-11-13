@@ -29,12 +29,16 @@ type nestedLease struct {
 	finish     func()
 }
 
-func (l *nestedLease) done()                   { l.once.Do(l.finish) }
-func nestedExecution(ctx context.Context) bool { return ctx.Value(nestedContextKey{}) != nil }
+func (l *nestedLease) done() { l.once.Do(l.finish) }
+func nestedExecution(ctx context.Context) bool {
+	lease, _ := ctx.Value(nestedContextKey{}).(*nestedLease)
+	return lease != nil
+}
 
 type nestedIdentity struct {
-	spec core.ToolSpec
-	hash string
+	spec       core.ToolSpec
+	hash       string
+	generation uint64
 }
 type codeModule struct {
 	generation string
@@ -65,9 +69,13 @@ type nestedCell struct {
 	sessionPermits chan struct{}
 	inflight       chan struct{}
 	authority      core.CodeModeAuthority
+	clients        *codeModeClientTools
+	serverTools    map[string]core.Tool
 }
 
-// SetCodeModeDirectOnly classifies built-in authority/lifecycle tools using host metadata.
+// SetCodeModeDirectOnly sets an additional narrowing-only exclusion list.
+// Deprecated: declare CodeModeExposure on the registered tool instead. Removing
+// an exclusion never grants exposure to an undeclared or direct-only instance.
 func (e *Engine) SetCodeModeDirectOnly(names []string) {
 	e.codeModeMu.Lock()
 	defer e.codeModeMu.Unlock()
@@ -92,7 +100,15 @@ func (e *Engine) admitCodeCell(ctx context.Context, parent string, send corestre
 			}
 		}
 	}
-	return e.admitCodeCellFor(ctx, parent, send, codemode.LegacyToolName, false)
+	cell, err := e.admitCodeCellFor(ctx, parent, send, codemode.LegacyToolName, false)
+	if err != nil {
+		return nil, err
+	}
+	if err := e.captureCodeModeAuthority(ctx, core.CodeModeCellRef{SessionID: core.SessionIDFromContext(ctx), CellID: parent, Ctx: ctx}, cell); err != nil {
+		cell.Close()
+		return nil, err
+	}
+	return cell, nil
 }
 
 // admitCodeCellFor snapshots one immutable capability ceiling. Background
@@ -112,13 +128,24 @@ func (e *Engine) admitCodeCellFor(ctx context.Context, parent string, send cores
 		c.eventSend = send
 		c.send = corestream.NewRoutedSender(c.currentSender)
 	}
-	for name, tool := range e.tools.executionSnapshot() {
-		if !e.IsToolAllowed(name) || e.codeModeDirectOnly[name] || directOnly(name, tool) {
+	registered, generations := e.tools.codeModeExecutionSnapshot()
+	clients, err := captureCodeModeClients(ctx, registered)
+	if err != nil {
+		return nil, err
+	}
+	c.clients = clients
+	c.serverTools = make(map[string]core.Tool)
+	for name, identity := range clients.identities() {
+		c.ceiling[name] = identity
+	}
+	for name, tool := range registered {
+		if !e.codeModeExposureLocked(name, tool).Allowed {
 			continue
 		}
 		spec, hash, err := codeIdentity(ctx, tool)
 		if err == nil {
-			c.ceiling[name] = nestedIdentity{spec, hash}
+			c.ceiling[name] = nestedIdentity{spec: spec, hash: hash, generation: generations[name]}
+			c.serverTools[name] = tool
 		}
 	}
 	for n, m := range e.codeModules {
@@ -130,28 +157,72 @@ func (e *Engine) admitCodeCellFor(ctx context.Context, parent string, send cores
 	return c, nil
 }
 
-func directOnly(name string, tool core.Tool) bool {
-	if f, ok := tool.(core.FinishingTool); ok && f.IsFinishingTool() {
-		return true
-	}
-	switch name {
-	case codemode.LegacyToolName, codemode.ExecToolName, codemode.WaitToolName, codemode.CancelToolName, "activate_skill", "search_skills", "tool_search", "suggest_commands", "ask_user", "spawn_agent", "wait_agent", "continue_agent", "cancel_agent", "list_agents", "queue_agent", "wait_for_jobs", "initiate_handover", "hub_delegate", "hub_check_delegation", "manage_workspace", "update_plan", "live_settings", "live_new_session", "live_switch_session", "ui_extensions", "ui_activate", "create_goal", "update_goal", "update_progress", "finalize_progress", "run_agent_script":
-		return true
-	}
-	return false
+// codeModeExposure is the single effective server-tool exposure policy. It is
+// deliberately instance-based: a remote tool with a builtin-looking name cannot
+// inherit local privileges, and replacement can narrow an existing cell.
+func (e *Engine) codeModeExposure(name string, tool core.Tool) core.CodeModeExposure {
+	e.codeModeMu.Lock()
+	defer e.codeModeMu.Unlock()
+	return e.codeModeExposureLocked(name, tool)
 }
+
+// codeModeExposureLocked requires codeModeMu, including during cell admission.
+func (e *Engine) codeModeExposureLocked(name string, tool core.Tool) core.CodeModeExposure {
+	if tool == nil {
+		return core.CodeModeExposure{Reason: "tool_removed"}
+	}
+	if f, ok := tool.(core.FinishingTool); ok && f.IsFinishingTool() {
+		return core.CodeModeExposure{Reason: "finishing_tool"}
+	}
+	// Lifecycle tools cannot compose themselves, even if a host supplies metadata.
+	// Check instance semantics, not names: MCP names are arbitrary.
+	if control, ok := tool.(core.CodeModeLifecycleTool); ok && control.IsCodeModeLifecycleTool() {
+		return core.CodeModeExposure{Reason: "script_lifecycle"}
+	}
+	if e.codeModeDirectOnly[name] {
+		return core.CodeModeExposure{Reason: "host_direct_only"}
+	}
+	if !e.IsToolAllowed(name) {
+		return core.CodeModeExposure{Reason: "permission_denied"}
+	}
+	if p, ok := tool.(core.CodeModeExposureProvider); ok {
+		exposure := p.CodeModeExposure()
+		if exposure.Allowed {
+			return core.CodeModeExposure{Allowed: true}
+		}
+		if exposure.Reason != "" {
+			return exposure
+		}
+	}
+	return core.CodeModeExposure{Reason: "undeclared_exposure"}
+}
+
 func codeIdentity(ctx context.Context, t core.Tool) (core.ToolSpec, string, error) {
+	var spec core.ToolSpec
+	var hash string
 	if live, ok := t.(interface {
 		CodeModeIdentity(context.Context) (core.ToolSpec, string, error)
 	}); ok {
-		return live.CodeModeIdentity(ctx)
+		var err error
+		spec, hash, err = live.CodeModeIdentity(ctx)
+		if err != nil {
+			return spec, "", err
+		}
+	} else {
+		spec = t.Spec()
+		raw, err := json.Marshal(spec)
+		if err != nil {
+			return spec, "", err
+		}
+		hash = fmt.Sprintf("%x", sha256.Sum256(raw))
 	}
-	spec := t.Spec()
-	raw, err := json.Marshal(spec)
-	if err != nil {
-		return spec, "", err
+	// A remote target/credential change can happen before catalogue refresh
+	// replaces its registry wrapper. Include live binding identity as well as
+	// the schema so that gap cannot retarget an admitted capability.
+	if binding := core.ToolBindingIDOf(t); binding != "" {
+		hash = fmt.Sprintf("%x", sha256.Sum256([]byte(hash+"\x00"+binding)))
 	}
-	return spec, fmt.Sprintf("%x", sha256.Sum256(raw)), nil
+	return spec, hash, nil
 }
 func (c *nestedCell) Names() []string {
 	names := make([]string, 0, len(c.ceiling))
@@ -163,21 +234,27 @@ func (c *nestedCell) Names() []string {
 }
 func (c *nestedCell) identity(ctx context.Context, name string) (nestedIdentity, error) {
 	frozen, ok := c.ceiling[name]
-	if !ok || !c.engine.IsToolAllowed(name) {
+	if !ok {
 		return nestedIdentity{}, &codemode.Error{Code: "permission_denied", Message: "tool outside admitted capability ceiling: " + name}
 	}
-	tool, ok := c.engine.tools.Get(name)
-	if !ok || directOnly(name, tool) {
+	if identity, handled, err := c.clients.identity(name, c.engine.tools.executionSnapshot()); handled {
+		return identity, err
+	}
+	if !c.engine.IsToolAllowed(name) {
+		return nestedIdentity{}, &codemode.Error{Code: "permission_denied", Message: "tool outside admitted capability ceiling: " + name}
+	}
+	tool, generation, ok := c.engine.tools.codeModeExecutionBinding(name)
+	if !ok || !c.engine.codeModeExposure(name, tool).Allowed {
 		return nestedIdentity{}, &codemode.Error{Code: "permission_denied", Message: "tool removed or direct-only: " + name}
 	}
 	spec, hash, err := codeIdentity(ctx, tool)
 	if err != nil {
 		return nestedIdentity{}, &codemode.Error{Code: "permission_denied", Message: err.Error()}
 	}
-	if hash != frozen.hash || spec.Name != frozen.spec.Name {
-		return nestedIdentity{}, &codemode.Error{Code: "schema_changed", Message: "rediscover tool before a new cell: " + name}
+	if hash != frozen.hash || spec.Name != frozen.spec.Name || generation != frozen.generation {
+		return nestedIdentity{}, &codemode.Error{Code: "schema_changed", Message: "tool schema or binding changed; rediscover before a new cell: " + name}
 	}
-	return nestedIdentity{spec, hash}, nil
+	return nestedIdentity{spec: spec, hash: hash, generation: generation}, nil
 }
 func (c *nestedCell) Describe(ctx context.Context, names []string) (json.RawMessage, error) {
 	if len(names) > codemode.Limits.Calls {
@@ -230,10 +307,18 @@ func (c *nestedCell) Call(ctx context.Context, name string, args json.RawMessage
 	if c.background {
 		toolCtx = core.ContextWithCodeModeToolPause(toolCtx, lease.pause)
 	}
+	// Pin the admitted execution instance even if a registry replacement races
+	// the final identity check. Scoped authority overrides refine this instance.
+	if tool, ok := c.serverTools[name]; ok {
+		toolCtx = context.WithValue(toolCtx, nestedToolOverrideKey{}, tool)
+	}
 	if c.authority != nil {
 		if tool, ok := c.authority.Tool(name); ok {
 			toolCtx = context.WithValue(toolCtx, nestedToolOverrideKey{}, tool)
 		}
+	}
+	if tool, ok := c.clients.tool(name); ok {
+		toolCtx = context.WithValue(toolCtx, nestedToolOverrideKey{}, tool)
 	}
 	startEvent := core.Event{Type: core.EventToolExecStart, ParentToolCallID: c.parent, ToolCallID: call.ID, ToolName: name, ToolArgs: call.Arguments}
 	if c.background {
@@ -251,6 +336,10 @@ func (c *nestedCell) Call(ctx context.Context, name string, args json.RawMessage
 	outcome := c.engine.executeSingleToolCallOutcomeSafe(toolCtx, call, c.send, false, false)
 	c.record(core.CodeModeCallOutcome{ID: call.ID, Name: name, Status: "executing", Outcome: "outcome_unknown", GuardianReviews: outcome.output.GuardianReviews})
 	if outcome.err != nil {
+		var clientErr *core.ClientToolError
+		if errors.As(outcome.err, &clientErr) {
+			return nil, c.failure(call, clientErr.Code, clientErr.Outcome, clientErr.Error())
+		}
 		code := "tool_error"
 		if errors.Is(outcome.err, context.Canceled) || errors.Is(outcome.err, context.DeadlineExceeded) {
 			code = "cancelled"
@@ -446,10 +535,7 @@ func (e *Engine) AdmitCodeModule(name string, source core.CodeModeModules, requi
 	}
 	for _, n := range requires {
 		t, ok := e.tools.Get(n)
-		e.codeModeMu.Lock()
-		control := e.codeModeDirectOnly[n]
-		e.codeModeMu.Unlock()
-		if !ok || control || !e.IsToolAllowed(n) || directOnly(n, t) {
+		if !ok || !e.codeModeExposure(n, t).Allowed {
 			return fmt.Errorf("skill %s requires unavailable tool %s", name, n)
 		}
 	}

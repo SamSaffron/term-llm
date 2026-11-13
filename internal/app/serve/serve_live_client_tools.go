@@ -3,7 +3,6 @@ package serve
 import (
 	"context"
 	"crypto/sha256"
-	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -134,6 +133,8 @@ func (l *liveSession) setClientTools(tools []json.RawMessage) error {
 	if l.ended {
 		return errLiveCallEnded
 	}
+	l.clientToolGeneration++
+	l.revokeClientToolLeasesLocked("client tool generation changed", -1)
 	l.clientTools = tools
 	l.lastActivity = time.Now()
 	return nil
@@ -165,20 +166,7 @@ type liveClientToolResult struct {
 // 32 bytes rather than every output it carried. Each field is length-prefixed,
 // so no two different results share a digest input.
 func (r liveClientToolResult) digest() [sha256.Size]byte {
-	hash := sha256.New()
-	write := func(value string) {
-		var size [8]byte
-		binary.BigEndian.PutUint64(size[:], uint64(len(value)))
-		hash.Write(size[:])
-		hash.Write([]byte(value))
-	}
-	write(r.Error)
-	for _, output := range r.Outputs {
-		write(output)
-	}
-	var sum [sha256.Size]byte
-	copy(sum[:], hash.Sum(nil))
-	return sum
+	return core.ClientToolResultDigest(r.Error, r.Outputs)
 }
 
 // liveClientToolRequest is one round of page tool calls published to the client.
@@ -186,6 +174,7 @@ func (r liveClientToolResult) digest() [sha256.Size]byte {
 // retries is told "duplicate" rather than "unknown". Every field is read and
 // written under liveSession.mu, and calls never changes after publication.
 type liveClientToolRequest struct {
+	lease      *core.ClientToolLease
 	id         string
 	sessionID  string
 	responseID string
@@ -213,6 +202,10 @@ func (e *liveClientToolRequest) abandonLocked() {
 // names the session of the delegation that made it even if the call has since
 // moved: the turn it continues stays in the session it started in.
 func (l *liveSession) beginClientToolRequest(requestID, sessionID, responseID string, calls []liveClientToolCall, deadline ...time.Time) (<-chan struct{}, error) {
+	return l.beginClientToolRequestForContext(context.Background(), requestID, sessionID, responseID, calls, deadline...)
+}
+
+func (l *liveSession) beginClientToolRequestForContext(ctx context.Context, requestID, sessionID, responseID string, calls []liveClientToolCall, deadline ...time.Time) (<-chan struct{}, error) {
 	expires := time.Now().Add(liveClientDelegationTimeout)
 	if len(deadline) > 0 {
 		expires = deadline[0]
@@ -222,11 +215,14 @@ func (l *liveSession) beginClientToolRequest(requestID, sessionID, responseID st
 	if l.ended {
 		return nil, errLiveCallEnded
 	}
+	if err := core.BeginClientToolDispatch(ctx); err != nil {
+		return nil, err
+	}
 	if l.clientToolRequestLocked(requestID) != nil {
 		return nil, errors.New("this tool call request is already known to the device")
 	}
 	entry := &liveClientToolRequest{
-		id: requestID, sessionID: sessionID, responseID: responseID, calls: calls, deadline: expires, done: make(chan struct{}),
+		id: requestID, sessionID: sessionID, responseID: responseID, calls: calls, deadline: expires, done: make(chan struct{}), lease: core.ClientToolCallLease(ctx),
 	}
 	// A call runs one delegated turn at a time, so only the newest round can
 	// have a waiter and dropping the oldest never strands one.
@@ -251,9 +247,12 @@ func (l *liveSession) clientToolRequestLocked(requestID string) *liveClientToolR
 // marks a repeat, which a client that already ran the round answers again from
 // its results instead of running any tool twice.
 func (l *liveSession) publishClientToolRequestLocked(entry *liveClientToolRequest, resend bool) {
+	if entry.lease != nil && entry.lease.Check() != nil {
+		return
+	}
 	l.appendEventLocked(liveEventToolCallsRequested, map[string]any{
 		"session_id": entry.sessionID, "request_id": entry.id, "response_id": entry.responseID,
-		"calls": entry.calls, "resend": resend, "deadline_ms": entry.deadline.UnixMilli(),
+		"calls": entry.calls, "resend": resend, "deadline_ms": entry.deadline.UnixMilli(), "foreground_only": entry.lease != nil,
 	})
 }
 
@@ -287,22 +286,28 @@ func (l *liveSession) completeClientToolRequest(requestID string, result liveCli
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	entry := l.clientToolRequestLocked(requestID)
-	switch {
-	case entry == nil:
+	if entry == nil {
 		return liveDelegationResultUnknown
-	case entry.digest != nil && *entry.digest == digest:
-		return liveDelegationResultDuplicate
-	case entry.digest != nil, entry.done == nil:
-		// It contradicts the accepted answer, or nobody is waiting any more:
-		// absorbing it would discard work the client believes it delivered.
-		return liveDelegationResultConflict
 	}
-	accepted := result
-	entry.result, entry.digest = &accepted, &digest
-	close(entry.done)
-	entry.done = nil
-	l.lastActivity = time.Now()
-	return liveDelegationResultAccepted
+	outcome := liveDelegationResultConflict
+	entry.lease.AcceptResult(func() {
+		switch {
+		case entry.digest != nil && *entry.digest == digest:
+			outcome = liveDelegationResultDuplicate
+		case entry.digest != nil, entry.done == nil:
+			// Conflicting or retired result: never absorb a late device effect.
+		default:
+			accepted := result
+			entry.result, entry.digest = &accepted, &digest
+			close(entry.done)
+			entry.done = nil
+			outcome = liveDelegationResultAccepted
+		}
+	})
+	if outcome == liveDelegationResultAccepted {
+		l.lastActivity = time.Now()
+	}
+	return outcome
 }
 
 // finishClientToolRequest retires the waiter for requestID and reports how the
@@ -579,7 +584,7 @@ func (d *serveLiveDelegator) pageToolRound(ctx context.Context, sessionID, respo
 	if limit <= 0 {
 		limit = liveClientDelegationTimeout
 	}
-	done, err := d.live.beginClientToolRequest(requestID, sessionID, responseID, calls, time.Now().Add(limit))
+	done, err := d.live.beginClientToolRequestForContext(ctx, requestID, sessionID, responseID, calls, time.Now().Add(limit))
 	if err != nil {
 		return nil, err
 	}
@@ -635,6 +640,42 @@ type inlinePageTools struct {
 type inlinePageToolRun struct {
 	*inlinePageTools
 	responseID string
+	lease      *core.ClientToolLease
+}
+
+func (r inlinePageToolRun) ClientToolLease() *core.ClientToolLease { return r.lease }
+
+// newClientToolLease admits only a unique, currently attached foreground event
+// owner. Disconnect is terminal for this capability: a reconnect must not renew
+// a surviving cell. Direct inline calls do not depend on this stricter contract.
+func (l *liveSession) newClientToolLease(responseID, sessionID string, owner int, generation uint64, specs []core.ToolSpec) *core.ClientToolLease {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.ended || l.sessionID != sessionID || l.clientToolGeneration != generation || len(l.subscribers) != 1 {
+		return nil
+	}
+	if _, attached := l.subscribers[owner]; !attached || l.subscriberDropped[owner] {
+		return nil
+	}
+	return l.clientToolLeases.Admit(core.ClientToolBinding{
+		ResponseID: responseID, SessionID: sessionID,
+		ClientID: l.id, Generation: fmt.Sprintf("%s/%d/%d", l.id, owner, generation),
+	}, specs, liveClientToolSpecs(l.clientTools), owner, liveClientToolRequestHistoryLimit)
+}
+
+// revokeClientToolLeasesLocked must be called synchronously under l.mu from
+// unsubscribe/overflow (one owner), end and owner/session change (all owners).
+func (l *liveSession) revokeClientToolLeasesLocked(reason string, owner int) {
+	l.clientToolLeases.Revoke(reason, owner)
+}
+
+// ResponseClientToolsDone is also called at the actual response terminal
+// boundary, not just when its request context expires or wait_script times out.
+func (r inlinePageToolRun) ResponseClientToolsDone() {
+	if r.inlinePageTools == nil || r.d == nil || r.d.live == nil {
+		return
+	}
+	r.d.live.clientToolLeases.End(r.lease)
 }
 
 // inlinePageToolRunner returns the runner factory for one delegated run, or nil
@@ -646,9 +687,30 @@ func (d *serveLiveDelegator) inlinePageToolRunner(runtime *serveRuntime, session
 		return nil
 	}
 	shared := &inlinePageTools{d: d, runtime: runtime, sessionID: sessionID, names: names, turn: make(chan struct{}, 1)}
-	return func(responseID string) core.ClientToolRunner {
-		return inlinePageToolRun{inlinePageTools: shared, responseID: responseID}
+	specs := liveClientToolSpecs(tools)
+	var generation uint64
+	owner := -1
+	if d.live != nil {
+		d.live.mu.Lock()
+		generation = d.live.clientToolGeneration
+		if len(d.live.subscribers) == 1 {
+			for id := range d.live.subscribers {
+				owner = id
+			}
+		}
+		d.live.mu.Unlock()
 	}
+	return func(responseID string) core.ClientToolRunner {
+		var lease *core.ClientToolLease
+		if d.live != nil && len(specs) == len(names) {
+			lease = d.live.newClientToolLease(responseID, sessionID, owner, generation, specs)
+		}
+		return inlinePageToolRun{inlinePageTools: shared, responseID: responseID, lease: lease}
+	}
+}
+
+func liveClientToolSpecs(tools []json.RawMessage) []core.ToolSpec {
+	return core.ParseClientFunctionTools(tools)
 }
 
 func (p *inlinePageTools) OwnsClientTool(name string) bool { return p.names[name] }
@@ -705,28 +767,14 @@ func (d *serveLiveDelegator) awaitPageTools(ctx context.Context, done <-chan str
 	if limit <= 0 {
 		limit = liveClientDelegationTimeout
 	}
-	resend := time.NewTicker(interval)
-	defer resend.Stop()
-	tick := time.NewTicker(liveprogress.TickInterval)
-	defer tick.Stop()
-	timeout := time.NewTimer(limit)
-	defer timeout.Stop()
-	for {
-		select {
-		case <-done:
-			return nil
-		case <-resend.C:
-			d.live.resendClientToolRequest(requestID)
-		case <-tick.C:
-			if progress != nil {
-				progress.Tick()
-			}
-		case <-timeout.C:
-			return errors.New("the device did not run its tools in time")
-		case <-ctx.Done():
-			return ctx.Err()
-		}
+	var tick func()
+	if progress != nil {
+		tick = progress.Tick
 	}
+	return (core.ClientToolWait{
+		Timeout: limit, ResendInterval: interval, TickInterval: liveprogress.TickInterval,
+		Resend: func() { d.live.resendClientToolRequest(requestID) }, Tick: tick,
+	}).Await(ctx, done)
 }
 
 // continueWithPageTools starts the run that carries a round's results back to
@@ -760,4 +808,14 @@ func (d *serveLiveDelegator) continueWithPageTools(ctx context.Context, sessionI
 		return nil, errLivePageToolsSuperseded
 	}
 	return run, err
+}
+
+func (l *liveSession) clientToolEventDeliverable(event liveSessionEvent) bool {
+	if event.Type != liveEventToolCallsRequested || event.Data["foreground_only"] != true {
+		return true
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	entry := l.clientToolRequestLocked(stringValue(event.Data["request_id"]))
+	return entry != nil && entry.lease != nil && entry.lease.Check() == nil
 }

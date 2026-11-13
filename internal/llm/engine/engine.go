@@ -395,9 +395,16 @@ func (e *Engine) IndirectVision() bool {
 	return e.indirectVision.Load()
 }
 
-// RegisterTool adds a tool to the engine's registry.
-func (e *Engine) RegisterTool(tool core.Tool) {
-	e.tools.Register(tool)
+// RegisterTool adds a tool to the engine's registry. It reports a provenance
+// conflict instead of silently replacing a tool owned by another origin.
+func (e *Engine) RegisterTool(tool core.Tool) error {
+	return e.tools.Register(tool)
+}
+
+// RegisterToolOverride intentionally shadows an occupied name for a scoped
+// replacement. UnregisterTool restores the previous binding.
+func (e *Engine) RegisterToolOverride(tool core.Tool, reason string) error {
+	return e.tools.RegisterOverride(tool, reason)
 }
 
 // SetToolSurfacePlanner installs the planner that owns dynamic provider visibility.
@@ -451,14 +458,32 @@ func (e *Engine) ToolDiscoveryActiveSpecs(sessionID string) []core.ToolSpec {
 
 // AddDynamicTool registers a tool and queues it for the currently active run.
 // Calls outside a run only register the tool; durable activation belongs to the planner/tool.
-func (e *Engine) AddDynamicTool(tool core.Tool) {
-	e.tools.Register(tool)
+func (e *Engine) AddDynamicTool(tool core.Tool) error {
+	if err := e.tools.Register(tool); err != nil {
+		return err
+	}
 	e.pendingToolsMu.Lock()
 	runID := e.activeToolRunID
 	e.pendingToolsMu.Unlock()
 	if runID != "" {
 		e.AddDynamicToolForRun(runID, tool)
 	}
+	return nil
+}
+
+// AddDynamicToolOverride is AddDynamicTool with an explicit scoped replacement.
+// UnregisterTool restores the shadowed binding.
+func (e *Engine) AddDynamicToolOverride(tool core.Tool, reason string) error {
+	if err := e.tools.RegisterOverride(tool, reason); err != nil {
+		return err
+	}
+	e.pendingToolsMu.Lock()
+	runID := e.activeToolRunID
+	e.pendingToolsMu.Unlock()
+	if runID != "" {
+		e.AddDynamicToolForRun(runID, tool)
+	}
+	return nil
 }
 
 // AddDynamicToolForRun queues a provider schema only for the matching active run.

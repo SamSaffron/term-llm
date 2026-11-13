@@ -14,7 +14,7 @@ import (
 )
 
 func (e *Engine) runLoop(ctx context.Context, req core.Request, send corestream.Sender) (returnErr error) {
-	ctx = core.ScopeClientToolRunner(ctx, req.Tools)
+	ctx = scopeEngineToolContext(core.ScopeClientToolRunner(ctx, req.Tools))
 	syncBridgeCtx, cancelSyncBridges := context.WithCancel(ctx)
 	defer cancelSyncBridges()
 	task := restart.CurrentTask(ctx)

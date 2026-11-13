@@ -120,6 +120,9 @@ func (m *Manager) revokeDeniedServers() {
 }
 
 func (m *Manager) policyError(name string) error {
+	if IsReservedServerName(name) {
+		return fmt.Errorf("MCP server name %q is reserved for client tool routing; rename the server", name)
+	}
 	m.policy.mu.Lock()
 	defer m.policy.mu.Unlock()
 	if !m.policy.loaded {

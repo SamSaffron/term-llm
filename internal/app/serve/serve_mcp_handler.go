@@ -246,10 +246,10 @@ func (rt *serveRuntime) unregisterMCPServerToolsLocked(serverName string) {
 	if rt == nil || rt.engine == nil || rt.engine.Tools() == nil {
 		return
 	}
-	prefix := serverName + "__"
 	for _, spec := range rt.engine.Tools().AllSpecsIncludingDeferred() {
-		if strings.HasPrefix(spec.Name, prefix) {
-			rt.engine.UnregisterTool(spec.Name)
+		tool, _ := rt.engine.Tools().Get(spec.Name)
+		if remote, ok := tool.(*mcp.MCPTool); ok && strings.HasPrefix(remote.ToolOrigin().ID, serverName+"\x00") {
+			rt.engine.Tools().UnregisterIf(spec.Name, tool)
 		}
 	}
 }

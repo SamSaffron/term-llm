@@ -114,7 +114,9 @@ func TestHostedChildReloadSettlesBeforeReplacement(t *testing.T) {
 				defer close(finished)
 				_, err := runner.Run(childCtx, runpkg.Request{Platform: runpkg.PlatformWeb, SessionID: id, ParentSessionID: f.parent.ID, IsSubagent: true, Persist: true, Cwd: cwd, ProviderInstance: mock, Prompt: "work", OnEngineReady: func(e *engine.Engine) {
 					if tc.interrupt {
-						e.RegisterTool(blocked)
+						if err := e.RegisterToolOverride(blocked, "hosted reload settlement fixture"); err != nil {
+							t.Errorf("install hosted reload fixture: %v", err)
+						}
 					}
 				}}, sink)
 				releaseChild()

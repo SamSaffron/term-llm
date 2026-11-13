@@ -58,6 +58,9 @@ func CodeModeControllerFromContext(ctx context.Context) CodeModeController {
 type CodeModeCellRef struct {
 	SessionID, CellID string
 	Ctx               context.Context
+	// Tools is the immutable admitted server-instance snapshot. A host may
+	// bind only instances it actually owns, never a same-named replacement.
+	Tools map[string]Tool
 }
 
 // CodeModeAuthority supplies captured local tools; live catalogue checks still narrow admission.
@@ -96,19 +99,12 @@ func PauseCodeModeTool(ctx context.Context) (func() error, error) {
 }
 
 // WithCodeModeApproval parks shared dispatch permits only during a human prompt.
-func WithCodeModeApproval[T any](ctx context.Context, prompt func() (T, error)) (value T, err error) {
-	resume, err := PauseCodeModeTool(ctx)
-	if err != nil {
-		return value, err
-	}
-	value, err = prompt()
-	if resumed := resume(); err == nil {
-		err = resumed
-	}
+func WithCodeModeApproval[T any](ctx context.Context, prompt func() (T, error)) (T, error) {
+	value, err := WithCodeModeWait(ctx, prompt)
 	if err == nil {
 		err = ctx.Err()
 	}
-	return
+	return value, err
 }
 
 // LockCodeModeApproval parks shared execution permits while waiting for a

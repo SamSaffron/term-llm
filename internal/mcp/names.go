@@ -7,14 +7,25 @@ import (
 	"regexp"
 	"strings"
 	"unicode"
+
+	"github.com/samsaffron/term-llm/internal/llm/core"
 )
 
 var validServerName = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$`)
+
+// IsReservedServerName reports names whose MCP tool namespace would shadow the
+// reserved client/WebMCP namespace, including sanitized dot/underscore forms.
+func IsReservedServerName(name string) bool {
+	return core.IsWebMCPToolName(strings.ToLower(sanitizeProviderToolName(name) + "__"))
+}
 
 // ValidateServerName checks a name for use as an MCP tool namespace.
 func ValidateServerName(name string) error {
 	if !validServerName.MatchString(name) || strings.Contains(name, "__") {
 		return fmt.Errorf("invalid MCP server name %q", name)
+	}
+	if IsReservedServerName(name) {
+		return fmt.Errorf("MCP server name %q is reserved for client/WebMCP tools", name)
 	}
 	return nil
 }

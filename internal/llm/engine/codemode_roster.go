@@ -3,6 +3,7 @@ package engine
 import (
 	"context"
 	"fmt"
+	"maps"
 	"sort"
 	"strings"
 	"time"
@@ -26,11 +27,25 @@ func (e *Engine) captureCodeModeAuthority(ctx context.Context, ref core.CodeMode
 	if capture == nil {
 		return nil
 	}
+	ref.Tools = maps.Clone(c.serverTools)
 	authority, err := capture(ctx, ref, c.Names())
 	if err != nil {
 		return err
 	}
 	c.authority = authority
+	// A host may bind a denial for an unavailable configured service. Narrow
+	// the catalogue before the VM starts instead of exposing callable stubs or
+	// falling back to an unrelated mutable live instance.
+	if authority != nil {
+		for name := range c.ceiling {
+			if tool, ok := authority.Tool(name); ok {
+				if policy, declared := tool.(core.CodeModeExposureProvider); declared && !policy.CodeModeExposure().Allowed {
+					delete(c.ceiling, name)
+					delete(c.serverTools, name)
+				}
+			}
+		}
+	}
 	return nil
 }
 

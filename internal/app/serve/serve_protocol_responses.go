@@ -251,67 +251,7 @@ func parseRequestedTools(raw []json.RawMessage) (bool, bool, map[string]bool, []
 }
 
 func parseRequestedFunctionTool(generic map[string]json.RawMessage) (core.ToolSpec, bool) {
-	spec := core.ToolSpec{
-		Name:        strings.TrimSpace(jsonString(generic["name"])),
-		Description: strings.TrimSpace(jsonString(generic["description"])),
-	}
-	if rawParams := generic["parameters"]; len(rawParams) > 0 {
-		_ = json.Unmarshal(rawParams, &spec.Schema)
-	}
-	if rawStrict := generic["strict"]; len(rawStrict) > 0 {
-		var strict bool
-		if err := json.Unmarshal(rawStrict, &strict); err == nil {
-			spec.Strict = strict
-		}
-	}
-	if rawCallers := generic["allowed_callers"]; len(rawCallers) > 0 {
-		_ = json.Unmarshal(rawCallers, &spec.AllowedCallers)
-	}
-	if rawOutput := generic["output_schema"]; len(rawOutput) > 0 {
-		_ = json.Unmarshal(rawOutput, &spec.OutputSchema)
-	}
-
-	if rawFunc := generic["function"]; len(rawFunc) > 0 {
-		var fn struct {
-			Name           string                 `json:"name"`
-			Description    string                 `json:"description"`
-			Parameters     map[string]interface{} `json:"parameters"`
-			Strict         *bool                  `json:"strict"`
-			AllowedCallers []string               `json:"allowed_callers"`
-			OutputSchema   map[string]interface{} `json:"output_schema"`
-		}
-		if err := json.Unmarshal(rawFunc, &fn); err == nil {
-			if spec.Name == "" {
-				spec.Name = strings.TrimSpace(fn.Name)
-			}
-			if spec.Description == "" {
-				spec.Description = strings.TrimSpace(fn.Description)
-			}
-			if spec.Schema == nil {
-				spec.Schema = fn.Parameters
-			}
-			if fn.Strict != nil {
-				spec.Strict = *fn.Strict
-			}
-			if spec.AllowedCallers == nil {
-				spec.AllowedCallers = append([]string(nil), fn.AllowedCallers...)
-			}
-			if spec.OutputSchema == nil {
-				spec.OutputSchema = fn.OutputSchema
-			}
-		}
-	}
-
-	if spec.Name == "" {
-		return core.ToolSpec{}, false
-	}
-	if spec.Schema == nil {
-		spec.Schema = map[string]interface{}{
-			"type":       "object",
-			"properties": map[string]interface{}{},
-		}
-	}
-	return spec, true
+	return core.ParseClientFunctionTool(generic)
 }
 
 func responsesUsagePayload(usage core.Usage) map[string]any {

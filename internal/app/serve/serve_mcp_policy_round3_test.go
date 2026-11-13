@@ -158,7 +158,7 @@ func TestMCPPolicyRevocationCleansStoppedServerGrantsAndStrayTools(t *testing.T)
 		t.Fatal(err)
 	}
 	rt.mcpAuthRequiredGrants = map[string]string{"greeter": "observed-grant"}
-	rt.engine.Tools().Register(serveMCPFakeTool{name: "greeter__stray"})
+	rt.engine.Tools().Register(mcp.NewCatalogMCPTool(rt.mcpManager, mcp.CatalogTool{Server: "greeter", OriginalName: "stray", Name: "greeter__stray"}))
 	writeServePolicy(t, "mcp: {servers: {greeter: {agents: []}}}")
 	if err := rt.mcpManager.RefreshPolicy(); err != nil {
 		t.Fatal(err)

@@ -70,3 +70,13 @@ func (t *WebSearchTool) Execute(ctx context.Context, args json.RawMessage) (core
 	}
 	return core.TextOutput(strings.TrimSuffix(b.String(), "\n")), nil
 }
+
+// CodeModeExposure allows composition without changing search authorization.
+func (*WebSearchTool) CodeModeExposure() core.CodeModeExposure {
+	return core.CodeModeExposure{Allowed: true}
+}
+
+// ToolOrigin identifies the trusted local implementation, not its public spelling.
+func (*WebSearchTool) ToolOrigin() core.ToolOrigin {
+	return core.ToolOrigin{Class: core.ToolOriginWeb, ID: "web_search"}
+}

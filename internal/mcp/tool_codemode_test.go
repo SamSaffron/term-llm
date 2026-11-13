@@ -211,3 +211,20 @@ func TestCodeModeIdentity_LegacyTool_NoCatalogue(t *testing.T) {
 		t.Fatal("expected non-nil error when catalogue empty")
 	}
 }
+
+func TestMCPCodeModeExposureIndependentOfRemoteName(t *testing.T) {
+	for _, name := range []string{"spawn_agent", "spawn_script", "ui_activate_extensions", "tool_search", "ordinary"} {
+		t.Run(name, func(t *testing.T) {
+			ct := makeCatalogTool("remote", name, "hash")
+			manager := managerWithCatalogueTools("remote", []CatalogTool{ct})
+			for _, tool := range []*MCPTool{
+				NewCatalogMCPTool(manager, ct),
+				NewMCPTool(manager, ToolSpec{Name: name}),
+			} {
+				if exposure := tool.CodeModeExposure(); !exposure.Allowed || exposure.Reason != "" {
+					t.Fatalf("remote name %q changed exposure: %+v", name, exposure)
+				}
+			}
+		})
+	}
+}

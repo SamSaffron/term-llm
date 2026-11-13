@@ -49,14 +49,27 @@ func clientToolRunnerFromContext(ctx context.Context) ClientToolRunner {
 // in-process subagent, say) inherits it; such a run never offered the page's
 // tools, so it must not answer calls to them on the parent's behalf.
 func ScopeClientToolRunner(ctx context.Context, tools []ToolSpec) context.Context {
+	// A child engine run must obtain its own cell/controller rather than using
+	// the parent's capability via an inherited tool-execution context.
+	ctx = context.WithValue(ctx, codeModeCellKey{}, struct{}{})
+	ctx = context.WithValue(ctx, codeModeControllerKey{}, struct{}{})
+	ctx = context.WithValue(ctx, codeModePauseKey{}, struct{}{})
 	runner := clientToolRunnerFromContext(ctx)
 	if runner == nil {
 		return ctx
 	}
-	offered := make(map[string]bool, len(tools))
+	// A second engine run is a child/resume boundary, not a new grant from the
+	// host. In particular, offering the same names cannot inherit a cell lease.
+	if _, scoped := runner.(scopedClientToolRunner); scoped {
+		return ContextWithClientToolRunner(ctx, nil)
+	}
+	offered := make(map[string]ToolSpec, len(tools))
 	for _, spec := range tools {
 		if runner.OwnsClientTool(spec.Name) {
-			offered[spec.Name] = true
+			copy, err := cloneClientToolSpec(spec)
+			if err == nil {
+				offered[spec.Name] = copy
+			}
 		}
 	}
 	if len(offered) == 0 {
@@ -67,10 +80,45 @@ func ScopeClientToolRunner(ctx context.Context, tools []ToolSpec) context.Contex
 
 type scopedClientToolRunner struct {
 	ClientToolRunner
-	offered map[string]bool
+	offered map[string]ToolSpec
 }
 
-func (r scopedClientToolRunner) OwnsClientTool(name string) bool { return r.offered[name] }
+func (r scopedClientToolRunner) OwnsClientTool(name string) bool {
+	_, ok := r.offered[name]
+	return ok
+}
+
+// CaptureClientTools captures only a first-level request-scoped inline runner.
+// Ambient runners and ordinary passthrough requests never grant script access.
+// The caller must reject collisions with every server-origin registered tool.
+func CaptureClientTools(ctx context.Context) (ClientToolRunner, *ClientToolLease, []ToolSpec) {
+	r, ok := clientToolRunnerFromContext(ctx).(scopedClientToolRunner)
+	if !ok {
+		return nil, nil, nil
+	}
+	provider, ok := r.ClientToolRunner.(ClientToolLeaseProvider)
+	if !ok {
+		return nil, nil, nil
+	}
+	lease := provider.ClientToolLease()
+	if lease == nil || lease.Check() != nil {
+		return nil, nil, nil
+	}
+	specs := make([]ToolSpec, 0, len(r.offered))
+	for name, offered := range r.offered {
+		spec, found := lease.Spec(name)
+		if !found {
+			continue
+		}
+		// Both the originating host offer and this exact request must agree.
+		a, errA := json.Marshal(offered)
+		b, errB := json.Marshal(spec)
+		if errA == nil && errB == nil && string(a) == string(b) {
+			specs = append(specs, spec)
+		}
+	}
+	return r, lease, specs
+}
 
 // ClientTool returns a Tool adapter for an unregistered call the context's
 // runner owns, or nil.

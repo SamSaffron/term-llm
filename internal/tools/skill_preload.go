@@ -22,7 +22,9 @@ func RegisterSkillScriptTools(eng *engine.Engine, manager *ToolManager, defs []s
 	}
 	for _, def := range defs {
 		if tool, ok := manager.Registry.Get(def.Name); ok {
-			eng.AddDynamicTool(tool)
+			if err := eng.AddDynamicTool(tool); err != nil {
+				return fmt.Errorf("register skill tool %q: %w", def.Name, err)
+			}
 		}
 	}
 	return nil
