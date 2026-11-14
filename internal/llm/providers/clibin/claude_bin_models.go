@@ -13,9 +13,9 @@ import (
 	"time"
 	"unicode"
 
-	"github.com/samsaffron/term-llm/internal/cache"
-	"github.com/samsaffron/term-llm/internal/llm/core"
-	"github.com/samsaffron/term-llm/internal/procutil"
+	"github.com/term-llm/term-llm/internal/cache"
+	"github.com/term-llm/term-llm/internal/llm/core"
+	"github.com/term-llm/term-llm/internal/procutil"
 )
 
 const (

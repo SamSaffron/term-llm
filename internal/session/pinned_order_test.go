@@ -12,8 +12,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/samsaffron/term-llm/internal/llm/core"
-	"github.com/samsaffron/term-llm/internal/sqliteutil"
+	"github.com/term-llm/term-llm/internal/llm/core"
+	"github.com/term-llm/term-llm/internal/sqliteutil"
 )
 
 func createPinTestSession(t *testing.T, store *SQLiteStore, id string, activity time.Time) {

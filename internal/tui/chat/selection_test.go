@@ -3,7 +3,7 @@ package chat
 import (
 	"testing"
 
-	"github.com/samsaffron/term-llm/internal/ui"
+	"github.com/term-llm/term-llm/internal/ui"
 )
 
 func TestSelectionNormalized(t *testing.T) {

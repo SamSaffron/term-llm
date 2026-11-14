@@ -6,7 +6,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/samsaffron/term-llm/internal/uisource"
+	"github.com/term-llm/term-llm/internal/uisource"
 )
 
 func writeFile(t *testing.T, root, rel, body string) {

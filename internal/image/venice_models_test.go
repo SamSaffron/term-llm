@@ -13,8 +13,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/samsaffron/term-llm/internal/cache"
-	"github.com/samsaffron/term-llm/internal/venice"
+	"github.com/term-llm/term-llm/internal/cache"
+	"github.com/term-llm/term-llm/internal/venice"
 )
 
 func seedVeniceSizingCache(t *testing.T) {

@@ -6,9 +6,9 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/samsaffron/term-llm/internal/agents"
-	"github.com/samsaffron/term-llm/internal/config"
-	runpkg "github.com/samsaffron/term-llm/internal/run"
+	"github.com/term-llm/term-llm/internal/agents"
+	"github.com/term-llm/term-llm/internal/config"
+	runpkg "github.com/term-llm/term-llm/internal/run"
 )
 
 func TestCommitChildDisablesConfiguredToolsWithoutInvalidSentinels(t *testing.T) {

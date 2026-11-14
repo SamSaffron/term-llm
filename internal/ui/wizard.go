@@ -8,10 +8,10 @@ import (
 	"strings"
 
 	"charm.land/huh/v2"
-	"github.com/samsaffron/term-llm/internal/config"
-	"github.com/samsaffron/term-llm/internal/llm"
-	"github.com/samsaffron/term-llm/internal/providerspec"
-	"github.com/samsaffron/term-llm/internal/terminalpolicy"
+	"github.com/term-llm/term-llm/internal/config"
+	"github.com/term-llm/term-llm/internal/llm"
+	"github.com/term-llm/term-llm/internal/providerspec"
+	"github.com/term-llm/term-llm/internal/terminalpolicy"
 )
 
 const openRouterGettingStartedHint = "Need a provider? See https://openrouter.ai/pricing for OpenRouter's free plan. Set OPENROUTER_API_KEY and try --provider openrouter:openrouter/free (usage limits apply)."
@@ -189,7 +189,7 @@ func defaultWizardProviderConfigs() map[string]config.ProviderConfig {
 	providers["openrouter"] = config.ProviderConfig{
 		Model:     config.DefaultProviderModel("openrouter"),
 		FastModel: config.DefaultProviderFastModel("openrouter"),
-		AppURL:    "https://github.com/samsaffron/term-llm",
+		AppURL:    "https://github.com/term-llm/term-llm",
 		AppTitle:  "term-llm",
 	}
 	return providers

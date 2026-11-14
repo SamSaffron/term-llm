@@ -6,7 +6,7 @@ import (
 	"log"
 	"net/http"
 
-	"github.com/samsaffron/term-llm/internal/session"
+	"github.com/term-llm/term-llm/internal/session"
 )
 
 func (s *serveServer) retireNotificationTurn(ctx context.Context, responseID string) bool {

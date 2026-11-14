@@ -6,11 +6,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/samsaffron/term-llm/internal/classify"
-	"github.com/samsaffron/term-llm/internal/classify/cloudflare"
-	"github.com/samsaffron/term-llm/internal/classify/openai"
-	"github.com/samsaffron/term-llm/internal/classify/typesafe"
-	"github.com/samsaffron/term-llm/internal/config"
+	"github.com/term-llm/term-llm/internal/classify"
+	"github.com/term-llm/term-llm/internal/classify/cloudflare"
+	"github.com/term-llm/term-llm/internal/classify/openai"
+	"github.com/term-llm/term-llm/internal/classify/typesafe"
+	"github.com/term-llm/term-llm/internal/config"
 )
 
 func TestOpenDispatchesByProviderType(t *testing.T) {

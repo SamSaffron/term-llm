@@ -4,12 +4,12 @@ import (
 	"context"
 	"time"
 
-	"github.com/samsaffron/term-llm/internal/agents"
-	"github.com/samsaffron/term-llm/internal/config"
-	"github.com/samsaffron/term-llm/internal/llm/core"
-	"github.com/samsaffron/term-llm/internal/llm/engine"
-	runpkg "github.com/samsaffron/term-llm/internal/run"
-	"github.com/samsaffron/term-llm/internal/session"
+	"github.com/term-llm/term-llm/internal/agents"
+	"github.com/term-llm/term-llm/internal/config"
+	"github.com/term-llm/term-llm/internal/llm/core"
+	"github.com/term-llm/term-llm/internal/llm/engine"
+	runpkg "github.com/term-llm/term-llm/internal/run"
+	"github.com/term-llm/term-llm/internal/session"
 )
 
 // SessionRuntime is a per-conversation runtime for non-web platforms.

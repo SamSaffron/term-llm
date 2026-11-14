@@ -14,11 +14,11 @@ import (
 	"time"
 
 	sdkmcp "github.com/modelcontextprotocol/go-sdk/mcp"
-	"github.com/samsaffron/term-llm/internal/config"
-	"github.com/samsaffron/term-llm/internal/llm/core"
-	"github.com/samsaffron/term-llm/internal/llm/engine"
-	"github.com/samsaffron/term-llm/internal/llm/mockprovider"
-	internalmcp "github.com/samsaffron/term-llm/internal/mcp"
+	"github.com/term-llm/term-llm/internal/config"
+	"github.com/term-llm/term-llm/internal/llm/core"
+	"github.com/term-llm/term-llm/internal/llm/engine"
+	"github.com/term-llm/term-llm/internal/llm/mockprovider"
+	internalmcp "github.com/term-llm/term-llm/internal/mcp"
 )
 
 const discoveryTestServerEnv = "TERM_LLM_TOOL_DISCOVERY_TEST_SERVER"

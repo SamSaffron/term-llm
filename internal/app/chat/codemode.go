@@ -2,9 +2,9 @@ package chat
 
 import (
 	tea "charm.land/bubbletea/v2"
-	"github.com/samsaffron/term-llm/internal/llm/core"
-	"github.com/samsaffron/term-llm/internal/tools"
-	tuichat "github.com/samsaffron/term-llm/internal/tui/chat"
+	"github.com/term-llm/term-llm/internal/llm/core"
+	"github.com/term-llm/term-llm/internal/tools"
+	tuichat "github.com/term-llm/term-llm/internal/tui/chat"
 )
 
 func bindChatCodeModePrompts(manager *tools.ToolManager, send func(tea.Msg)) {

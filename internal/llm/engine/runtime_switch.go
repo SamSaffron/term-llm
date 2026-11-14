@@ -3,8 +3,8 @@ package engine
 import (
 	"context"
 	"fmt"
-	"github.com/samsaffron/term-llm/internal/llm/core"
-	corestream "github.com/samsaffron/term-llm/internal/llm/core/stream"
+	"github.com/term-llm/term-llm/internal/llm/core"
+	corestream "github.com/term-llm/term-llm/internal/llm/core/stream"
 	"strings"
 )
 

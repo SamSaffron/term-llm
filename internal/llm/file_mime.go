@@ -1,6 +1,6 @@
 package llm
 
-import "github.com/samsaffron/term-llm/internal/llm/filemime"
+import "github.com/term-llm/term-llm/internal/llm/filemime"
 
 // MIME canonicalization lives in filemime so provider families can reuse it
 // without importing the root llm package.

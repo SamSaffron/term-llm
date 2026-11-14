@@ -4,11 +4,11 @@ import (
 	"fmt"
 	"time"
 
-	appruntime "github.com/samsaffron/term-llm/internal/app/runtime"
-	sessionsapp "github.com/samsaffron/term-llm/internal/app/sessions"
-	"github.com/samsaffron/term-llm/internal/config"
-	"github.com/samsaffron/term-llm/internal/session"
 	"github.com/spf13/cobra"
+	appruntime "github.com/term-llm/term-llm/internal/app/runtime"
+	sessionsapp "github.com/term-llm/term-llm/internal/app/sessions"
+	"github.com/term-llm/term-llm/internal/config"
+	"github.com/term-llm/term-llm/internal/session"
 )
 
 var sessionsCmd = &cobra.Command{

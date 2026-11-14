@@ -6,10 +6,10 @@ import (
 	"log"
 	"time"
 
-	"github.com/samsaffron/term-llm/internal/config"
-	projectpkg "github.com/samsaffron/term-llm/internal/project"
-	"github.com/samsaffron/term-llm/internal/restart"
-	"github.com/samsaffron/term-llm/internal/session"
+	"github.com/term-llm/term-llm/internal/config"
+	projectpkg "github.com/term-llm/term-llm/internal/project"
+	"github.com/term-llm/term-llm/internal/restart"
+	"github.com/term-llm/term-llm/internal/session"
 )
 
 func initializeServeProjectRuntime(ctx context.Context, flags FlagState, opts *Options, cfg *config.Config, store session.Store, startupDir string, hasWeb bool, errWriter io.Writer) (bool, string, error) {

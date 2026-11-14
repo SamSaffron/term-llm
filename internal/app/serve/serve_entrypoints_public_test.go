@@ -5,9 +5,9 @@ import (
 	"strings"
 	"testing"
 
-	app "github.com/samsaffron/term-llm/internal/app/serve"
-	appserve "github.com/samsaffron/term-llm/internal/app/serve"
-	apphub "github.com/samsaffron/term-llm/internal/app/serve/hub"
+	app "github.com/term-llm/term-llm/internal/app/serve"
+	appserve "github.com/term-llm/term-llm/internal/app/serve"
+	apphub "github.com/term-llm/term-llm/internal/app/serve/hub"
 )
 
 func TestServePublicInvocationEntrypointsValidateBeforeConfiguration(t *testing.T) {

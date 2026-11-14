@@ -1,9 +1,9 @@
 package ui
 
 import (
-	rendermarkdown "github.com/samsaffron/term-llm/internal/render/markdown"
-	"github.com/samsaffron/term-llm/internal/ui/ansisafe"
-	"github.com/samsaffron/term-llm/internal/ui/streaming"
+	rendermarkdown "github.com/term-llm/term-llm/internal/render/markdown"
+	"github.com/term-llm/term-llm/internal/ui/ansisafe"
+	"github.com/term-llm/term-llm/internal/ui/streaming"
 )
 
 // TextSegmentRenderer wraps the streaming markdown renderer for use with

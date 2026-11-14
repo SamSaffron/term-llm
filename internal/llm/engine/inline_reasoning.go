@@ -4,8 +4,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/samsaffron/term-llm/internal/llm/core"
-	internalreasoning "github.com/samsaffron/term-llm/internal/reasoning"
+	"github.com/term-llm/term-llm/internal/llm/core"
+	internalreasoning "github.com/term-llm/term-llm/internal/reasoning"
 )
 
 // inlineReasoningState tracks display boundaries independently of cumulative

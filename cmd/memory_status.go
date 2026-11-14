@@ -1,8 +1,8 @@
 package cmd
 
 import (
-	appmemory "github.com/samsaffron/term-llm/internal/app/memory"
 	"github.com/spf13/cobra"
+	appmemory "github.com/term-llm/term-llm/internal/app/memory"
 )
 
 var memoryStatusJSON bool

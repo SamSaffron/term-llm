@@ -8,9 +8,9 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/samsaffron/term-llm/internal/llm/core"
-	"github.com/samsaffron/term-llm/internal/llm/core/stream"
-	"github.com/samsaffron/term-llm/internal/runtimeoutput"
+	"github.com/term-llm/term-llm/internal/llm/core"
+	"github.com/term-llm/term-llm/internal/llm/core/stream"
+	"github.com/term-llm/term-llm/internal/runtimeoutput"
 )
 
 // Provider implements core.Provider using the Google Gemini API.

@@ -2,12 +2,12 @@ package engine
 
 import (
 	"fmt"
-	"github.com/samsaffron/term-llm/internal/llm/core"
+	"github.com/term-llm/term-llm/internal/llm/core"
 	"io"
 	"sync"
 	"time"
 
-	"github.com/samsaffron/term-llm/internal/usage"
+	"github.com/term-llm/term-llm/internal/usage"
 )
 
 // loggingStream wraps a stream to accumulate usage and log it on completion

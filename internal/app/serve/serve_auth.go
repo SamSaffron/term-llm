@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"strings"
 
-	appserver "github.com/samsaffron/term-llm/internal/app/serve/server"
+	appserver "github.com/term-llm/term-llm/internal/app/serve/server"
 )
 
 func resolveServeAuthMode(authFlagSet bool, authMode string, allowNoAuthSet bool, allowNoAuth bool) (string, error) {

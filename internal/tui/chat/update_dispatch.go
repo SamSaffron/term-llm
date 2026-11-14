@@ -9,10 +9,10 @@ import (
 	"charm.land/bubbles/v2/key"
 	"charm.land/bubbles/v2/spinner"
 	tea "charm.land/bubbletea/v2"
-	"github.com/samsaffron/term-llm/internal/llm/core"
-	"github.com/samsaffron/term-llm/internal/mcp"
-	"github.com/samsaffron/term-llm/internal/tools"
-	"github.com/samsaffron/term-llm/internal/ui"
+	"github.com/term-llm/term-llm/internal/llm/core"
+	"github.com/term-llm/term-llm/internal/mcp"
+	"github.com/term-llm/term-llm/internal/tools"
+	"github.com/term-llm/term-llm/internal/ui"
 )
 
 func handledUpdate(model tea.Model, cmd tea.Cmd) (tea.Model, tea.Cmd, bool) {

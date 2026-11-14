@@ -7,7 +7,7 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/samsaffron/term-llm/internal/worktree"
+	"github.com/term-llm/term-llm/internal/worktree"
 )
 
 // rootCheckoutLeaseRegistry coordinates agent runs with operations that mutate

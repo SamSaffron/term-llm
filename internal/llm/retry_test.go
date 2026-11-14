@@ -13,9 +13,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/samsaffron/term-llm/internal/llm/core"
-	"github.com/samsaffron/term-llm/internal/llm/providers/opencompat"
-	rp "github.com/samsaffron/term-llm/internal/llm/providers/responsesproviders"
+	"github.com/term-llm/term-llm/internal/llm/core"
+	"github.com/term-llm/term-llm/internal/llm/providers/opencompat"
+	rp "github.com/term-llm/term-llm/internal/llm/providers/responsesproviders"
 )
 
 func TestRateLimitErrorPreservesTypeAcrossProviderBoundary(t *testing.T) {

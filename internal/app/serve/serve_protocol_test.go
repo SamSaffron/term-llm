@@ -14,11 +14,11 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/samsaffron/term-llm/internal/app/uploads"
-	"github.com/samsaffron/term-llm/internal/llm"
-	"github.com/samsaffron/term-llm/internal/llm/core"
-	"github.com/samsaffron/term-llm/internal/llm/providers/responses"
-	"github.com/samsaffron/term-llm/internal/session"
+	"github.com/term-llm/term-llm/internal/app/uploads"
+	"github.com/term-llm/term-llm/internal/llm"
+	"github.com/term-llm/term-llm/internal/llm/core"
+	"github.com/term-llm/term-llm/internal/llm/providers/responses"
+	"github.com/term-llm/term-llm/internal/session"
 )
 
 const onePixelPNGDataURL = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4//8/AwAI/AL+KDvV3wAAAABJRU5ErkJggg=="

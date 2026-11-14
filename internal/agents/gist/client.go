@@ -13,8 +13,8 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/samsaffron/term-llm/internal/procutil"
-	"github.com/samsaffron/term-llm/internal/runtimeoutput"
+	"github.com/term-llm/term-llm/internal/procutil"
+	"github.com/term-llm/term-llm/internal/runtimeoutput"
 )
 
 var (

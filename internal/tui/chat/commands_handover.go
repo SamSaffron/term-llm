@@ -12,14 +12,14 @@ import (
 	"time"
 
 	tea "charm.land/bubbletea/v2"
-	"github.com/samsaffron/term-llm/internal/agents"
-	"github.com/samsaffron/term-llm/internal/llm"
-	"github.com/samsaffron/term-llm/internal/llm/core"
-	"github.com/samsaffron/term-llm/internal/llm/engine"
-	"github.com/samsaffron/term-llm/internal/modelpolicy"
-	projectpkg "github.com/samsaffron/term-llm/internal/project"
-	"github.com/samsaffron/term-llm/internal/session"
-	"github.com/samsaffron/term-llm/internal/tools"
+	"github.com/term-llm/term-llm/internal/agents"
+	"github.com/term-llm/term-llm/internal/llm"
+	"github.com/term-llm/term-llm/internal/llm/core"
+	"github.com/term-llm/term-llm/internal/llm/engine"
+	"github.com/term-llm/term-llm/internal/modelpolicy"
+	projectpkg "github.com/term-llm/term-llm/internal/project"
+	"github.com/term-llm/term-llm/internal/session"
+	"github.com/term-llm/term-llm/internal/tools"
 )
 
 func (m *Model) cmdHandover(args []string) (tea.Model, tea.Cmd) {

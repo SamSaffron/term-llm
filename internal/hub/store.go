@@ -7,7 +7,7 @@ import (
 	"path/filepath"
 	"sync"
 
-	"github.com/samsaffron/term-llm/internal/config"
+	"github.com/term-llm/term-llm/internal/config"
 )
 
 // Store persists UI-added nodes in a local JSON file (0600 — it holds node

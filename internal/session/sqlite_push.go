@@ -6,7 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/samsaffron/term-llm/internal/sqliteutil"
+	"github.com/term-llm/term-llm/internal/sqliteutil"
 	"strings"
 	"time"
 )

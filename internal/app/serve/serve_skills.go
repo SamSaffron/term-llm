@@ -11,14 +11,14 @@ import (
 	"strings"
 	"time"
 
-	appruntime "github.com/samsaffron/term-llm/internal/app/runtime"
-	codemodetool "github.com/samsaffron/term-llm/internal/codemode/tool"
-	"github.com/samsaffron/term-llm/internal/llm/core"
-	"github.com/samsaffron/term-llm/internal/restart"
-	runpkg "github.com/samsaffron/term-llm/internal/run"
-	"github.com/samsaffron/term-llm/internal/session"
-	"github.com/samsaffron/term-llm/internal/skills"
-	"github.com/samsaffron/term-llm/internal/tools"
+	appruntime "github.com/term-llm/term-llm/internal/app/runtime"
+	codemodetool "github.com/term-llm/term-llm/internal/codemode/tool"
+	"github.com/term-llm/term-llm/internal/llm/core"
+	"github.com/term-llm/term-llm/internal/restart"
+	runpkg "github.com/term-llm/term-llm/internal/run"
+	"github.com/term-llm/term-llm/internal/session"
+	"github.com/term-llm/term-llm/internal/skills"
+	"github.com/term-llm/term-llm/internal/tools"
 )
 
 func newServeSkillRun(id, sessionID, childSessionID string, activation *skills.Activation, cancel context.CancelFunc) *serveSkillRun {

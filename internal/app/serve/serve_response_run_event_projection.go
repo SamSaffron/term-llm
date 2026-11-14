@@ -3,13 +3,13 @@ package serve
 import (
 	"errors"
 	"fmt"
-	"github.com/samsaffron/term-llm/internal/app/serve/authorship"
+	"github.com/term-llm/term-llm/internal/app/serve/authorship"
 	"maps"
 	"strings"
 	"time"
 
-	"github.com/samsaffron/term-llm/internal/llm/core"
-	"github.com/samsaffron/term-llm/internal/tools"
+	"github.com/term-llm/term-llm/internal/llm/core"
+	"github.com/term-llm/term-llm/internal/tools"
 )
 
 func (s *serveServer) appendResponseTextDelta(runtime *serveRuntime, run *responseRun, state *responseRunStreamState, ev core.Event) error {

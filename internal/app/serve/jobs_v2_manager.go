@@ -1,6 +1,6 @@
 package serve
 
-import servejobs "github.com/samsaffron/term-llm/internal/app/serve/jobs"
+import servejobs "github.com/term-llm/term-llm/internal/app/serve/jobs"
 
 func newJobsV2Manager(dbPath string, workers int, llmExec serveJobsExecutor) (*jobsV2Manager, error) {
 	return newJobsV2ManagerWithNotifier(dbPath, workers, llmExec, nil)

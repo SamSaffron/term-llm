@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/samsaffron/term-llm/internal/classify"
+	"github.com/term-llm/term-llm/internal/classify"
 )
 
 func TestRelativePathsAreNotTruncated(t *testing.T) {

@@ -1,9 +1,9 @@
 package cmd
 
 import (
-	"github.com/samsaffron/term-llm/internal/app/providers"
-	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/spf13/cobra"
+	"github.com/term-llm/term-llm/internal/app/providers"
+	"github.com/term-llm/term-llm/internal/config"
 )
 
 var providersOptions providers.Options

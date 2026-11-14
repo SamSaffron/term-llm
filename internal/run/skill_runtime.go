@@ -2,10 +2,10 @@ package run
 
 import (
 	"fmt"
-	codemodetool "github.com/samsaffron/term-llm/internal/codemode/tool"
-	"github.com/samsaffron/term-llm/internal/llm/engine"
-	"github.com/samsaffron/term-llm/internal/skills"
-	"github.com/samsaffron/term-llm/internal/tools"
+	codemodetool "github.com/term-llm/term-llm/internal/codemode/tool"
+	"github.com/term-llm/term-llm/internal/llm/engine"
+	"github.com/term-llm/term-llm/internal/skills"
+	"github.com/term-llm/term-llm/internal/tools"
 )
 
 // ApplySkillRuntime installs a host-resolved isolated child's tools, temporary

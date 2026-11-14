@@ -9,7 +9,7 @@
       {{ if gt (len .Fragments.Headings) 0 }}<details class="mobile-toc" data-pagefind-ignore><summary>On this page</summary>{{ .TableOfContents | replaceRE `id="TableOfContents"` `id="mobile-table-of-contents"` | safeHTML }}</details>{{ end }}
       <article class="markdown">{{ .Content }}</article>
       <footer class="article-footer" data-pagefind-ignore>
-        {{ with .File }}<a href="https://github.com/samsaffron/term-llm/edit/main/docs-site/content/{{ .Path }}">Edit this page ↗</a>{{ end }}
+        {{ with .File }}<a href="https://github.com/term-llm/term-llm/edit/main/docs-site/content/{{ .Path }}">Edit this page ↗</a>{{ end }}
         {{ with .Params.next }}<a class="next-page" href="{{ .url }}"><span>Next</span>{{ .label }} <span aria-hidden="true">→</span></a>{{ end }}
       </footer>
     </div>

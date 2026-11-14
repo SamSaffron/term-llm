@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/samsaffron/term-llm/internal/runtimeoutput"
+	"github.com/term-llm/term-llm/internal/runtimeoutput"
 )
 
 func TestInteractiveDiagnosticsOpenFailureWarnsBeforeUIAndDiscards(t *testing.T) {

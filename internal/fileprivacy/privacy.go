@@ -10,7 +10,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/samsaffron/term-llm/internal/atomicfile"
+	"github.com/term-llm/term-llm/internal/atomicfile"
 )
 
 const (

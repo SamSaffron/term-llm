@@ -1,6 +1,6 @@
 package tools
 
-import "github.com/samsaffron/term-llm/internal/tools/gitidentity"
+import "github.com/term-llm/term-llm/internal/tools/gitidentity"
 
 // GitRepoInfo contains information about a git repository.
 type GitRepoInfo = gitidentity.GitRepoInfo

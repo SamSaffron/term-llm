@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/samsaffron/term-llm/internal/restart"
+	"github.com/term-llm/term-llm/internal/restart"
 )
 
 func TestReloadWaitsForStreamProducerNotStreamClose(t *testing.T) {

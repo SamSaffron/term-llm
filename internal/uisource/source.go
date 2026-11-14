@@ -22,8 +22,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/samsaffron/term-llm/internal/filelock"
-	"github.com/samsaffron/term-llm/internal/serveui"
+	"github.com/term-llm/term-llm/internal/filelock"
+	"github.com/term-llm/term-llm/internal/serveui"
 	"golang.org/x/mod/semver"
 )
 
@@ -293,7 +293,7 @@ func published(ctx context.Context, version string) (*Reference, error) {
 			if page == 1 {
 				conditional = c.ETag
 			}
-			b, status, nextETag, err := downloadConditional(ctx, fmt.Sprintf("https://api.github.com/repos/samsaffron/term-llm/releases?per_page=100&page=%d", page), 4<<20, conditional)
+			b, status, nextETag, err := downloadConditional(ctx, fmt.Sprintf("https://api.github.com/repos/term-llm/term-llm/releases?per_page=100&page=%d", page), 4<<20, conditional)
 			if status == http.StatusNotModified {
 				releases = c.Releases
 				etag = c.ETag
@@ -342,7 +342,7 @@ func published(ctx context.Context, version string) (*Reference, error) {
 				}
 			}
 		}
-		url := "https://github.com/samsaffron/term-llm/releases/download/" + tag + "/"
+		url := "https://github.com/term-llm/term-llm/releases/download/" + tag + "/"
 		checks, err := download(ctx, url+"checksums.txt", 1<<20)
 		if err != nil {
 			continue

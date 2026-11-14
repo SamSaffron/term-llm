@@ -11,7 +11,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/samsaffron/term-llm/internal/hub"
+	"github.com/term-llm/term-llm/internal/hub"
 )
 
 func TestHubCacheScopeFor(t *testing.T) {

@@ -1,7 +1,7 @@
 package chat
 
 import (
-	"github.com/samsaffron/term-llm/internal/session"
+	"github.com/term-llm/term-llm/internal/session"
 )
 
 // VirtualViewport handles virtualized rendering of message history.

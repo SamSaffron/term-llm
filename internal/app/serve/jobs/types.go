@@ -3,7 +3,7 @@ package jobs
 import (
 	"context"
 	"encoding/json"
-	"github.com/samsaffron/term-llm/internal/jobs"
+	"github.com/term-llm/term-llm/internal/jobs"
 	"time"
 )
 

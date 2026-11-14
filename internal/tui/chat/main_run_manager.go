@@ -9,14 +9,14 @@ import (
 	"time"
 
 	tea "charm.land/bubbletea/v2"
-	"github.com/samsaffron/term-llm/internal/llm/core"
-	"github.com/samsaffron/term-llm/internal/llm/engine"
-	"github.com/samsaffron/term-llm/internal/restart"
-	"github.com/samsaffron/term-llm/internal/runboundary"
-	"github.com/samsaffron/term-llm/internal/session"
-	"github.com/samsaffron/term-llm/internal/tools"
-	"github.com/samsaffron/term-llm/internal/tui/chat/agentbarrier"
-	"github.com/samsaffron/term-llm/internal/ui"
+	"github.com/term-llm/term-llm/internal/llm/core"
+	"github.com/term-llm/term-llm/internal/llm/engine"
+	"github.com/term-llm/term-llm/internal/restart"
+	"github.com/term-llm/term-llm/internal/runboundary"
+	"github.com/term-llm/term-llm/internal/session"
+	"github.com/term-llm/term-llm/internal/tools"
+	"github.com/term-llm/term-llm/internal/tui/chat/agentbarrier"
+	"github.com/term-llm/term-llm/internal/ui"
 )
 
 const (

@@ -8,8 +8,8 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/samsaffron/term-llm/internal/openaiapi"
-	"github.com/samsaffron/term-llm/internal/runtimeoutput"
+	"github.com/term-llm/term-llm/internal/openaiapi"
+	"github.com/term-llm/term-llm/internal/runtimeoutput"
 )
 
 // OpenAIProvider implements Provider using the standard OpenAI API.

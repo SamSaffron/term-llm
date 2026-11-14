@@ -15,7 +15,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/samsaffron/term-llm/internal/fileprivacy"
+	"github.com/term-llm/term-llm/internal/fileprivacy"
 )
 
 // Native is injectable so tests never alter the user's service manager.

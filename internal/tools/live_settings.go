@@ -5,8 +5,8 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"github.com/samsaffron/term-llm/internal/live"
-	"github.com/samsaffron/term-llm/internal/llm/core"
+	"github.com/term-llm/term-llm/internal/live"
+	"github.com/term-llm/term-llm/internal/llm/core"
 )
 
 // LiveSettingsToolName controls only the current live call, never saved config.

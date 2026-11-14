@@ -1,6 +1,6 @@
 package engine
 
-import "github.com/samsaffron/term-llm/internal/runtimeoutput"
+import "github.com/term-llm/term-llm/internal/runtimeoutput"
 
 // reportToolRegistrationError makes rejection observable even for historical
 // void-style callers that intentionally ignore Register's new error result.

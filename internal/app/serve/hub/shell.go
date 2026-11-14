@@ -3,7 +3,7 @@ package hub
 import (
 	"strings"
 
-	"github.com/samsaffron/term-llm/internal/htmlesc"
+	"github.com/term-llm/term-llm/internal/htmlesc"
 )
 
 // ShellView holds presentation values for the Hub and passkey browser shell.

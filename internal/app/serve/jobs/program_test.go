@@ -12,7 +12,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/samsaffron/term-llm/internal/testutil"
+	"github.com/term-llm/term-llm/internal/testutil"
 )
 
 func testJobsV2ProgramJob(t *testing.T, cfg ProgramConfig) Job {

@@ -8,8 +8,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/samsaffron/term-llm/internal/contain"
 	"github.com/spf13/cobra"
+	"github.com/term-llm/term-llm/internal/contain"
 )
 
 type containFakeRunner struct {

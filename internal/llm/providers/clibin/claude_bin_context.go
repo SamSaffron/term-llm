@@ -3,7 +3,7 @@ package clibin
 import (
 	"encoding/json"
 
-	"github.com/samsaffron/term-llm/internal/llm/core"
+	"github.com/term-llm/term-llm/internal/llm/core"
 )
 
 // claudeContextReport tracks the context occupancy Claude Code reports while

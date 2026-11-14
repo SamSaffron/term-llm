@@ -3,7 +3,7 @@ package llm
 import (
 	"testing"
 
-	"github.com/samsaffron/term-llm/internal/config"
+	"github.com/term-llm/term-llm/internal/config"
 )
 
 func TestEffectiveFileUploadPolicyForProviderConfig_DisablesNativeWithEmptyList(t *testing.T) {

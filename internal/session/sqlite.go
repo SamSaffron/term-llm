@@ -4,8 +4,8 @@ import (
 	"database/sql"
 	"sync"
 
-	"github.com/samsaffron/term-llm/internal/session/notificationdb"
-	_ "github.com/samsaffron/term-llm/internal/sqlitedriver"
+	"github.com/term-llm/term-llm/internal/session/notificationdb"
+	_ "github.com/term-llm/term-llm/internal/sqlitedriver"
 )
 
 // SQLiteStore implements Store using SQLite.

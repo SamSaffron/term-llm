@@ -9,9 +9,9 @@ import (
 	"io"
 	"time"
 
-	"github.com/samsaffron/term-llm/internal/config"
-	"github.com/samsaffron/term-llm/internal/session"
-	sharepkg "github.com/samsaffron/term-llm/internal/share"
+	"github.com/term-llm/term-llm/internal/config"
+	"github.com/term-llm/term-llm/internal/session"
+	sharepkg "github.com/term-llm/term-llm/internal/share"
 )
 
 // Deps are CLI-level helpers owned by the cmd package.

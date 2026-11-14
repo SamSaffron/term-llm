@@ -7,10 +7,10 @@ import (
 	"sync"
 	"time"
 
-	"github.com/samsaffron/term-llm/internal/llm/core"
-	"github.com/samsaffron/term-llm/internal/llm/engine"
-	"github.com/samsaffron/term-llm/internal/session"
-	transcriptstore "github.com/samsaffron/term-llm/internal/session/transcript"
+	"github.com/term-llm/term-llm/internal/llm/core"
+	"github.com/term-llm/term-llm/internal/llm/engine"
+	"github.com/term-llm/term-llm/internal/session"
+	transcriptstore "github.com/term-llm/term-llm/internal/session/transcript"
 )
 
 // serveRunSpec gives the run's durability modes explicit names at construction.

@@ -7,7 +7,7 @@ import (
 	"unicode/utf8"
 
 	tea "charm.land/bubbletea/v2"
-	"github.com/samsaffron/term-llm/internal/worktree"
+	"github.com/term-llm/term-llm/internal/worktree"
 )
 
 func testModel() *Model {

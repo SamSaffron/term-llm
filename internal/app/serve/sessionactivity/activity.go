@@ -8,10 +8,10 @@ import (
 	"net/http"
 	"time"
 
-	servejobs "github.com/samsaffron/term-llm/internal/app/serve/jobs"
-	"github.com/samsaffron/term-llm/internal/linkeddevices"
-	"github.com/samsaffron/term-llm/internal/llm/core"
-	"github.com/samsaffron/term-llm/internal/session"
+	servejobs "github.com/term-llm/term-llm/internal/app/serve/jobs"
+	"github.com/term-llm/term-llm/internal/linkeddevices"
+	"github.com/term-llm/term-llm/internal/llm/core"
+	"github.com/term-llm/term-llm/internal/session"
 )
 
 const (

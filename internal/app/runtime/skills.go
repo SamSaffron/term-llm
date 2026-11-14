@@ -3,7 +3,7 @@ package runtime
 import (
 	"strings"
 
-	"github.com/samsaffron/term-llm/internal/config"
+	"github.com/term-llm/term-llm/internal/config"
 )
 
 // ApplySkillsFlag applies the --skills flag value to modify skills config.

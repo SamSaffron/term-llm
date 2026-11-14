@@ -9,8 +9,8 @@ import (
 	"io"
 	"sync"
 
-	"github.com/samsaffron/term-llm/internal/llm/core"
-	"github.com/samsaffron/term-llm/internal/restart"
+	"github.com/term-llm/term-llm/internal/llm/core"
+	"github.com/term-llm/term-llm/internal/restart"
 )
 
 // ErrClosed is returned by Sender.Send when the consumer closed the stream.

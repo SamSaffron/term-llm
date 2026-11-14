@@ -5,8 +5,8 @@ import (
 	"maps"
 	"sync"
 
-	"github.com/samsaffron/term-llm/internal/llm/core"
-	"github.com/samsaffron/term-llm/internal/session"
+	"github.com/term-llm/term-llm/internal/llm/core"
+	"github.com/term-llm/term-llm/internal/session"
 )
 
 // CodeModePrompts supplies cell-owned cancellation and presentation, never authority.

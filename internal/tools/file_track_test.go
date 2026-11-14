@@ -11,9 +11,9 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/samsaffron/term-llm/internal/diff"
-	"github.com/samsaffron/term-llm/internal/filetrack"
-	"github.com/samsaffron/term-llm/internal/llm/core"
+	"github.com/term-llm/term-llm/internal/diff"
+	"github.com/term-llm/term-llm/internal/filetrack"
+	"github.com/term-llm/term-llm/internal/llm/core"
 )
 
 // fakeFileRecorder captures ChangeRecords for assertions.

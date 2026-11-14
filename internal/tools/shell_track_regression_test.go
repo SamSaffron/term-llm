@@ -12,7 +12,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/samsaffron/term-llm/internal/filetrack"
+	"github.com/term-llm/term-llm/internal/filetrack"
 )
 
 func executeTrackedShell(t *testing.T, recorder *fakeFileRecorder, dir, command string, affectedPaths ...string) {

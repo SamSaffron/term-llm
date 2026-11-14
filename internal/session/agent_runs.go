@@ -8,7 +8,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/samsaffron/term-llm/internal/llm/core"
+	"github.com/term-llm/term-llm/internal/llm/core"
 )
 
 // AgentRunDeliveryStore is implemented by durable stores able to reconcile

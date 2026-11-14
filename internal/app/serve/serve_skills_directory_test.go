@@ -9,11 +9,11 @@ import (
 	"strings"
 	"testing"
 
-	appruntime "github.com/samsaffron/term-llm/internal/app/runtime"
-	"github.com/samsaffron/term-llm/internal/config"
-	"github.com/samsaffron/term-llm/internal/llm/mockprovider"
-	runpkg "github.com/samsaffron/term-llm/internal/run"
-	"github.com/samsaffron/term-llm/internal/session"
+	appruntime "github.com/term-llm/term-llm/internal/app/runtime"
+	"github.com/term-llm/term-llm/internal/config"
+	"github.com/term-llm/term-llm/internal/llm/mockprovider"
+	runpkg "github.com/term-llm/term-llm/internal/run"
+	"github.com/term-llm/term-llm/internal/session"
 )
 
 func servePreloadDirectories(t *testing.T) (*config.Config, string, string) {

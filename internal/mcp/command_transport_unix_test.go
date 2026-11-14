@@ -14,8 +14,8 @@ import (
 	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/jsonrpc"
-	"github.com/samsaffron/term-llm/internal/procutil"
-	"github.com/samsaffron/term-llm/internal/testutil/processinfo"
+	"github.com/term-llm/term-llm/internal/procutil"
+	"github.com/term-llm/term-llm/internal/testutil/processinfo"
 )
 
 type fakeMCPConnection struct{}

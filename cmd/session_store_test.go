@@ -8,10 +8,10 @@ import (
 	"testing"
 	"time"
 
-	appserve "github.com/samsaffron/term-llm/internal/app/serve"
-	"github.com/samsaffron/term-llm/internal/config"
-	"github.com/samsaffron/term-llm/internal/session"
-	"github.com/samsaffron/term-llm/internal/tools"
+	appserve "github.com/term-llm/term-llm/internal/app/serve"
+	"github.com/term-llm/term-llm/internal/config"
+	"github.com/term-llm/term-llm/internal/session"
+	"github.com/term-llm/term-llm/internal/tools"
 )
 
 func TestInitSessionStore_NoSessionFlagBypassesStore(t *testing.T) {

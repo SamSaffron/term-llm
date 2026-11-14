@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/samsaffron/term-llm/internal/shellcmd"
+	"github.com/term-llm/term-llm/internal/shellcmd"
 )
 
 func TestResolveFileWindowsPathForms(t *testing.T) {

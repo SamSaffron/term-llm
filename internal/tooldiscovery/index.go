@@ -8,7 +8,7 @@ import (
 	"sync/atomic"
 	"unicode"
 
-	"github.com/samsaffron/term-llm/internal/mcp"
+	"github.com/term-llm/term-llm/internal/mcp"
 )
 
 const schemaTraversalDepth = 6

@@ -1,6 +1,6 @@
 package engine
 
-import "github.com/samsaffron/term-llm/internal/llm/core"
+import "github.com/term-llm/term-llm/internal/llm/core"
 
 // The fake used specifically by script execution tests explicitly opts in.
 // General engine fixtures and undeclared production tools remain default-denied.

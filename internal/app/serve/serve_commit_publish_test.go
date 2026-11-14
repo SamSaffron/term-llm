@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/samsaffron/term-llm/internal/gitcommit"
+	"github.com/term-llm/term-llm/internal/gitcommit"
 )
 
 func TestCommitPublishOperationLifecycle(t *testing.T) {

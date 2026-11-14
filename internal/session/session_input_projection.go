@@ -1,7 +1,7 @@
 package session
 
 import (
-	"github.com/samsaffron/term-llm/internal/llm/core"
+	"github.com/term-llm/term-llm/internal/llm/core"
 )
 
 // ProjectSelectedSessionPrompt applies an owning surface's process-local

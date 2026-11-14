@@ -7,10 +7,10 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/samsaffron/term-llm/internal/app/runtime/mcpstart"
-	"github.com/samsaffron/term-llm/internal/mcp"
-	"github.com/samsaffron/term-llm/internal/session"
-	"github.com/samsaffron/term-llm/internal/testutil/mcptest"
+	"github.com/term-llm/term-llm/internal/app/runtime/mcpstart"
+	"github.com/term-llm/term-llm/internal/mcp"
+	"github.com/term-llm/term-llm/internal/session"
+	"github.com/term-llm/term-llm/internal/testutil/mcptest"
 )
 
 func TestMCPPolicyChatTransientLoadFailurePreservesSavedSelection(t *testing.T) {

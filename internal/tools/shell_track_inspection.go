@@ -3,7 +3,7 @@ package tools
 import (
 	"context"
 
-	"github.com/samsaffron/term-llm/internal/filetrack/shellscope"
+	"github.com/term-llm/term-llm/internal/filetrack/shellscope"
 )
 
 // These adapters preserve the shell tracker's private representation and its

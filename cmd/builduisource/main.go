@@ -18,7 +18,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/samsaffron/term-llm/internal/serveui"
+	"github.com/term-llm/term-llm/internal/serveui"
 )
 
 // formatVersion must match the format uisource.Decode accepts.

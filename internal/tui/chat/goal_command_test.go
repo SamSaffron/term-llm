@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/samsaffron/term-llm/internal/session"
+	"github.com/term-llm/term-llm/internal/session"
 )
 
 func TestUpdateGoalStatusRejectsBudgetLimitedResumeWithoutBudget(t *testing.T) {

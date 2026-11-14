@@ -7,7 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	apphub "github.com/samsaffron/term-llm/internal/app/serve/hub"
+	apphub "github.com/term-llm/term-llm/internal/app/serve/hub"
 	"io"
 	"log"
 	"mime"
@@ -18,7 +18,7 @@ import (
 	"time"
 
 	"github.com/go-webauthn/webauthn/protocol"
-	"github.com/samsaffron/term-llm/internal/passkeyauth"
+	"github.com/term-llm/term-llm/internal/passkeyauth"
 )
 
 const (

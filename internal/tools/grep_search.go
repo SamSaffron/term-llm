@@ -6,7 +6,7 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/samsaffron/term-llm/internal/grepsearch"
+	"github.com/term-llm/term-llm/internal/grepsearch"
 )
 
 type grepFileScanner func(context.Context, string, *regexp.Regexp, int, func([]string, int) error) error

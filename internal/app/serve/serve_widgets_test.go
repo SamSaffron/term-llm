@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/samsaffron/term-llm/internal/widgets"
+	"github.com/term-llm/term-llm/internal/widgets"
 )
 
 func TestWidgetIndexUsesProxyPortableLinks(t *testing.T) {

@@ -11,8 +11,8 @@ import (
 	"time"
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
-	"github.com/samsaffron/term-llm/internal/process"
-	"github.com/samsaffron/term-llm/internal/restart"
+	"github.com/term-llm/term-llm/internal/process"
+	"github.com/term-llm/term-llm/internal/restart"
 )
 
 func TestTelegramPollingReloadCancelsOnlyIdlePollAndResumes(t *testing.T) {

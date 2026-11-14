@@ -5,9 +5,9 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/samsaffron/term-llm/internal/formatutil"
-	"github.com/samsaffron/term-llm/internal/llm/core"
-	internalreasoning "github.com/samsaffron/term-llm/internal/reasoning"
+	"github.com/term-llm/term-llm/internal/formatutil"
+	"github.com/term-llm/term-llm/internal/llm/core"
+	internalreasoning "github.com/term-llm/term-llm/internal/reasoning"
 )
 
 // ExportOptions configures session export.
@@ -86,7 +86,7 @@ func exportToMarkdown(sess *Session, messages []Message, opts ExportOptions, ima
 	}
 
 	// Header with link
-	b.WriteString("> Exported from [term-llm](https://github.com/samsaffron/term-llm)\n\n")
+	b.WriteString("> Exported from [term-llm](https://github.com/term-llm/term-llm)\n\n")
 
 	if !opts.ResponseOnly {
 		// Setup section

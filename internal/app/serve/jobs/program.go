@@ -4,7 +4,7 @@ import (
 	"context"
 	"time"
 
-	"github.com/samsaffron/term-llm/internal/jobs"
+	"github.com/term-llm/term-llm/internal/jobs"
 )
 
 // ProgramRunner executes program-backed jobs.

@@ -5,9 +5,9 @@ import (
 	"strings"
 
 	tea "charm.land/bubbletea/v2"
-	"github.com/samsaffron/term-llm/internal/llm/core"
-	internalreasoning "github.com/samsaffron/term-llm/internal/reasoning"
-	"github.com/samsaffron/term-llm/internal/ui"
+	"github.com/term-llm/term-llm/internal/llm/core"
+	internalreasoning "github.com/term-llm/term-llm/internal/reasoning"
+	"github.com/term-llm/term-llm/internal/ui"
 )
 
 func (m askStreamModel) handleStreamEventMessage(msg askStreamEventMsg) (tea.Model, tea.Cmd) {

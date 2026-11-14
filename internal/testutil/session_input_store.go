@@ -3,7 +3,7 @@ package testutil
 import (
 	"testing"
 
-	"github.com/samsaffron/term-llm/internal/session"
+	"github.com/term-llm/term-llm/internal/session"
 )
 
 // NewSessionInputStore opens a real SQLite store and closes it at test cleanup.

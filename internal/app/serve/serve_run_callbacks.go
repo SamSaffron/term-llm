@@ -3,7 +3,7 @@ package serve
 import (
 	"context"
 
-	"github.com/samsaffron/term-llm/internal/llm/core"
+	"github.com/term-llm/term-llm/internal/llm/core"
 )
 
 func (p *serveRunPersistence) assistantSnapshot(ctx context.Context, turnIndex int, assistant core.Message) error {

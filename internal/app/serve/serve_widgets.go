@@ -7,7 +7,7 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/samsaffron/term-llm/internal/widgets"
+	"github.com/term-llm/term-llm/internal/widgets"
 )
 
 // widgetsRoute returns the widgets sub-route, e.g. "/ui/widgets/".

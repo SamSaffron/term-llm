@@ -9,7 +9,7 @@ import (
 	"strings"
 	"unicode"
 
-	"github.com/samsaffron/term-llm/internal/worktree"
+	"github.com/term-llm/term-llm/internal/worktree"
 )
 
 // Resolved is the canonical identity of a registered project directory.

@@ -6,8 +6,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/samsaffron/term-llm/internal/app/serve/liveprogress"
-	"github.com/samsaffron/term-llm/internal/live"
+	"github.com/term-llm/term-llm/internal/app/serve/liveprogress"
+	"github.com/term-llm/term-llm/internal/live"
 )
 
 // streamRun folds a replayed backlog before announcing anything: an approval

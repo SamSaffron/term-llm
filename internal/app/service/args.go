@@ -9,9 +9,9 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/samsaffron/term-llm/internal/passkeyauth"
-	"github.com/samsaffron/term-llm/internal/userservice"
 	"github.com/spf13/pflag"
+	"github.com/term-llm/term-llm/internal/passkeyauth"
+	"github.com/term-llm/term-llm/internal/userservice"
 )
 
 // parseServiceLaunch uses the actual serve command flags and validators. It

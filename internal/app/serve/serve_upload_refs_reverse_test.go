@@ -20,11 +20,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/samsaffron/term-llm/internal/app/uploads"
-	"github.com/samsaffron/term-llm/internal/hub"
-	"github.com/samsaffron/term-llm/internal/llm/core"
-	"github.com/samsaffron/term-llm/internal/llm/engine"
-	"github.com/samsaffron/term-llm/internal/llm/mockprovider"
+	"github.com/term-llm/term-llm/internal/app/uploads"
+	"github.com/term-llm/term-llm/internal/hub"
+	"github.com/term-llm/term-llm/internal/llm/core"
+	"github.com/term-llm/term-llm/internal/llm/engine"
+	"github.com/term-llm/term-llm/internal/llm/mockprovider"
 )
 
 // Real reverse WebSocket Hub -> authenticated node routes -> engine -> scripted

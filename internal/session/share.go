@@ -3,7 +3,7 @@ package session
 import (
 	"time"
 
-	"github.com/samsaffron/term-llm/internal/agents/gist"
+	"github.com/term-llm/term-llm/internal/agents/gist"
 )
 
 // ShareState records the current external share for a session. The generic

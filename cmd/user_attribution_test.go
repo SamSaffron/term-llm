@@ -5,9 +5,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/samsaffron/term-llm/internal/app/ask"
-	appchat "github.com/samsaffron/term-llm/internal/app/chat"
 	"github.com/spf13/cobra"
+	"github.com/term-llm/term-llm/internal/app/ask"
+	appchat "github.com/term-llm/term-llm/internal/app/chat"
 )
 
 func TestCLIUserFlagsCaptureAndValidate(t *testing.T) {

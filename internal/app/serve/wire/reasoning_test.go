@@ -5,9 +5,9 @@ import (
 	"testing"
 	"unicode/utf8"
 
-	"github.com/samsaffron/term-llm/internal/config"
-	"github.com/samsaffron/term-llm/internal/llm/core"
-	"github.com/samsaffron/term-llm/internal/reasoning"
+	"github.com/term-llm/term-llm/internal/config"
+	"github.com/term-llm/term-llm/internal/llm/core"
+	"github.com/term-llm/term-llm/internal/reasoning"
 )
 
 func TestReasoningStreamSourceAndLimits(t *testing.T) {

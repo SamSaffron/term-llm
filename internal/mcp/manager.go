@@ -15,10 +15,10 @@ import (
 	"time"
 
 	sdkmcp "github.com/modelcontextprotocol/go-sdk/mcp"
-	"github.com/samsaffron/term-llm/internal/config"
-	"github.com/samsaffron/term-llm/internal/llm/core"
-	mcpoauth "github.com/samsaffron/term-llm/internal/mcp/oauth"
-	"github.com/samsaffron/term-llm/internal/restart"
+	"github.com/term-llm/term-llm/internal/config"
+	"github.com/term-llm/term-llm/internal/llm/core"
+	mcpoauth "github.com/term-llm/term-llm/internal/mcp/oauth"
+	"github.com/term-llm/term-llm/internal/restart"
 )
 
 // ServerStatus represents the current state of an MCP server.

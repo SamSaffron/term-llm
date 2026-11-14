@@ -9,10 +9,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/samsaffron/term-llm/internal/llm/core"
-	"github.com/samsaffron/term-llm/internal/llm/engine"
-	"github.com/samsaffron/term-llm/internal/llm/mockprovider"
-	"github.com/samsaffron/term-llm/internal/skills"
+	"github.com/term-llm/term-llm/internal/llm/core"
+	"github.com/term-llm/term-llm/internal/llm/engine"
+	"github.com/term-llm/term-llm/internal/llm/mockprovider"
+	"github.com/term-llm/term-llm/internal/skills"
 )
 
 func probeActivation(t *testing.T) *skills.Activation {

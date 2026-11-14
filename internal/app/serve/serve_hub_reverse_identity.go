@@ -3,7 +3,7 @@ package serve
 import (
 	"errors"
 
-	"github.com/samsaffron/term-llm/internal/hub"
+	"github.com/term-llm/term-llm/internal/hub"
 )
 
 var errHubReverseStale = errors.New("reverse connection registration is no longer current")

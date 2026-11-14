@@ -7,11 +7,11 @@ import (
 	"strings"
 
 	"charm.land/lipgloss/v2"
-	appconfig "github.com/samsaffron/term-llm/internal/config"
-	"github.com/samsaffron/term-llm/internal/inspect"
-	"github.com/samsaffron/term-llm/internal/llm/core"
-	"github.com/samsaffron/term-llm/internal/session"
-	"github.com/samsaffron/term-llm/internal/ui"
+	appconfig "github.com/term-llm/term-llm/internal/config"
+	"github.com/term-llm/term-llm/internal/inspect"
+	"github.com/term-llm/term-llm/internal/llm/core"
+	"github.com/term-llm/term-llm/internal/session"
+	"github.com/term-llm/term-llm/internal/ui"
 )
 
 // maxContentLines is the maximum lines to show before truncating with expand option

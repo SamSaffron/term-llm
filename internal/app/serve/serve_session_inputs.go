@@ -7,8 +7,8 @@ import (
 	"sync"
 	"time"
 
-	appruntime "github.com/samsaffron/term-llm/internal/app/runtime"
-	"github.com/samsaffron/term-llm/internal/session"
+	appruntime "github.com/term-llm/term-llm/internal/app/runtime"
+	"github.com/term-llm/term-llm/internal/session"
 )
 
 // runtimeServingSelection returns the installed runtime when it can already

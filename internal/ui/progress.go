@@ -5,7 +5,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/samsaffron/term-llm/internal/formatutil"
+	"github.com/term-llm/term-llm/internal/formatutil"
 )
 
 // FormatTokenCount formats a token count using shared compact units and precision.

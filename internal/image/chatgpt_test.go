@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/samsaffron/term-llm/internal/credentials"
+	"github.com/term-llm/term-llm/internal/credentials"
 )
 
 type chatGPTImageRoundTripper func(*http.Request) (*http.Response, error)

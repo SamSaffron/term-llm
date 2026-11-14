@@ -10,9 +10,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/samsaffron/term-llm/internal/app/serve/sessionactivity"
-	"github.com/samsaffron/term-llm/internal/linkeddevices"
-	"github.com/samsaffron/term-llm/internal/session"
+	"github.com/term-llm/term-llm/internal/app/serve/sessionactivity"
+	"github.com/term-llm/term-llm/internal/linkeddevices"
+	"github.com/term-llm/term-llm/internal/session"
 )
 
 func TestSessionActivityRouteReusesDirectChildProjection(t *testing.T) {

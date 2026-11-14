@@ -2,8 +2,8 @@ package serve
 
 import (
 	"context"
-	"github.com/samsaffron/term-llm/internal/llm/core"
-	"github.com/samsaffron/term-llm/internal/skills"
+	"github.com/term-llm/term-llm/internal/llm/core"
+	"github.com/term-llm/term-llm/internal/skills"
 	"sync"
 	"time"
 )

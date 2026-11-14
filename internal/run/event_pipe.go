@@ -5,7 +5,7 @@ import (
 	"io"
 	"sync"
 
-	"github.com/samsaffron/term-llm/internal/llm/core"
+	"github.com/term-llm/term-llm/internal/llm/core"
 )
 
 // EventPipe adapts a Runner EventSink into an llm.Stream. It is useful for

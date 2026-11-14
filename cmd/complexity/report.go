@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"io"
 
-	"github.com/samsaffron/term-llm/internal/complexity"
+	"github.com/term-llm/term-llm/internal/complexity"
 )
 
 // reportSizes prints size notes and violations to w and reports whether the

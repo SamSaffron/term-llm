@@ -7,9 +7,9 @@ import (
 	"reflect"
 	"testing"
 
-	"github.com/samsaffron/term-llm/internal/llm/core"
-	corestream "github.com/samsaffron/term-llm/internal/llm/core/stream"
-	"github.com/samsaffron/term-llm/internal/llm/providers/responses"
+	"github.com/term-llm/term-llm/internal/llm/core"
+	corestream "github.com/term-llm/term-llm/internal/llm/core/stream"
+	"github.com/term-llm/term-llm/internal/llm/providers/responses"
 )
 
 type reasoningInlineProvider struct {

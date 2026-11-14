@@ -13,10 +13,10 @@ import (
 	"sync"
 	"time"
 
-	"github.com/samsaffron/term-llm/internal/llm/core"
-	"github.com/samsaffron/term-llm/internal/llm/engine"
-	"github.com/samsaffron/term-llm/internal/procutil"
-	"github.com/samsaffron/term-llm/internal/shellcmd"
+	"github.com/term-llm/term-llm/internal/llm/core"
+	"github.com/term-llm/term-llm/internal/llm/engine"
+	"github.com/term-llm/term-llm/internal/procutil"
+	"github.com/term-llm/term-llm/internal/shellcmd"
 )
 
 const (

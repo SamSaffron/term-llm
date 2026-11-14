@@ -9,7 +9,7 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/samsaffron/term-llm/internal/process"
+	"github.com/term-llm/term-llm/internal/process"
 )
 
 // RestartFunc restarts one process, reporting phases through the callback.

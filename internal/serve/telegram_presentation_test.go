@@ -14,8 +14,8 @@ import (
 	"time"
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
-	"github.com/samsaffron/term-llm/internal/llm/core"
-	"github.com/samsaffron/term-llm/internal/testutil/mediafixture"
+	"github.com/term-llm/term-llm/internal/llm/core"
+	"github.com/term-llm/term-llm/internal/testutil/mediafixture"
 )
 
 // codeHTMLBotSender validates the code/pre subset used by these fixtures. The

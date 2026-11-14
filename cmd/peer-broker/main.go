@@ -13,7 +13,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/samsaffron/term-llm/internal/peerbroker"
+	"github.com/term-llm/term-llm/internal/peerbroker"
 )
 
 type stringList []string

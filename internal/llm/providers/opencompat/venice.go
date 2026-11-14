@@ -9,8 +9,8 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/samsaffron/term-llm/internal/config"
-	"github.com/samsaffron/term-llm/internal/runtimeoutput"
+	"github.com/term-llm/term-llm/internal/config"
+	"github.com/term-llm/term-llm/internal/runtimeoutput"
 )
 
 const veniceBaseURL = "https://api.venice.ai/api/v1"

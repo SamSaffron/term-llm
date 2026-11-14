@@ -13,7 +13,7 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
-	"github.com/samsaffron/term-llm/internal/mentions"
+	"github.com/term-llm/term-llm/internal/mentions"
 )
 
 const (

@@ -16,8 +16,8 @@ import (
 	"sync/atomic"
 	"testing"
 
-	"github.com/samsaffron/term-llm/internal/hub"
-	"github.com/samsaffron/term-llm/internal/widgets"
+	"github.com/term-llm/term-llm/internal/hub"
+	"github.com/term-llm/term-llm/internal/widgets"
 )
 
 // hubWithBackend spins up a fake node serve and returns a hub fronting it as

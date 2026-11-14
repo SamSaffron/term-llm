@@ -57,24 +57,24 @@ class TermLlm < Formula
 
   on_macos do
     on_arm do
-      url "https://github.com/SamSaffron/term-llm/releases/download/$tag/$darwin_arm64_asset"
+      url "https://github.com/term-llm/term-llm/releases/download/$tag/$darwin_arm64_asset"
       sha256 "$darwin_arm64_sha"
     end
 
     on_intel do
-      url "https://github.com/SamSaffron/term-llm/releases/download/$tag/$darwin_amd64_asset"
+      url "https://github.com/term-llm/term-llm/releases/download/$tag/$darwin_amd64_asset"
       sha256 "$darwin_amd64_sha"
     end
   end
 
   on_linux do
     on_arm do
-      url "https://github.com/SamSaffron/term-llm/releases/download/$tag/$linux_arm64_asset"
+      url "https://github.com/term-llm/term-llm/releases/download/$tag/$linux_arm64_asset"
       sha256 "$linux_arm64_sha"
     end
 
     on_intel do
-      url "https://github.com/SamSaffron/term-llm/releases/download/$tag/$linux_amd64_asset"
+      url "https://github.com/term-llm/term-llm/releases/download/$tag/$linux_amd64_asset"
       sha256 "$linux_amd64_sha"
     end
   end

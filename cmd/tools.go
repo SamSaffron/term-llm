@@ -1,12 +1,12 @@
 package cmd
 
 import (
-	"github.com/samsaffron/term-llm/internal/app/runtime"
-	"github.com/samsaffron/term-llm/internal/config"
+	"github.com/term-llm/term-llm/internal/app/runtime"
+	"github.com/term-llm/term-llm/internal/config"
 
-	"github.com/samsaffron/term-llm/internal/llm/core"
-	"github.com/samsaffron/term-llm/internal/llm/engine"
-	"github.com/samsaffron/term-llm/internal/tools"
+	"github.com/term-llm/term-llm/internal/llm/core"
+	"github.com/term-llm/term-llm/internal/llm/engine"
+	"github.com/term-llm/term-llm/internal/tools"
 )
 
 func defaultToolRegistry(cfg *config.Config) *engine.ToolRegistry {

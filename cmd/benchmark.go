@@ -12,12 +12,12 @@ import (
 	"strings"
 	"time"
 
-	"github.com/samsaffron/term-llm/internal/benchmark"
-	"github.com/samsaffron/term-llm/internal/config"
-	"github.com/samsaffron/term-llm/internal/llm"
-	"github.com/samsaffron/term-llm/internal/llm/core"
-	"github.com/samsaffron/term-llm/internal/ui"
 	"github.com/spf13/cobra"
+	"github.com/term-llm/term-llm/internal/benchmark"
+	"github.com/term-llm/term-llm/internal/config"
+	"github.com/term-llm/term-llm/internal/llm"
+	"github.com/term-llm/term-llm/internal/llm/core"
+	"github.com/term-llm/term-llm/internal/ui"
 )
 
 type benchmarkFlags struct {

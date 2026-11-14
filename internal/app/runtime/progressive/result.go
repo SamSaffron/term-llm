@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"strings"
 
-	runpkg "github.com/samsaffron/term-llm/internal/run"
+	runpkg "github.com/term-llm/term-llm/internal/run"
 )
 
 // OutputText selects the stable textual output of a progressive run.

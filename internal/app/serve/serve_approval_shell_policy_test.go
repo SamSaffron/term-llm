@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/samsaffron/term-llm/internal/tools"
+	"github.com/term-llm/term-llm/internal/tools"
 )
 
 func TestServeShellApprovalDefaultsToOnceAndDisclosesExecutionGrant(t *testing.T) {

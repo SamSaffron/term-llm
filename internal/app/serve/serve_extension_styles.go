@@ -7,9 +7,9 @@ import (
 	"net/url"
 	"strings"
 
-	appserver "github.com/samsaffron/term-llm/internal/app/serve/server"
-	"github.com/samsaffron/term-llm/internal/app/serve/wire"
-	"github.com/samsaffron/term-llm/internal/linkeddevices"
+	appserver "github.com/term-llm/term-llm/internal/app/serve/server"
+	"github.com/term-llm/term-llm/internal/app/serve/wire"
+	"github.com/term-llm/term-llm/internal/linkeddevices"
 )
 
 // serveIndexHTML serves the SPA shell. Authorized, non-safe-mode documents link

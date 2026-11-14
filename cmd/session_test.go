@@ -7,11 +7,11 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/samsaffron/term-llm/internal/agents"
-	appmemory "github.com/samsaffron/term-llm/internal/app/memory"
-	appserve "github.com/samsaffron/term-llm/internal/app/serve"
-	"github.com/samsaffron/term-llm/internal/config"
-	memorydb "github.com/samsaffron/term-llm/internal/memory"
+	"github.com/term-llm/term-llm/internal/agents"
+	appmemory "github.com/term-llm/term-llm/internal/app/memory"
+	appserve "github.com/term-llm/term-llm/internal/app/serve"
+	"github.com/term-llm/term-llm/internal/config"
+	memorydb "github.com/term-llm/term-llm/internal/memory"
 )
 
 func TestResolveSettings_AppendsInsightsToSystemPrompt(t *testing.T) {

@@ -8,9 +8,9 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/samsaffron/term-llm/internal/llm/core"
-	"github.com/samsaffron/term-llm/internal/llm/engine"
-	"github.com/samsaffron/term-llm/internal/session/notificationdb"
+	"github.com/term-llm/term-llm/internal/llm/core"
+	"github.com/term-llm/term-llm/internal/llm/engine"
+	"github.com/term-llm/term-llm/internal/session/notificationdb"
 )
 
 var ErrSteeringConflict = errors.New("steering identity, content or ownership conflict")

@@ -15,8 +15,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/samsaffron/term-llm/internal/llm/core"
-	"github.com/samsaffron/term-llm/internal/testutil/mediafixture"
+	"github.com/term-llm/term-llm/internal/llm/core"
+	"github.com/term-llm/term-llm/internal/testutil/mediafixture"
 )
 
 func TestServeMediaPublisherAndHandler(t *testing.T) {

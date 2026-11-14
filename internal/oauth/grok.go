@@ -15,7 +15,7 @@ import (
 	"unicode"
 	"unicode/utf8"
 
-	"github.com/samsaffron/term-llm/internal/grokprotocol"
+	"github.com/term-llm/term-llm/internal/grokprotocol"
 )
 
 const (

@@ -8,8 +8,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/samsaffron/term-llm/internal/diff"
-	"github.com/samsaffron/term-llm/internal/llm/core"
+	"github.com/term-llm/term-llm/internal/diff"
+	"github.com/term-llm/term-llm/internal/llm/core"
 )
 
 func TestWriteFileTool_NewSmallFileEmitsDiff(t *testing.T) {

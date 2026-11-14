@@ -8,8 +8,8 @@ import (
 	"unicode/utf8"
 
 	tea "charm.land/bubbletea/v2"
-	"github.com/samsaffron/term-llm/internal/session"
-	"github.com/samsaffron/term-llm/internal/sessiontitle"
+	"github.com/term-llm/term-llm/internal/session"
+	"github.com/term-llm/term-llm/internal/sessiontitle"
 )
 
 // TerminalTitleMode controls whether and how chat updates terminal/window titles.

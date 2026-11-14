@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/samsaffron/term-llm/internal/tsgen"
+	"github.com/term-llm/term-llm/internal/tsgen"
 )
 
 func main() {

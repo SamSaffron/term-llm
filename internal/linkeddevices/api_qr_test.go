@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/samsaffron/term-llm/internal/pairing"
+	"github.com/term-llm/term-llm/internal/pairing"
 )
 
 func TestEncodeQR(t *testing.T) {

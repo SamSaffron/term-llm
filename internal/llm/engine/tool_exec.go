@@ -4,15 +4,15 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"github.com/samsaffron/term-llm/internal/codemode"
-	"github.com/samsaffron/term-llm/internal/llm/core"
-	corestream "github.com/samsaffron/term-llm/internal/llm/core/stream"
+	"github.com/term-llm/term-llm/internal/codemode"
+	"github.com/term-llm/term-llm/internal/llm/core"
+	corestream "github.com/term-llm/term-llm/internal/llm/core/stream"
 	"sort"
 	"strings"
 	"sync/atomic"
 	"time"
 
-	"github.com/samsaffron/term-llm/internal/restart"
+	"github.com/term-llm/term-llm/internal/restart"
 )
 
 // toolCallOutcome is the provider-neutral result of one engine-owned tool

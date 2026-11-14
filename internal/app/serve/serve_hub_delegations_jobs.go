@@ -11,7 +11,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/samsaffron/term-llm/internal/hub"
+	"github.com/term-llm/term-llm/internal/hub"
 )
 
 // jobsV2HubDelegationLabel is the trusted label shape the hub writes onto

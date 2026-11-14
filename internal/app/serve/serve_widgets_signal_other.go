@@ -5,7 +5,7 @@ package serve
 import (
 	"context"
 
-	"github.com/samsaffron/term-llm/internal/widgets"
+	"github.com/term-llm/term-llm/internal/widgets"
 )
 
 func installWidgetStopSignal(context.Context, *widgets.Manager) func() {

@@ -9,14 +9,14 @@ import (
 	"sync"
 	"time"
 
-	"github.com/samsaffron/term-llm/internal/app/runtime"
-	"github.com/samsaffron/term-llm/internal/config"
-	"github.com/samsaffron/term-llm/internal/llm"
-	"github.com/samsaffron/term-llm/internal/llm/core"
-	"github.com/samsaffron/term-llm/internal/llm/engine"
-	"github.com/samsaffron/term-llm/internal/session"
-	"github.com/samsaffron/term-llm/internal/terminaltext"
-	"github.com/samsaffron/term-llm/internal/tools"
+	"github.com/term-llm/term-llm/internal/app/runtime"
+	"github.com/term-llm/term-llm/internal/config"
+	"github.com/term-llm/term-llm/internal/llm"
+	"github.com/term-llm/term-llm/internal/llm/core"
+	"github.com/term-llm/term-llm/internal/llm/engine"
+	"github.com/term-llm/term-llm/internal/session"
+	"github.com/term-llm/term-llm/internal/terminaltext"
+	"github.com/term-llm/term-llm/internal/tools"
 )
 
 func initializeAskPersistence(ctx context.Context, cfg *config.Config, store session.Store, sess *session.Session, instructions string, historyHasSystem, resuming bool, messages []core.Message, conversationStartedAt time.Time, userMessage core.Message, question string) *AssistantPersistence {

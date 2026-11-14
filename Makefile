@@ -5,9 +5,9 @@ VERSION ?= $(shell git describe --tags --abbrev=0 2>/dev/null || echo dev)
 COMMIT ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo unknown)
 BUILD_DATE ?= $(shell date -u +"%Y-%m-%dT%H:%M:%SZ")
 TERM_LLM_LDFLAGS := -s -w \
-	-X github.com/samsaffron/term-llm/cmd.Version=$(VERSION) \
-	-X github.com/samsaffron/term-llm/cmd.Commit=$(COMMIT) \
-	-X github.com/samsaffron/term-llm/cmd.Date=$(BUILD_DATE)
+	-X github.com/term-llm/term-llm/cmd.Version=$(VERSION) \
+	-X github.com/term-llm/term-llm/cmd.Commit=$(COMMIT) \
+	-X github.com/term-llm/term-llm/cmd.Date=$(BUILD_DATE)
 
 # Optional override; otherwise prefer this user's persistent signing choice,
 # then retain the existing binary's authority. Fresh clones need no certificate.

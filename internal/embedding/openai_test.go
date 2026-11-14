@@ -9,9 +9,9 @@ import (
 	"reflect"
 	"testing"
 
-	"github.com/samsaffron/term-llm/internal/config"
-	"github.com/samsaffron/term-llm/internal/openaiapi"
-	"github.com/samsaffron/term-llm/internal/providerhttp"
+	"github.com/term-llm/term-llm/internal/config"
+	"github.com/term-llm/term-llm/internal/openaiapi"
+	"github.com/term-llm/term-llm/internal/providerhttp"
 )
 
 func TestOpenAIProviderEmbedRequestAndResponse(t *testing.T) {

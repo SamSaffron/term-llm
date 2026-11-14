@@ -4,7 +4,7 @@ import (
 	"context"
 	"reflect"
 
-	"github.com/samsaffron/term-llm/internal/llm/core"
+	"github.com/term-llm/term-llm/internal/llm/core"
 )
 
 // DebugLogger is the request/event sink the engine writes to in debug mode.

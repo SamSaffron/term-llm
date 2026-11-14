@@ -4,9 +4,9 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/samsaffron/term-llm/internal/session"
-	"github.com/samsaffron/term-llm/internal/terminalpolicy"
 	"github.com/spf13/cobra"
+	"github.com/term-llm/term-llm/internal/session"
+	"github.com/term-llm/term-llm/internal/terminalpolicy"
 )
 
 func (a App) Reset(cmd *cobra.Command, args []string) error {

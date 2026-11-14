@@ -10,8 +10,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/samsaffron/term-llm/internal/embedding"
-	memorydb "github.com/samsaffron/term-llm/internal/memory"
+	"github.com/term-llm/term-llm/internal/embedding"
+	memorydb "github.com/term-llm/term-llm/internal/memory"
 )
 
 const (

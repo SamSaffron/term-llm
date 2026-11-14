@@ -8,8 +8,8 @@ import (
 	"os"
 	"strings"
 
-	"github.com/samsaffron/term-llm/internal/session"
-	"github.com/samsaffron/term-llm/internal/worktree"
+	"github.com/term-llm/term-llm/internal/session"
+	"github.com/term-llm/term-llm/internal/worktree"
 )
 
 type serveWorkspaceRequest struct {

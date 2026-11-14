@@ -20,7 +20,7 @@
   Local checksums.txt to use with -ArchivePath.
 
 .EXAMPLE
-  irm https://raw.githubusercontent.com/samsaffron/term-llm/main/install.ps1 | iex
+  irm https://raw.githubusercontent.com/term-llm/term-llm/main/install.ps1 | iex
 
 .EXAMPLE
   .\install.ps1 -InstallDir C:\tools\term-llm
@@ -31,12 +31,12 @@ param(
   [string]$InstallDir = (Join-Path $env:LOCALAPPDATA "term-llm\bin"),
   [string]$ArchivePath = "",
   [string]$ChecksumsPath = "",
-  [string]$BaseUrl = "https://github.com/samsaffron/term-llm/releases"
+  [string]$BaseUrl = "https://github.com/term-llm/term-llm/releases"
 )
 
 $ErrorActionPreference = "Stop"
 $ProgressPreference = "SilentlyContinue"
-$Repo = "samsaffron/term-llm"
+$Repo = "term-llm/term-llm"
 $AssetArch = "amd64"
 
 function Fail([string]$Message) {

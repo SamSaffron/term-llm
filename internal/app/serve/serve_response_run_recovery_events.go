@@ -6,8 +6,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/samsaffron/term-llm/internal/llm/core"
-	"github.com/samsaffron/term-llm/internal/tools"
+	"github.com/term-llm/term-llm/internal/llm/core"
+	"github.com/term-llm/term-llm/internal/tools"
 )
 
 func (r *responseRun) applyRecoveryResponseAskUserPrompt(event string, payload map[string]any) {

@@ -1,6 +1,6 @@
 package tools
 
-import "github.com/samsaffron/term-llm/internal/llm/core"
+import "github.com/term-llm/term-llm/internal/llm/core"
 
 // Builtin origin is declared on concrete local implementations. Remote tools
 // cannot inherit it by choosing a builtin-looking public name.

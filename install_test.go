@@ -70,7 +70,7 @@ done
 [ "$redirects" = 5 ] && [ "$connect" = 20 ] && [ "$timeout" = 300 ] || exit 92
 printf '%s\n' "$url" >> "$FIXTURES/requests"
 case "$url" in
-    https://github.com/samsaffron/term-llm/releases/latest)
+    https://github.com/term-llm/term-llm/releases/latest)
         [ "$size" = 1048576 ] && [ "$write" = '%{url_effective}\n' ] || exit 94
         if [ "$headers" = yes ]; then
             printf 'HTTP/2 200\r\nContent-Length: %s\r\n\r\n' "${LATEST_PAGE_BYTES:-8388608}" > "$output"
@@ -81,12 +81,12 @@ case "$url" in
         [ "$headers" = yes ] && [ "$ignore_length" = yes ] || exit 98
         printf '%s\n' "$LATEST_URL"
         ;;
-    https://github.com/samsaffron/term-llm/releases/download/v1.2.3/checksums.txt)
+    https://github.com/term-llm/term-llm/releases/download/v1.2.3/checksums.txt)
         [ -z "$headers$ignore_length" ] || exit 99
         [ "$size" = 1048576 ] || exit 95
         cp "$FIXTURES/checksums.txt" "$output"
         ;;
-    https://github.com/samsaffron/term-llm/releases/download/v1.2.3/term-llm_1.2.3_linux_amd64.tar.gz)
+    https://github.com/term-llm/term-llm/releases/download/v1.2.3/term-llm_1.2.3_linux_amd64.tar.gz)
         [ -z "$headers$ignore_length" ] || exit 99
         [ "$size" = 134217728 ] || exit 96
         # Deliberately ignore max-filesize, like old curl with chunked bodies:
@@ -121,7 +121,7 @@ func newInstallerFixture(t *testing.T, archive []byte) *installerFixture {
 		"PATH=" + filepath.Join(root, "tools") + ":/usr/bin:/bin",
 		"TMPDIR=" + filepath.Join(root, "tmp"),
 		"FIXTURES=" + filepath.Join(root, "fixtures"),
-		"LATEST_URL=https://github.com/samsaffron/term-llm/releases/tag/v1.2.3",
+		"LATEST_URL=https://github.com/term-llm/term-llm/releases/tag/v1.2.3",
 		"LC_ALL=C",
 	}
 	return f
@@ -369,10 +369,10 @@ func TestInstallerRejectsUnsafeVersions(t *testing.T) {
 
 func TestInstallerRejectsUnsafeLatestRedirects(t *testing.T) {
 	for _, url := range []string{
-		"http://github.com/samsaffron/term-llm/releases/tag/v1.2.3",
-		"https://evil.example/samsaffron/term-llm/releases/tag/v1.2.3",
-		"https://github.com/samsaffron/term-llm/releases/tag/v1.2.3/other",
-		"https://github.com/samsaffron/term-llm/releases/tag/v1.2.3?other",
+		"http://github.com/term-llm/term-llm/releases/tag/v1.2.3",
+		"https://evil.example/term-llm/term-llm/releases/tag/v1.2.3",
+		"https://github.com/term-llm/term-llm/releases/tag/v1.2.3/other",
+		"https://github.com/term-llm/term-llm/releases/tag/v1.2.3?other",
 	} {
 		t.Run(url, func(t *testing.T) {
 			f := newInstallerFixture(t, nil)

@@ -6,12 +6,12 @@ import (
 	"strings"
 	"time"
 
-	"github.com/samsaffron/term-llm/internal/llm/core"
-	"github.com/samsaffron/term-llm/internal/llm/debug"
-	"github.com/samsaffron/term-llm/internal/llm/engine"
-	"github.com/samsaffron/term-llm/internal/llm/providers/responses"
-	rp "github.com/samsaffron/term-llm/internal/llm/providers/responsesproviders"
-	"github.com/samsaffron/term-llm/internal/runtimeoutput"
+	"github.com/term-llm/term-llm/internal/llm/core"
+	"github.com/term-llm/term-llm/internal/llm/debug"
+	"github.com/term-llm/term-llm/internal/llm/engine"
+	"github.com/term-llm/term-llm/internal/llm/providers/responses"
+	rp "github.com/term-llm/term-llm/internal/llm/providers/responsesproviders"
+	"github.com/term-llm/term-llm/internal/runtimeoutput"
 )
 
 func init() {

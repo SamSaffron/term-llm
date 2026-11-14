@@ -10,7 +10,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/samsaffron/term-llm/internal/mcp"
+	"github.com/term-llm/term-llm/internal/mcp"
 )
 
 type mcpRegistrySearcher interface {

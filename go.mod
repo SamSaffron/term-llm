@@ -1,4 +1,4 @@
-module github.com/samsaffron/term-llm
+module github.com/term-llm/term-llm
 
 go 1.27.4
 

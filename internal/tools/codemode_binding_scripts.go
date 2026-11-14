@@ -3,9 +3,9 @@ package tools
 import (
 	"maps"
 
-	"github.com/samsaffron/term-llm/internal/agents"
-	"github.com/samsaffron/term-llm/internal/llm/core"
-	"github.com/samsaffron/term-llm/internal/skills"
+	"github.com/term-llm/term-llm/internal/agents"
+	"github.com/term-llm/term-llm/internal/llm/core"
+	"github.com/term-llm/term-llm/internal/skills"
 )
 
 // bindCodeModeScriptTool rebuilds a registered custom agent or skill script

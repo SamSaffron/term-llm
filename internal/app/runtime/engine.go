@@ -3,13 +3,13 @@ package runtime
 import (
 	"fmt"
 
-	"github.com/samsaffron/term-llm/internal/config"
-	"github.com/samsaffron/term-llm/internal/llm"
-	"github.com/samsaffron/term-llm/internal/llm/core"
-	"github.com/samsaffron/term-llm/internal/llm/engine"
-	"github.com/samsaffron/term-llm/internal/runtimeoutput"
-	"github.com/samsaffron/term-llm/internal/search"
-	"github.com/samsaffron/term-llm/internal/tools"
+	"github.com/term-llm/term-llm/internal/config"
+	"github.com/term-llm/term-llm/internal/llm"
+	"github.com/term-llm/term-llm/internal/llm/core"
+	"github.com/term-llm/term-llm/internal/llm/engine"
+	"github.com/term-llm/term-llm/internal/runtimeoutput"
+	"github.com/term-llm/term-llm/internal/search"
+	"github.com/term-llm/term-llm/internal/tools"
 )
 
 func DefaultToolRegistry(cfg *config.Config) *engine.ToolRegistry {

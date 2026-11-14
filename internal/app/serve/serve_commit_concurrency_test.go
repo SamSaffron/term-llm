@@ -11,8 +11,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/samsaffron/term-llm/internal/gitcommit"
-	"github.com/samsaffron/term-llm/internal/session"
+	"github.com/term-llm/term-llm/internal/gitcommit"
+	"github.com/term-llm/term-llm/internal/session"
 )
 
 func TestActiveCommitBlocksNewSessionWork(t *testing.T) {

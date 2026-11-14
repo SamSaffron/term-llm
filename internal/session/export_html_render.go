@@ -5,7 +5,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/samsaffron/term-llm/internal/htmlesc"
+	"github.com/term-llm/term-llm/internal/htmlesc"
 )
 
 // The HTML export is rendered by hand rather than with html/template: template

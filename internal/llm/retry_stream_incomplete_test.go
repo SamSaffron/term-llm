@@ -3,7 +3,7 @@ package llm
 import (
 	"testing"
 
-	corestream "github.com/samsaffron/term-llm/internal/llm/core/stream"
+	corestream "github.com/term-llm/term-llm/internal/llm/core/stream"
 )
 
 func TestBedrockCompatTruncatedStreamIsRetryable(t *testing.T) {

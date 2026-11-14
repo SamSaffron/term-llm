@@ -3,10 +3,10 @@ package cmd
 import (
 	"testing"
 
-	appmemory "github.com/samsaffron/term-llm/internal/app/memory"
-	appruntime "github.com/samsaffron/term-llm/internal/app/runtime"
-	appserve "github.com/samsaffron/term-llm/internal/app/serve"
-	"github.com/samsaffron/term-llm/internal/tools"
+	appmemory "github.com/term-llm/term-llm/internal/app/memory"
+	appruntime "github.com/term-llm/term-llm/internal/app/runtime"
+	appserve "github.com/term-llm/term-llm/internal/app/serve"
+	"github.com/term-llm/term-llm/internal/tools"
 )
 
 func TestServeJobsRunnerOptionsUseCapturedResolvedApproval(t *testing.T) {

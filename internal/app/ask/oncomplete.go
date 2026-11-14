@@ -1,6 +1,6 @@
 package ask
 
-import "github.com/samsaffron/term-llm/internal/app/runtime/oncomplete"
+import "github.com/term-llm/term-llm/internal/app/runtime/oncomplete"
 
 // WriteCommitEditMsg writes the commit message to .git/COMMIT_EDITMSG and .git/GITGUI_MSG.
 func WriteCommitEditMsg(message string) error { return oncomplete.WriteCommitEditMsg(message) }

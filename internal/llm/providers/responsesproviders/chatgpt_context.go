@@ -4,7 +4,7 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/samsaffron/term-llm/internal/config"
+	"github.com/term-llm/term-llm/internal/config"
 )
 
 var chatGPTContextConfig struct {

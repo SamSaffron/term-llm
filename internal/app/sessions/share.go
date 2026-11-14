@@ -7,11 +7,11 @@ import (
 	"strings"
 	"time"
 
-	"github.com/samsaffron/term-llm/internal/config"
-	internalreasoning "github.com/samsaffron/term-llm/internal/reasoning"
-	"github.com/samsaffron/term-llm/internal/session"
-	sharepkg "github.com/samsaffron/term-llm/internal/share"
 	"github.com/spf13/cobra"
+	"github.com/term-llm/term-llm/internal/config"
+	internalreasoning "github.com/term-llm/term-llm/internal/reasoning"
+	"github.com/term-llm/term-llm/internal/session"
+	sharepkg "github.com/term-llm/term-llm/internal/share"
 )
 
 type ShareOutput struct {

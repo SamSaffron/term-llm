@@ -5,11 +5,11 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/samsaffron/term-llm/internal/config"
-	"github.com/samsaffron/term-llm/internal/llm/core"
-	"github.com/samsaffron/term-llm/internal/llm/debug"
-	"github.com/samsaffron/term-llm/internal/llm/factory"
-	"github.com/samsaffron/term-llm/internal/llm/providers/opencompat"
+	"github.com/term-llm/term-llm/internal/config"
+	"github.com/term-llm/term-llm/internal/llm/core"
+	"github.com/term-llm/term-llm/internal/llm/debug"
+	"github.com/term-llm/term-llm/internal/llm/factory"
+	"github.com/term-llm/term-llm/internal/llm/providers/opencompat"
 )
 
 func removedProviderError(name string) error {

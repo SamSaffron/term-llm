@@ -5,11 +5,11 @@ import (
 	"errors"
 	"time"
 
-	"github.com/samsaffron/term-llm/internal/restart"
-	"github.com/samsaffron/term-llm/internal/runtimeoutput"
-	"github.com/samsaffron/term-llm/internal/session"
-	"github.com/samsaffron/term-llm/internal/tools"
-	"github.com/samsaffron/term-llm/internal/tui/chat/agentbarrier"
+	"github.com/term-llm/term-llm/internal/restart"
+	"github.com/term-llm/term-llm/internal/runtimeoutput"
+	"github.com/term-llm/term-llm/internal/session"
+	"github.com/term-llm/term-llm/internal/tools"
+	"github.com/term-llm/term-llm/internal/tui/chat/agentbarrier"
 )
 
 // explicitParentStop distinguishes a human cancellation from a host reload,

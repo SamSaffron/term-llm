@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/samsaffron/term-llm/internal/llm/core"
+	"github.com/term-llm/term-llm/internal/llm/core"
 	"io"
 	"os"
 	"path/filepath"
@@ -13,9 +13,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/samsaffron/term-llm/internal/mcphttp"
+	"github.com/term-llm/term-llm/internal/mcphttp"
 
-	"github.com/samsaffron/term-llm/internal/testutil/processinfo"
+	"github.com/term-llm/term-llm/internal/testutil/processinfo"
 )
 
 func TestClaudeBinProvider_ImplementsToolExecutorSetter(t *testing.T) {

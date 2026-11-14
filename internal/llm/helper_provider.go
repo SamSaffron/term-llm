@@ -1,7 +1,7 @@
 package llm
 
 import (
-	"github.com/samsaffron/term-llm/internal/llm/core"
+	"github.com/term-llm/term-llm/internal/llm/core"
 )
 
 // helperConversationIsolator is implemented by providers that must clone

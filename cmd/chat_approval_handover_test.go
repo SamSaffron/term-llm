@@ -16,8 +16,8 @@ import (
 	"time"
 
 	"github.com/creack/pty"
-	"github.com/samsaffron/term-llm/internal/mcp"
-	"github.com/samsaffron/term-llm/internal/testutil/mcptest"
+	"github.com/term-llm/term-llm/internal/mcp"
+	"github.com/term-llm/term-llm/internal/testutil/mcptest"
 )
 
 // Run the real Cobra capture and application in a separate terminal process.

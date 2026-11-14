@@ -12,7 +12,7 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/samsaffron/term-llm/internal/config"
+	"github.com/term-llm/term-llm/internal/config"
 )
 
 // MaxNodeOrderIDs bounds one node reorder request.

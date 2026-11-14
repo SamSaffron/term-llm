@@ -13,7 +13,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/samsaffron/term-llm/internal/procutil"
+	"github.com/term-llm/term-llm/internal/procutil"
 )
 
 const (

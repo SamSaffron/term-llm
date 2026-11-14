@@ -9,10 +9,10 @@ import (
 	"time"
 
 	tea "charm.land/bubbletea/v2"
-	"github.com/samsaffron/term-llm/internal/session"
-	"github.com/samsaffron/term-llm/internal/tui/inspector"
-	sessionsui "github.com/samsaffron/term-llm/internal/tui/sessions"
-	worktreesui "github.com/samsaffron/term-llm/internal/tui/worktrees"
+	"github.com/term-llm/term-llm/internal/session"
+	"github.com/term-llm/term-llm/internal/tui/inspector"
+	sessionsui "github.com/term-llm/term-llm/internal/tui/sessions"
+	worktreesui "github.com/term-llm/term-llm/internal/tui/worktrees"
 )
 
 type attentionAckCall struct {

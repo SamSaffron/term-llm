@@ -6,7 +6,7 @@ import (
 	"math"
 	"strings"
 
-	"github.com/samsaffron/term-llm/internal/config"
+	"github.com/term-llm/term-llm/internal/config"
 )
 
 // EmbeddingResult contains the embeddings and metadata from an API call

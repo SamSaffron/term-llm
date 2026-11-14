@@ -6,10 +6,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/samsaffron/term-llm/internal/config"
-	"github.com/samsaffron/term-llm/internal/credentials"
-	"github.com/samsaffron/term-llm/internal/llm/core"
-	rp "github.com/samsaffron/term-llm/internal/llm/providers/responsesproviders"
+	"github.com/term-llm/term-llm/internal/config"
+	"github.com/term-llm/term-llm/internal/credentials"
+	"github.com/term-llm/term-llm/internal/llm/core"
+	rp "github.com/term-llm/term-llm/internal/llm/providers/responsesproviders"
 )
 
 func TestCurrentOpenAIDefaultModelMetadata(t *testing.T) {

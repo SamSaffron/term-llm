@@ -1,6 +1,6 @@
 package chat
 
-import "github.com/samsaffron/term-llm/internal/lifecycle"
+import "github.com/term-llm/term-llm/internal/lifecycle"
 
 // LifecycleSnapshot returns the current foreground lifecycle without mutating
 // the model or publishing it. The Bubble Tea host decides which model is

@@ -3,8 +3,8 @@ package cmd
 import (
 	"strings"
 
-	modelsapp "github.com/samsaffron/term-llm/internal/app/models"
 	"github.com/spf13/cobra"
+	modelsapp "github.com/term-llm/term-llm/internal/app/models"
 )
 
 var modelsOptions = modelsapp.Options{LoadConfig: loadConfigWithSetup}

@@ -7,8 +7,8 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/samsaffron/term-llm/internal/app/uploads"
-	"github.com/samsaffron/term-llm/internal/llm/core"
+	"github.com/term-llm/term-llm/internal/app/uploads"
+	"github.com/term-llm/term-llm/internal/llm/core"
 )
 
 type anthropicMessagesRequest struct {

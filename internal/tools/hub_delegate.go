@@ -11,9 +11,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/samsaffron/term-llm/internal/hub"
-	"github.com/samsaffron/term-llm/internal/llm/core"
-	"github.com/samsaffron/term-llm/internal/modelpolicy"
+	"github.com/term-llm/term-llm/internal/hub"
+	"github.com/term-llm/term-llm/internal/llm/core"
+	"github.com/term-llm/term-llm/internal/modelpolicy"
 )
 
 // hub_delegate / hub_check_delegation let an agent on one term-llm node run

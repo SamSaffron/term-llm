@@ -3,9 +3,9 @@ package session
 import (
 	"context"
 	"database/sql"
-	"github.com/samsaffron/term-llm/internal/llm/core"
+	"github.com/term-llm/term-llm/internal/llm/core"
 
-	"github.com/samsaffron/term-llm/internal/session/transcriptprefix"
+	"github.com/term-llm/term-llm/internal/session/transcriptprefix"
 )
 
 // Compare only persistence metadata, without copying large structured message bodies.

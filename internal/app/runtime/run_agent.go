@@ -5,11 +5,11 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/samsaffron/term-llm/internal/agents"
-	"github.com/samsaffron/term-llm/internal/config"
-	"github.com/samsaffron/term-llm/internal/modelpolicy"
-	runpkg "github.com/samsaffron/term-llm/internal/run"
-	"github.com/samsaffron/term-llm/internal/session"
+	"github.com/term-llm/term-llm/internal/agents"
+	"github.com/term-llm/term-llm/internal/config"
+	"github.com/term-llm/term-llm/internal/modelpolicy"
+	runpkg "github.com/term-llm/term-llm/internal/run"
+	"github.com/term-llm/term-llm/internal/session"
 )
 
 // ResolveRunAgent resolves one request and its persisted provenance before model

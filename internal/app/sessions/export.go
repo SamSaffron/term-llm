@@ -7,11 +7,11 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/samsaffron/term-llm/internal/agents/gist"
-	"github.com/samsaffron/term-llm/internal/config"
-	internalreasoning "github.com/samsaffron/term-llm/internal/reasoning"
-	"github.com/samsaffron/term-llm/internal/session"
 	"github.com/spf13/cobra"
+	"github.com/term-llm/term-llm/internal/agents/gist"
+	"github.com/term-llm/term-llm/internal/config"
+	internalreasoning "github.com/term-llm/term-llm/internal/reasoning"
+	"github.com/term-llm/term-llm/internal/session"
 	"gopkg.in/yaml.v3"
 )
 

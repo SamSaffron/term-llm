@@ -6,9 +6,9 @@ import (
 	"slices"
 	"strings"
 
-	planpkg "github.com/samsaffron/term-llm/internal/plan"
-	"github.com/samsaffron/term-llm/internal/terminaltext"
-	"github.com/samsaffron/term-llm/internal/tools"
+	planpkg "github.com/term-llm/term-llm/internal/plan"
+	"github.com/term-llm/term-llm/internal/terminaltext"
+	"github.com/term-llm/term-llm/internal/tools"
 )
 
 func handleRemovedSubagentProgress(subagentTracker *SubagentTracker, callID string, event tools.SubagentEvent, p *SubagentProgress) bool {

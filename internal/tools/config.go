@@ -7,8 +7,8 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/samsaffron/term-llm/internal/pathutil"
-	"github.com/samsaffron/term-llm/internal/runtimeoutput"
+	"github.com/term-llm/term-llm/internal/pathutil"
+	"github.com/term-llm/term-llm/internal/runtimeoutput"
 )
 
 // ToolConfig holds configuration for the local tool system.

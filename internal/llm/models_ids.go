@@ -4,10 +4,10 @@ import (
 	"os"
 	"strings"
 
-	"github.com/samsaffron/term-llm/internal/config"
-	"github.com/samsaffron/term-llm/internal/llm/providers/anthropic"
-	"github.com/samsaffron/term-llm/internal/llm/providers/clibin"
-	rp "github.com/samsaffron/term-llm/internal/llm/providers/responsesproviders"
+	"github.com/term-llm/term-llm/internal/config"
+	"github.com/term-llm/term-llm/internal/llm/providers/anthropic"
+	"github.com/term-llm/term-llm/internal/llm/providers/clibin"
+	rp "github.com/term-llm/term-llm/internal/llm/providers/responsesproviders"
 )
 
 // cachedProviderModels contains provider-specific offline/live catalog probes.

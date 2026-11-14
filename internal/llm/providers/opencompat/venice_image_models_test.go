@@ -6,8 +6,8 @@ import (
 	"reflect"
 	"testing"
 
-	"github.com/samsaffron/term-llm/internal/cache"
-	"github.com/samsaffron/term-llm/internal/config"
+	"github.com/term-llm/term-llm/internal/cache"
+	"github.com/term-llm/term-llm/internal/config"
 )
 
 func TestVeniceImageModelDeferredCredentials(t *testing.T) {

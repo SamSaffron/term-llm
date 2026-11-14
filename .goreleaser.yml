@@ -18,9 +18,9 @@ builds:
     main: ./main.go
     ldflags:
       - -s -w
-      - -X github.com/samsaffron/term-llm/cmd.Version={{.Version}}
-      - -X github.com/samsaffron/term-llm/cmd.Commit={{.Commit}}
-      - -X github.com/samsaffron/term-llm/cmd.Date={{.Date}}
+      - -X github.com/term-llm/term-llm/cmd.Version={{.Version}}
+      - -X github.com/term-llm/term-llm/cmd.Commit={{.Commit}}
+      - -X github.com/term-llm/term-llm/cmd.Date={{.Date}}
 
 # Sign darwin binaries with a Developer ID certificate and notarize them before
 # archiving, so archives and checksums cover the signed files. The release
@@ -61,7 +61,7 @@ archives:
 # Release configuration
 release:
   github:
-    owner: samsaffron
+    owner: term-llm
     name: term-llm
   name_template: "Release {{ .Tag }}"
   draft: false

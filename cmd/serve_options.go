@@ -1,6 +1,6 @@
 package cmd
 
-import appserve "github.com/samsaffron/term-llm/internal/app/serve"
+import appserve "github.com/term-llm/term-llm/internal/app/serve"
 
 // ServeOptions is the application configuration bound by the Cobra serve flags.
 type ServeOptions = appserve.Options

@@ -7,10 +7,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/samsaffron/term-llm/internal/app/serve/authorship"
-	"github.com/samsaffron/term-llm/internal/llm/core"
-	"github.com/samsaffron/term-llm/internal/llm/engine"
-	"github.com/samsaffron/term-llm/internal/session"
+	"github.com/term-llm/term-llm/internal/app/serve/authorship"
+	"github.com/term-llm/term-llm/internal/llm/core"
+	"github.com/term-llm/term-llm/internal/llm/engine"
+	"github.com/term-llm/term-llm/internal/session"
 )
 
 // claimUIFollowUp claims only first-party client messages that this runtime

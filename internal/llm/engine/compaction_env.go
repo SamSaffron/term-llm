@@ -1,6 +1,6 @@
 package engine
 
-import "github.com/samsaffron/term-llm/internal/llm/core"
+import "github.com/term-llm/term-llm/internal/llm/core"
 
 // ContextContinuationPrompt is the control prompt appended after compaction.
 // The engine appends it and compaction recognises and filters it from history.

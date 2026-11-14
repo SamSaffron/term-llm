@@ -3,8 +3,8 @@ package presentation_test
 import (
 	"testing"
 
-	"github.com/samsaffron/term-llm/internal/codemode/presentation"
-	"github.com/samsaffron/term-llm/internal/llm/core"
+	"github.com/term-llm/term-llm/internal/codemode/presentation"
+	"github.com/term-llm/term-llm/internal/llm/core"
 )
 
 // stubURL is an ImageURLFunc that returns a /images/<base64> stub URL.

@@ -18,12 +18,12 @@ import (
 	"time"
 
 	"github.com/pion/webrtc/v4"
-	"github.com/samsaffron/term-llm/internal/appdata"
-	"github.com/samsaffron/term-llm/internal/filelock"
-	"github.com/samsaffron/term-llm/internal/fileprivacy"
-	"github.com/samsaffron/term-llm/internal/pairing"
-	"github.com/samsaffron/term-llm/internal/peer"
-	"github.com/samsaffron/term-llm/internal/peerbroker"
+	"github.com/term-llm/term-llm/internal/appdata"
+	"github.com/term-llm/term-llm/internal/filelock"
+	"github.com/term-llm/term-llm/internal/fileprivacy"
+	"github.com/term-llm/term-llm/internal/pairing"
+	"github.com/term-llm/term-llm/internal/peer"
+	"github.com/term-llm/term-llm/internal/peerbroker"
 )
 
 const (

@@ -9,9 +9,9 @@ import (
 
 	"testing"
 
-	"github.com/samsaffron/term-llm/internal/testutil/procenv"
+	"github.com/term-llm/term-llm/internal/testutil/procenv"
 
-	"github.com/samsaffron/term-llm/internal/testutil/mcptest"
+	"github.com/term-llm/term-llm/internal/testutil/mcptest"
 )
 
 var bindingTestRepoTemplate string

@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/samsaffron/term-llm/internal/ui"
+	"github.com/term-llm/term-llm/internal/ui"
 )
 
 // TestAskJSONEndToEndSmoke drives a realistic ask session through the JSON

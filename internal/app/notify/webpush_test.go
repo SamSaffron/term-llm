@@ -14,8 +14,8 @@ import (
 	"testing"
 
 	webpush "github.com/SherClockHolmes/webpush-go"
-	"github.com/samsaffron/term-llm/internal/config"
-	"github.com/samsaffron/term-llm/internal/session"
+	"github.com/term-llm/term-llm/internal/config"
+	"github.com/term-llm/term-llm/internal/session"
 )
 
 func TestNormalizeWebPushSubject(t *testing.T) {
@@ -24,8 +24,8 @@ func TestNormalizeWebPushSubject(t *testing.T) {
 		input string
 		want  string
 	}{
-		{name: "empty uses https default", input: "", want: "https://github.com/samsaffron/term-llm"},
-		{name: "whitespace empty uses https default", input: "   ", want: "https://github.com/samsaffron/term-llm"},
+		{name: "empty uses https default", input: "", want: "https://github.com/term-llm/term-llm"},
+		{name: "whitespace empty uses https default", input: "   ", want: "https://github.com/term-llm/term-llm"},
 		{name: "bare email kept", input: "test@example.com", want: "test@example.com"},
 		{name: "mailto stripped once", input: "mailto:test@example.com", want: "test@example.com"},
 		{name: "mailto stripped case insensitive", input: "MAILTO:test@example.com", want: "test@example.com"},

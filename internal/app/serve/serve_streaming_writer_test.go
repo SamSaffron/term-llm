@@ -3,7 +3,7 @@ package serve
 import (
 	"testing"
 
-	"github.com/samsaffron/term-llm/internal/testutil"
+	"github.com/term-llm/term-llm/internal/testutil"
 )
 
 func TestStreamingResponseWriterSetsPerWriteDeadline(t *testing.T) {

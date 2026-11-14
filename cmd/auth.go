@@ -1,8 +1,8 @@
 package cmd
 
 import (
-	authapp "github.com/samsaffron/term-llm/internal/app/auth"
 	"github.com/spf13/cobra"
+	authapp "github.com/term-llm/term-llm/internal/app/auth"
 )
 
 var authCmd = &cobra.Command{

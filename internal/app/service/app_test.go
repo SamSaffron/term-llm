@@ -13,9 +13,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/samsaffron/term-llm/internal/userservice"
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
+	"github.com/term-llm/term-llm/internal/userservice"
 )
 
 func isolatedServiceHome(t *testing.T) string {

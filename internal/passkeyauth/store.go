@@ -10,7 +10,7 @@ import (
 	"io"
 	"os"
 
-	"github.com/samsaffron/term-llm/internal/fileprivacy"
+	"github.com/term-llm/term-llm/internal/fileprivacy"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -19,7 +19,7 @@ import (
 	"github.com/go-webauthn/webauthn/protocol"
 	"github.com/go-webauthn/webauthn/protocol/webauthncose"
 	"github.com/go-webauthn/webauthn/webauthn"
-	"github.com/samsaffron/term-llm/internal/config"
+	"github.com/term-llm/term-llm/internal/config"
 )
 
 var (

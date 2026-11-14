@@ -3,7 +3,7 @@ package search
 import (
 	"fmt"
 
-	"github.com/samsaffron/term-llm/internal/config"
+	"github.com/term-llm/term-llm/internal/config"
 )
 
 // NewSearcher creates a Searcher based on the config.

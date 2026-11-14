@@ -3,7 +3,7 @@ package session
 import (
 	"context"
 
-	"github.com/samsaffron/term-llm/internal/llm/core"
+	"github.com/term-llm/term-llm/internal/llm/core"
 )
 
 // AgentRunResumable deliberately does not equate Started with saved history: runners

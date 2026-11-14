@@ -10,10 +10,10 @@ import (
 	"strings"
 	"time"
 
-	mcpstart "github.com/samsaffron/term-llm/internal/app/runtime/mcpstart"
-	"github.com/samsaffron/term-llm/internal/mcp"
-	mcpoauth "github.com/samsaffron/term-llm/internal/mcp/oauth"
-	"github.com/samsaffron/term-llm/internal/terminaltext"
+	mcpstart "github.com/term-llm/term-llm/internal/app/runtime/mcpstart"
+	"github.com/term-llm/term-llm/internal/mcp"
+	mcpoauth "github.com/term-llm/term-llm/internal/mcp/oauth"
+	"github.com/term-llm/term-llm/internal/terminaltext"
 )
 
 type serveMCPOAuthStartRequest struct {

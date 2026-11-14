@@ -7,7 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/samsaffron/term-llm/internal/clipboard"
+	"github.com/term-llm/term-llm/internal/clipboard"
 	"golang.org/x/term"
 )
 

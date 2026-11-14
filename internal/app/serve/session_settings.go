@@ -1,9 +1,9 @@
 package serve
 
 import (
-	"github.com/samsaffron/term-llm/internal/agents"
-	appmemory "github.com/samsaffron/term-llm/internal/app/memory"
-	"github.com/samsaffron/term-llm/internal/tools"
+	"github.com/term-llm/term-llm/internal/agents"
+	appmemory "github.com/term-llm/term-llm/internal/app/memory"
+	"github.com/term-llm/term-llm/internal/tools"
 )
 
 // SessionSettings holds the resolved settings for a session, merged from

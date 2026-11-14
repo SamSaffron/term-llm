@@ -5,8 +5,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/samsaffron/term-llm/internal/termimage"
-	"github.com/samsaffron/term-llm/internal/ui"
+	"github.com/term-llm/term-llm/internal/termimage"
+	"github.com/term-llm/term-llm/internal/ui"
 )
 
 func TestAcknowledgedImageStreamingTicksDoNotRetransmitPayload(t *testing.T) {

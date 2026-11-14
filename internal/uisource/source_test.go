@@ -17,7 +17,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/samsaffron/term-llm/internal/serveui"
+	"github.com/term-llm/term-llm/internal/serveui"
 )
 
 func TestEmbeddedSourceMatchesBuild(t *testing.T) {

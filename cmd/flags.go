@@ -3,10 +3,10 @@ package cmd
 import (
 	"strings"
 
-	"github.com/samsaffron/term-llm/internal/app/runtime"
-	"github.com/samsaffron/term-llm/internal/config"
-	toolspkg "github.com/samsaffron/term-llm/internal/tools"
 	"github.com/spf13/cobra"
+	"github.com/term-llm/term-llm/internal/app/runtime"
+	"github.com/term-llm/term-llm/internal/config"
+	toolspkg "github.com/term-llm/term-llm/internal/tools"
 )
 
 type flagKind int

@@ -5,7 +5,7 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/samsaffron/term-llm/internal/agyproxy"
+	"github.com/term-llm/term-llm/internal/agyproxy"
 )
 
 // agyToolIsolation routes agy's model traffic through internal/agyproxy. The

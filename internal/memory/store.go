@@ -10,9 +10,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/samsaffron/term-llm/internal/appdata"
-	_ "github.com/samsaffron/term-llm/internal/sqlitedriver"
-	"github.com/samsaffron/term-llm/internal/sqliteutil"
+	"github.com/term-llm/term-llm/internal/appdata"
+	_ "github.com/term-llm/term-llm/internal/sqlitedriver"
+	"github.com/term-llm/term-llm/internal/sqliteutil"
 )
 
 const (

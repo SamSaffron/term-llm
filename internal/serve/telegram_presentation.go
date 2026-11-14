@@ -12,9 +12,9 @@ import (
 	"unicode/utf8"
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
-	"github.com/samsaffron/term-llm/internal/llm/core"
-	"github.com/samsaffron/term-llm/internal/mediatype"
-	"github.com/samsaffron/term-llm/internal/terminaltext"
+	"github.com/term-llm/term-llm/internal/llm/core"
+	"github.com/term-llm/term-llm/internal/mediatype"
+	"github.com/term-llm/term-llm/internal/terminaltext"
 )
 
 // telegramPresentation owns the message window and send/edit policy for one

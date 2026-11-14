@@ -126,7 +126,7 @@ func wireMoveFixture(t *testing.T, moveJobs, moveHost bool) (string, []string) {
 	cmd := "package cmd\n"
 	if moveJobs {
 		// Go callers may retain this alias, but the registry must target RunEvent.
-		cmd += `import servejobs "github.com/samsaffron/term-llm/internal/app/serve/jobs"
+		cmd += `import servejobs "github.com/term-llm/term-llm/internal/app/serve/jobs"
  type jobsV2RunEvent = servejobs.RunEvent
 `
 		write("internal/app/serve/jobs", "package jobs; type RunEvent struct { Value string }")

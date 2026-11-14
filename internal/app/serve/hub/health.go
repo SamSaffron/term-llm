@@ -5,7 +5,7 @@ import (
 	"sync"
 	"time"
 
-	corehub "github.com/samsaffron/term-llm/internal/hub"
+	corehub "github.com/term-llm/term-llm/internal/hub"
 )
 
 const (

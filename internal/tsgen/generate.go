@@ -31,7 +31,7 @@ var Registry = []string{
 	"internal/linkeddevices.Status",
 }
 
-const module = "github.com/samsaffron/term-llm/"
+const module = "github.com/term-llm/term-llm/"
 
 type declaration struct {
 	node    ast.Expr

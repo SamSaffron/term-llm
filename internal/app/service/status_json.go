@@ -14,8 +14,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/samsaffron/term-llm/internal/userservice"
 	"github.com/spf13/cobra"
+	"github.com/term-llm/term-llm/internal/userservice"
 )
 
 // This is an explicit allowlist, not a serialization of Spec or native output.

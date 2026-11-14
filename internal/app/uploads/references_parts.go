@@ -7,7 +7,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/samsaffron/term-llm/internal/llm/core"
+	"github.com/term-llm/term-llm/internal/llm/core"
 )
 
 // ParseReferencePart resolves a strict input_upload part from trusted metadata.

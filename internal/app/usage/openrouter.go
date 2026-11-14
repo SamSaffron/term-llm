@@ -11,10 +11,10 @@ import (
 	"time"
 	"unicode"
 
-	"github.com/samsaffron/term-llm/internal/config"
-	"github.com/samsaffron/term-llm/internal/formatutil"
-	usagedata "github.com/samsaffron/term-llm/internal/usage"
 	"github.com/spf13/cobra"
+	"github.com/term-llm/term-llm/internal/config"
+	"github.com/term-llm/term-llm/internal/formatutil"
+	usagedata "github.com/term-llm/term-llm/internal/usage"
 )
 
 var fetchOpenRouterUsage = usagedata.FetchOpenRouterUsage

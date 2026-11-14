@@ -1,9 +1,9 @@
 package cmd
 
 import (
-	"github.com/samsaffron/term-llm/internal/config"
-	sharepkg "github.com/samsaffron/term-llm/internal/share"
 	"github.com/spf13/cobra"
+	"github.com/term-llm/term-llm/internal/config"
+	sharepkg "github.com/term-llm/term-llm/internal/share"
 )
 
 // newSessionSharePublisher is a seam so tests can inject a fake provider.

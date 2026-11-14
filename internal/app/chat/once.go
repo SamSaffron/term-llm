@@ -9,11 +9,11 @@ import (
 	"time"
 
 	tea "charm.land/bubbletea/v2"
-	runapproval "github.com/samsaffron/term-llm/internal/app/runtime/approval"
-	"github.com/samsaffron/term-llm/internal/config"
-	"github.com/samsaffron/term-llm/internal/exitcode"
-	"github.com/samsaffron/term-llm/internal/tools"
-	"github.com/samsaffron/term-llm/internal/tui/chat"
+	runapproval "github.com/term-llm/term-llm/internal/app/runtime/approval"
+	"github.com/term-llm/term-llm/internal/config"
+	"github.com/term-llm/term-llm/internal/exitcode"
+	"github.com/term-llm/term-llm/internal/tools"
+	"github.com/term-llm/term-llm/internal/tui/chat"
 )
 
 func (r *chatInvocation) runChatOnce(ctx context.Context, initialText, cliAgent string, resumeRequested bool, resumeID, handoverAutoSend string, relaunchHandoff *chatRelaunchHandoff, mainRuns *chat.MainRunManager, lifecycleReporter LifecycleReporter, launchConfig *config.Config) (string, string, error) {

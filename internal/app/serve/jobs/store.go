@@ -8,8 +8,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/samsaffron/term-llm/internal/app/serve/wire"
-	corejobs "github.com/samsaffron/term-llm/internal/jobs"
+	"github.com/term-llm/term-llm/internal/app/serve/wire"
+	corejobs "github.com/term-llm/term-llm/internal/jobs"
 )
 
 func validateJobsV2RunnerConfig(runnerType RunnerType, raw json.RawMessage) error {

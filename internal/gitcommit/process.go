@@ -12,8 +12,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/samsaffron/term-llm/internal/fileprivacy"
-	"github.com/samsaffron/term-llm/internal/procutil"
+	"github.com/term-llm/term-llm/internal/fileprivacy"
+	"github.com/term-llm/term-llm/internal/procutil"
 )
 
 var scrubGitEnvironment = map[string]struct{}{

@@ -8,14 +8,14 @@ import (
 	"path"
 
 	"github.com/bmatcuk/doublestar/v4"
-	"github.com/samsaffron/term-llm/internal/llm/engine"
+	"github.com/term-llm/term-llm/internal/llm/engine"
 	"strings"
 	"unicode/utf8"
 
-	"github.com/samsaffron/term-llm/internal/config"
-	memorydb "github.com/samsaffron/term-llm/internal/memory"
-	"github.com/samsaffron/term-llm/internal/secrettext"
-	"github.com/samsaffron/term-llm/internal/session"
+	"github.com/term-llm/term-llm/internal/config"
+	memorydb "github.com/term-llm/term-llm/internal/memory"
+	"github.com/term-llm/term-llm/internal/secrettext"
+	"github.com/term-llm/term-llm/internal/session"
 )
 
 var errMemorySafety = errors.New("memory content rejected by native safety validation")

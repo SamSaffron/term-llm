@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/samsaffron/term-llm/internal/hub"
+	"github.com/term-llm/term-llm/internal/hub"
 )
 
 type hubJSONDeadlineTransport func(*http.Request) (*http.Response, error)

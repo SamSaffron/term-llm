@@ -4,9 +4,9 @@ import (
 	"context"
 	"errors"
 
-	"github.com/samsaffron/term-llm/internal/llm/core"
-	"github.com/samsaffron/term-llm/internal/llm/engine"
-	"github.com/samsaffron/term-llm/internal/runtimeoutput"
+	"github.com/term-llm/term-llm/internal/llm/core"
+	"github.com/term-llm/term-llm/internal/llm/engine"
+	"github.com/term-llm/term-llm/internal/runtimeoutput"
 )
 
 // compactionEnv adapts root-owned model limits, provider isolation, and

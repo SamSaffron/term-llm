@@ -9,7 +9,7 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 	"github.com/sahilm/fuzzy"
-	"github.com/samsaffron/term-llm/internal/terminaltext"
+	"github.com/term-llm/term-llm/internal/terminaltext"
 )
 
 // SlashEntryKind distinguishes fixed built-ins from dynamically discovered

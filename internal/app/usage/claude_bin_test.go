@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/samsaffron/term-llm/internal/llm/providerusage"
+	"github.com/term-llm/term-llm/internal/llm/providerusage"
 )
 
 func TestParseClaudeBinUsageOutput(t *testing.T) {

@@ -1,6 +1,6 @@
 package runtime
 
-import "github.com/samsaffron/term-llm/internal/config"
+import "github.com/term-llm/term-llm/internal/config"
 
 // CloneConfig returns a run-local config copy. It preserves the historical
 // cloneConfigForServeJob copy boundary exactly.

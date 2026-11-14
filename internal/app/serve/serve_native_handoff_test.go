@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/samsaffron/term-llm/internal/passkeyauth"
+	"github.com/term-llm/term-llm/internal/passkeyauth"
 )
 
 const nativeTestVerifier = "native-test-verifier-0123456789abcdefghijklmnopqrstuvwxyz"

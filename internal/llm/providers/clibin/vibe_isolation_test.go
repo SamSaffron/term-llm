@@ -7,8 +7,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/samsaffron/term-llm/internal/acp"
-	"github.com/samsaffron/term-llm/internal/llm/core"
+	"github.com/term-llm/term-llm/internal/acp"
+	"github.com/term-llm/term-llm/internal/llm/core"
 )
 
 func TestVibeBinProviderIsolatesUserConfiguration(t *testing.T) {

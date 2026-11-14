@@ -10,8 +10,8 @@ import (
 	"time"
 
 	tea "charm.land/bubbletea/v2"
-	worktreesui "github.com/samsaffron/term-llm/internal/tui/worktrees"
-	"github.com/samsaffron/term-llm/internal/worktree"
+	worktreesui "github.com/term-llm/term-llm/internal/tui/worktrees"
+	"github.com/term-llm/term-llm/internal/worktree"
 )
 
 func (m *Model) openWorktreeBrowser() (tea.Model, tea.Cmd) {

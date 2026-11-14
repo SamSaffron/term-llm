@@ -1,6 +1,6 @@
 package serve
 
-import "github.com/samsaffron/term-llm/internal/app/serve/protocol"
+import "github.com/term-llm/term-llm/internal/app/serve/protocol"
 
 // Keep the existing shell/controller integration while the protocol implementation
 // and its tests live in a separately testable, dependency-free package.

@@ -8,15 +8,15 @@ import (
 	"strings"
 	"time"
 
-	"github.com/samsaffron/term-llm/internal/agents"
-	appmemory "github.com/samsaffron/term-llm/internal/app/memory"
-	appserve "github.com/samsaffron/term-llm/internal/app/serve"
-	"github.com/samsaffron/term-llm/internal/config"
-	"github.com/samsaffron/term-llm/internal/llm/engine"
-	"github.com/samsaffron/term-llm/internal/session"
-	"github.com/samsaffron/term-llm/internal/skills"
-	"github.com/samsaffron/term-llm/internal/tools"
-	"github.com/samsaffron/term-llm/internal/tui/chat"
+	"github.com/term-llm/term-llm/internal/agents"
+	appmemory "github.com/term-llm/term-llm/internal/app/memory"
+	appserve "github.com/term-llm/term-llm/internal/app/serve"
+	"github.com/term-llm/term-llm/internal/config"
+	"github.com/term-llm/term-llm/internal/llm/engine"
+	"github.com/term-llm/term-llm/internal/session"
+	"github.com/term-llm/term-llm/internal/skills"
+	"github.com/term-llm/term-llm/internal/tools"
+	"github.com/term-llm/term-llm/internal/tui/chat"
 )
 
 func (r *chatInvocation) resolveChatHandoverSystemPrompt(targetAgent *agents.Agent, providerKey, modelName string, paths appmemory.Paths) (string, error) {

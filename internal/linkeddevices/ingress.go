@@ -4,7 +4,7 @@ import (
 	"context"
 	"crypto/subtle"
 	"errors"
-	"github.com/samsaffron/term-llm/internal/pairing"
+	"github.com/term-llm/term-llm/internal/pairing"
 	"net/http"
 	"strings"
 )

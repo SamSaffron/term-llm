@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"testing"
 
-	"github.com/samsaffron/term-llm/internal/contain"
+	"github.com/term-llm/term-llm/internal/contain"
 )
 
 func TestContainResolverDiscoversWorkspaces(t *testing.T) {

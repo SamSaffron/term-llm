@@ -14,10 +14,10 @@ import (
 	"unicode"
 	"unicode/utf8"
 
-	"github.com/samsaffron/term-llm/internal/appdata"
-	"github.com/samsaffron/term-llm/internal/credentials"
-	"github.com/samsaffron/term-llm/internal/grokprotocol"
-	"github.com/samsaffron/term-llm/internal/oauth"
+	"github.com/term-llm/term-llm/internal/appdata"
+	"github.com/term-llm/term-llm/internal/credentials"
+	"github.com/term-llm/term-llm/internal/grokprotocol"
+	"github.com/term-llm/term-llm/internal/oauth"
 )
 
 const (

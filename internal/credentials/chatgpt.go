@@ -8,8 +8,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/samsaffron/term-llm/internal/fileprivacy"
-	"github.com/samsaffron/term-llm/internal/oauth"
+	"github.com/term-llm/term-llm/internal/fileprivacy"
+	"github.com/term-llm/term-llm/internal/oauth"
 )
 
 var (

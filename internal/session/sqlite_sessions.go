@@ -10,9 +10,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/samsaffron/term-llm/internal/modelpolicy"
-	planpkg "github.com/samsaffron/term-llm/internal/plan"
-	"github.com/samsaffron/term-llm/internal/runtimeoutput"
+	"github.com/term-llm/term-llm/internal/modelpolicy"
+	planpkg "github.com/term-llm/term-llm/internal/plan"
+	"github.com/term-llm/term-llm/internal/runtimeoutput"
 )
 
 func (s *SQLiteStore) Create(ctx context.Context, sess *Session) error {

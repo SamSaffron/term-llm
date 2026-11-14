@@ -10,11 +10,11 @@ import (
 	"strings"
 	"time"
 
-	"github.com/samsaffron/term-llm/internal/classify/backends"
-	"github.com/samsaffron/term-llm/internal/config"
-	"github.com/samsaffron/term-llm/internal/live"
-	liveclassify "github.com/samsaffron/term-llm/internal/live/classify"
-	"github.com/samsaffron/term-llm/internal/tools"
+	"github.com/term-llm/term-llm/internal/classify/backends"
+	"github.com/term-llm/term-llm/internal/config"
+	"github.com/term-llm/term-llm/internal/live"
+	liveclassify "github.com/term-llm/term-llm/internal/live/classify"
+	"github.com/term-llm/term-llm/internal/tools"
 )
 
 const (

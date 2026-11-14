@@ -1,8 +1,8 @@
 package serve
 
 import (
-	"github.com/samsaffron/term-llm/internal/codemode/presentation"
-	"github.com/samsaffron/term-llm/internal/llm/core"
+	"github.com/term-llm/term-llm/internal/codemode/presentation"
+	"github.com/term-llm/term-llm/internal/llm/core"
 )
 
 func (s *serveServer) toolContentPartsPayload(parts []core.ToolContentPart) []map[string]any {

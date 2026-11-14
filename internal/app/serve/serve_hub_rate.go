@@ -4,7 +4,7 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/samsaffron/term-llm/internal/app/serve/hub"
+	"github.com/term-llm/term-llm/internal/app/serve/hub"
 )
 
 // Thin adapters keep the existing cmd call sites on the extracted hub limiter.

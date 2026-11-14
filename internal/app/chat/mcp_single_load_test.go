@@ -13,13 +13,13 @@ import (
 	tea "charm.land/bubbletea/v2"
 
 	sdkmcp "github.com/modelcontextprotocol/go-sdk/mcp"
-	"github.com/samsaffron/term-llm/internal/app/runtime/approval"
-	"github.com/samsaffron/term-llm/internal/app/runtime/bootstrap"
-	"github.com/samsaffron/term-llm/internal/config"
-	"github.com/samsaffron/term-llm/internal/mcp"
-	"github.com/samsaffron/term-llm/internal/session"
-	"github.com/samsaffron/term-llm/internal/testutil/mcptest"
-	"github.com/samsaffron/term-llm/internal/tools"
+	"github.com/term-llm/term-llm/internal/app/runtime/approval"
+	"github.com/term-llm/term-llm/internal/app/runtime/bootstrap"
+	"github.com/term-llm/term-llm/internal/config"
+	"github.com/term-llm/term-llm/internal/mcp"
+	"github.com/term-llm/term-llm/internal/session"
+	"github.com/term-llm/term-llm/internal/testutil/mcptest"
+	"github.com/term-llm/term-llm/internal/tools"
 )
 
 func TestMCPPolicyChatLoadsSelectionOnce(t *testing.T) {

@@ -4,7 +4,7 @@
 
 set -e
 
-REPO="https://github.com/samsaffron/term-llm.git"
+REPO="https://github.com/term-llm/term-llm.git"
 SRC_DIR="$HOME/source/term-llm"
 BINARY_DEST="/usr/local/bin/term-llm"
 BEFORE=$(git -C "$SRC_DIR" rev-parse --short HEAD 2>/dev/null || echo "unknown")

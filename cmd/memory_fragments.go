@@ -3,9 +3,9 @@ package cmd
 import (
 	"time"
 
-	appmemory "github.com/samsaffron/term-llm/internal/app/memory"
-	memorydb "github.com/samsaffron/term-llm/internal/memory"
 	"github.com/spf13/cobra"
+	appmemory "github.com/term-llm/term-llm/internal/app/memory"
+	memorydb "github.com/term-llm/term-llm/internal/memory"
 )
 
 var (

@@ -7,8 +7,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/samsaffron/term-llm/internal/config"
-	platform "github.com/samsaffron/term-llm/internal/serve"
+	"github.com/term-llm/term-llm/internal/config"
+	platform "github.com/term-llm/term-llm/internal/serve"
 )
 
 type transientFailurePlatform struct {

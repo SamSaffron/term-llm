@@ -4,12 +4,12 @@ import (
 	"os"
 	"time"
 
-	"github.com/samsaffron/term-llm/internal/app/ask"
-	"github.com/samsaffron/term-llm/internal/config"
-	runpkg "github.com/samsaffron/term-llm/internal/run"
-	"github.com/samsaffron/term-llm/internal/signal"
-	"github.com/samsaffron/term-llm/internal/terminalpolicy"
 	"github.com/spf13/cobra"
+	"github.com/term-llm/term-llm/internal/app/ask"
+	"github.com/term-llm/term-llm/internal/config"
+	runpkg "github.com/term-llm/term-llm/internal/run"
+	"github.com/term-llm/term-llm/internal/signal"
+	"github.com/term-llm/term-llm/internal/terminalpolicy"
 )
 
 var (

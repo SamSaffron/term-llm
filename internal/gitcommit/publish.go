@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/samsaffron/term-llm/internal/procutil"
+	"github.com/term-llm/term-llm/internal/procutil"
 )
 
 // PublishPlan is a reviewable, single-branch destination. URL is the effective

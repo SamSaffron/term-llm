@@ -5,10 +5,10 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/samsaffron/term-llm/internal/config"
-	"github.com/samsaffron/term-llm/internal/llm/providers/anthropic"
-	"github.com/samsaffron/term-llm/internal/llm/providers/opencompat"
-	rp "github.com/samsaffron/term-llm/internal/llm/providers/responsesproviders"
+	"github.com/term-llm/term-llm/internal/config"
+	"github.com/term-llm/term-llm/internal/llm/providers/anthropic"
+	"github.com/term-llm/term-llm/internal/llm/providers/opencompat"
+	rp "github.com/term-llm/term-llm/internal/llm/providers/responsesproviders"
 )
 
 // ConfigModelLimit holds per-model token limits from user config.

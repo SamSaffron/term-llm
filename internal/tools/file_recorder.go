@@ -6,8 +6,8 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/samsaffron/term-llm/internal/filetrack"
-	"github.com/samsaffron/term-llm/internal/llm/core"
+	"github.com/term-llm/term-llm/internal/filetrack"
+	"github.com/term-llm/term-llm/internal/llm/core"
 )
 
 // FileChangeRecorder records file changes made by tools so sessions can expose

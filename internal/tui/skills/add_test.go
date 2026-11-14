@@ -5,7 +5,7 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
-	internalSkills "github.com/samsaffron/term-llm/internal/skills"
+	internalSkills "github.com/term-llm/term-llm/internal/skills"
 )
 
 func TestUpdate_SpaceTogglesSelectedSkill(t *testing.T) {

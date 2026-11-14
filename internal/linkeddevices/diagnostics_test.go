@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/samsaffron/term-llm/internal/peer"
+	"github.com/term-llm/term-llm/internal/peer"
 )
 
 func TestDiagnosticTimelineDisabledIsSilentAndDoesNotReadClock(t *testing.T) {

@@ -23,10 +23,10 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/samsaffron/term-llm/internal/config"
-	"github.com/samsaffron/term-llm/internal/sqliteutil"
+	"github.com/term-llm/term-llm/internal/config"
+	"github.com/term-llm/term-llm/internal/sqliteutil"
 
-	_ "github.com/samsaffron/term-llm/internal/sqlitedriver"
+	_ "github.com/term-llm/term-llm/internal/sqlitedriver"
 )
 
 // Default caps, overridable via config.

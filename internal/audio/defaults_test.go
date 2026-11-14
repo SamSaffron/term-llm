@@ -3,7 +3,7 @@ package audio
 import (
 	"testing"
 
-	"github.com/samsaffron/term-llm/internal/config"
+	"github.com/term-llm/term-llm/internal/config"
 )
 
 func TestAudioDefaultsMatchConfig(t *testing.T) {

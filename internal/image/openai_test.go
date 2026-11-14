@@ -11,8 +11,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/samsaffron/term-llm/internal/config"
-	"github.com/samsaffron/term-llm/internal/openaiapi"
+	"github.com/term-llm/term-llm/internal/config"
+	"github.com/term-llm/term-llm/internal/openaiapi"
 )
 
 type openAIImageRoundTripper func(*http.Request) (*http.Response, error)

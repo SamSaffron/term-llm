@@ -6,14 +6,14 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"github.com/samsaffron/term-llm/internal/app/serve/protocol"
+	"github.com/term-llm/term-llm/internal/app/serve/protocol"
 	"io"
 	"sort"
 	"strings"
 	"time"
 	"unicode/utf8"
 
-	"github.com/samsaffron/term-llm/internal/tools"
+	"github.com/term-llm/term-llm/internal/tools"
 )
 
 func (s *Shell) appendActivityOutputLocked(start int64, data []byte) {

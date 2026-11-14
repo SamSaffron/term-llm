@@ -15,11 +15,11 @@ import (
 	"strings"
 	"time"
 
-	"github.com/samsaffron/term-llm/internal/filelock"
-	"github.com/samsaffron/term-llm/internal/passkeyauth"
-	"github.com/samsaffron/term-llm/internal/userservice"
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
+	"github.com/term-llm/term-llm/internal/filelock"
+	"github.com/term-llm/term-llm/internal/passkeyauth"
+	"github.com/term-llm/term-llm/internal/userservice"
 	"golang.org/x/term"
 )
 

@@ -11,8 +11,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/samsaffron/term-llm/internal/config"
-	"github.com/samsaffron/term-llm/internal/providerhttp"
+	"github.com/term-llm/term-llm/internal/config"
+	"github.com/term-llm/term-llm/internal/providerhttp"
 )
 
 const openrouterImageEndpoint = "https://openrouter.ai/api/v1/chat/completions"
@@ -90,7 +90,7 @@ func (p *OpenRouterProvider) doRequest(ctx context.Context, content []orMessageC
 
 	httpReq.Header.Set("Content-Type", "application/json")
 	httpReq.Header.Set("Authorization", "Bearer "+p.apiKey)
-	httpReq.Header.Set("HTTP-Referer", "https://github.com/samsaffron/term-llm")
+	httpReq.Header.Set("HTTP-Referer", "https://github.com/term-llm/term-llm")
 	httpReq.Header.Set("X-Title", "term-llm")
 
 	client := &http.Client{Timeout: 10 * time.Minute}

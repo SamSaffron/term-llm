@@ -6,11 +6,11 @@ import (
 	"io"
 	"strings"
 
-	"github.com/samsaffron/term-llm/internal/authoridentity"
-	"github.com/samsaffron/term-llm/internal/config"
-	"github.com/samsaffron/term-llm/internal/llm/core"
-	"github.com/samsaffron/term-llm/internal/tools"
-	"github.com/samsaffron/term-llm/internal/tui/chat"
+	"github.com/term-llm/term-llm/internal/authoridentity"
+	"github.com/term-llm/term-llm/internal/config"
+	"github.com/term-llm/term-llm/internal/llm/core"
+	"github.com/term-llm/term-llm/internal/tools"
+	"github.com/term-llm/term-llm/internal/tui/chat"
 )
 
 type chatInvocation struct {

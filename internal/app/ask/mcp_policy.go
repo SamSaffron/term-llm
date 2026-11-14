@@ -6,12 +6,12 @@ import (
 	"io"
 	"strings"
 
-	"github.com/samsaffron/term-llm/internal/agents"
-	appruntime "github.com/samsaffron/term-llm/internal/app/runtime"
-	"github.com/samsaffron/term-llm/internal/app/runtime/mcpstart"
-	appserve "github.com/samsaffron/term-llm/internal/app/serve"
-	"github.com/samsaffron/term-llm/internal/config"
-	"github.com/samsaffron/term-llm/internal/session"
+	"github.com/term-llm/term-llm/internal/agents"
+	appruntime "github.com/term-llm/term-llm/internal/app/runtime"
+	"github.com/term-llm/term-llm/internal/app/runtime/mcpstart"
+	appserve "github.com/term-llm/term-llm/internal/app/serve"
+	"github.com/term-llm/term-llm/internal/config"
+	"github.com/term-llm/term-llm/internal/session"
 )
 
 func findAskResumeSession(ctx context.Context, opts Options, store session.Store) (*session.Session, error) {

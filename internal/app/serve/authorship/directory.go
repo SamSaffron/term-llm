@@ -6,8 +6,8 @@ import (
 	"net/http"
 	"sync"
 
-	"github.com/samsaffron/term-llm/internal/llm/core"
-	"github.com/samsaffron/term-llm/internal/session"
+	"github.com/term-llm/term-llm/internal/llm/core"
+	"github.com/term-llm/term-llm/internal/session"
 )
 
 // Directory caches successful identity writes; reads refresh names in one batch.

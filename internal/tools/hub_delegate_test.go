@@ -12,8 +12,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/samsaffron/term-llm/internal/hub"
-	"github.com/samsaffron/term-llm/internal/modelpolicy"
+	"github.com/term-llm/term-llm/internal/hub"
+	"github.com/term-llm/term-llm/internal/modelpolicy"
 )
 
 // fakeHub fakes the Hub delegation API the node tools talk to.

@@ -3,7 +3,7 @@ package responses
 import (
 	"bytes"
 	"encoding/json"
-	"github.com/samsaffron/term-llm/internal/llm/core"
+	"github.com/term-llm/term-llm/internal/llm/core"
 	"testing"
 )
 

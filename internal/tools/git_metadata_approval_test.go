@@ -7,7 +7,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/samsaffron/term-llm/internal/session"
+	"github.com/term-llm/term-llm/internal/session"
 )
 
 func requireGitAdministrativeWriteDenied(t *testing.T, outcome ConfirmOutcome, err error) {

@@ -7,8 +7,8 @@ import (
 	"time"
 	"unicode/utf8"
 
-	servejobs "github.com/samsaffron/term-llm/internal/app/serve/jobs"
-	"github.com/samsaffron/term-llm/internal/linkeddevices"
+	servejobs "github.com/term-llm/term-llm/internal/app/serve/jobs"
+	"github.com/term-llm/term-llm/internal/linkeddevices"
 )
 
 const maxActivityOutputBytes = 64 << 10

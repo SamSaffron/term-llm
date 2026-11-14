@@ -1,10 +1,10 @@
 package tools
 
 import (
-	codemodetool "github.com/samsaffron/term-llm/internal/codemode/tool"
+	codemodetool "github.com/term-llm/term-llm/internal/codemode/tool"
 	"strings"
 
-	"github.com/samsaffron/term-llm/internal/llm/core"
+	"github.com/term-llm/term-llm/internal/llm/core"
 )
 
 // ToolDescriptor is a read-only snapshot of a built-in tool's public metadata.

@@ -8,7 +8,7 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/samsaffron/term-llm/internal/live"
+	"github.com/term-llm/term-llm/internal/live"
 )
 
 type liveProgressHarness struct {

@@ -7,8 +7,8 @@ import (
 	"reflect"
 	"testing"
 
-	"github.com/samsaffron/term-llm/internal/llm/core"
-	"github.com/samsaffron/term-llm/internal/sqliteutil"
+	"github.com/term-llm/term-llm/internal/llm/core"
+	"github.com/term-llm/term-llm/internal/sqliteutil"
 )
 
 func TestAuthorsPersistenceAndStarter(t *testing.T) {

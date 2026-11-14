@@ -5,10 +5,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	codemodetool "github.com/samsaffron/term-llm/internal/codemode/tool"
+	codemodetool "github.com/term-llm/term-llm/internal/codemode/tool"
 
-	"github.com/samsaffron/term-llm/internal/llm/core"
-	"github.com/samsaffron/term-llm/internal/skills"
+	"github.com/term-llm/term-llm/internal/llm/core"
+	"github.com/term-llm/term-llm/internal/skills"
 )
 
 // ActivateSkillToolName is the tool spec name.

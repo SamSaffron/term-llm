@@ -10,7 +10,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/samsaffron/term-llm/internal/llm/core"
+	"github.com/term-llm/term-llm/internal/llm/core"
 )
 
 type runAgentScriptCommandFunc func(context.Context, string, []string, string, *limitedBuffer, *limitedBuffer) error

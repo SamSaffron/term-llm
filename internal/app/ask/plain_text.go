@@ -7,11 +7,11 @@ import (
 	"os"
 	"strings"
 
-	runtimeguardian "github.com/samsaffron/term-llm/internal/app/runtime/guardian"
-	"github.com/samsaffron/term-llm/internal/llm/core"
-	"github.com/samsaffron/term-llm/internal/terminaltext"
-	"github.com/samsaffron/term-llm/internal/tools"
-	"github.com/samsaffron/term-llm/internal/ui"
+	runtimeguardian "github.com/term-llm/term-llm/internal/app/runtime/guardian"
+	"github.com/term-llm/term-llm/internal/llm/core"
+	"github.com/term-llm/term-llm/internal/terminaltext"
+	"github.com/term-llm/term-llm/internal/tools"
+	"github.com/term-llm/term-llm/internal/ui"
 )
 
 // StreamPlainText streams text directly without formatting

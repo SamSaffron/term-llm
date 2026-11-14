@@ -1,7 +1,7 @@
 package chat
 
 import (
-	"github.com/samsaffron/term-llm/internal/llm/core"
+	"github.com/term-llm/term-llm/internal/llm/core"
 )
 
 func filterSearchToolSpecs(specs []core.ToolSpec, searchEnabled bool) []core.ToolSpec {

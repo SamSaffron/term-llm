@@ -4,14 +4,14 @@ import (
 	"io"
 	"os"
 
-	appmemory "github.com/samsaffron/term-llm/internal/app/memory"
-	"github.com/samsaffron/term-llm/internal/app/runtime"
-	"github.com/samsaffron/term-llm/internal/app/runtime/approval"
-	"github.com/samsaffron/term-llm/internal/app/runtime/mcpstart"
-	"github.com/samsaffron/term-llm/internal/config"
-	"github.com/samsaffron/term-llm/internal/llm/debug"
-	"github.com/samsaffron/term-llm/internal/session"
-	"github.com/samsaffron/term-llm/internal/tools"
+	appmemory "github.com/term-llm/term-llm/internal/app/memory"
+	"github.com/term-llm/term-llm/internal/app/runtime"
+	"github.com/term-llm/term-llm/internal/app/runtime/approval"
+	"github.com/term-llm/term-llm/internal/app/runtime/mcpstart"
+	"github.com/term-llm/term-llm/internal/config"
+	"github.com/term-llm/term-llm/internal/llm/debug"
+	"github.com/term-llm/term-llm/internal/session"
+	"github.com/term-llm/term-llm/internal/tools"
 )
 
 // Options captures chat flag values without retaining Cobra state.

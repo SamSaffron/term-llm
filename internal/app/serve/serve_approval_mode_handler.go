@@ -6,9 +6,9 @@ import (
 	"net/http"
 	"strings"
 
-	runapproval "github.com/samsaffron/term-llm/internal/app/runtime/approval"
-	"github.com/samsaffron/term-llm/internal/app/serve/webagents"
-	"github.com/samsaffron/term-llm/internal/tools"
+	runapproval "github.com/term-llm/term-llm/internal/app/runtime/approval"
+	"github.com/term-llm/term-llm/internal/app/serve/webagents"
+	"github.com/term-llm/term-llm/internal/tools"
 )
 
 type sessionApprovalModeRequest struct {

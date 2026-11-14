@@ -5,12 +5,12 @@ import (
 	"strings"
 	"testing"
 
-	command "github.com/samsaffron/term-llm/internal/app/serve"
-	"github.com/samsaffron/term-llm/internal/config"
-	"github.com/samsaffron/term-llm/internal/llm/core"
-	"github.com/samsaffron/term-llm/internal/llm/mockprovider"
-	"github.com/samsaffron/term-llm/internal/modelpolicy"
-	runpkg "github.com/samsaffron/term-llm/internal/run"
+	command "github.com/term-llm/term-llm/internal/app/serve"
+	"github.com/term-llm/term-llm/internal/config"
+	"github.com/term-llm/term-llm/internal/llm/core"
+	"github.com/term-llm/term-llm/internal/llm/mockprovider"
+	"github.com/term-llm/term-llm/internal/modelpolicy"
+	runpkg "github.com/term-llm/term-llm/internal/run"
 )
 
 // Exercise the opaque preparation API from outside its implementation package.

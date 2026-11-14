@@ -9,10 +9,10 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/samsaffron/term-llm/internal/app/runtime/bootstrap"
-	"github.com/samsaffron/term-llm/internal/mcp"
-	"github.com/samsaffron/term-llm/internal/session"
-	"github.com/samsaffron/term-llm/internal/testutil/mcptest"
+	"github.com/term-llm/term-llm/internal/app/runtime/bootstrap"
+	"github.com/term-llm/term-llm/internal/mcp"
+	"github.com/term-llm/term-llm/internal/session"
+	"github.com/term-llm/term-llm/internal/testutil/mcptest"
 )
 
 func TestMCPPolicyChatExplicitResumeRejectsBeforeAnyPersistence(t *testing.T) {

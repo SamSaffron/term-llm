@@ -3,7 +3,7 @@ package engine
 import (
 	"encoding/json"
 	"fmt"
-	"github.com/samsaffron/term-llm/internal/codemode"
+	"github.com/term-llm/term-llm/internal/codemode"
 	"sort"
 	"strings"
 	"sync"

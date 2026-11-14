@@ -5,16 +5,16 @@ import (
 	"fmt"
 	"io"
 
-	"github.com/samsaffron/term-llm/internal/agents"
-	appruntime "github.com/samsaffron/term-llm/internal/app/runtime"
-	"github.com/samsaffron/term-llm/internal/app/runtime/bootstrap"
-	"github.com/samsaffron/term-llm/internal/app/runtime/progressive"
-	"github.com/samsaffron/term-llm/internal/config"
-	"github.com/samsaffron/term-llm/internal/llm/core"
-	"github.com/samsaffron/term-llm/internal/llm/engine"
-	"github.com/samsaffron/term-llm/internal/session"
-	"github.com/samsaffron/term-llm/internal/tools"
-	"github.com/samsaffron/term-llm/internal/ui"
+	"github.com/term-llm/term-llm/internal/agents"
+	appruntime "github.com/term-llm/term-llm/internal/app/runtime"
+	"github.com/term-llm/term-llm/internal/app/runtime/bootstrap"
+	"github.com/term-llm/term-llm/internal/app/runtime/progressive"
+	"github.com/term-llm/term-llm/internal/config"
+	"github.com/term-llm/term-llm/internal/llm/core"
+	"github.com/term-llm/term-llm/internal/llm/engine"
+	"github.com/term-llm/term-llm/internal/session"
+	"github.com/term-llm/term-llm/internal/tools"
+	"github.com/term-llm/term-llm/internal/ui"
 )
 
 type askFinalization struct {

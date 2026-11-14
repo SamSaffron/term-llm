@@ -15,8 +15,8 @@ import (
 	"time"
 
 	tea "charm.land/bubbletea/v2"
-	"github.com/samsaffron/term-llm/internal/mcp"
-	mcpoauth "github.com/samsaffron/term-llm/internal/mcp/oauth"
+	"github.com/term-llm/term-llm/internal/mcp"
+	mcpoauth "github.com/term-llm/term-llm/internal/mcp/oauth"
 	"golang.org/x/oauth2"
 )
 

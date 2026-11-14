@@ -13,11 +13,11 @@ import (
 	"strings"
 	"time"
 
-	"github.com/samsaffron/term-llm/internal/skills"
-	"github.com/samsaffron/term-llm/internal/terminalpolicy"
-	skillsTui "github.com/samsaffron/term-llm/internal/tui/skills"
-	"github.com/samsaffron/term-llm/internal/ui"
 	"github.com/spf13/cobra"
+	"github.com/term-llm/term-llm/internal/skills"
+	"github.com/term-llm/term-llm/internal/terminalpolicy"
+	skillsTui "github.com/term-llm/term-llm/internal/tui/skills"
+	"github.com/term-llm/term-llm/internal/ui"
 )
 
 var (

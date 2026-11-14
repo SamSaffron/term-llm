@@ -5,7 +5,7 @@ import (
 	"database/sql"
 	"fmt"
 
-	"github.com/samsaffron/term-llm/internal/sqlitefts"
+	"github.com/term-llm/term-llm/internal/sqlitefts"
 )
 
 // Search finds sessions containing the query text using FTS5.

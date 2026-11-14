@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/term-llm/term-llm/internal/llm"
 )
 
 func writeMentionTestFile(t *testing.T, root, name, content string) string {

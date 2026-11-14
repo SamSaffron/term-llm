@@ -7,9 +7,9 @@ import (
 	"strings"
 	"time"
 
-	appserve "github.com/samsaffron/term-llm/internal/app/serve"
-	platform "github.com/samsaffron/term-llm/internal/serve"
 	"github.com/spf13/cobra"
+	appserve "github.com/term-llm/term-llm/internal/app/serve"
+	platform "github.com/term-llm/term-llm/internal/serve"
 )
 
 var serveCmd = &cobra.Command{

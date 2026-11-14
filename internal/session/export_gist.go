@@ -5,8 +5,8 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/samsaffron/term-llm/internal/agents/gist"
-	"github.com/samsaffron/term-llm/internal/share"
+	"github.com/term-llm/term-llm/internal/agents/gist"
+	"github.com/term-llm/term-llm/internal/share"
 )
 
 // ShareFiles builds the canonical self-contained HTML and Markdown transcript

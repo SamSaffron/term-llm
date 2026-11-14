@@ -23,7 +23,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/samsaffron/term-llm/internal/userservice"
+	"github.com/term-llm/term-llm/internal/userservice"
 )
 
 const configYAML = "default_provider: debug\nproviders:\n  debug:\n    model: fast\n"

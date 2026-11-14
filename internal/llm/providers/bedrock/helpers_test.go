@@ -12,7 +12,7 @@ import (
 	"net/url"
 	"testing"
 
-	"github.com/samsaffron/term-llm/internal/llm/core"
+	"github.com/term-llm/term-llm/internal/llm/core"
 )
 
 func drainGoldenStream(t *testing.T, stream core.Stream) []core.Event {

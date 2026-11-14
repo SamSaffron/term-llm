@@ -7,7 +7,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/samsaffron/term-llm/internal/peer"
+	"github.com/term-llm/term-llm/internal/peer"
 )
 
 const maxDiagnosticDuration = 24 * time.Hour

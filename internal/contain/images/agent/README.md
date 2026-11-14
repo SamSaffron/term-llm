@@ -5,7 +5,7 @@ Fork it if you want custom image behavior.
 
 The selected Dockerfile installs `term-llm` with the official release installer:
 
-    curl -fsSL https://raw.githubusercontent.com/samsaffron/term-llm/main/install.sh | sh
+    curl -fsSL https://raw.githubusercontent.com/term-llm/term-llm/main/install.sh | sh
 
 By default it installs the latest release. To pin a specific release tag during
 build, set `TERM_LLM_VERSION` in the workspace `.env`.

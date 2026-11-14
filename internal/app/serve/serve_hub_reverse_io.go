@@ -7,8 +7,8 @@ import (
 	"io"
 	"sync"
 
-	appserver "github.com/samsaffron/term-llm/internal/app/serve/server"
-	"github.com/samsaffron/term-llm/internal/app/serve/wire"
+	appserver "github.com/term-llm/term-llm/internal/app/serve/server"
+	"github.com/term-llm/term-llm/internal/app/serve/wire"
 )
 
 const (

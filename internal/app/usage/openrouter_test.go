@@ -9,9 +9,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/samsaffron/term-llm/internal/config"
-	usagedata "github.com/samsaffron/term-llm/internal/usage"
 	"github.com/spf13/cobra"
+	"github.com/term-llm/term-llm/internal/config"
+	usagedata "github.com/term-llm/term-llm/internal/usage"
 )
 
 func openRouterTestCommand(t *testing.T) (*cobra.Command, *Options) {

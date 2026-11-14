@@ -12,8 +12,8 @@ import (
 	"strings"
 	"time"
 
-	servejobs "github.com/samsaffron/term-llm/internal/app/serve/jobs"
 	"github.com/spf13/cobra"
+	servejobs "github.com/term-llm/term-llm/internal/app/serve/jobs"
 	"gopkg.in/yaml.v3"
 )
 

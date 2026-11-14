@@ -2,11 +2,11 @@ package engine
 
 import (
 	"context"
-	"github.com/samsaffron/term-llm/internal/llm/core"
-	corestream "github.com/samsaffron/term-llm/internal/llm/core/stream"
+	"github.com/term-llm/term-llm/internal/llm/core"
+	corestream "github.com/term-llm/term-llm/internal/llm/core/stream"
 	"strings"
 
-	"github.com/samsaffron/term-llm/internal/restart"
+	"github.com/term-llm/term-llm/internal/restart"
 )
 
 // engineTurnCompletion borrows a settled provider attempt and the run-level

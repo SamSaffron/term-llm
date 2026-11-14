@@ -4,7 +4,7 @@ import (
 	"reflect"
 	"testing"
 
-	"github.com/samsaffron/term-llm/internal/openaiapi"
+	"github.com/term-llm/term-llm/internal/openaiapi"
 )
 
 func TestConfigOpenAIEndpoint(t *testing.T) {

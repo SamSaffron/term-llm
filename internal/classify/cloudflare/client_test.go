@@ -11,7 +11,7 @@ import (
 	"sync/atomic"
 	"testing"
 
-	"github.com/samsaffron/term-llm/internal/classify"
+	"github.com/term-llm/term-llm/internal/classify"
 )
 
 const pngURL = "data:image/png;base64,iVBORw0KGgo="

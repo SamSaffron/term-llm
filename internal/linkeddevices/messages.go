@@ -6,7 +6,7 @@ import (
 	"net/url"
 	"strings"
 
-	"github.com/samsaffron/term-llm/internal/peerbroker"
+	"github.com/term-llm/term-llm/internal/peerbroker"
 )
 
 // User-facing text for the linked-devices service (the rendezvous broker).

@@ -5,15 +5,15 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/samsaffron/term-llm/internal/agents"
-	appruntime "github.com/samsaffron/term-llm/internal/app/runtime"
-	runapproval "github.com/samsaffron/term-llm/internal/app/runtime/approval"
-	appserve "github.com/samsaffron/term-llm/internal/app/serve"
-	"github.com/samsaffron/term-llm/internal/config"
-	"github.com/samsaffron/term-llm/internal/llm"
-	"github.com/samsaffron/term-llm/internal/llm/core"
-	"github.com/samsaffron/term-llm/internal/session"
-	"github.com/samsaffron/term-llm/internal/tools"
+	"github.com/term-llm/term-llm/internal/agents"
+	appruntime "github.com/term-llm/term-llm/internal/app/runtime"
+	runapproval "github.com/term-llm/term-llm/internal/app/runtime/approval"
+	appserve "github.com/term-llm/term-llm/internal/app/serve"
+	"github.com/term-llm/term-llm/internal/config"
+	"github.com/term-llm/term-llm/internal/llm"
+	"github.com/term-llm/term-llm/internal/llm/core"
+	"github.com/term-llm/term-llm/internal/session"
+	"github.com/term-llm/term-llm/internal/tools"
 )
 
 type preparedAskConversation struct {

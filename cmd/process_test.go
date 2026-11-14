@@ -11,8 +11,8 @@ import (
 	"time"
 
 	"fmt"
-	"github.com/samsaffron/term-llm/internal/process"
 	"github.com/spf13/cobra"
+	"github.com/term-llm/term-llm/internal/process"
 	"reflect"
 )
 

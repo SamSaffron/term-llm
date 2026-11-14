@@ -3,7 +3,7 @@ package serve
 import (
 	"context"
 
-	"github.com/samsaffron/term-llm/internal/session"
+	"github.com/term-llm/term-llm/internal/session"
 )
 
 // Active compaction is polled independently of the sidebar catalog. In

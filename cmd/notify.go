@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"strings"
 
-	appnotify "github.com/samsaffron/term-llm/internal/app/notify"
+	appnotify "github.com/term-llm/term-llm/internal/app/notify"
 
 	"github.com/spf13/cobra"
 )

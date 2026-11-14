@@ -1,6 +1,6 @@
 package serve
 
-import apphub "github.com/samsaffron/term-llm/internal/app/serve/hub"
+import apphub "github.com/term-llm/term-llm/internal/app/serve/hub"
 
 // hubCacheScope uses only a random state identity and the effective auth mode,
 // never a token, passkey credential, cookie, or other authentication secret.

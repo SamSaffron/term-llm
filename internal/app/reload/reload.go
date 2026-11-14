@@ -10,10 +10,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/samsaffron/term-llm/internal/process"
-	"github.com/samsaffron/term-llm/internal/restart"
-	"github.com/samsaffron/term-llm/internal/runtimeoutput"
-	"github.com/samsaffron/term-llm/internal/tools"
+	"github.com/term-llm/term-llm/internal/process"
+	"github.com/term-llm/term-llm/internal/restart"
+	"github.com/term-llm/term-llm/internal/runtimeoutput"
+	"github.com/term-llm/term-llm/internal/tools"
 )
 
 // Capture the installed pathname before an updater replaces/unlinks the image.

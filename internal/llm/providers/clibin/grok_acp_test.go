@@ -4,7 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"github.com/samsaffron/term-llm/internal/llm/core"
+	"github.com/term-llm/term-llm/internal/llm/core"
 	"io"
 	"net"
 	"os"
@@ -16,7 +16,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/samsaffron/term-llm/internal/acp"
+	"github.com/term-llm/term-llm/internal/acp"
 )
 
 type observedWriteCloser struct {

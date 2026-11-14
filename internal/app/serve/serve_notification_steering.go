@@ -6,10 +6,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/samsaffron/term-llm/internal/app/serve/authorship"
-	"github.com/samsaffron/term-llm/internal/llm/core"
-	"github.com/samsaffron/term-llm/internal/llm/engine"
-	"github.com/samsaffron/term-llm/internal/session"
+	"github.com/term-llm/term-llm/internal/app/serve/authorship"
+	"github.com/term-llm/term-llm/internal/llm/core"
+	"github.com/term-llm/term-llm/internal/llm/engine"
+	"github.com/term-llm/term-llm/internal/session"
 )
 
 func (rt *serveRuntime) configurePendingSteeringPersistence(state *runtimeInterruptState, sessionID string) {

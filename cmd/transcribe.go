@@ -1,9 +1,9 @@
 package cmd
 
 import (
-	"github.com/samsaffron/term-llm/internal/app/transcribe"
-	"github.com/samsaffron/term-llm/internal/signal"
 	"github.com/spf13/cobra"
+	"github.com/term-llm/term-llm/internal/app/transcribe"
+	"github.com/term-llm/term-llm/internal/signal"
 )
 
 var transcribeOptions transcribe.Options

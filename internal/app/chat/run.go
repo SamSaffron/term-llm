@@ -6,10 +6,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/samsaffron/term-llm/internal/app/runtime"
-	"github.com/samsaffron/term-llm/internal/authoridentity"
-	"github.com/samsaffron/term-llm/internal/termhost"
-	"github.com/samsaffron/term-llm/internal/tui/chat"
+	"github.com/term-llm/term-llm/internal/app/runtime"
+	"github.com/term-llm/term-llm/internal/authoridentity"
+	"github.com/term-llm/term-llm/internal/termhost"
+	"github.com/term-llm/term-llm/internal/tui/chat"
 )
 
 func (r *chatInvocation) run(ctx context.Context, args []string) error {

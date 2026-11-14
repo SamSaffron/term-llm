@@ -14,8 +14,8 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/samsaffron/term-llm/internal/config"
-	"github.com/samsaffron/term-llm/internal/extensions"
+	"github.com/term-llm/term-llm/internal/config"
+	"github.com/term-llm/term-llm/internal/extensions"
 )
 
 // Main config supplies only directory/legacy defaults. Enablement is written

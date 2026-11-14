@@ -8,7 +8,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/samsaffron/term-llm/internal/filelock"
+	"github.com/term-llm/term-llm/internal/filelock"
 )
 
 // DefaultWALWarnBytes is the write-ahead log size above which doctor suggests a

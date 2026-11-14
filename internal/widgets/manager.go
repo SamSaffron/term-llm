@@ -17,8 +17,8 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/samsaffron/term-llm/internal/procutil"
-	"github.com/samsaffron/term-llm/internal/restart"
+	"github.com/term-llm/term-llm/internal/procutil"
+	"github.com/term-llm/term-llm/internal/restart"
 	"golang.org/x/net/http/httpguts"
 )
 

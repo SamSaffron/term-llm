@@ -3,8 +3,8 @@ package cmd
 import (
 	"fmt"
 
-	appnotify "github.com/samsaffron/term-llm/internal/app/notify"
 	"github.com/spf13/cobra"
+	appnotify "github.com/term-llm/term-llm/internal/app/notify"
 )
 
 var notifyTelegramCmd = &cobra.Command{

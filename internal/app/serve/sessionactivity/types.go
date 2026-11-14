@@ -1,6 +1,6 @@
 package sessionactivity
 
-import "github.com/samsaffron/term-llm/internal/session"
+import "github.com/term-llm/term-llm/internal/session"
 
 // WebSessionMetrics contains durable counters, not request-level pricing data.
 type WebSessionMetrics struct {

@@ -1,7 +1,7 @@
 package prompt
 
 import (
-	"github.com/samsaffron/term-llm/internal/input"
+	"github.com/term-llm/term-llm/internal/input"
 )
 
 // AskSystemPrompt returns the system prompt for ask command.

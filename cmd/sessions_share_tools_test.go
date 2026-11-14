@@ -8,11 +8,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/samsaffron/term-llm/internal/config"
-	"github.com/samsaffron/term-llm/internal/llm/core"
-	"github.com/samsaffron/term-llm/internal/session"
-	sharepkg "github.com/samsaffron/term-llm/internal/share"
 	"github.com/spf13/cobra"
+	"github.com/term-llm/term-llm/internal/config"
+	"github.com/term-llm/term-llm/internal/llm/core"
+	"github.com/term-llm/term-llm/internal/session"
+	sharepkg "github.com/term-llm/term-llm/internal/share"
 )
 
 func TestSessionsShareNoToolsIsStickyAcrossUpdates(t *testing.T) {

@@ -36,14 +36,14 @@ Open a new Terminal window to pick up the change, or run `source ~/.zprofile`
 in your current Zsh session.
 
 Prefer a terminal-only install, or using an older macOS version? [Homebrew](#homebrew),
-the [shell installer](#linuxmacos-shell-installer), and [release archives](https://github.com/samsaffron/term-llm/releases)
+the [shell installer](#linuxmacos-shell-installer), and [release archives](https://github.com/term-llm/term-llm/releases)
 remain supported on macOS.
 
 ### Supported release platforms
 
 Release archives support **Linux/macOS** on **amd64/arm64** and **Windows** on
 **amd64**. They include the browser workspace; Go and Node.js are only needed
-for source builds. You can also [download an archive and its checksums](https://github.com/samsaffron/term-llm/releases)
+for source builds. You can also [download an archive and its checksums](https://github.com/term-llm/term-llm/releases)
 instead of using an installer.
 
 ### Linux/macOS (shell installer)
@@ -55,13 +55,13 @@ checksum before installation and does not run the installed binary. See
 for the limits of this verification.
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/samsaffron/term-llm/main/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/term-llm/term-llm/main/install.sh | sh
 ```
 
 Or with options:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/samsaffron/term-llm/main/install.sh | sh -s -- --version v0.1.0 --install-dir ~/bin
+curl -fsSL https://raw.githubusercontent.com/term-llm/term-llm/main/install.sh | sh -s -- --version v0.1.0 --install-dir ~/bin
 ```
 
 ### Windows (PowerShell)
@@ -76,7 +76,7 @@ Windows PowerShell, then `COMSPEC`. Bash syntax is not automatically portable.
 Service installation and Windows ARM64 are unsupported.
 
 ```powershell
-irm https://raw.githubusercontent.com/samsaffron/term-llm/main/install.ps1 | iex
+irm https://raw.githubusercontent.com/term-llm/term-llm/main/install.ps1 | iex
 ```
 
 For a downloaded installer, choose a different destination with:
@@ -101,7 +101,7 @@ Homebrew installs the correct release binary for Apple Silicon or Intel macOS. F
 Source builds require the Go version declared in `go.mod`, Node.js 24 or newer, npm, and Make:
 
 ```bash
-git clone https://github.com/samsaffron/term-llm
+git clone https://github.com/term-llm/term-llm
 cd term-llm
 make build
 ./term-llm version

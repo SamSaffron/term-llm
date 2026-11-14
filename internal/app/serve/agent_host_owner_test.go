@@ -2,7 +2,7 @@ package serve
 
 import (
 	"context"
-	"github.com/samsaffron/term-llm/internal/app/runtime"
+	"github.com/term-llm/term-llm/internal/app/runtime"
 	"testing"
 )
 

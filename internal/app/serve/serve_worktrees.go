@@ -12,9 +12,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/samsaffron/term-llm/internal/session"
-	"github.com/samsaffron/term-llm/internal/worktree"
-	worktreerecovery "github.com/samsaffron/term-llm/internal/worktree/recovery"
+	"github.com/term-llm/term-llm/internal/session"
+	"github.com/term-llm/term-llm/internal/worktree"
+	worktreerecovery "github.com/term-llm/term-llm/internal/worktree/recovery"
 )
 
 type worktreeCreateRequest struct {

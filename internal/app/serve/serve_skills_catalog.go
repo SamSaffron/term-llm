@@ -4,9 +4,9 @@ import (
 	"errors"
 	"net/http"
 
-	"github.com/samsaffron/term-llm/internal/session"
-	"github.com/samsaffron/term-llm/internal/skills"
-	chatui "github.com/samsaffron/term-llm/internal/tui/chat"
+	"github.com/term-llm/term-llm/internal/session"
+	"github.com/term-llm/term-llm/internal/skills"
+	chatui "github.com/term-llm/term-llm/internal/tui/chat"
 )
 
 // handleDraftSkills lists skills for a new chat, which has no session until its

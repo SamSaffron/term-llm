@@ -11,11 +11,11 @@ import (
 	"strings"
 	"time"
 
-	"github.com/samsaffron/term-llm/internal/appdata"
-	"github.com/samsaffron/term-llm/internal/llm/core"
-	planpkg "github.com/samsaffron/term-llm/internal/plan"
-	"github.com/samsaffron/term-llm/internal/session/notificationdb"
-	"github.com/samsaffron/term-llm/internal/sqliteutil"
+	"github.com/term-llm/term-llm/internal/appdata"
+	"github.com/term-llm/term-llm/internal/llm/core"
+	planpkg "github.com/term-llm/term-llm/internal/plan"
+	"github.com/term-llm/term-llm/internal/session/notificationdb"
+	"github.com/term-llm/term-llm/internal/sqliteutil"
 )
 
 // ErrNotFound is returned when a lookup or update targets a row that does not

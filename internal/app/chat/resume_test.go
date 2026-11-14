@@ -5,7 +5,7 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/samsaffron/term-llm/internal/session"
+	"github.com/term-llm/term-llm/internal/session"
 )
 
 type resumeStore struct {

@@ -9,10 +9,10 @@ import (
 	"time"
 
 	tea "charm.land/bubbletea/v2"
-	"github.com/samsaffron/term-llm/internal/mcp"
-	mcpoauth "github.com/samsaffron/term-llm/internal/mcp/oauth"
-	internalauth "github.com/samsaffron/term-llm/internal/oauth"
-	"github.com/samsaffron/term-llm/internal/terminaltext"
+	"github.com/term-llm/term-llm/internal/mcp"
+	mcpoauth "github.com/term-llm/term-llm/internal/mcp/oauth"
+	internalauth "github.com/term-llm/term-llm/internal/oauth"
+	"github.com/term-llm/term-llm/internal/terminaltext"
 )
 
 type mcpOAuthResultMsg struct {

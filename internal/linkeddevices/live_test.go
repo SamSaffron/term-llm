@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/samsaffron/term-llm/internal/peer"
+	"github.com/term-llm/term-llm/internal/peer"
 )
 
 func TestLinkedLiveRouteAllowlist(t *testing.T) {

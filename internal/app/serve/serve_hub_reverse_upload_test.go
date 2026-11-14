@@ -15,7 +15,7 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
-	"github.com/samsaffron/term-llm/internal/hub"
+	"github.com/term-llm/term-llm/internal/hub"
 )
 
 // Pace real socket writes below the old20MiB/10s threshold. Crucially, a giant

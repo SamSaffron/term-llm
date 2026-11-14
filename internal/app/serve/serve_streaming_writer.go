@@ -4,7 +4,7 @@ import (
 	"net/http"
 	"time"
 
-	servehttp "github.com/samsaffron/term-llm/internal/serve/http"
+	servehttp "github.com/term-llm/term-llm/internal/serve/http"
 )
 
 const (

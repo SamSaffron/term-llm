@@ -3,7 +3,7 @@ package tools
 import (
 	"reflect"
 
-	"github.com/samsaffron/term-llm/internal/llm/core"
+	"github.com/term-llm/term-llm/internal/llm/core"
 )
 
 // ownedCodeModeNames runs under r.mu and prevents name-only authority capture.

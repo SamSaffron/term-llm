@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/samsaffron/term-llm/internal/credentials"
+	"github.com/term-llm/term-llm/internal/credentials"
 )
 
 func TestChatGPTListModelsFetchesAndCachesServiceTiers(t *testing.T) {

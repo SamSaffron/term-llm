@@ -2,7 +2,7 @@
 
 package memory
 
-import "github.com/samsaffron/term-llm/internal/filelock"
+import "github.com/term-llm/term-llm/internal/filelock"
 
 func lockRecentFile(lockPath string) (func() error, error) {
 	return filelock.Lock(lockPath)

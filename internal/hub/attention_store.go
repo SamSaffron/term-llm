@@ -11,7 +11,7 @@ import (
 	"strings"
 	"time"
 
-	_ "github.com/samsaffron/term-llm/internal/sqlitedriver"
+	_ "github.com/term-llm/term-llm/internal/sqlitedriver"
 )
 
 type AttentionCapability string

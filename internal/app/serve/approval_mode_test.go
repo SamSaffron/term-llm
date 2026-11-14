@@ -3,8 +3,8 @@ package serve
 import (
 	"testing"
 
-	runpkg "github.com/samsaffron/term-llm/internal/run"
-	"github.com/samsaffron/term-llm/internal/tools"
+	runpkg "github.com/term-llm/term-llm/internal/run"
+	"github.com/term-llm/term-llm/internal/tools"
 )
 
 func TestChildRunnerInheritsWithoutIndependentEscalation(t *testing.T) {

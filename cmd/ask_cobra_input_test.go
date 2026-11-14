@@ -4,11 +4,11 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/samsaffron/term-llm/internal/app/ask"
-	"github.com/samsaffron/term-llm/internal/config"
-	"github.com/samsaffron/term-llm/internal/llm/core"
-	"github.com/samsaffron/term-llm/internal/prompt"
 	"github.com/spf13/cobra"
+	"github.com/term-llm/term-llm/internal/app/ask"
+	"github.com/term-llm/term-llm/internal/config"
+	"github.com/term-llm/term-llm/internal/llm/core"
+	"github.com/term-llm/term-llm/internal/prompt"
 )
 
 func TestPrepareAskInputUsesCobraInputAndKeepsSmallTextInline(t *testing.T) {

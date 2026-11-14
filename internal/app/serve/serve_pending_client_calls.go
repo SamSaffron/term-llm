@@ -1,7 +1,7 @@
 package serve
 
 import (
-	"github.com/samsaffron/term-llm/internal/llm/core"
+	"github.com/term-llm/term-llm/internal/llm/core"
 )
 
 // pendingClientCallTracker records which client (passthrough) tool calls a run

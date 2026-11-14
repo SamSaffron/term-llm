@@ -1,6 +1,6 @@
 package prompt
 
-import "github.com/samsaffron/term-llm/internal/textmatch"
+import "github.com/term-llm/term-llm/internal/textmatch"
 
 // EditSpec describes a file with optional line range guard.
 type EditSpec struct {

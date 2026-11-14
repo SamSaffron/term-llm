@@ -1,6 +1,6 @@
 package tools
 
-import "github.com/samsaffron/term-llm/internal/llm/core"
+import "github.com/term-llm/term-llm/internal/llm/core"
 
 // builtinCodeModeExposure is used only by concrete builtin implementations, never
 // to classify an arbitrary registered tool by its public name. Descriptors are

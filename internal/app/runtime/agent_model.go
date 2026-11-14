@@ -1,8 +1,8 @@
 package runtime
 
 import (
-	appagent "github.com/samsaffron/term-llm/internal/app/agent"
-	"github.com/samsaffron/term-llm/internal/config"
+	appagent "github.com/term-llm/term-llm/internal/app/agent"
+	"github.com/term-llm/term-llm/internal/config"
 )
 
 // ResolveAgentModelOverride resolves an agent model override without mutating cfg.

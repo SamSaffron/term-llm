@@ -4,8 +4,8 @@ import (
 	"slices"
 	"testing"
 
-	"github.com/samsaffron/term-llm/internal/config"
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/term-llm/term-llm/internal/config"
+	"github.com/term-llm/term-llm/internal/llm"
 )
 
 func TestGetAvailableProviders_FiltersProviderAllowedModels(t *testing.T) {

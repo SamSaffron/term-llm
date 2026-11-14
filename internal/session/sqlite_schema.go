@@ -7,9 +7,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/samsaffron/term-llm/internal/runtimeoutput"
-	"github.com/samsaffron/term-llm/internal/session/notificationdb"
-	"github.com/samsaffron/term-llm/internal/sqliteutil"
+	"github.com/term-llm/term-llm/internal/runtimeoutput"
+	"github.com/term-llm/term-llm/internal/session/notificationdb"
+	"github.com/term-llm/term-llm/internal/sqliteutil"
 )
 
 func sqliteFileURI(path string) string {

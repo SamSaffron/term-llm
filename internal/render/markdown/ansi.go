@@ -17,7 +17,7 @@ import (
 	xansi "github.com/charmbracelet/x/ansi"
 	"github.com/muesli/reflow/wordwrap"
 	"github.com/muesli/reflow/wrap"
-	"github.com/samsaffron/term-llm/internal/terminaltext"
+	"github.com/term-llm/term-llm/internal/terminaltext"
 	"github.com/yuin/goldmark"
 	gast "github.com/yuin/goldmark/ast"
 	"github.com/yuin/goldmark/extension"

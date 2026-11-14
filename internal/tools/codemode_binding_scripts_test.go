@@ -8,9 +8,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/samsaffron/term-llm/internal/agents"
-	"github.com/samsaffron/term-llm/internal/llm/core"
-	"github.com/samsaffron/term-llm/internal/skills"
+	"github.com/term-llm/term-llm/internal/agents"
+	"github.com/term-llm/term-llm/internal/llm/core"
+	"github.com/term-llm/term-llm/internal/skills"
 )
 
 func writeProbeScript(t *testing.T, dir, output string) {

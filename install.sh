@@ -10,7 +10,7 @@ CHECKSUM_LIMIT=1048576        # 1 MiB
 BINARY_LIMIT=268435456        # 256 MiB
 TAR_LIMIT=536870912           # 512 MiB decompressed
 
-REPO_OWNER="samsaffron"
+REPO_OWNER="term-llm"
 REPO_NAME="term-llm"
 BINARY_NAME="term-llm"
 DEFAULT_INSTALL_DIR=${TERM_LLM_INSTALL_DIR:-$HOME/.local/bin}

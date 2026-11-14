@@ -3,10 +3,10 @@ package serve
 import (
 	"io"
 
-	appmemory "github.com/samsaffron/term-llm/internal/app/memory"
-	"github.com/samsaffron/term-llm/internal/app/runtime"
-	runapproval "github.com/samsaffron/term-llm/internal/app/runtime/approval"
-	"github.com/samsaffron/term-llm/internal/config"
+	appmemory "github.com/term-llm/term-llm/internal/app/memory"
+	"github.com/term-llm/term-llm/internal/app/runtime"
+	runapproval "github.com/term-llm/term-llm/internal/app/runtime/approval"
+	"github.com/term-llm/term-llm/internal/config"
 )
 
 // FlagState captures every serve flag whose explicitness affects startup.

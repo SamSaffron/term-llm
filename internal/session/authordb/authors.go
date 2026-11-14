@@ -8,7 +8,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/samsaffron/term-llm/internal/sqliteutil"
+	"github.com/term-llm/term-llm/internal/sqliteutil"
 )
 
 // Author is display-only metadata for a human sender, never provider input.

@@ -4,10 +4,10 @@ import (
 	"context"
 	"time"
 
-	serveshell "github.com/samsaffron/term-llm/internal/app/serve/shell"
-	"github.com/samsaffron/term-llm/internal/llm/core"
-	"github.com/samsaffron/term-llm/internal/llm/engine"
-	"github.com/samsaffron/term-llm/internal/tools"
+	serveshell "github.com/term-llm/term-llm/internal/app/serve/shell"
+	"github.com/term-llm/term-llm/internal/llm/core"
+	"github.com/term-llm/term-llm/internal/llm/engine"
+	"github.com/term-llm/term-llm/internal/tools"
 )
 
 // The shared shell manager, PTY handling, and collaborative controller live in

@@ -9,9 +9,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/samsaffron/term-llm/internal/llm/core"
-	"github.com/samsaffron/term-llm/internal/session"
-	transcriptstore "github.com/samsaffron/term-llm/internal/session/transcript"
+	"github.com/term-llm/term-llm/internal/llm/core"
+	"github.com/term-llm/term-llm/internal/session"
+	transcriptstore "github.com/term-llm/term-llm/internal/session/transcript"
 )
 
 func (r *responseRun) appendEvent(event string, payload map[string]any) error {

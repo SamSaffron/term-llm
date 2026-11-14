@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/samsaffron/term-llm/internal/config"
+	"github.com/term-llm/term-llm/internal/config"
 )
 
 func TestChatRequiresApprovalResolverAfterConfigSessionAndSettings(t *testing.T) {

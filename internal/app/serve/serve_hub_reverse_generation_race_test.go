@@ -13,7 +13,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/samsaffron/term-llm/internal/hub"
+	"github.com/term-llm/term-llm/internal/hub"
 )
 
 func (p *generationSecurityPeer) reconnect(t *testing.T, token string) *generationSecurityPeer {

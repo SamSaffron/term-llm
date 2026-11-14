@@ -5,7 +5,7 @@ import (
 	"database/sql"
 	"errors"
 
-	"github.com/samsaffron/term-llm/internal/session/notificationdb"
+	"github.com/term-llm/term-llm/internal/session/notificationdb"
 )
 
 // SupersedeSessionNotificationTurn silences prior destinations only after a

@@ -12,9 +12,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/samsaffron/term-llm/internal/llm/providers/clibin"
-	"github.com/samsaffron/term-llm/internal/llm/providerusage"
 	"github.com/spf13/pflag"
+	"github.com/term-llm/term-llm/internal/llm/providers/clibin"
+	"github.com/term-llm/term-llm/internal/llm/providerusage"
 )
 
 const agyBinUsageMinimumVersion = "1.1.11"

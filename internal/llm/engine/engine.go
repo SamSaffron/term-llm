@@ -6,15 +6,15 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"github.com/samsaffron/term-llm/internal/llm/core"
-	corestream "github.com/samsaffron/term-llm/internal/llm/core/stream"
+	"github.com/term-llm/term-llm/internal/llm/core"
+	corestream "github.com/term-llm/term-llm/internal/llm/core/stream"
 	"sort"
 	"sync"
 	"sync/atomic"
 	"time"
 
-	"github.com/samsaffron/term-llm/internal/restart"
-	"github.com/samsaffron/term-llm/internal/runtimeoutput"
+	"github.com/term-llm/term-llm/internal/restart"
+	"github.com/term-llm/term-llm/internal/runtimeoutput"
 )
 
 const (

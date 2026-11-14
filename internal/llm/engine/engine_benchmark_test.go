@@ -3,8 +3,8 @@ package engine
 import (
 	"context"
 	"encoding/json"
-	"github.com/samsaffron/term-llm/internal/llm/core"
-	corestream "github.com/samsaffron/term-llm/internal/llm/core/stream"
+	"github.com/term-llm/term-llm/internal/llm/core"
+	corestream "github.com/term-llm/term-llm/internal/llm/core/stream"
 	"io"
 	"testing"
 )

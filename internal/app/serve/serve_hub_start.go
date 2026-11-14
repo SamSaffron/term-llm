@@ -14,16 +14,16 @@ import (
 	"strings"
 	"time"
 
-	"github.com/samsaffron/term-llm/internal/app/reload"
-	apphub "github.com/samsaffron/term-llm/internal/app/serve/hub"
-	appserver "github.com/samsaffron/term-llm/internal/app/serve/server"
-	"github.com/samsaffron/term-llm/internal/filelock"
-	"github.com/samsaffron/term-llm/internal/fileprivacy"
-	"github.com/samsaffron/term-llm/internal/hub"
-	"github.com/samsaffron/term-llm/internal/passkeyauth"
-	"github.com/samsaffron/term-llm/internal/restart"
-	"github.com/samsaffron/term-llm/internal/signal"
-	"github.com/samsaffron/term-llm/internal/tools"
+	"github.com/term-llm/term-llm/internal/app/reload"
+	apphub "github.com/term-llm/term-llm/internal/app/serve/hub"
+	appserver "github.com/term-llm/term-llm/internal/app/serve/server"
+	"github.com/term-llm/term-llm/internal/filelock"
+	"github.com/term-llm/term-llm/internal/fileprivacy"
+	"github.com/term-llm/term-llm/internal/hub"
+	"github.com/term-llm/term-llm/internal/passkeyauth"
+	"github.com/term-llm/term-llm/internal/restart"
+	"github.com/term-llm/term-llm/internal/signal"
+	"github.com/term-llm/term-llm/internal/tools"
 )
 
 func validateHubBind(host string, port int, requireAuth bool) error {

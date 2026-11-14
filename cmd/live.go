@@ -10,9 +10,9 @@ import (
 	"text/tabwriter"
 	"time"
 
-	"github.com/samsaffron/term-llm/internal/config"
-	liveclassify "github.com/samsaffron/term-llm/internal/live/classify"
 	"github.com/spf13/cobra"
+	"github.com/term-llm/term-llm/internal/config"
+	liveclassify "github.com/term-llm/term-llm/internal/live/classify"
 )
 
 var liveDecisionsSince string

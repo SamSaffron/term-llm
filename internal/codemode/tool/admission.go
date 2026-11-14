@@ -3,10 +3,10 @@ package tool
 import (
 	"errors"
 	"fmt"
-	"github.com/samsaffron/term-llm/internal/codemode"
-	"github.com/samsaffron/term-llm/internal/config"
-	"github.com/samsaffron/term-llm/internal/llm/engine"
-	"github.com/samsaffron/term-llm/internal/skills"
+	"github.com/term-llm/term-llm/internal/codemode"
+	"github.com/term-llm/term-llm/internal/config"
+	"github.com/term-llm/term-llm/internal/llm/engine"
+	"github.com/term-llm/term-llm/internal/skills"
 )
 
 // ErrUnavailable reports that the engine has no permitted spawn_script (or

@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/samsaffron/term-llm/internal/complexity"
+	"github.com/term-llm/term-llm/internal/complexity"
 )
 
 func TestCheckComplexityWarnsOnlyAboveThirty(t *testing.T) {

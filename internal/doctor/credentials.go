@@ -6,9 +6,9 @@ import (
 	"os"
 	"time"
 
-	"github.com/samsaffron/term-llm/internal/config"
-	"github.com/samsaffron/term-llm/internal/credentials"
-	"github.com/samsaffron/term-llm/internal/fileprivacy"
+	"github.com/term-llm/term-llm/internal/config"
+	"github.com/term-llm/term-llm/internal/credentials"
+	"github.com/term-llm/term-llm/internal/fileprivacy"
 )
 
 // CredentialsCheck inspects stored OAuth credentials without contacting any

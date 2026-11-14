@@ -9,13 +9,13 @@ import (
 	"sync"
 	"time"
 
-	progressive "github.com/samsaffron/term-llm/internal/app/runtime/progressive"
-	"github.com/samsaffron/term-llm/internal/llm/core"
-	"github.com/samsaffron/term-llm/internal/llm/engine"
-	"github.com/samsaffron/term-llm/internal/prompt"
-	"github.com/samsaffron/term-llm/internal/runtimeoutput"
-	"github.com/samsaffron/term-llm/internal/session"
-	toolpkg "github.com/samsaffron/term-llm/internal/tools"
+	progressive "github.com/term-llm/term-llm/internal/app/runtime/progressive"
+	"github.com/term-llm/term-llm/internal/llm/core"
+	"github.com/term-llm/term-llm/internal/llm/engine"
+	"github.com/term-llm/term-llm/internal/prompt"
+	"github.com/term-llm/term-llm/internal/runtimeoutput"
+	"github.com/term-llm/term-llm/internal/session"
+	toolpkg "github.com/term-llm/term-llm/internal/tools"
 )
 
 const (

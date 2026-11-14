@@ -3,7 +3,7 @@ package chat
 import (
 	"encoding/json"
 
-	"github.com/samsaffron/term-llm/internal/ui"
+	"github.com/term-llm/term-llm/internal/ui"
 )
 
 // RenderEventType identifies the type of render event

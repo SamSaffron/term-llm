@@ -7,14 +7,14 @@ import (
 	"sync"
 	"time"
 
-	"github.com/samsaffron/term-llm/internal/agents"
-	appmemory "github.com/samsaffron/term-llm/internal/app/memory"
-	"github.com/samsaffron/term-llm/internal/app/runtime"
-	runapproval "github.com/samsaffron/term-llm/internal/app/runtime/approval"
-	"github.com/samsaffron/term-llm/internal/config"
-	runpkg "github.com/samsaffron/term-llm/internal/run"
-	platform "github.com/samsaffron/term-llm/internal/serve"
-	"github.com/samsaffron/term-llm/internal/session"
+	"github.com/term-llm/term-llm/internal/agents"
+	appmemory "github.com/term-llm/term-llm/internal/app/memory"
+	"github.com/term-llm/term-llm/internal/app/runtime"
+	runapproval "github.com/term-llm/term-llm/internal/app/runtime/approval"
+	"github.com/term-llm/term-llm/internal/config"
+	runpkg "github.com/term-llm/term-llm/internal/run"
+	platform "github.com/term-llm/term-llm/internal/serve"
+	"github.com/term-llm/term-llm/internal/session"
 )
 
 type servePlatformFactory func(string, *config.Config) (platform.Platform, error)

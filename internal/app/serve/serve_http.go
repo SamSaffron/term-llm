@@ -10,8 +10,8 @@ import (
 	"sync"
 	"time"
 
-	appserver "github.com/samsaffron/term-llm/internal/app/serve/server"
-	"github.com/samsaffron/term-llm/internal/usage"
+	appserver "github.com/term-llm/term-llm/internal/app/serve/server"
+	"github.com/term-llm/term-llm/internal/usage"
 )
 
 func (s *serveServer) Start() (startErr error) {

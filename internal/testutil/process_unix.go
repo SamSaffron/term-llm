@@ -2,7 +2,7 @@
 
 package testutil
 
-import "github.com/samsaffron/term-llm/internal/testutil/processinfo"
+import "github.com/term-llm/term-llm/internal/testutil/processinfo"
 
 // ProcessHasExited reports whether pid no longer has executable code.
 func ProcessHasExited(pid int) bool { return processinfo.ProcessHasExited(pid) }

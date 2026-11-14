@@ -17,7 +17,10 @@ func setReleaseBaseURL(t *testing.T, url string) {
 func TestFetchLatestRelease(t *testing.T) {
 	t.Run("parses tag from 302 redirect", func(t *testing.T) {
 		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			w.Header().Set("Location", "http://"+r.Host+"/samsaffron/term-llm/releases/tag/v1.5.0")
+			if r.URL.Path != "/term-llm/term-llm/releases/latest" {
+				t.Errorf("release request path = %q, want organization repository", r.URL.Path)
+			}
+			w.Header().Set("Location", "http://"+r.Host+"/term-llm/term-llm/releases/tag/v1.5.0")
 			w.WriteHeader(http.StatusFound)
 		}))
 		defer srv.Close()
@@ -34,7 +37,7 @@ func TestFetchLatestRelease(t *testing.T) {
 
 	t.Run("parses tag from 301 redirect", func(t *testing.T) {
 		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			w.Header().Set("Location", "http://"+r.Host+"/samsaffron/term-llm/releases/tag/v2.0.1")
+			w.Header().Set("Location", "http://"+r.Host+"/term-llm/term-llm/releases/tag/v2.0.1")
 			w.WriteHeader(http.StatusMovedPermanently)
 		}))
 		defer srv.Close()
@@ -51,7 +54,7 @@ func TestFetchLatestRelease(t *testing.T) {
 
 	t.Run("parses tag from relative Location", func(t *testing.T) {
 		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			w.Header().Set("Location", "/samsaffron/term-llm/releases/tag/v3.0.0")
+			w.Header().Set("Location", "/term-llm/term-llm/releases/tag/v3.0.0")
 			w.WriteHeader(http.StatusFound)
 		}))
 		defer srv.Close()

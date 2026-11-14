@@ -5,8 +5,8 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/x/ansi"
-	"github.com/samsaffron/term-llm/internal/ui"
-	"github.com/samsaffron/term-llm/internal/ui/ansisafe"
+	"github.com/term-llm/term-llm/internal/ui"
+	"github.com/term-llm/term-llm/internal/ui/ansisafe"
 )
 
 // ContentPos is a position within the full rendered content.

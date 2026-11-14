@@ -19,13 +19,13 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
-	"github.com/samsaffron/term-llm/internal/app/serve/liveprogress"
-	"github.com/samsaffron/term-llm/internal/config"
-	"github.com/samsaffron/term-llm/internal/linkeddevices"
-	"github.com/samsaffron/term-llm/internal/live"
-	"github.com/samsaffron/term-llm/internal/llm/core"
-	"github.com/samsaffron/term-llm/internal/restart"
-	"github.com/samsaffron/term-llm/internal/session"
+	"github.com/term-llm/term-llm/internal/app/serve/liveprogress"
+	"github.com/term-llm/term-llm/internal/config"
+	"github.com/term-llm/term-llm/internal/linkeddevices"
+	"github.com/term-llm/term-llm/internal/live"
+	"github.com/term-llm/term-llm/internal/llm/core"
+	"github.com/term-llm/term-llm/internal/restart"
+	"github.com/term-llm/term-llm/internal/session"
 )
 
 const (

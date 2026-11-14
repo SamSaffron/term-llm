@@ -10,9 +10,9 @@ import (
 	"strconv"
 	"strings"
 
-	appruntime "github.com/samsaffron/term-llm/internal/app/runtime"
-	servejobs "github.com/samsaffron/term-llm/internal/app/serve/jobs"
-	"github.com/samsaffron/term-llm/internal/jobs"
+	appruntime "github.com/term-llm/term-llm/internal/app/runtime"
+	servejobs "github.com/term-llm/term-llm/internal/app/serve/jobs"
+	"github.com/term-llm/term-llm/internal/jobs"
 	_ "modernc.org/sqlite"
 )
 

@@ -1,6 +1,6 @@
 package memory
 
-import "github.com/samsaffron/term-llm/internal/llm/core"
+import "github.com/term-llm/term-llm/internal/llm/core"
 
 // Mining tools belong to the dedicated collector/budget scope, not script cells.
 func (*memorySearchFragmentsTool) CodeModeExposure() core.CodeModeExposure {

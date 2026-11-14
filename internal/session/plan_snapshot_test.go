@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	planpkg "github.com/samsaffron/term-llm/internal/plan"
+	planpkg "github.com/term-llm/term-llm/internal/plan"
 )
 
 func TestSQLitePlanSnapshotLifecycle(t *testing.T) {

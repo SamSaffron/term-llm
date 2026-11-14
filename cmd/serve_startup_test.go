@@ -8,8 +8,8 @@ import (
 	"testing"
 	"time"
 
-	appserve "github.com/samsaffron/term-llm/internal/app/serve"
 	"github.com/spf13/cobra"
+	appserve "github.com/term-llm/term-llm/internal/app/serve"
 )
 
 func TestServeFlagBindingIsolated(t *testing.T) {

@@ -6,12 +6,12 @@ import (
 	"io"
 	"strings"
 
-	"github.com/samsaffron/term-llm/internal/app/runtime"
-	appserve "github.com/samsaffron/term-llm/internal/app/serve"
-	"github.com/samsaffron/term-llm/internal/config"
-	"github.com/samsaffron/term-llm/internal/session"
-	"github.com/samsaffron/term-llm/internal/tools"
-	"github.com/samsaffron/term-llm/internal/tui/chat"
+	"github.com/term-llm/term-llm/internal/app/runtime"
+	appserve "github.com/term-llm/term-llm/internal/app/serve"
+	"github.com/term-llm/term-llm/internal/config"
+	"github.com/term-llm/term-llm/internal/session"
+	"github.com/term-llm/term-llm/internal/tools"
+	"github.com/term-llm/term-llm/internal/tui/chat"
 )
 
 func applyChatSearchDefault(settings *appserve.SessionSettings, noSearch bool, sess *session.Session, agentActive bool) {

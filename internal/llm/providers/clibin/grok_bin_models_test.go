@@ -2,7 +2,7 @@ package clibin
 
 import (
 	"context"
-	"github.com/samsaffron/term-llm/internal/llm/core"
+	"github.com/term-llm/term-llm/internal/llm/core"
 	"os"
 	"path/filepath"
 	"testing"

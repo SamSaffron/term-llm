@@ -11,9 +11,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/samsaffron/term-llm/internal/app/serve/wire"
-	"github.com/samsaffron/term-llm/internal/filelock"
-	"github.com/samsaffron/term-llm/internal/session"
+	"github.com/term-llm/term-llm/internal/app/serve/wire"
+	"github.com/term-llm/term-llm/internal/filelock"
+	"github.com/term-llm/term-llm/internal/session"
 	_ "modernc.org/sqlite"
 )
 

@@ -1,6 +1,6 @@
 package reasoning
 
-import "github.com/samsaffron/term-llm/internal/config"
+import "github.com/term-llm/term-llm/internal/config"
 
 // InteractiveSourceAllows gates transport independently of the browser display preference.
 func InteractiveSourceAllows(kind string, cfg config.ReasoningConfig) bool {

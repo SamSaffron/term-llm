@@ -8,8 +8,8 @@ import (
 	"sort"
 	"time"
 
-	"github.com/samsaffron/term-llm/internal/runtimeoutput"
-	"github.com/samsaffron/term-llm/internal/ui"
+	"github.com/term-llm/term-llm/internal/runtimeoutput"
+	"github.com/term-llm/term-llm/internal/ui"
 )
 
 const (

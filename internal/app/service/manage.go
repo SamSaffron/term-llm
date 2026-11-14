@@ -8,8 +8,8 @@ import (
 	"runtime"
 	"strings"
 
-	"github.com/samsaffron/term-llm/internal/userservice"
 	"github.com/spf13/cobra"
+	"github.com/term-llm/term-llm/internal/userservice"
 )
 
 func (a App) manageUserService(cmd *cobra.Command, action string, args []string) (result error) {

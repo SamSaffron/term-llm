@@ -6,12 +6,12 @@ import (
 	"testing"
 	"time"
 
-	appnotify "github.com/samsaffron/term-llm/internal/app/notify"
-	"github.com/samsaffron/term-llm/internal/llm/core"
-	"github.com/samsaffron/term-llm/internal/llm/engine"
-	"github.com/samsaffron/term-llm/internal/llm/mockprovider"
-	"github.com/samsaffron/term-llm/internal/session"
-	"github.com/samsaffron/term-llm/internal/tools"
+	appnotify "github.com/term-llm/term-llm/internal/app/notify"
+	"github.com/term-llm/term-llm/internal/llm/core"
+	"github.com/term-llm/term-llm/internal/llm/engine"
+	"github.com/term-llm/term-llm/internal/llm/mockprovider"
+	"github.com/term-llm/term-llm/internal/session"
+	"github.com/term-llm/term-llm/internal/tools"
 )
 
 func TestNotificationHostWakeFinishesOnlyExplicitAwaitedTurn(t *testing.T) {

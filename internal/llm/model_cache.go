@@ -4,9 +4,9 @@ import (
 	"os"
 	"sync/atomic"
 
-	"github.com/samsaffron/term-llm/internal/cache"
-	"github.com/samsaffron/term-llm/internal/llm/core"
-	"github.com/samsaffron/term-llm/internal/llm/providers/opencompat"
+	"github.com/term-llm/term-llm/internal/cache"
+	"github.com/term-llm/term-llm/internal/llm/core"
+	"github.com/term-llm/term-llm/internal/llm/providers/opencompat"
 )
 
 func getCachedModelInfos(apiKey, envName, cacheKey string, refreshInFlight *atomic.Bool, refresh func(string), fetch func(string) []core.ModelInfo) []core.ModelInfo {

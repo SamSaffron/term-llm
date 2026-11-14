@@ -16,9 +16,9 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
-	"github.com/samsaffron/term-llm/internal/llm/core"
-	"github.com/samsaffron/term-llm/internal/llm/debug"
-	"github.com/samsaffron/term-llm/internal/llm/providers/responses"
+	"github.com/term-llm/term-llm/internal/llm/core"
+	"github.com/term-llm/term-llm/internal/llm/debug"
+	"github.com/term-llm/term-llm/internal/llm/providers/responses"
 )
 
 func TestBuildResponsesInput_FilePolicyFallsBackToTextWhenNativeDisabled(t *testing.T) {

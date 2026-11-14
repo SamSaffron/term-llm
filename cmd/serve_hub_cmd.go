@@ -1,9 +1,9 @@
 package cmd
 
 import (
-	appserve "github.com/samsaffron/term-llm/internal/app/serve"
-	apphub "github.com/samsaffron/term-llm/internal/app/serve/hub"
 	"github.com/spf13/cobra"
+	appserve "github.com/term-llm/term-llm/internal/app/serve"
+	apphub "github.com/term-llm/term-llm/internal/app/serve/hub"
 )
 
 var serveHubFlags apphub.Options

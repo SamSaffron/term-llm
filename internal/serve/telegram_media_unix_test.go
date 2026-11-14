@@ -9,8 +9,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/samsaffron/term-llm/internal/llm/core"
-	"github.com/samsaffron/term-llm/internal/testutil/mediafixture"
+	"github.com/term-llm/term-llm/internal/llm/core"
+	"github.com/term-llm/term-llm/internal/testutil/mediafixture"
 )
 
 func assertTelegramRejectsFIFO(t *testing.T, fifo string, p *telegramPresentation, media core.MediaArtifact) {

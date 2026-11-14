@@ -5,8 +5,8 @@ import (
 	"net/http"
 	"net/url"
 
-	apphub "github.com/samsaffron/term-llm/internal/app/serve/hub"
-	"github.com/samsaffron/term-llm/internal/serveui"
+	apphub "github.com/term-llm/term-llm/internal/app/serve/hub"
+	"github.com/term-llm/term-llm/internal/serveui"
 )
 
 type hubPageConfig struct {

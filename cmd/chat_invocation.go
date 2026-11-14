@@ -5,13 +5,13 @@ import (
 	"os"
 
 	tea "charm.land/bubbletea/v2"
-	appchat "github.com/samsaffron/term-llm/internal/app/chat"
-	"github.com/samsaffron/term-llm/internal/config"
-	"github.com/samsaffron/term-llm/internal/process"
-	"github.com/samsaffron/term-llm/internal/session"
-	"github.com/samsaffron/term-llm/internal/terminalpolicy"
-	"github.com/samsaffron/term-llm/internal/tools"
 	"github.com/spf13/cobra"
+	appchat "github.com/term-llm/term-llm/internal/app/chat"
+	"github.com/term-llm/term-llm/internal/config"
+	"github.com/term-llm/term-llm/internal/process"
+	"github.com/term-llm/term-llm/internal/session"
+	"github.com/term-llm/term-llm/internal/terminalpolicy"
+	"github.com/term-llm/term-llm/internal/tools"
 	"golang.org/x/term"
 )
 

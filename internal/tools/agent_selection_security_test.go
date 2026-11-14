@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/samsaffron/term-llm/internal/modelpolicy"
+	"github.com/term-llm/term-llm/internal/modelpolicy"
 )
 
 type rejectingAgentJobTransport struct{ calls int }

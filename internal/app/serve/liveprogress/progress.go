@@ -9,7 +9,7 @@ import (
 	"unicode"
 	"unicode/utf8"
 
-	"github.com/samsaffron/term-llm/internal/live"
+	"github.com/term-llm/term-llm/internal/live"
 )
 
 // Live progress turns a delegated run's event stream into two kinds of note for

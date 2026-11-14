@@ -6,7 +6,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	internalmcp "github.com/samsaffron/term-llm/internal/mcp"
+	internalmcp "github.com/term-llm/term-llm/internal/mcp"
 )
 
 func TestMCPPolicyBrowseTestsUseInstalledLocalName(t *testing.T) {

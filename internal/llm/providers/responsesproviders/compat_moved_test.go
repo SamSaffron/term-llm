@@ -13,12 +13,12 @@ import (
 	"testing"
 	"time"
 
-	"github.com/samsaffron/term-llm/internal/credentials"
-	. "github.com/samsaffron/term-llm/internal/llm"
-	"github.com/samsaffron/term-llm/internal/llm/core"
-	"github.com/samsaffron/term-llm/internal/llm/engine"
-	"github.com/samsaffron/term-llm/internal/llm/providers/responses"
-	rp "github.com/samsaffron/term-llm/internal/llm/providers/responsesproviders"
+	"github.com/term-llm/term-llm/internal/credentials"
+	. "github.com/term-llm/term-llm/internal/llm"
+	"github.com/term-llm/term-llm/internal/llm/core"
+	"github.com/term-llm/term-llm/internal/llm/engine"
+	"github.com/term-llm/term-llm/internal/llm/providers/responses"
+	rp "github.com/term-llm/term-llm/internal/llm/providers/responsesproviders"
 )
 
 const testWebSearchCallRaw = `{"type":"web_search_call","id":"ws_1","status":"completed","action":{"type":"search","query":"example"}}`

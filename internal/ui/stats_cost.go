@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/samsaffron/term-llm/internal/usage"
+	"github.com/term-llm/term-llm/internal/usage"
 )
 
 // SessionStatsCostEstimate is a per-request cost roll-up. A partial estimate is

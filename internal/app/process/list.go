@@ -11,7 +11,7 @@ import (
 	"strings"
 	"text/tabwriter"
 
-	"github.com/samsaffron/term-llm/internal/process"
+	"github.com/term-llm/term-llm/internal/process"
 )
 
 // ListFunc returns the validated local process records.

@@ -3,7 +3,7 @@ package opencompat
 import (
 	"context"
 
-	"github.com/samsaffron/term-llm/internal/config"
+	"github.com/term-llm/term-llm/internal/config"
 )
 
 const sambaNovaBaseURL = "https://api.sambanova.ai/v1"

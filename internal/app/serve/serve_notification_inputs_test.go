@@ -6,10 +6,10 @@ import (
 	"path/filepath"
 	"testing"
 
-	appruntime "github.com/samsaffron/term-llm/internal/app/runtime"
-	"github.com/samsaffron/term-llm/internal/config"
-	"github.com/samsaffron/term-llm/internal/llm/core"
-	"github.com/samsaffron/term-llm/internal/session"
+	appruntime "github.com/term-llm/term-llm/internal/app/runtime"
+	"github.com/term-llm/term-llm/internal/config"
+	"github.com/term-llm/term-llm/internal/llm/core"
+	"github.com/term-llm/term-llm/internal/session"
 )
 
 func TestServeTelegramNotificationUsesCapturedSessionStore(t *testing.T) {

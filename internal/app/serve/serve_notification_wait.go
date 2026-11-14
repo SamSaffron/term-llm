@@ -4,8 +4,8 @@ import (
 	"context"
 	"time"
 
-	"github.com/samsaffron/term-llm/internal/session"
-	"github.com/samsaffron/term-llm/internal/tools/agentwait"
+	"github.com/term-llm/term-llm/internal/session"
+	"github.com/term-llm/term-llm/internal/tools/agentwait"
 )
 
 func withNotificationWaitObserver(ctx context.Context, run *responseRun) context.Context {

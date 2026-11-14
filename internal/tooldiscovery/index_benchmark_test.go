@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"testing"
 
-	"github.com/samsaffron/term-llm/internal/mcp"
+	"github.com/term-llm/term-llm/internal/mcp"
 )
 
 func BenchmarkIndexBuild10000(b *testing.B) {

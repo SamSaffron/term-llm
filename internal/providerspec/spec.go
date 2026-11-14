@@ -293,7 +293,7 @@ var specs = []Spec{
 	},
 	{
 		Name: "openrouter", Type: TypeOpenRouter, ModelListing: ModelListingAPIKey, Wizard: WizardSpec{Order: 1, Label: "OpenRouter - free models (API key required)", Hint: "set OPENROUTER_API_KEY"}, ConfigDefault: true, ShowInConfig: true, ResetTemplate: true,
-		Defaults:    []DefaultField{{"model", "openrouter/free"}, {"fast_model", "openrouter/free"}, {"app_url", "https://github.com/samsaffron/term-llm"}, {"app_title", "term-llm"}},
+		Defaults:    []DefaultField{{"model", "openrouter/free"}, {"fast_model", "openrouter/free"}, {"app_url", "https://github.com/term-llm/term-llm"}, {"app_title", "term-llm"}},
 		Description: "OpenRouter API (access to many providers)",
 		Credential:  CredentialAPIKey, APIKeyEnv: "OPENROUTER_API_KEY",
 	},

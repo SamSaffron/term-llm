@@ -6,10 +6,10 @@ import (
 	"os"
 	"strings"
 
-	"github.com/samsaffron/term-llm/internal/config"
-	rp "github.com/samsaffron/term-llm/internal/llm/providers/responsesproviders"
-	"github.com/samsaffron/term-llm/internal/llm/providers/transcription"
-	"github.com/samsaffron/term-llm/internal/openaiapi"
+	"github.com/term-llm/term-llm/internal/config"
+	rp "github.com/term-llm/term-llm/internal/llm/providers/responsesproviders"
+	"github.com/term-llm/term-llm/internal/llm/providers/transcription"
+	"github.com/term-llm/term-llm/internal/openaiapi"
 )
 
 func firstNonEmptyString(values ...string) string {

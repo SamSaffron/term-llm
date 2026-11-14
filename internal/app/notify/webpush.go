@@ -12,9 +12,9 @@ import (
 	"time"
 
 	webpush "github.com/SherClockHolmes/webpush-go"
-	"github.com/samsaffron/term-llm/internal/config"
-	"github.com/samsaffron/term-llm/internal/notification"
-	"github.com/samsaffron/term-llm/internal/session"
+	"github.com/term-llm/term-llm/internal/config"
+	"github.com/term-llm/term-llm/internal/notification"
+	"github.com/term-llm/term-llm/internal/session"
 )
 
 // WebPushConfigured reports whether both VAPID keys are configured, without
@@ -68,7 +68,7 @@ func WebPushKeyID(publicKey string) string {
 func NormalizeWebPushSubject(raw string) string {
 	subject := strings.TrimSpace(raw)
 	if subject == "" {
-		return "https://github.com/samsaffron/term-llm"
+		return "https://github.com/term-llm/term-llm"
 	}
 	lower := strings.ToLower(subject)
 	if strings.HasPrefix(lower, "mailto:") {

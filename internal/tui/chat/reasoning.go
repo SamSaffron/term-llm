@@ -4,12 +4,12 @@ import (
 	"strings"
 	"time"
 
-	"github.com/samsaffron/term-llm/internal/config"
-	"github.com/samsaffron/term-llm/internal/llm/core"
-	internalreasoning "github.com/samsaffron/term-llm/internal/reasoning"
-	renderchat "github.com/samsaffron/term-llm/internal/render/chat"
-	"github.com/samsaffron/term-llm/internal/session"
-	"github.com/samsaffron/term-llm/internal/ui"
+	"github.com/term-llm/term-llm/internal/config"
+	"github.com/term-llm/term-llm/internal/llm/core"
+	internalreasoning "github.com/term-llm/term-llm/internal/reasoning"
+	renderchat "github.com/term-llm/term-llm/internal/render/chat"
+	"github.com/term-llm/term-llm/internal/session"
+	"github.com/term-llm/term-llm/internal/ui"
 )
 
 func (m *Model) effectiveReasoningConfig() config.ReasoningConfig {

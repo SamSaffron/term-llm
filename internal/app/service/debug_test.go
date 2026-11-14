@@ -9,8 +9,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/samsaffron/term-llm/internal/userservice"
 	"github.com/spf13/cobra"
+	"github.com/term-llm/term-llm/internal/userservice"
 )
 
 func TestServiceDebugFailure(t *testing.T) {

@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/samsaffron/term-llm/internal/testutil"
+	"github.com/term-llm/term-llm/internal/testutil"
 )
 
 func testProgramJob(t *testing.T, cfg ProgramConfig) Job {

@@ -12,9 +12,9 @@ import (
 	"time"
 
 	"github.com/bmatcuk/doublestar/v4"
-	"github.com/samsaffron/term-llm/internal/filetrack"
-	"github.com/samsaffron/term-llm/internal/filetrack/shellscope"
-	"github.com/samsaffron/term-llm/internal/llm/core"
+	"github.com/term-llm/term-llm/internal/filetrack"
+	"github.com/term-llm/term-llm/internal/filetrack/shellscope"
+	"github.com/term-llm/term-llm/internal/llm/core"
 )
 
 // Bounds for shell file-change snapshots. They cap the cost of a single shell

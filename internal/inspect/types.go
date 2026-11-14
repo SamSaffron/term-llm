@@ -1,8 +1,8 @@
 package inspect
 
 import (
-	"github.com/samsaffron/term-llm/internal/llm/core"
-	"github.com/samsaffron/term-llm/internal/session"
+	"github.com/term-llm/term-llm/internal/llm/core"
+	"github.com/term-llm/term-llm/internal/session"
 )
 
 // Options supplies provenance, session metadata, and an optional detached runtime snapshot.

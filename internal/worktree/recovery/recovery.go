@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/samsaffron/term-llm/internal/worktree"
+	"github.com/term-llm/term-llm/internal/worktree"
 )
 
 // Kind identifies an interactive worktree recovery flow.

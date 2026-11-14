@@ -3,8 +3,8 @@ package runtime
 import (
 	"testing"
 
-	"github.com/samsaffron/term-llm/internal/config"
-	"github.com/samsaffron/term-llm/internal/session"
+	"github.com/term-llm/term-llm/internal/config"
+	"github.com/term-llm/term-llm/internal/session"
 )
 
 func TestResolveSessionProviderKey_PrefersCanonicalProviderKey(t *testing.T) {

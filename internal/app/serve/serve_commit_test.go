@@ -13,9 +13,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/samsaffron/term-llm/internal/config"
-	"github.com/samsaffron/term-llm/internal/gitcommit"
-	"github.com/samsaffron/term-llm/internal/session"
+	"github.com/term-llm/term-llm/internal/config"
+	"github.com/term-llm/term-llm/internal/gitcommit"
+	"github.com/term-llm/term-llm/internal/session"
 )
 
 func commitAPIGit(t *testing.T, dir string, args ...string) {

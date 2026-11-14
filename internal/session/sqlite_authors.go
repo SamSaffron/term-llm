@@ -3,8 +3,8 @@ package session
 import (
 	"context"
 
-	"github.com/samsaffron/term-llm/internal/llm/core"
-	"github.com/samsaffron/term-llm/internal/session/authordb"
+	"github.com/term-llm/term-llm/internal/llm/core"
+	"github.com/term-llm/term-llm/internal/session/authordb"
 )
 
 // Author is display-only metadata for a human sender.

@@ -1,6 +1,6 @@
 package chat
 
-import tuichat "github.com/samsaffron/term-llm/internal/tui/chat"
+import tuichat "github.com/term-llm/term-llm/internal/tui/chat"
 
 // RestoreLifecycleOSC writes the reporter's restore sequence to the terminal.
 func RestoreLifecycleOSC(reporter LifecycleReporter) {

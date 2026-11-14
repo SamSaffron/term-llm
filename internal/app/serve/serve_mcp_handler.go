@@ -10,13 +10,13 @@ import (
 	"strings"
 	"time"
 
-	mcpstart "github.com/samsaffron/term-llm/internal/app/runtime/mcpstart"
-	"github.com/samsaffron/term-llm/internal/llm/core"
-	"github.com/samsaffron/term-llm/internal/llm/engine"
-	"github.com/samsaffron/term-llm/internal/mcp"
-	mcpoauth "github.com/samsaffron/term-llm/internal/mcp/oauth"
-	"github.com/samsaffron/term-llm/internal/session"
-	"github.com/samsaffron/term-llm/internal/tooldiscovery"
+	mcpstart "github.com/term-llm/term-llm/internal/app/runtime/mcpstart"
+	"github.com/term-llm/term-llm/internal/llm/core"
+	"github.com/term-llm/term-llm/internal/llm/engine"
+	"github.com/term-llm/term-llm/internal/mcp"
+	mcpoauth "github.com/term-llm/term-llm/internal/mcp/oauth"
+	"github.com/term-llm/term-llm/internal/session"
+	"github.com/term-llm/term-llm/internal/tooldiscovery"
 )
 
 const serveMCPStartupTimeout = 30 * time.Second

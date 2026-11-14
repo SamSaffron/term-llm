@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/samsaffron/term-llm/internal/ui"
+	"github.com/term-llm/term-llm/internal/ui"
 )
 
 func TestSetEstimatedStatsCostSumsRequestScopedTierPricing(t *testing.T) {

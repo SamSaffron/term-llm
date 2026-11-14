@@ -6,10 +6,10 @@ import (
 	"sync"
 	"time"
 
-	"github.com/samsaffron/term-llm/internal/config"
-	"github.com/samsaffron/term-llm/internal/credentials"
-	"github.com/samsaffron/term-llm/internal/llm/providers/clibin"
-	"github.com/samsaffron/term-llm/internal/providerspec"
+	"github.com/term-llm/term-llm/internal/config"
+	"github.com/term-llm/term-llm/internal/credentials"
+	"github.com/term-llm/term-llm/internal/llm/providers/clibin"
+	"github.com/term-llm/term-llm/internal/providerspec"
 )
 
 // Provider availability answers one question for every provider picker (web

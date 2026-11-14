@@ -1,6 +1,6 @@
 package opencompat
 
-import "github.com/samsaffron/term-llm/internal/config"
+import "github.com/term-llm/term-llm/internal/config"
 
 const openRouterBaseURL = "https://openrouter.ai/api/v1"
 

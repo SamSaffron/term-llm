@@ -3,12 +3,12 @@ package clibin
 import (
 	"context"
 	"fmt"
-	"github.com/samsaffron/term-llm/internal/llm/core"
+	"github.com/term-llm/term-llm/internal/llm/core"
 	"os"
 	"path/filepath"
 	"strings"
 
-	"github.com/samsaffron/term-llm/internal/cache"
+	"github.com/term-llm/term-llm/internal/cache"
 )
 
 const grokBinModelCacheKey = "grok-bin"

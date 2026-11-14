@@ -5,10 +5,10 @@ import (
 	"os"
 
 	tea "charm.land/bubbletea/v2"
-	"github.com/samsaffron/term-llm/internal/terminalpolicy"
-	tuisessions "github.com/samsaffron/term-llm/internal/tui/sessions"
-	"github.com/samsaffron/term-llm/internal/ui"
 	"github.com/spf13/cobra"
+	"github.com/term-llm/term-llm/internal/terminalpolicy"
+	tuisessions "github.com/term-llm/term-llm/internal/tui/sessions"
+	"github.com/term-llm/term-llm/internal/ui"
 	"golang.org/x/term"
 )
 

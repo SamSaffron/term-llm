@@ -3,8 +3,8 @@ package chat
 import (
 	"context"
 
-	"github.com/samsaffron/term-llm/internal/session"
-	"github.com/samsaffron/term-llm/internal/tools"
+	"github.com/term-llm/term-llm/internal/session"
+	"github.com/term-llm/term-llm/internal/tools"
 )
 
 func sessionApprovalModeFromTools(mode tools.ApprovalMode) session.SessionApprovalMode {

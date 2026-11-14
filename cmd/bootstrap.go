@@ -1,9 +1,9 @@
 package cmd
 
 import (
-	"github.com/samsaffron/term-llm/internal/app/runtime/bootstrap"
-	"github.com/samsaffron/term-llm/internal/config"
-	"github.com/samsaffron/term-llm/internal/llm/debug"
+	"github.com/term-llm/term-llm/internal/app/runtime/bootstrap"
+	"github.com/term-llm/term-llm/internal/config"
+	"github.com/term-llm/term-llm/internal/llm/debug"
 )
 
 // Cobra callers retain these adapters until their command implementations move.

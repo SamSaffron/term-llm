@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/samsaffron/term-llm/internal/share"
+	"github.com/term-llm/term-llm/internal/share"
 )
 
 func TestCreateSessionShareAudioConsent(t *testing.T) {

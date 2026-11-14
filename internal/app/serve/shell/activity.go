@@ -1,10 +1,10 @@
 package shell
 
 import (
-	"github.com/samsaffron/term-llm/internal/app/serve/protocol"
+	"github.com/term-llm/term-llm/internal/app/serve/protocol"
 	"unicode/utf8"
 
-	"github.com/samsaffron/term-llm/internal/terminaltext"
+	"github.com/term-llm/term-llm/internal/terminaltext"
 )
 
 // activityBytesBetweenLocked returns retained, unclaimed output for [start,end).

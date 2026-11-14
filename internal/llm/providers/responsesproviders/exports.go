@@ -4,7 +4,7 @@ import (
 	"context"
 	"net/http"
 
-	"github.com/samsaffron/term-llm/internal/credentials"
+	"github.com/term-llm/term-llm/internal/credentials"
 )
 
 // Exports for the parent llm package's model registry, completion, usage and

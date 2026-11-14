@@ -7,8 +7,8 @@ import (
 	"regexp"
 	"sync"
 
-	"github.com/samsaffron/term-llm/internal/greprerank"
-	"github.com/samsaffron/term-llm/internal/grepsearch"
+	"github.com/term-llm/term-llm/internal/greprerank"
+	"github.com/term-llm/term-llm/internal/grepsearch"
 )
 
 type intentSearchResult struct {

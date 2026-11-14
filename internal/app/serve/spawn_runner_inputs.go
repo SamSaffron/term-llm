@@ -3,8 +3,8 @@ package serve
 import (
 	"strings"
 
-	appmemory "github.com/samsaffron/term-llm/internal/app/memory"
-	"github.com/samsaffron/term-llm/internal/app/runtime"
+	appmemory "github.com/term-llm/term-llm/internal/app/memory"
+	"github.com/term-llm/term-llm/internal/app/runtime"
 )
 
 // SetRuntimeInputs stores invocation-local persistence and memory selections for

@@ -4,9 +4,9 @@ import (
 	"slices"
 	"testing"
 
-	"github.com/samsaffron/term-llm/internal/config"
-	"github.com/samsaffron/term-llm/internal/llm/factory"
-	"github.com/samsaffron/term-llm/internal/providerspec"
+	"github.com/term-llm/term-llm/internal/config"
+	"github.com/term-llm/term-llm/internal/llm/factory"
+	"github.com/term-llm/term-llm/internal/providerspec"
 )
 
 // A new provider type must be declared in the leaf registry and wired into

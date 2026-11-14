@@ -3,14 +3,14 @@ package cmd
 import (
 	"fmt"
 
-	"github.com/samsaffron/term-llm/internal/app/reload"
-	appserve "github.com/samsaffron/term-llm/internal/app/serve"
-	apphub "github.com/samsaffron/term-llm/internal/app/serve/hub"
-	appserver "github.com/samsaffron/term-llm/internal/app/serve/server"
-	"github.com/samsaffron/term-llm/internal/app/service"
-	"github.com/samsaffron/term-llm/internal/userservice"
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
+	"github.com/term-llm/term-llm/internal/app/reload"
+	appserve "github.com/term-llm/term-llm/internal/app/serve"
+	apphub "github.com/term-llm/term-llm/internal/app/serve/hub"
+	appserver "github.com/term-llm/term-llm/internal/app/serve/server"
+	"github.com/term-llm/term-llm/internal/app/service"
+	"github.com/term-llm/term-llm/internal/userservice"
 )
 
 var serviceCmd = &cobra.Command{Use: "service", Short: "Install and manage per-user Web and Hub services", Long: `Manage one Web service and one Hub service through systemd (Linux) or launchd

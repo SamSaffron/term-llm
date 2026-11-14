@@ -1,6 +1,6 @@
 package main
 
-import "github.com/samsaffron/term-llm/cmd"
+import "github.com/term-llm/term-llm/cmd"
 
 func main() {
 	cmd.Execute()

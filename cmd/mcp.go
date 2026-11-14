@@ -12,11 +12,11 @@ import (
 	"strings"
 	"time"
 
-	"github.com/samsaffron/term-llm/internal/llm/core"
-	"github.com/samsaffron/term-llm/internal/mcp"
-	"github.com/samsaffron/term-llm/internal/terminalpolicy"
-	mcpTui "github.com/samsaffron/term-llm/internal/tui/mcp"
 	"github.com/spf13/cobra"
+	"github.com/term-llm/term-llm/internal/llm/core"
+	"github.com/term-llm/term-llm/internal/mcp"
+	"github.com/term-llm/term-llm/internal/terminalpolicy"
+	mcpTui "github.com/term-llm/term-llm/internal/tui/mcp"
 )
 
 var mcpBrowseTUI bool

@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/samsaffron/term-llm/internal/linkeddevices"
+	"github.com/term-llm/term-llm/internal/linkeddevices"
 )
 
 func TestPeerBootstrapAndHealthExposeScopedReadOnlyIdentity(t *testing.T) {

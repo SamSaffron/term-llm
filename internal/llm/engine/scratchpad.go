@@ -3,13 +3,13 @@ package engine
 import (
 	"context"
 	"encoding/json"
-	"github.com/samsaffron/term-llm/internal/llm/core"
-	corestream "github.com/samsaffron/term-llm/internal/llm/core/stream"
+	"github.com/term-llm/term-llm/internal/llm/core"
+	corestream "github.com/term-llm/term-llm/internal/llm/core/stream"
 	"io"
 	"strings"
 
-	internalreasoning "github.com/samsaffron/term-llm/internal/reasoning"
-	"github.com/samsaffron/term-llm/internal/runtimeoutput"
+	internalreasoning "github.com/term-llm/term-llm/internal/reasoning"
+	"github.com/term-llm/term-llm/internal/runtimeoutput"
 )
 
 func (e *Engine) runSimpleScratchpad(ctx context.Context, req core.Request, send corestream.Sender) error {

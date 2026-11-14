@@ -1,6 +1,6 @@
 package mcp
 
-import "github.com/samsaffron/term-llm/internal/runtimeoutput"
+import "github.com/term-llm/term-llm/internal/runtimeoutput"
 
 // Disable stops an MCP server.
 func (m *Manager) Disable(name string) error { return m.disable(name, false) }

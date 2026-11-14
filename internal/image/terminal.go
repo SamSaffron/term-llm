@@ -5,7 +5,7 @@ import (
 	"io"
 	"strings"
 
-	"github.com/samsaffron/term-llm/internal/termimage"
+	"github.com/term-llm/term-llm/internal/termimage"
 )
 
 // TerminalImageCapability represents the terminal's image rendering capability.

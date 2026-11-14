@@ -9,10 +9,10 @@ import (
 	"time"
 
 	"github.com/charmbracelet/x/ansi"
-	"github.com/samsaffron/term-llm/internal/llm/core"
-	"github.com/samsaffron/term-llm/internal/session"
-	"github.com/samsaffron/term-llm/internal/subagentview"
-	"github.com/samsaffron/term-llm/internal/ui"
+	"github.com/term-llm/term-llm/internal/llm/core"
+	"github.com/term-llm/term-llm/internal/session"
+	"github.com/term-llm/term-llm/internal/subagentview"
+	"github.com/term-llm/term-llm/internal/ui"
 )
 
 // generateMessages creates a slice of test messages for benchmarking.

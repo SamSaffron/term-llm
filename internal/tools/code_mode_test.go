@@ -8,12 +8,12 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/samsaffron/term-llm/internal/agents"
-	"github.com/samsaffron/term-llm/internal/config"
-	"github.com/samsaffron/term-llm/internal/llm/core"
-	"github.com/samsaffron/term-llm/internal/llm/providers/responses"
-	"github.com/samsaffron/term-llm/internal/skills"
-	"github.com/samsaffron/term-llm/internal/testutil"
+	"github.com/term-llm/term-llm/internal/agents"
+	"github.com/term-llm/term-llm/internal/config"
+	"github.com/term-llm/term-llm/internal/llm/core"
+	"github.com/term-llm/term-llm/internal/llm/providers/responses"
+	"github.com/term-llm/term-llm/internal/skills"
+	"github.com/term-llm/term-llm/internal/testutil"
 )
 
 func TestCodeModeHello(t *testing.T) {

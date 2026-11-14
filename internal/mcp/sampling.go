@@ -11,9 +11,9 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
-	"github.com/samsaffron/term-llm/internal/llm/core"
-	"github.com/samsaffron/term-llm/internal/terminalpolicy"
-	"github.com/samsaffron/term-llm/internal/tuiutil"
+	"github.com/term-llm/term-llm/internal/llm/core"
+	"github.com/term-llm/term-llm/internal/terminalpolicy"
+	"github.com/term-llm/term-llm/internal/tuiutil"
 	"golang.org/x/term"
 )
 

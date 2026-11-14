@@ -7,7 +7,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/samsaffron/term-llm/internal/sqlitefts"
+	"github.com/term-llm/term-llm/internal/sqlitefts"
 )
 
 func (s *Store) CreateFragment(ctx context.Context, f *Fragment) error {

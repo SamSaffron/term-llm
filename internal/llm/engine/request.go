@@ -5,14 +5,14 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"fmt"
-	"github.com/samsaffron/term-llm/internal/llm/core"
+	"github.com/term-llm/term-llm/internal/llm/core"
 	"mime"
 	"os"
 	"path/filepath"
 	"strings"
 
-	"github.com/samsaffron/term-llm/internal/appdata"
-	"github.com/samsaffron/term-llm/internal/runtimeoutput"
+	"github.com/term-llm/term-llm/internal/appdata"
+	"github.com/term-llm/term-llm/internal/runtimeoutput"
 )
 
 // applyToolOutputTruncation applies global and compaction truncation limits

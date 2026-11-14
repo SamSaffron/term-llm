@@ -15,7 +15,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/samsaffron/term-llm/internal/linkeddevices/testdevice"
+	"github.com/term-llm/term-llm/internal/linkeddevices/testdevice"
 )
 
 func main() {

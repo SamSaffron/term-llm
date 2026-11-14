@@ -4,11 +4,11 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/samsaffron/term-llm/internal/app/serve/wire"
-	"github.com/samsaffron/term-llm/internal/config"
-	"github.com/samsaffron/term-llm/internal/llm/core"
-	"github.com/samsaffron/term-llm/internal/reasoning"
-	"github.com/samsaffron/term-llm/internal/session"
+	"github.com/term-llm/term-llm/internal/app/serve/wire"
+	"github.com/term-llm/term-llm/internal/config"
+	"github.com/term-llm/term-llm/internal/llm/core"
+	"github.com/term-llm/term-llm/internal/reasoning"
+	"github.com/term-llm/term-llm/internal/session"
 )
 
 func appendSessionMessageTextWithReasoning(entry *sessionMessageEntry, msg *session.Message, p core.Part, files map[string]bool, displayText string, cfg config.ReasoningConfig) {

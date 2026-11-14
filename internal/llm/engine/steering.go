@@ -3,7 +3,7 @@ package engine
 import (
 	"context"
 	"errors"
-	"github.com/samsaffron/term-llm/internal/llm/core"
+	"github.com/term-llm/term-llm/internal/llm/core"
 )
 
 const SteeringInterruptionNotice = "The previous run was interrupted to deliver pending steering. Partial actions may have completed and independent background processes may still be running. Check state before repeating side effects."

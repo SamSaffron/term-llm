@@ -20,9 +20,9 @@ import (
 
 	"github.com/fxamacker/cbor/v2"
 	"github.com/go-webauthn/webauthn/webauthn"
-	"github.com/samsaffron/term-llm/internal/passkeyauth"
-	"github.com/samsaffron/term-llm/internal/userservice"
 	"github.com/spf13/cobra"
+	"github.com/term-llm/term-llm/internal/passkeyauth"
+	"github.com/term-llm/term-llm/internal/userservice"
 )
 
 const statusTestSecret = "must-not-appear-in-json"

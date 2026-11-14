@@ -3,9 +3,9 @@ package mcpstart
 import (
 	"context"
 	"encoding/json"
-	"github.com/samsaffron/term-llm/internal/llm/engine"
-	"github.com/samsaffron/term-llm/internal/mcp"
-	"github.com/samsaffron/term-llm/internal/testutil/mcptest"
+	"github.com/term-llm/term-llm/internal/llm/engine"
+	"github.com/term-llm/term-llm/internal/mcp"
+	"github.com/term-llm/term-llm/internal/testutil/mcptest"
 	"io"
 	"os"
 	"strings"

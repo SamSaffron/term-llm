@@ -9,8 +9,8 @@ import (
 	"io"
 	"strings"
 
-	"github.com/samsaffron/term-llm/internal/config"
-	"github.com/samsaffron/term-llm/internal/session"
+	"github.com/term-llm/term-llm/internal/config"
+	"github.com/term-llm/term-llm/internal/session"
 )
 
 // Deps are CLI-level helpers owned by the cmd package.

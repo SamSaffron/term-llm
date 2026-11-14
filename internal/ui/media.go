@@ -9,8 +9,8 @@ import (
 	"strings"
 
 	"github.com/charmbracelet/x/ansi"
-	"github.com/samsaffron/term-llm/internal/llm/core"
-	"github.com/samsaffron/term-llm/internal/terminaltext"
+	"github.com/term-llm/term-llm/internal/llm/core"
+	"github.com/term-llm/term-llm/internal/terminaltext"
 )
 
 var mediaMarkdownPattern = regexp.MustCompile(`(?im)!\[([^\]\n]*)\]\([ \t]*<?term-llm-media://([a-f0-9]{32})>?[ \t]*\)[ \t]*$`)

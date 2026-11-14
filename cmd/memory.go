@@ -1,13 +1,13 @@
 package cmd
 
 import (
-	"github.com/samsaffron/term-llm/internal/app/memory"
-	appruntime "github.com/samsaffron/term-llm/internal/app/runtime"
-	"github.com/samsaffron/term-llm/internal/config"
-	"github.com/samsaffron/term-llm/internal/image"
-	memorydb "github.com/samsaffron/term-llm/internal/memory"
-	"github.com/samsaffron/term-llm/internal/session"
 	"github.com/spf13/cobra"
+	"github.com/term-llm/term-llm/internal/app/memory"
+	appruntime "github.com/term-llm/term-llm/internal/app/runtime"
+	"github.com/term-llm/term-llm/internal/config"
+	"github.com/term-llm/term-llm/internal/image"
+	memorydb "github.com/term-llm/term-llm/internal/memory"
+	"github.com/term-llm/term-llm/internal/session"
 )
 
 var (

@@ -5,8 +5,8 @@ import (
 	"io"
 	"strings"
 
-	"github.com/samsaffron/term-llm/internal/config"
-	"github.com/samsaffron/term-llm/internal/skills"
+	"github.com/term-llm/term-llm/internal/config"
+	"github.com/term-llm/term-llm/internal/skills"
 )
 
 // PreloadSkillInstructions adds only explicitly named skill bodies to a command

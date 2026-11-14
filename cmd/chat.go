@@ -1,9 +1,9 @@
 package cmd
 
 import (
-	appchat "github.com/samsaffron/term-llm/internal/app/chat"
-	"github.com/samsaffron/term-llm/internal/signal"
 	"github.com/spf13/cobra"
+	appchat "github.com/term-llm/term-llm/internal/app/chat"
+	"github.com/term-llm/term-llm/internal/signal"
 )
 
 var (

@@ -8,7 +8,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/samsaffron/term-llm/internal/runtimeoutput"
+	"github.com/term-llm/term-llm/internal/runtimeoutput"
 )
 
 var probeAudioDuration = ffprobeAudioDuration

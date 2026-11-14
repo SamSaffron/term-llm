@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/samsaffron/term-llm/internal/llm/filemime"
+	"github.com/term-llm/term-llm/internal/llm/filemime"
 )
 
 // sortedKeys returns the keys of a MIME set in deterministic order.

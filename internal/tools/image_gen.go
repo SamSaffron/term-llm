@@ -8,11 +8,11 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/samsaffron/term-llm/internal/config"
-	"github.com/samsaffron/term-llm/internal/image"
-	"github.com/samsaffron/term-llm/internal/llm/core"
-	memorystore "github.com/samsaffron/term-llm/internal/memory"
-	"github.com/samsaffron/term-llm/internal/runtimeoutput"
+	"github.com/term-llm/term-llm/internal/config"
+	"github.com/term-llm/term-llm/internal/image"
+	"github.com/term-llm/term-llm/internal/llm/core"
+	memorystore "github.com/term-llm/term-llm/internal/memory"
+	"github.com/term-llm/term-llm/internal/runtimeoutput"
 )
 
 // ImageRecorder is a minimal interface for recording generated images.

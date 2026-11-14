@@ -5,8 +5,8 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/samsaffron/term-llm/internal/llm/core"
-	"github.com/samsaffron/term-llm/internal/session"
+	"github.com/term-llm/term-llm/internal/llm/core"
+	"github.com/term-llm/term-llm/internal/session"
 )
 
 // ResponseRunOwnedOutputKeys identifies response-owned assistant segments, tool

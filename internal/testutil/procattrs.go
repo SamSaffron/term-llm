@@ -3,7 +3,7 @@ package testutil
 import (
 	"syscall"
 
-	"github.com/samsaffron/term-llm/internal/testutil/processinfo"
+	"github.com/term-llm/term-llm/internal/testutil/processinfo"
 )
 
 // ProcessIsDetached reports whether attr starts the child in a new session or

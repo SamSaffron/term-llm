@@ -3,8 +3,8 @@ package runtime
 import (
 	"strings"
 
-	"github.com/samsaffron/term-llm/internal/llm/core"
-	internalreasoning "github.com/samsaffron/term-llm/internal/reasoning"
+	"github.com/term-llm/term-llm/internal/llm/core"
+	internalreasoning "github.com/term-llm/term-llm/internal/reasoning"
 )
 
 // runnerOutput retains earlier provider turns while allowing the current

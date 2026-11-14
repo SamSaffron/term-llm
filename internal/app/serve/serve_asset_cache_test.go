@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/samsaffron/term-llm/internal/serveui"
+	"github.com/term-llm/term-llm/internal/serveui"
 )
 
 func uiBuildAsset(t *testing.T, name string) string {

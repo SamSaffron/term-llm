@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/samsaffron/term-llm/internal/procutil"
+	"github.com/term-llm/term-llm/internal/procutil"
 )
 
 func TestCommandTransportPipeSetupFailureClosesOwner(t *testing.T) {

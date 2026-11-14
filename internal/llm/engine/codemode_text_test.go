@@ -8,8 +8,8 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/samsaffron/term-llm/internal/codemode"
-	"github.com/samsaffron/term-llm/internal/llm/core"
+	"github.com/term-llm/term-llm/internal/codemode"
+	"github.com/term-llm/term-llm/internal/llm/core"
 )
 
 func TestCodeModeTextEmissionsSeparated(t *testing.T) {

@@ -6,7 +6,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/samsaffron/term-llm/internal/fileprivacy"
+	"github.com/term-llm/term-llm/internal/fileprivacy"
 )
 
 const stateVersion = 1

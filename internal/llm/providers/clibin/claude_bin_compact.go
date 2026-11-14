@@ -9,7 +9,7 @@ import (
 	"io"
 	"strings"
 
-	"github.com/samsaffron/term-llm/internal/llm/core"
+	"github.com/term-llm/term-llm/internal/llm/core"
 )
 
 // claudeNativeCompactRunner executes one Claude Code compaction process and

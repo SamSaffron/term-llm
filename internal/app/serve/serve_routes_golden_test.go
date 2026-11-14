@@ -18,8 +18,8 @@ import (
 	"strings"
 	"testing"
 
-	apphub "github.com/samsaffron/term-llm/internal/app/serve/hub"
-	"github.com/samsaffron/term-llm/internal/hub"
+	apphub "github.com/term-llm/term-llm/internal/app/serve/hub"
+	"github.com/term-llm/term-llm/internal/hub"
 )
 
 // TestServeRoutesGolden snapshots the actual ServeMux registrations, including

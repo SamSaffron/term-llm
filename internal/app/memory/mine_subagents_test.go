@@ -8,9 +8,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/samsaffron/term-llm/internal/llm/core"
-	memorydb "github.com/samsaffron/term-llm/internal/memory"
-	"github.com/samsaffron/term-llm/internal/session"
+	"github.com/term-llm/term-llm/internal/llm/core"
+	memorydb "github.com/term-llm/term-llm/internal/memory"
+	"github.com/term-llm/term-llm/internal/session"
 )
 
 func TestMemoryMinePersistedSubagentFiltering(t *testing.T) {

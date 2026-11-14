@@ -1,8 +1,8 @@
 package cmd
 
 import (
-	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/spf13/cobra"
+	"github.com/term-llm/term-llm/internal/config"
 )
 
 // Capture explicitness as well as value: --allow-project-skill-tools=false must

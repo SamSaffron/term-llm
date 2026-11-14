@@ -12,10 +12,10 @@ import (
 	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
 	"github.com/muesli/reflow/wordwrap"
-	"github.com/samsaffron/term-llm/internal/llm/core"
-	renderchat "github.com/samsaffron/term-llm/internal/render/chat"
-	"github.com/samsaffron/term-llm/internal/sidequestion"
-	"github.com/samsaffron/term-llm/internal/ui"
+	"github.com/term-llm/term-llm/internal/llm/core"
+	renderchat "github.com/term-llm/term-llm/internal/render/chat"
+	"github.com/term-llm/term-llm/internal/sidequestion"
+	"github.com/term-llm/term-llm/internal/ui"
 )
 
 type SideQuestionState struct {

@@ -5,7 +5,7 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/samsaffron/term-llm/internal/llm/providers/opencompat"
+	"github.com/term-llm/term-llm/internal/llm/providers/opencompat"
 )
 
 // The OpenAI-compatible provider family lives in providers/opencompat; this

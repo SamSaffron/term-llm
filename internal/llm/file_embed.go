@@ -6,7 +6,7 @@ import (
 	"strings"
 	"unicode"
 
-	"github.com/samsaffron/term-llm/internal/llm/filemime"
+	"github.com/term-llm/term-llm/internal/llm/filemime"
 )
 
 // EmbeddedFileIntro introduces one or more file bodies embedded directly in a

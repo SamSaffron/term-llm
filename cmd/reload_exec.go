@@ -3,7 +3,7 @@
 package cmd
 
 import (
-	"github.com/samsaffron/term-llm/internal/app/reload"
+	"github.com/term-llm/term-llm/internal/app/reload"
 	"os"
 	"strings"
 )

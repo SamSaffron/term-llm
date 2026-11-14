@@ -14,7 +14,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/samsaffron/term-llm/internal/cache"
+	"github.com/term-llm/term-llm/internal/cache"
 )
 
 func TestEffectiveOpenCodeGoInputLimitPrefersExplicitInput(t *testing.T) {

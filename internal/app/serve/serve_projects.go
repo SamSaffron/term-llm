@@ -16,8 +16,8 @@ import (
 	"time"
 	"unicode"
 
-	projectpkg "github.com/samsaffron/term-llm/internal/project"
-	"github.com/samsaffron/term-llm/internal/session"
+	projectpkg "github.com/term-llm/term-llm/internal/project"
+	"github.com/term-llm/term-llm/internal/session"
 )
 
 const (

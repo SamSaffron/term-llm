@@ -5,13 +5,13 @@ import (
 	"fmt"
 	"io"
 
-	"github.com/samsaffron/term-llm/internal/agents"
-	appruntime "github.com/samsaffron/term-llm/internal/app/runtime"
-	appserve "github.com/samsaffron/term-llm/internal/app/serve"
-	"github.com/samsaffron/term-llm/internal/config"
-	"github.com/samsaffron/term-llm/internal/llm/core"
-	"github.com/samsaffron/term-llm/internal/session"
-	"github.com/samsaffron/term-llm/internal/skills"
+	"github.com/term-llm/term-llm/internal/agents"
+	appruntime "github.com/term-llm/term-llm/internal/app/runtime"
+	appserve "github.com/term-llm/term-llm/internal/app/serve"
+	"github.com/term-llm/term-llm/internal/config"
+	"github.com/term-llm/term-llm/internal/llm/core"
+	"github.com/term-llm/term-llm/internal/session"
+	"github.com/term-llm/term-llm/internal/skills"
 )
 
 func finalizeAskSessionSettings(settings *appserve.SessionSettings, sess *session.Session, selected *appserve.SessionInputSelection, setup *skills.Setup, cfg *config.Config, provider core.Provider, resuming bool) (string, string) {

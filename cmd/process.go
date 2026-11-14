@@ -4,9 +4,9 @@ import (
 	"os"
 	"time"
 
-	appprocess "github.com/samsaffron/term-llm/internal/app/process"
-	"github.com/samsaffron/term-llm/internal/process"
 	"github.com/spf13/cobra"
+	appprocess "github.com/term-llm/term-llm/internal/app/process"
+	"github.com/term-llm/term-llm/internal/process"
 )
 
 func newProcessCommand() *cobra.Command {

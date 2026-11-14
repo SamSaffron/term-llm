@@ -3,10 +3,10 @@ package serve
 import (
 	"context"
 
-	"github.com/samsaffron/term-llm/internal/config"
-	"github.com/samsaffron/term-llm/internal/llm/core"
-	"github.com/samsaffron/term-llm/internal/llm/engine"
-	runpkg "github.com/samsaffron/term-llm/internal/run"
+	"github.com/term-llm/term-llm/internal/config"
+	"github.com/term-llm/term-llm/internal/llm/core"
+	"github.com/term-llm/term-llm/internal/llm/engine"
+	runpkg "github.com/term-llm/term-llm/internal/run"
 )
 
 // RunnerOptions captures explicit inputs to the shared command runner.

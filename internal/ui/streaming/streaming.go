@@ -11,7 +11,7 @@ import (
 	"regexp"
 	"strings"
 
-	rendermarkdown "github.com/samsaffron/term-llm/internal/render/markdown"
+	rendermarkdown "github.com/term-llm/term-llm/internal/render/markdown"
 )
 
 // multiNewlineRe matches 3 or more consecutive newlines.

@@ -4,7 +4,7 @@ import (
 	"io"
 	"net/http"
 
-	"github.com/samsaffron/term-llm/internal/app/serve/authorship"
+	"github.com/term-llm/term-llm/internal/app/serve/authorship"
 )
 
 // webAuthor is presentation metadata, never model context or authorization.

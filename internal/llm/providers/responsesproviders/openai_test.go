@@ -12,8 +12,8 @@ import (
 	"testing"
 
 	"github.com/gorilla/websocket"
-	"github.com/samsaffron/term-llm/internal/config"
-	"github.com/samsaffron/term-llm/internal/openaiapi"
+	"github.com/term-llm/term-llm/internal/config"
+	"github.com/term-llm/term-llm/internal/openaiapi"
 )
 
 func TestParseModelEffort(t *testing.T) {

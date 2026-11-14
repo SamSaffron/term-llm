@@ -7,10 +7,10 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/samsaffron/term-llm/internal/agents"
-	"github.com/samsaffron/term-llm/internal/config"
-	"github.com/samsaffron/term-llm/internal/llm/mockprovider"
-	runpkg "github.com/samsaffron/term-llm/internal/run"
+	"github.com/term-llm/term-llm/internal/agents"
+	"github.com/term-llm/term-llm/internal/config"
+	"github.com/term-llm/term-llm/internal/llm/mockprovider"
+	runpkg "github.com/term-llm/term-llm/internal/run"
 )
 
 // writePromptLLMAgent writes an agent whose preferred provider differs from the

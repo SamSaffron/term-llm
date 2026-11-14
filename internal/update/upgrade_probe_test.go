@@ -105,7 +105,7 @@ func TestRunUpgradeProbeProcess(t *testing.T) {
 	}
 	manifest := os.Getenv("TERM_LLM_PROBE_MANIFEST")
 	http.DefaultTransport = probeTransport(func(req *http.Request) (*http.Response, error) {
-		if req.URL.Scheme != "https" || req.URL.Host != "github.com" || !strings.HasPrefix(req.URL.Path, "/samsaffron/term-llm/releases/download/v1.2.3/") {
+		if req.URL.Scheme != "https" || req.URL.Host != "github.com" || !strings.HasPrefix(req.URL.Path, "/term-llm/term-llm/releases/download/v1.2.3/") {
 			return nil, fmt.Errorf("unexpected probe URL %s", req.URL)
 		}
 		body := archive

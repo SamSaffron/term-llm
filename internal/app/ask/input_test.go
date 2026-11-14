@@ -12,14 +12,14 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/samsaffron/term-llm/internal/app/uploads"
-	"github.com/samsaffron/term-llm/internal/config"
-	inputpkg "github.com/samsaffron/term-llm/internal/input"
-	"github.com/samsaffron/term-llm/internal/llm"
-	"github.com/samsaffron/term-llm/internal/llm/core"
-	"github.com/samsaffron/term-llm/internal/prompt"
-	"github.com/samsaffron/term-llm/internal/session"
-	"github.com/samsaffron/term-llm/internal/tools"
+	"github.com/term-llm/term-llm/internal/app/uploads"
+	"github.com/term-llm/term-llm/internal/config"
+	inputpkg "github.com/term-llm/term-llm/internal/input"
+	"github.com/term-llm/term-llm/internal/llm"
+	"github.com/term-llm/term-llm/internal/llm/core"
+	"github.com/term-llm/term-llm/internal/prompt"
+	"github.com/term-llm/term-llm/internal/session"
+	"github.com/term-llm/term-llm/internal/tools"
 )
 
 func testAskConfig() config.AskConfig {

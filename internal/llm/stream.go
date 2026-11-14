@@ -3,8 +3,8 @@ package llm
 import (
 	"context"
 
-	"github.com/samsaffron/term-llm/internal/llm/core"
-	"github.com/samsaffron/term-llm/internal/llm/core/stream"
+	"github.com/term-llm/term-llm/internal/llm/core"
+	"github.com/term-llm/term-llm/internal/llm/core/stream"
 )
 
 // eventSender provides safe event sending for stream producers. Zero value is

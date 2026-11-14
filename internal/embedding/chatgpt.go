@@ -4,8 +4,8 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/samsaffron/term-llm/internal/credentials"
-	"github.com/samsaffron/term-llm/internal/openaiapi"
+	"github.com/term-llm/term-llm/internal/credentials"
+	"github.com/term-llm/term-llm/internal/openaiapi"
 )
 
 // ChatGPTProvider uses the user's ChatGPT/Codex OAuth session with OpenAI's

@@ -8,8 +8,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/samsaffron/term-llm/internal/classify"
-	"github.com/samsaffron/term-llm/internal/llm/core"
+	"github.com/term-llm/term-llm/internal/classify"
+	"github.com/term-llm/term-llm/internal/llm/core"
 )
 
 // recordingEscalationLogger captures escalation records for assertions.

@@ -3,7 +3,7 @@ package contain
 import (
 	"path/filepath"
 
-	"github.com/samsaffron/term-llm/internal/config"
+	"github.com/term-llm/term-llm/internal/config"
 )
 
 // ContainersRoot returns the global directory containing named contain workspaces.

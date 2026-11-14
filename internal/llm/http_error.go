@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"net/http"
 
-	"github.com/samsaffron/term-llm/internal/providerhttp"
+	"github.com/term-llm/term-llm/internal/providerhttp"
 )
 
 func newHTTPStatusError(provider string, resp *http.Response, body []byte) *providerhttp.StatusError {

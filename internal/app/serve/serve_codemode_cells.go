@@ -3,9 +3,9 @@ package serve
 import (
 	"net/http"
 
-	"github.com/samsaffron/term-llm/internal/app/serve/approvalprompt"
-	"github.com/samsaffron/term-llm/internal/llm/core"
-	"github.com/samsaffron/term-llm/internal/tools"
+	"github.com/term-llm/term-llm/internal/app/serve/approvalprompt"
+	"github.com/term-llm/term-llm/internal/llm/core"
+	"github.com/term-llm/term-llm/internal/tools"
 )
 
 func (rt *serveRuntime) codeModeCellPrompts(ref core.CodeModeCellRef) tools.CodeModePrompts {

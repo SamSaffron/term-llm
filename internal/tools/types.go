@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 
-	planpkg "github.com/samsaffron/term-llm/internal/plan"
+	planpkg "github.com/term-llm/term-llm/internal/plan"
 )
 
 // ToolKind categorizes tools for permission grouping.

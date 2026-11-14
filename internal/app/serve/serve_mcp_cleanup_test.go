@@ -3,9 +3,9 @@ package serve
 import (
 	"testing"
 
-	"github.com/samsaffron/term-llm/internal/llm/engine"
-	"github.com/samsaffron/term-llm/internal/llm/mockprovider"
-	"github.com/samsaffron/term-llm/internal/mcp"
+	"github.com/term-llm/term-llm/internal/llm/engine"
+	"github.com/term-llm/term-llm/internal/llm/mockprovider"
+	"github.com/term-llm/term-llm/internal/mcp"
 )
 
 func TestMCPCleanupUsesServerOriginNotNamePrefix(t *testing.T) {

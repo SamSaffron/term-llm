@@ -14,7 +14,7 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/samsaffron/term-llm/internal/classify"
+	"github.com/term-llm/term-llm/internal/classify"
 )
 
 type fakeBackend struct {

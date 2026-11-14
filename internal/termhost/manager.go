@@ -11,9 +11,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/samsaffron/term-llm/internal/config"
-	"github.com/samsaffron/term-llm/internal/lifecycle"
-	"github.com/samsaffron/term-llm/internal/runtimeoutput"
+	"github.com/term-llm/term-llm/internal/config"
+	"github.com/term-llm/term-llm/internal/lifecycle"
+	"github.com/term-llm/term-llm/internal/runtimeoutput"
 )
 
 // Control is terminal output that must be returned to Bubble Tea's renderer.

@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/samsaffron/term-llm/internal/termimage"
+	"github.com/term-llm/term-llm/internal/termimage"
 )
 
 func TestTerminalImageWrapperUsesTermimageKittyImplementation(t *testing.T) {

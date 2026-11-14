@@ -1,6 +1,6 @@
 package session
 
-import "github.com/samsaffron/term-llm/internal/sqliteutil"
+import "github.com/term-llm/term-llm/internal/sqliteutil"
 
 // Read-only stores skip migrations, so pre-v67 rows are browser enrollments.
 func (s *SQLiteStore) probePushClientKind() {

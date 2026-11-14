@@ -13,7 +13,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/samsaffron/term-llm/internal/grokprotocol"
+	"github.com/term-llm/term-llm/internal/grokprotocol"
 )
 
 type grokRoundTripFunc func(*http.Request) (*http.Response, error)

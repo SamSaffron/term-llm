@@ -5,7 +5,7 @@ import (
 	"log"
 	"net/http"
 
-	"github.com/samsaffron/term-llm/internal/session"
+	"github.com/term-llm/term-llm/internal/session"
 )
 
 // projectOrderRequest lists project IDs in their new relative order.

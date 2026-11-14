@@ -13,11 +13,11 @@ import (
 	"text/tabwriter"
 	"time"
 
-	"github.com/samsaffron/term-llm/internal/classify"
-	"github.com/samsaffron/term-llm/internal/classify/backends"
-	"github.com/samsaffron/term-llm/internal/config"
-	"github.com/samsaffron/term-llm/internal/terminaltext"
 	"github.com/spf13/cobra"
+	"github.com/term-llm/term-llm/internal/classify"
+	"github.com/term-llm/term-llm/internal/classify/backends"
+	"github.com/term-llm/term-llm/internal/config"
+	"github.com/term-llm/term-llm/internal/terminaltext"
 	"gopkg.in/yaml.v3"
 )
 

@@ -3,7 +3,7 @@ package mcp
 import (
 	"strings"
 
-	"github.com/samsaffron/term-llm/internal/mcp"
+	"github.com/term-llm/term-llm/internal/mcp"
 )
 
 // registryLocalName is shared by installation, installed-state checks and

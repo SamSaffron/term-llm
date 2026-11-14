@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/samsaffron/term-llm/internal/sqliteutil"
+	"github.com/term-llm/term-llm/internal/sqliteutil"
 )
 
 // Frozen released v67 outbox shape. The other bootstrap objects are unchanged

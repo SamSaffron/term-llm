@@ -4,8 +4,8 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"context"
 
-	"github.com/samsaffron/term-llm/internal/llm/core"
-	"github.com/samsaffron/term-llm/internal/tools"
+	"github.com/term-llm/term-llm/internal/llm/core"
+	"github.com/term-llm/term-llm/internal/tools"
 )
 
 // A one-shot ask still owns its cell prompts until explicit cancellation or

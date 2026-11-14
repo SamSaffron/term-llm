@@ -14,16 +14,16 @@ import (
 	"strings"
 	"time"
 
-	"github.com/samsaffron/term-llm/internal/config"
-	"github.com/samsaffron/term-llm/internal/runtimeoutput"
 	"github.com/spf13/cobra"
+	"github.com/term-llm/term-llm/internal/config"
+	"github.com/term-llm/term-llm/internal/runtimeoutput"
 )
 
 const (
 	updateCheckInterval   = 24 * time.Hour
 	updateUserAgent       = "term-llm-cli"
 	SkipUpdateEnvVar      = "TERM_LLM_SKIP_UPDATE_CHECK"
-	RepoOwner             = "samsaffron"
+	RepoOwner             = "term-llm"
 	RepoName              = "term-llm"
 	updateCheckCommandArg = "__update-check"
 )

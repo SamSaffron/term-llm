@@ -9,7 +9,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/mattn/go-runewidth"
-	"github.com/samsaffron/term-llm/internal/tools"
+	"github.com/term-llm/term-llm/internal/tools"
 )
 
 func TestBuildSubagentPreview_Nil(t *testing.T) {

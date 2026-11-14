@@ -10,9 +10,9 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/samsaffron/term-llm/internal/llm/core"
-	"github.com/samsaffron/term-llm/internal/llm/engine"
-	memorydb "github.com/samsaffron/term-llm/internal/memory"
+	"github.com/term-llm/term-llm/internal/llm/core"
+	"github.com/term-llm/term-llm/internal/llm/engine"
+	memorydb "github.com/term-llm/term-llm/internal/memory"
 )
 
 type memoryExtractionResult struct {

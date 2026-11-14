@@ -14,7 +14,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/samsaffron/term-llm/internal/hub"
+	"github.com/term-llm/term-llm/internal/hub"
 )
 
 // orderTestNodes are config nodes on a closed port (probes fail at once):

@@ -9,8 +9,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/samsaffron/term-llm/internal/clipboard"
-	"github.com/samsaffron/term-llm/internal/pathutil"
+	"github.com/term-llm/term-llm/internal/clipboard"
+	"github.com/term-llm/term-llm/internal/pathutil"
 )
 
 // SaveImage saves image data to the configured output directory

@@ -12,8 +12,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/samsaffron/term-llm/internal/hub"
-	"github.com/samsaffron/term-llm/internal/passkeyauth"
+	"github.com/term-llm/term-llm/internal/hub"
+	"github.com/term-llm/term-llm/internal/passkeyauth"
 )
 
 func configureTestPasskeyHub(t *testing.T, s *hubServer, base string) *hubServer {

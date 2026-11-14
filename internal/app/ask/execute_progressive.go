@@ -8,15 +8,15 @@ import (
 	"time"
 
 	tea "charm.land/bubbletea/v2"
-	appruntime "github.com/samsaffron/term-llm/internal/app/runtime"
-	"github.com/samsaffron/term-llm/internal/app/runtime/bootstrap"
-	runtimeprogressive "github.com/samsaffron/term-llm/internal/app/runtime/progressive"
-	"github.com/samsaffron/term-llm/internal/config"
-	jobcore "github.com/samsaffron/term-llm/internal/jobs"
-	"github.com/samsaffron/term-llm/internal/run"
-	"github.com/samsaffron/term-llm/internal/session"
-	"github.com/samsaffron/term-llm/internal/tools"
-	"github.com/samsaffron/term-llm/internal/ui"
+	appruntime "github.com/term-llm/term-llm/internal/app/runtime"
+	"github.com/term-llm/term-llm/internal/app/runtime/bootstrap"
+	runtimeprogressive "github.com/term-llm/term-llm/internal/app/runtime/progressive"
+	"github.com/term-llm/term-llm/internal/config"
+	jobcore "github.com/term-llm/term-llm/internal/jobs"
+	"github.com/term-llm/term-llm/internal/run"
+	"github.com/term-llm/term-llm/internal/session"
+	"github.com/term-llm/term-llm/internal/tools"
+	"github.com/term-llm/term-llm/internal/ui"
 )
 
 type askProgressiveExecution struct {

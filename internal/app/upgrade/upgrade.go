@@ -1,8 +1,8 @@
 package upgrade
 
 import (
-	"github.com/samsaffron/term-llm/internal/update"
 	"github.com/spf13/cobra"
+	"github.com/term-llm/term-llm/internal/update"
 )
 
 // Options contains the requested release version and the current build version.

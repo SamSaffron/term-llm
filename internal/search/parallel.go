@@ -10,7 +10,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/samsaffron/term-llm/internal/providerhttp"
+	"github.com/term-llm/term-llm/internal/providerhttp"
 )
 
 const parallelSearchURL = "https://api.parallel.ai/v1/search"

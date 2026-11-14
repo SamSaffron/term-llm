@@ -11,10 +11,10 @@ import (
 	"sync"
 	"time"
 
-	"github.com/samsaffron/term-llm/internal/cache"
-	"github.com/samsaffron/term-llm/internal/llm/providers/anthropic"
-	"github.com/samsaffron/term-llm/internal/llm/providers/gemini"
-	"github.com/samsaffron/term-llm/internal/runtimeoutput"
+	"github.com/term-llm/term-llm/internal/cache"
+	"github.com/term-llm/term-llm/internal/llm/providers/anthropic"
+	"github.com/term-llm/term-llm/internal/llm/providers/gemini"
+	"github.com/term-llm/term-llm/internal/runtimeoutput"
 	"golang.org/x/sync/singleflight"
 )
 

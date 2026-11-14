@@ -9,14 +9,14 @@ import (
 	"testing"
 	"time"
 
-	appmemory "github.com/samsaffron/term-llm/internal/app/memory"
-	appruntime "github.com/samsaffron/term-llm/internal/app/runtime"
-	"github.com/samsaffron/term-llm/internal/config"
-	"github.com/samsaffron/term-llm/internal/llm/engine"
-	"github.com/samsaffron/term-llm/internal/llm/mockprovider"
-	memorydb "github.com/samsaffron/term-llm/internal/memory"
-	runpkg "github.com/samsaffron/term-llm/internal/run"
-	"github.com/samsaffron/term-llm/internal/tools"
+	appmemory "github.com/term-llm/term-llm/internal/app/memory"
+	appruntime "github.com/term-llm/term-llm/internal/app/runtime"
+	"github.com/term-llm/term-llm/internal/config"
+	"github.com/term-llm/term-llm/internal/llm/engine"
+	"github.com/term-llm/term-llm/internal/llm/mockprovider"
+	memorydb "github.com/term-llm/term-llm/internal/memory"
+	runpkg "github.com/term-llm/term-llm/internal/run"
+	"github.com/term-llm/term-llm/internal/tools"
 )
 
 func serveRuntimeFixtureOptions() Options {

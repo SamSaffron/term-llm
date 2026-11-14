@@ -7,7 +7,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/samsaffron/term-llm/internal/sqliteutil"
+	"github.com/term-llm/term-llm/internal/sqliteutil"
 )
 
 const jobsV2SchemaVersion = 2

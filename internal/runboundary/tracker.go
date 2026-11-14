@@ -5,7 +5,7 @@ package runboundary
 import (
 	"sync"
 
-	"github.com/samsaffron/term-llm/internal/llm/core"
+	"github.com/term-llm/term-llm/internal/llm/core"
 )
 
 // ProviderContext is the provider-side state captured with one boundary. It is

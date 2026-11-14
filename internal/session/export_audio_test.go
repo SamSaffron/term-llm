@@ -9,9 +9,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/samsaffron/term-llm/internal/llm/core"
-	"github.com/samsaffron/term-llm/internal/share"
-	"github.com/samsaffron/term-llm/internal/testutil/mediafixture"
+	"github.com/term-llm/term-llm/internal/llm/core"
+	"github.com/term-llm/term-llm/internal/share"
+	"github.com/term-llm/term-llm/internal/testutil/mediafixture"
 	"golang.org/x/net/html"
 )
 

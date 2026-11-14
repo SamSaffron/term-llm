@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	apphub "github.com/samsaffron/term-llm/internal/app/serve/hub"
+	apphub "github.com/term-llm/term-llm/internal/app/serve/hub"
 )
 
 func TestServeHubWithUsesCapturedValidationOptions(t *testing.T) {

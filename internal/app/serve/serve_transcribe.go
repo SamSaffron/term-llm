@@ -12,8 +12,8 @@ import (
 	"strings"
 	"time"
 
-	transcribe "github.com/samsaffron/term-llm/internal/app/transcribe"
-	"github.com/samsaffron/term-llm/internal/llm"
+	transcribe "github.com/term-llm/term-llm/internal/app/transcribe"
+	"github.com/term-llm/term-llm/internal/llm"
 )
 
 const (

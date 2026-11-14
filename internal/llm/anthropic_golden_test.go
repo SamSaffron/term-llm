@@ -48,9 +48,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/samsaffron/term-llm/internal/llm/core"
-	llmstream "github.com/samsaffron/term-llm/internal/llm/core/stream"
-	"github.com/samsaffron/term-llm/internal/llm/providers/bedrock"
+	"github.com/term-llm/term-llm/internal/llm/core"
+	llmstream "github.com/term-llm/term-llm/internal/llm/core/stream"
+	"github.com/term-llm/term-llm/internal/llm/providers/bedrock"
 )
 
 // The fixtures are shared with the anthropic leaf package, whose golden test

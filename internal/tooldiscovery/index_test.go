@@ -6,7 +6,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/samsaffron/term-llm/internal/mcp"
+	"github.com/term-llm/term-llm/internal/mcp"
 )
 
 func TestResolveModeBoundaries(t *testing.T) {

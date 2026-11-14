@@ -12,7 +12,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/samsaffron/term-llm/internal/testutil"
+	"github.com/term-llm/term-llm/internal/testutil"
 )
 
 func gitTest(t *testing.T, dir string, args ...string) string {

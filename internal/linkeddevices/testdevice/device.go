@@ -13,9 +13,9 @@ import (
 	"time"
 
 	"github.com/pion/webrtc/v4"
-	"github.com/samsaffron/term-llm/internal/pairing"
-	"github.com/samsaffron/term-llm/internal/peer"
-	"github.com/samsaffron/term-llm/internal/peerbroker"
+	"github.com/term-llm/term-llm/internal/pairing"
+	"github.com/term-llm/term-llm/internal/peer"
+	"github.com/term-llm/term-llm/internal/peerbroker"
 )
 
 var ErrNotPaired = errors.New("testdevice: device is not paired")

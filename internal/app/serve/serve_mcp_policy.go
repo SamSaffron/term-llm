@@ -9,9 +9,9 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/samsaffron/term-llm/internal/app/runtime/mcpstart"
-	"github.com/samsaffron/term-llm/internal/mcp"
-	"github.com/samsaffron/term-llm/internal/session"
+	"github.com/term-llm/term-llm/internal/app/runtime/mcpstart"
+	"github.com/term-llm/term-llm/internal/mcp"
+	"github.com/term-llm/term-llm/internal/session"
 )
 
 func (rt *serveRuntime) validateMCPAccess(names []string) error {

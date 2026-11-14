@@ -6,7 +6,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
-	"github.com/samsaffron/term-llm/internal/llm/core"
+	"github.com/term-llm/term-llm/internal/llm/core"
 	"go/ast"
 	"go/parser"
 	"go/token"
@@ -19,7 +19,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/samsaffron/term-llm/internal/mcphttp"
+	"github.com/term-llm/term-llm/internal/mcphttp"
 )
 
 func TestAppendInlineFlushNotice(t *testing.T) {

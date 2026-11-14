@@ -1,6 +1,6 @@
 package responses
 
-import "github.com/samsaffron/term-llm/internal/config"
+import "github.com/term-llm/term-llm/internal/config"
 
 func responsesOptionsFromConfig(cfg config.ResponsesConfig) ResponsesOptions {
 	return ResponsesOptions{

@@ -9,8 +9,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/spf13/cobra"
+	"github.com/term-llm/term-llm/internal/config"
 )
 
 func TestNotifyCommandsRegistered(t *testing.T) {

@@ -12,8 +12,8 @@ import (
 	_ "image/jpeg"
 	_ "image/png"
 
-	"github.com/samsaffron/term-llm/internal/codemode"
-	"github.com/samsaffron/term-llm/internal/llm/core"
+	"github.com/term-llm/term-llm/internal/codemode"
+	"github.com/term-llm/term-llm/internal/llm/core"
 	_ "golang.org/x/image/webp"
 )
 

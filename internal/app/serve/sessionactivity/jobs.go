@@ -14,7 +14,7 @@ import (
 	"strings"
 	"time"
 
-	servejobs "github.com/samsaffron/term-llm/internal/app/serve/jobs"
+	servejobs "github.com/term-llm/term-llm/internal/app/serve/jobs"
 )
 
 // errActivityRunNotFound marks a record retention has already removed. It is

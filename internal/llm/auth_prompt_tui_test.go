@@ -4,8 +4,8 @@ import (
 	"strings"
 	"testing"
 
-	rp "github.com/samsaffron/term-llm/internal/llm/providers/responsesproviders"
-	"github.com/samsaffron/term-llm/internal/runtimeoutput"
+	rp "github.com/term-llm/term-llm/internal/llm/providers/responsesproviders"
+	"github.com/term-llm/term-llm/internal/runtimeoutput"
 )
 
 func TestAuthPromptsRefuseActiveTUI(t *testing.T) {

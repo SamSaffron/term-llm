@@ -6,8 +6,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/samsaffron/term-llm/internal/termhost"
 	"github.com/spf13/cobra"
+	"github.com/term-llm/term-llm/internal/termhost"
 )
 
 func TestLifecycleStatusJSONExplainsDetectionWithoutPublishing(t *testing.T) {

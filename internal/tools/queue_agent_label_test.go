@@ -10,7 +10,7 @@ import (
 	"testing"
 	"unicode/utf8"
 
-	"github.com/samsaffron/term-llm/internal/formatutil"
+	"github.com/term-llm/term-llm/internal/formatutil"
 )
 
 // The optional label is presentation metadata for the conversation activity

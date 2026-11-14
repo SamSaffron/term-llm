@@ -13,16 +13,16 @@ import (
 	"testing"
 	"time"
 
-	"github.com/samsaffron/term-llm/internal/llm/core"
-	"github.com/samsaffron/term-llm/internal/llm/engine"
-	"github.com/samsaffron/term-llm/internal/llm/mockprovider"
-	"github.com/samsaffron/term-llm/internal/llm/providers/anthropic"
-	"github.com/samsaffron/term-llm/internal/llm/providers/clibin"
-	"github.com/samsaffron/term-llm/internal/llm/providers/gemini"
-	"github.com/samsaffron/term-llm/internal/llm/providers/ollama"
-	"github.com/samsaffron/term-llm/internal/llm/providers/opencompat"
-	"github.com/samsaffron/term-llm/internal/llm/providers/responses"
-	rp "github.com/samsaffron/term-llm/internal/llm/providers/responsesproviders"
+	"github.com/term-llm/term-llm/internal/llm/core"
+	"github.com/term-llm/term-llm/internal/llm/engine"
+	"github.com/term-llm/term-llm/internal/llm/mockprovider"
+	"github.com/term-llm/term-llm/internal/llm/providers/anthropic"
+	"github.com/term-llm/term-llm/internal/llm/providers/clibin"
+	"github.com/term-llm/term-llm/internal/llm/providers/gemini"
+	"github.com/term-llm/term-llm/internal/llm/providers/ollama"
+	"github.com/term-llm/term-llm/internal/llm/providers/opencompat"
+	"github.com/term-llm/term-llm/internal/llm/providers/responses"
+	rp "github.com/term-llm/term-llm/internal/llm/providers/responsesproviders"
 )
 
 func TestEngineStripsConversationStartMarkersAcrossRequest(t *testing.T) {

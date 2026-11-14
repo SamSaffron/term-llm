@@ -1,6 +1,6 @@
 package tools
 
-import "github.com/samsaffron/term-llm/internal/greprerank"
+import "github.com/term-llm/term-llm/internal/greprerank"
 
 // Ranked matches must not pass through formatGrepResults: it regroups by file
 // and caps ten blocks/file, both of which would silently destroy rank order.

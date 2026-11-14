@@ -7,8 +7,8 @@ import (
 
 	"charm.land/huh/v2"
 	"charm.land/lipgloss/v2"
-	"github.com/samsaffron/term-llm/internal/runtimeoutput"
-	"github.com/samsaffron/term-llm/internal/terminalpolicy"
+	"github.com/term-llm/term-llm/internal/runtimeoutput"
+	"github.com/term-llm/term-llm/internal/terminalpolicy"
 )
 
 // HuhApprovalPrompt prompts the user for approval using a huh form.

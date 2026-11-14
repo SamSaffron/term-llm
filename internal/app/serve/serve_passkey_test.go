@@ -9,8 +9,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/samsaffron/term-llm/internal/passkeyauth"
-	"github.com/samsaffron/term-llm/internal/widgets"
+	"github.com/term-llm/term-llm/internal/passkeyauth"
+	"github.com/term-llm/term-llm/internal/widgets"
 )
 
 func TestWebPasskeyAuthenticationBoundary(t *testing.T) {

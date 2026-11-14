@@ -16,8 +16,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/samsaffron/term-llm/internal/clipboard"
-	"github.com/samsaffron/term-llm/internal/config"
+	"github.com/term-llm/term-llm/internal/clipboard"
+	"github.com/term-llm/term-llm/internal/config"
 )
 
 type Runner interface {

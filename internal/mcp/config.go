@@ -8,7 +8,7 @@ import (
 	"sort"
 	"sync"
 
-	"github.com/samsaffron/term-llm/internal/filelock"
+	"github.com/term-llm/term-llm/internal/filelock"
 )
 
 var configUpdateMu sync.Mutex

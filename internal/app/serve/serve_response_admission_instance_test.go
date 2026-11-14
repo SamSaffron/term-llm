@@ -2,7 +2,7 @@ package serve
 
 import (
 	"encoding/json"
-	"github.com/samsaffron/term-llm/internal/app/uploads"
+	"github.com/term-llm/term-llm/internal/app/uploads"
 	"net/http"
 	"net/http/httptest"
 	"strings"

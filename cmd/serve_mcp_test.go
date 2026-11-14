@@ -4,11 +4,11 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/samsaffron/term-llm/internal/config"
+	"github.com/term-llm/term-llm/internal/config"
 
-	"github.com/samsaffron/term-llm/internal/tools"
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
+	"github.com/term-llm/term-llm/internal/tools"
 )
 
 func TestResolveServeMCPApprovalModeAcceptsNormalizedParentFlagAndDetectsCrossLevelConflict(t *testing.T) {

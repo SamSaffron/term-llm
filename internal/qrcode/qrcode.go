@@ -60,8 +60,8 @@ import (
 	"log"
 	"os"
 
-	bitset "github.com/samsaffron/term-llm/internal/qrcode/bitset"
-	reedsolomon "github.com/samsaffron/term-llm/internal/qrcode/reedsolomon"
+	bitset "github.com/term-llm/term-llm/internal/qrcode/bitset"
+	reedsolomon "github.com/term-llm/term-llm/internal/qrcode/reedsolomon"
 )
 
 // Encode a QR Code and return a raw PNG image.

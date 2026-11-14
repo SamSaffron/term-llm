@@ -1,8 +1,8 @@
 package tools
 
 import (
-	"github.com/samsaffron/term-llm/internal/modelpolicy"
-	"github.com/samsaffron/term-llm/internal/skills"
+	"github.com/term-llm/term-llm/internal/modelpolicy"
+	"github.com/term-llm/term-llm/internal/skills"
 )
 
 const codeModeBindingUnavailableCode = "binding_unavailable"

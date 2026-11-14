@@ -1,9 +1,9 @@
 package cmd
 
 import (
-	versionapp "github.com/samsaffron/term-llm/internal/app/version"
-	"github.com/samsaffron/term-llm/internal/buildinfo"
 	"github.com/spf13/cobra"
+	versionapp "github.com/term-llm/term-llm/internal/app/version"
+	"github.com/term-llm/term-llm/internal/buildinfo"
 )
 
 // These will be set by the linker during build

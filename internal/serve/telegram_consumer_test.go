@@ -8,9 +8,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/samsaffron/term-llm/internal/llm/core"
-	"github.com/samsaffron/term-llm/internal/restart"
-	runpkg "github.com/samsaffron/term-llm/internal/run"
+	"github.com/term-llm/term-llm/internal/llm/core"
+	"github.com/term-llm/term-llm/internal/restart"
+	runpkg "github.com/term-llm/term-llm/internal/run"
 )
 
 type blockingCloseTestStream struct {

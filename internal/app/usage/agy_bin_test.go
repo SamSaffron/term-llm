@@ -8,8 +8,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/samsaffron/term-llm/internal/llm/providerusage"
 	"github.com/spf13/cobra"
+	"github.com/term-llm/term-llm/internal/llm/providerusage"
 )
 
 const agyUsageFixture = `{

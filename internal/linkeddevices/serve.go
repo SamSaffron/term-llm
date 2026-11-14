@@ -3,11 +3,11 @@ package linkeddevices
 import (
 	"context"
 	"fmt"
-	"github.com/samsaffron/term-llm/internal/pairing"
+	"github.com/term-llm/term-llm/internal/pairing"
 	"net/http"
 
-	"github.com/samsaffron/term-llm/internal/config"
-	"github.com/samsaffron/term-llm/internal/session"
+	"github.com/term-llm/term-llm/internal/config"
+	"github.com/term-llm/term-llm/internal/session"
 )
 
 // ServeHost owns the linked-device runtime's integration with a serve process.

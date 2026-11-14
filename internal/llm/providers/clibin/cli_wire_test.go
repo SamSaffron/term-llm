@@ -6,7 +6,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/samsaffron/term-llm/internal/cliwire"
+	"github.com/term-llm/term-llm/internal/cliwire"
 )
 
 func TestStartCLIWireAuditForcesChildProxyEnvironment(t *testing.T) {

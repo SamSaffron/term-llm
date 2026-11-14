@@ -10,10 +10,10 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/samsaffron/term-llm/internal/authoridentity"
-	"github.com/samsaffron/term-llm/internal/linkeddevices"
-	"github.com/samsaffron/term-llm/internal/pairing"
-	"github.com/samsaffron/term-llm/internal/session"
+	"github.com/term-llm/term-llm/internal/authoridentity"
+	"github.com/term-llm/term-llm/internal/linkeddevices"
+	"github.com/term-llm/term-llm/internal/pairing"
+	"github.com/term-llm/term-llm/internal/session"
 )
 
 type Identity struct {

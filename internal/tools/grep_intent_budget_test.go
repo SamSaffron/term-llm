@@ -14,9 +14,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/samsaffron/term-llm/internal/classify"
-	"github.com/samsaffron/term-llm/internal/config"
-	"github.com/samsaffron/term-llm/internal/grepsearch"
+	"github.com/term-llm/term-llm/internal/classify"
+	"github.com/term-llm/term-llm/internal/config"
+	"github.com/term-llm/term-llm/internal/grepsearch"
 )
 
 const reviewedBudget = 50 * time.Millisecond

@@ -9,7 +9,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/samsaffron/term-llm/internal/ui"
+	"github.com/term-llm/term-llm/internal/ui"
 )
 
 // JSONEmitter serializes ui.StreamEvent and related metadata as JSONL

@@ -8,15 +8,15 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/samsaffron/term-llm/internal/app/runtime/approval"
-	"github.com/samsaffron/term-llm/internal/app/runtime/bootstrap"
-	"github.com/samsaffron/term-llm/internal/app/runtime/mcpstart"
-	appserve "github.com/samsaffron/term-llm/internal/app/serve"
-	"github.com/samsaffron/term-llm/internal/config"
-	"github.com/samsaffron/term-llm/internal/mcp"
-	"github.com/samsaffron/term-llm/internal/session"
-	"github.com/samsaffron/term-llm/internal/testutil/mcptest"
-	"github.com/samsaffron/term-llm/internal/tools"
+	"github.com/term-llm/term-llm/internal/app/runtime/approval"
+	"github.com/term-llm/term-llm/internal/app/runtime/bootstrap"
+	"github.com/term-llm/term-llm/internal/app/runtime/mcpstart"
+	appserve "github.com/term-llm/term-llm/internal/app/serve"
+	"github.com/term-llm/term-llm/internal/config"
+	"github.com/term-llm/term-llm/internal/mcp"
+	"github.com/term-llm/term-llm/internal/session"
+	"github.com/term-llm/term-llm/internal/testutil/mcptest"
+	"github.com/term-llm/term-llm/internal/tools"
 )
 
 func TestMCPPolicyChatResumeRepairsStaleSelection(t *testing.T) {

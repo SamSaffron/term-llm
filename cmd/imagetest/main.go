@@ -12,8 +12,8 @@ import (
 	"time"
 
 	"github.com/BourgeoisBear/rasterm"
-	"github.com/samsaffron/term-llm/internal/image"
-	"github.com/samsaffron/term-llm/internal/ui"
+	"github.com/term-llm/term-llm/internal/image"
+	"github.com/term-llm/term-llm/internal/ui"
 	_ "golang.org/x/image/webp"
 )
 

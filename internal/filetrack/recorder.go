@@ -4,8 +4,8 @@ import (
 	"context"
 	"sync"
 
-	"github.com/samsaffron/term-llm/internal/llm/core"
-	"github.com/samsaffron/term-llm/internal/runtimeoutput"
+	"github.com/term-llm/term-llm/internal/llm/core"
+	"github.com/term-llm/term-llm/internal/runtimeoutput"
 )
 
 // Recorder adapts a Store to the tools-facing FileChangeRecorder interface.

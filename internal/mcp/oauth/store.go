@@ -12,8 +12,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/samsaffron/term-llm/internal/atomicfile"
-	"github.com/samsaffron/term-llm/internal/filelock"
+	"github.com/term-llm/term-llm/internal/atomicfile"
+	"github.com/term-llm/term-llm/internal/filelock"
 	"golang.org/x/oauth2"
 )
 

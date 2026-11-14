@@ -7,7 +7,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/samsaffron/term-llm/internal/notification"
+	"github.com/term-llm/term-llm/internal/notification"
 )
 
 func TestNewManualPush(t *testing.T) {

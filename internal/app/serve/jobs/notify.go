@@ -6,8 +6,8 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/samsaffron/term-llm/internal/providerhttp"
-	"github.com/samsaffron/term-llm/internal/restart"
+	"github.com/term-llm/term-llm/internal/providerhttp"
+	"github.com/term-llm/term-llm/internal/restart"
 )
 
 func jobsV2NotifyTerminalStatus(status RunStatus) bool {

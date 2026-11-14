@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/samsaffron/term-llm/internal/input"
+	"github.com/term-llm/term-llm/internal/input"
 )
 
 func TestAskUserPrompt(t *testing.T) {

@@ -14,7 +14,7 @@ import (
 	"testing"
 	"time"
 
-	mcpoauth "github.com/samsaffron/term-llm/internal/mcp/oauth"
+	mcpoauth "github.com/term-llm/term-llm/internal/mcp/oauth"
 )
 
 func TestManagerPolicyGettersUseCacheWithoutRevocation(t *testing.T) {

@@ -8,11 +8,11 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/samsaffron/term-llm/internal/classify/backends"
-	"github.com/samsaffron/term-llm/internal/config"
-	"github.com/samsaffron/term-llm/internal/greprerank"
-	"github.com/samsaffron/term-llm/internal/greprerank/configured"
-	"github.com/samsaffron/term-llm/internal/llm/core"
+	"github.com/term-llm/term-llm/internal/classify/backends"
+	"github.com/term-llm/term-llm/internal/config"
+	"github.com/term-llm/term-llm/internal/greprerank"
+	"github.com/term-llm/term-llm/internal/greprerank/configured"
+	"github.com/term-llm/term-llm/internal/llm/core"
 )
 
 var newGrepRerankBackend backends.Factory = backends.New

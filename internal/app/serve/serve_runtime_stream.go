@@ -5,7 +5,7 @@ import (
 	"errors"
 	"io"
 
-	"github.com/samsaffron/term-llm/internal/llm/core"
+	"github.com/term-llm/term-llm/internal/llm/core"
 )
 
 func (rt *serveRuntime) consumeRunStream(runCtx, persistCtx context.Context, stateful, persisted bool, req core.Request, onEvent func(core.Event) error) (_ serveRunResult, streamErr error, _ bool) {

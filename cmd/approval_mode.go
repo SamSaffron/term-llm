@@ -4,11 +4,11 @@ import (
 	"fmt"
 	"io"
 
-	runapproval "github.com/samsaffron/term-llm/internal/app/runtime/approval"
-	"github.com/samsaffron/term-llm/internal/config"
-	"github.com/samsaffron/term-llm/internal/session"
-	"github.com/samsaffron/term-llm/internal/tools"
 	"github.com/spf13/cobra"
+	runapproval "github.com/term-llm/term-llm/internal/app/runtime/approval"
+	"github.com/term-llm/term-llm/internal/config"
+	"github.com/term-llm/term-llm/internal/session"
+	"github.com/term-llm/term-llm/internal/tools"
 )
 
 var cliApprovalModeNames = []string{"prompt", "auto", "yolo"}

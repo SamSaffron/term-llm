@@ -3,9 +3,9 @@ package wire
 import (
 	"strings"
 
-	"github.com/samsaffron/term-llm/internal/config"
-	"github.com/samsaffron/term-llm/internal/llm/core"
-	"github.com/samsaffron/term-llm/internal/reasoning"
+	"github.com/term-llm/term-llm/internal/config"
+	"github.com/term-llm/term-llm/internal/llm/core"
+	"github.com/term-llm/term-llm/internal/reasoning"
 )
 
 // ReasoningPartDisplay projects ordered or legacy reasoning with the same

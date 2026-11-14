@@ -3,7 +3,7 @@ package session
 import (
 	"fmt"
 
-	"github.com/samsaffron/term-llm/internal/sqliteutil"
+	"github.com/term-llm/term-llm/internal/sqliteutil"
 )
 
 // migrateProjectOrderV61 adds projects.sort_order, ranks existing projects,

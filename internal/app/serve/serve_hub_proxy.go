@@ -16,11 +16,11 @@ import (
 	"strconv"
 	"strings"
 
-	apphub "github.com/samsaffron/term-llm/internal/app/serve/hub"
-	appserver "github.com/samsaffron/term-llm/internal/app/serve/server"
-	"github.com/samsaffron/term-llm/internal/hub"
-	"github.com/samsaffron/term-llm/internal/restart"
-	"github.com/samsaffron/term-llm/internal/widgets"
+	apphub "github.com/term-llm/term-llm/internal/app/serve/hub"
+	appserver "github.com/term-llm/term-llm/internal/app/serve/server"
+	"github.com/term-llm/term-llm/internal/hub"
+	"github.com/term-llm/term-llm/internal/restart"
+	"github.com/term-llm/term-llm/internal/widgets"
 )
 
 const hubHTMLRebaseMaxBytes = 4 << 20

@@ -7,11 +7,11 @@ import (
 	"time"
 
 	tea "charm.land/bubbletea/v2"
-	"github.com/samsaffron/term-llm/internal/clipboard"
-	"github.com/samsaffron/term-llm/internal/config"
-	internalreasoning "github.com/samsaffron/term-llm/internal/reasoning"
-	"github.com/samsaffron/term-llm/internal/session"
-	sharepkg "github.com/samsaffron/term-llm/internal/share"
+	"github.com/term-llm/term-llm/internal/clipboard"
+	"github.com/term-llm/term-llm/internal/config"
+	internalreasoning "github.com/term-llm/term-llm/internal/reasoning"
+	"github.com/term-llm/term-llm/internal/session"
+	sharepkg "github.com/term-llm/term-llm/internal/share"
 )
 
 type shareRequest struct {

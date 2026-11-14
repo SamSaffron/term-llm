@@ -17,11 +17,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/samsaffron/term-llm/internal/classify"
-	"github.com/samsaffron/term-llm/internal/classify/backends"
-	"github.com/samsaffron/term-llm/internal/config"
-	"github.com/samsaffron/term-llm/internal/greprerank"
-	"github.com/samsaffron/term-llm/internal/llm/core"
+	"github.com/term-llm/term-llm/internal/classify"
+	"github.com/term-llm/term-llm/internal/classify/backends"
+	"github.com/term-llm/term-llm/internal/config"
+	"github.com/term-llm/term-llm/internal/greprerank"
+	"github.com/term-llm/term-llm/internal/llm/core"
 )
 
 const (

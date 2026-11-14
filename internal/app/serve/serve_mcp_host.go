@@ -9,17 +9,17 @@ import (
 	"strings"
 	"time"
 
-	"github.com/samsaffron/term-llm/internal/app/reload"
-	appruntime "github.com/samsaffron/term-llm/internal/app/runtime"
-	runapproval "github.com/samsaffron/term-llm/internal/app/runtime/approval"
-	guardian "github.com/samsaffron/term-llm/internal/app/runtime/guardian"
-	"github.com/samsaffron/term-llm/internal/config"
-	"github.com/samsaffron/term-llm/internal/llm"
-	"github.com/samsaffron/term-llm/internal/mcphttp"
-	"github.com/samsaffron/term-llm/internal/restart"
-	"github.com/samsaffron/term-llm/internal/search"
-	"github.com/samsaffron/term-llm/internal/signal"
-	"github.com/samsaffron/term-llm/internal/tools"
+	"github.com/term-llm/term-llm/internal/app/reload"
+	appruntime "github.com/term-llm/term-llm/internal/app/runtime"
+	runapproval "github.com/term-llm/term-llm/internal/app/runtime/approval"
+	guardian "github.com/term-llm/term-llm/internal/app/runtime/guardian"
+	"github.com/term-llm/term-llm/internal/config"
+	"github.com/term-llm/term-llm/internal/llm"
+	"github.com/term-llm/term-llm/internal/mcphttp"
+	"github.com/term-llm/term-llm/internal/restart"
+	"github.com/term-llm/term-llm/internal/search"
+	"github.com/term-llm/term-llm/internal/signal"
+	"github.com/term-llm/term-llm/internal/tools"
 )
 
 // MCP tool names for web tools (not part of local tool registry).

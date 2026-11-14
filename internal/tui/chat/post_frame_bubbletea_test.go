@@ -12,9 +12,9 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/x/ansi"
-	"github.com/samsaffron/term-llm/internal/termimage"
-	"github.com/samsaffron/term-llm/internal/testutil"
-	"github.com/samsaffron/term-llm/internal/ui"
+	"github.com/term-llm/term-llm/internal/termimage"
+	"github.com/term-llm/term-llm/internal/testutil"
+	"github.com/term-llm/term-llm/internal/ui"
 )
 
 const (

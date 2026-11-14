@@ -5,9 +5,9 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/samsaffron/term-llm/internal/app/providers"
-	"github.com/samsaffron/term-llm/internal/config"
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/term-llm/term-llm/internal/app/providers"
+	"github.com/term-llm/term-llm/internal/config"
+	"github.com/term-llm/term-llm/internal/llm"
 )
 
 // spawnModelCredentials memoizes the local login probes behind provider

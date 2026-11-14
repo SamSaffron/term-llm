@@ -1,6 +1,6 @@
 package llm
 
-import "github.com/samsaffron/term-llm/internal/llm/core"
+import "github.com/term-llm/term-llm/internal/llm/core"
 
 // FilterConversationMessages removes durable UI/session event markers and other
 // non-conversation rows before context is sent to providers, compaction, handover,

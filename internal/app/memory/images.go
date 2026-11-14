@@ -7,7 +7,7 @@ import (
 	"os"
 	"strings"
 
-	memorydb "github.com/samsaffron/term-llm/internal/memory"
+	memorydb "github.com/term-llm/term-llm/internal/memory"
 )
 
 // ImagesOptions configures `memory images list` and `memory images search`.

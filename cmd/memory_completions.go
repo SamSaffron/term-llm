@@ -5,8 +5,8 @@ import (
 	"sort"
 	"strings"
 
-	memorydb "github.com/samsaffron/term-llm/internal/memory"
 	"github.com/spf13/cobra"
+	memorydb "github.com/term-llm/term-llm/internal/memory"
 )
 
 func memoryAgentCompletion(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {

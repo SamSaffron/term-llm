@@ -8,9 +8,9 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/samsaffron/term-llm/internal/agents"
-	"github.com/samsaffron/term-llm/internal/app/serve/agentcatalog"
-	"github.com/samsaffron/term-llm/internal/config"
+	"github.com/term-llm/term-llm/internal/agents"
+	"github.com/term-llm/term-llm/internal/app/serve/agentcatalog"
+	"github.com/term-llm/term-llm/internal/config"
 )
 
 func writeAgentCatalogTestAgent(t *testing.T, dir, name, yaml string) {

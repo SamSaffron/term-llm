@@ -13,12 +13,12 @@ import (
 	"sync"
 	"time"
 
-	"github.com/samsaffron/term-llm/internal/app/serve/wire"
-	"github.com/samsaffron/term-llm/internal/llm"
-	"github.com/samsaffron/term-llm/internal/llm/core"
-	"github.com/samsaffron/term-llm/internal/restart"
-	"github.com/samsaffron/term-llm/internal/session"
-	transcriptstore "github.com/samsaffron/term-llm/internal/session/transcript"
+	"github.com/term-llm/term-llm/internal/app/serve/wire"
+	"github.com/term-llm/term-llm/internal/llm"
+	"github.com/term-llm/term-llm/internal/llm/core"
+	"github.com/term-llm/term-llm/internal/restart"
+	"github.com/term-llm/term-llm/internal/session"
+	transcriptstore "github.com/term-llm/term-llm/internal/session/transcript"
 )
 
 type responseRunStreamState struct {

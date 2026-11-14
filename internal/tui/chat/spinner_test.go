@@ -6,8 +6,8 @@ import (
 	"time"
 
 	"charm.land/bubbles/v2/spinner"
-	"github.com/samsaffron/term-llm/internal/tui/inspector"
-	"github.com/samsaffron/term-llm/internal/ui"
+	"github.com/term-llm/term-llm/internal/tui/inspector"
+	"github.com/term-llm/term-llm/internal/ui"
 )
 
 func TestChatSpinnerUsesReducedDefaultFPS(t *testing.T) {

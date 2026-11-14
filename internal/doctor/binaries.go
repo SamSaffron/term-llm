@@ -6,7 +6,7 @@ import (
 	"os/exec"
 	"sort"
 
-	"github.com/samsaffron/term-llm/internal/config"
+	"github.com/term-llm/term-llm/internal/config"
 )
 
 // BinarySpec describes an external command term-llm may shell out to.

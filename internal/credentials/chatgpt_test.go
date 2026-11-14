@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/samsaffron/term-llm/internal/oauth"
+	"github.com/term-llm/term-llm/internal/oauth"
 )
 
 func TestRefreshChatGPTCredentialsAdoptsRotatedCredentials(t *testing.T) {

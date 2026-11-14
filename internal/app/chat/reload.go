@@ -6,9 +6,9 @@ import (
 	"sync"
 
 	tea "charm.land/bubbletea/v2"
-	"github.com/samsaffron/term-llm/internal/process"
-	"github.com/samsaffron/term-llm/internal/restart"
-	tuichat "github.com/samsaffron/term-llm/internal/tui/chat"
+	"github.com/term-llm/term-llm/internal/process"
+	"github.com/term-llm/term-llm/internal/restart"
+	tuichat "github.com/term-llm/term-llm/internal/tui/chat"
 )
 
 // Bubble Tea can delay a Cmd after Update returns. Reserve ownership when the

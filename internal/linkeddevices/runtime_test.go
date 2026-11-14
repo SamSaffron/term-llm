@@ -16,11 +16,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/samsaffron/term-llm/internal/config"
-	"github.com/samsaffron/term-llm/internal/linkeddevices/testdevice"
-	"github.com/samsaffron/term-llm/internal/pairing"
-	"github.com/samsaffron/term-llm/internal/peer"
-	"github.com/samsaffron/term-llm/internal/peerbroker"
+	"github.com/term-llm/term-llm/internal/config"
+	"github.com/term-llm/term-llm/internal/linkeddevices/testdevice"
+	"github.com/term-llm/term-llm/internal/pairing"
+	"github.com/term-llm/term-llm/internal/peer"
+	"github.com/term-llm/term-llm/internal/peerbroker"
 )
 
 func TestRuntimeOffAndUnavailableMakeNoOutboundCalls(t *testing.T) {

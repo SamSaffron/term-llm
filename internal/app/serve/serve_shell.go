@@ -14,7 +14,7 @@ import (
 	"strings"
 	"time"
 
-	serveshell "github.com/samsaffron/term-llm/internal/app/serve/shell"
+	serveshell "github.com/term-llm/term-llm/internal/app/serve/shell"
 )
 
 type serveShellCreateRequest struct {

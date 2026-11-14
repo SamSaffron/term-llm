@@ -3,7 +3,7 @@ package shell
 import (
 	"context"
 	"errors"
-	"github.com/samsaffron/term-llm/internal/app/serve/protocol"
+	"github.com/term-llm/term-llm/internal/app/serve/protocol"
 	"io"
 	"sync"
 	"time"

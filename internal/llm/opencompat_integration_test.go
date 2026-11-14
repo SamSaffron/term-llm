@@ -14,14 +14,14 @@ import (
 	"testing"
 	"time"
 
-	"github.com/samsaffron/term-llm/internal/cache"
-	"github.com/samsaffron/term-llm/internal/config"
-	"github.com/samsaffron/term-llm/internal/llm/core"
-	"github.com/samsaffron/term-llm/internal/llm/factory"
-	"github.com/samsaffron/term-llm/internal/llm/providers/opencompat"
-	"github.com/samsaffron/term-llm/internal/llm/providers/responses"
-	"github.com/samsaffron/term-llm/internal/llm/schema"
-	"github.com/samsaffron/term-llm/internal/venice"
+	"github.com/term-llm/term-llm/internal/cache"
+	"github.com/term-llm/term-llm/internal/config"
+	"github.com/term-llm/term-llm/internal/llm/core"
+	"github.com/term-llm/term-llm/internal/llm/factory"
+	"github.com/term-llm/term-llm/internal/llm/providers/opencompat"
+	"github.com/term-llm/term-llm/internal/llm/providers/responses"
+	"github.com/term-llm/term-llm/internal/llm/schema"
+	"github.com/term-llm/term-llm/internal/venice"
 )
 
 // from venice_test.go: TestNewProviderByName_ResolvesConfiguredVeniceCredentialsOnDemand

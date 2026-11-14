@@ -7,10 +7,10 @@ import (
 	"time"
 
 	tea "charm.land/bubbletea/v2"
-	"github.com/samsaffron/term-llm/internal/lifecycle"
-	"github.com/samsaffron/term-llm/internal/restart"
-	"github.com/samsaffron/term-llm/internal/termhost"
-	tuichat "github.com/samsaffron/term-llm/internal/tui/chat"
+	"github.com/term-llm/term-llm/internal/lifecycle"
+	"github.com/term-llm/term-llm/internal/restart"
+	"github.com/term-llm/term-llm/internal/termhost"
+	tuichat "github.com/term-llm/term-llm/internal/tui/chat"
 )
 
 // chatProgramChild is the lifecycle-bearing Bubble Tea model currently visible

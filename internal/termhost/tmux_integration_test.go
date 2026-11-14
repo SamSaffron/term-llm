@@ -10,8 +10,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/samsaffron/term-llm/internal/config"
-	"github.com/samsaffron/term-llm/internal/lifecycle"
+	"github.com/term-llm/term-llm/internal/config"
+	"github.com/term-llm/term-llm/internal/lifecycle"
 )
 
 func TestCommandSinkTmuxEndToEnd(t *testing.T) {

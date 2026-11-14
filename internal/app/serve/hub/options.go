@@ -6,8 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 
-	appserver "github.com/samsaffron/term-llm/internal/app/serve/server"
-	"github.com/samsaffron/term-llm/internal/appdata"
+	appserver "github.com/term-llm/term-llm/internal/app/serve/server"
+	"github.com/term-llm/term-llm/internal/appdata"
 )
 
 // RegistrationTokenEnv is the private reverse-node registration handoff key.

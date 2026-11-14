@@ -3,7 +3,7 @@ package serve
 import (
 	"net/http"
 
-	"github.com/samsaffron/term-llm/internal/app/serve/agentcatalog"
+	"github.com/term-llm/term-llm/internal/app/serve/agentcatalog"
 )
 
 // handleAgentCatalog serves the Web UI's /agents catalog.

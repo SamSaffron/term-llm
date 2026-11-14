@@ -1,8 +1,8 @@
 package cmd
 
 import (
-	upgradeapp "github.com/samsaffron/term-llm/internal/app/upgrade"
 	"github.com/spf13/cobra"
+	upgradeapp "github.com/term-llm/term-llm/internal/app/upgrade"
 )
 
 var upgradeOptions upgradeapp.Options

@@ -4,7 +4,7 @@ import (
 	"context"
 	"sync"
 
-	"github.com/samsaffron/term-llm/internal/config"
+	"github.com/term-llm/term-llm/internal/config"
 )
 
 // lazySearcher defers provider construction (and therefore credential

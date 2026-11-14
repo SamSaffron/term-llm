@@ -11,7 +11,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/samsaffron/term-llm/internal/providerhttp"
+	"github.com/term-llm/term-llm/internal/providerhttp"
 )
 
 // BraveSearcher implements Searcher using the Brave Search API.

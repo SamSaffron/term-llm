@@ -7,8 +7,8 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/samsaffron/term-llm/internal/filetrack"
-	"github.com/samsaffron/term-llm/internal/llm/core"
+	"github.com/term-llm/term-llm/internal/filetrack"
+	"github.com/term-llm/term-llm/internal/llm/core"
 )
 
 func executeClaimedShell(t *testing.T, tool *ShellTool, sessionID, runID string, args ShellArgs) core.ToolOutput {

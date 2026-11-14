@@ -5,9 +5,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/samsaffron/term-llm/internal/llm/core"
-	corestream "github.com/samsaffron/term-llm/internal/llm/core/stream"
-	"github.com/samsaffron/term-llm/internal/llm/providers/anthropic"
+	"github.com/term-llm/term-llm/internal/llm/core"
+	corestream "github.com/term-llm/term-llm/internal/llm/core/stream"
+	"github.com/term-llm/term-llm/internal/llm/providers/anthropic"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -16,7 +16,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/samsaffron/term-llm/internal/awsauth"
+	"github.com/term-llm/term-llm/internal/awsauth"
 )
 
 func TestBedrockInvokeURL(t *testing.T) {

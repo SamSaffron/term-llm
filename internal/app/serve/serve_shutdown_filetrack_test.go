@@ -10,9 +10,9 @@ import (
 	"testing"
 	"time"
 
-	appruntime "github.com/samsaffron/term-llm/internal/app/runtime"
-	"github.com/samsaffron/term-llm/internal/config"
-	"github.com/samsaffron/term-llm/internal/filetrack"
+	appruntime "github.com/term-llm/term-llm/internal/app/runtime"
+	"github.com/term-llm/term-llm/internal/config"
+	"github.com/term-llm/term-llm/internal/filetrack"
 )
 
 func installShutdownFileTrackStore(t *testing.T) (*filetrack.Store, string) {

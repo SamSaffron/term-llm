@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	"github.com/samsaffron/term-llm/internal/session"
+	"github.com/term-llm/term-llm/internal/session"
 )
 
 func TestAgentWaitObserverRequiresActualOutstandingWait(t *testing.T) {

@@ -2,11 +2,11 @@ package engine
 
 import (
 	"context"
-	"github.com/samsaffron/term-llm/internal/llm/core"
+	"github.com/term-llm/term-llm/internal/llm/core"
 	"strings"
 	"time"
 
-	"github.com/samsaffron/term-llm/internal/runtimeoutput"
+	"github.com/term-llm/term-llm/internal/runtimeoutput"
 )
 
 // SetCompaction enables context compaction with the given input token limit

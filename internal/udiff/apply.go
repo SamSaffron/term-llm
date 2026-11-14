@@ -5,7 +5,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/samsaffron/term-llm/internal/textmatch"
+	"github.com/term-llm/term-llm/internal/textmatch"
 )
 
 // ApplyResult contains the result of applying hunks with warnings for failures.

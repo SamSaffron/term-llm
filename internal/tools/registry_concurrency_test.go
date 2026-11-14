@@ -5,7 +5,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/samsaffron/term-llm/internal/agents"
+	"github.com/term-llm/term-llm/internal/agents"
 )
 
 func TestLocalToolRegistryConcurrentCustomRegistrationAndReads(t *testing.T) {

@@ -1,8 +1,8 @@
 package llm
 
 import (
-	"github.com/samsaffron/term-llm/internal/llm/engine"
-	"github.com/samsaffron/term-llm/internal/llm/providers/clibin"
+	"github.com/term-llm/term-llm/internal/llm/engine"
+	"github.com/term-llm/term-llm/internal/llm/providers/clibin"
 )
 
 // The CLI-binary provider family lives in providers/clibin.

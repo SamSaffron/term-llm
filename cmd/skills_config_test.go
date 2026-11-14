@@ -8,8 +8,8 @@ import (
 	"strings"
 	"testing"
 
-	appserve "github.com/samsaffron/term-llm/internal/app/serve"
-	"github.com/samsaffron/term-llm/internal/config"
+	appserve "github.com/term-llm/term-llm/internal/app/serve"
+	"github.com/term-llm/term-llm/internal/config"
 )
 
 func TestProjectSkillToolsCobraConfigPrecedence(t *testing.T) {

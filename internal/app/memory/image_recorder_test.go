@@ -7,9 +7,9 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/samsaffron/term-llm/internal/config"
-	memorydb "github.com/samsaffron/term-llm/internal/memory"
-	"github.com/samsaffron/term-llm/internal/tools"
+	"github.com/term-llm/term-llm/internal/config"
+	memorydb "github.com/term-llm/term-llm/internal/memory"
+	"github.com/term-llm/term-llm/internal/tools"
 )
 
 type trackingImageRecordStore struct {

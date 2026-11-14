@@ -13,14 +13,14 @@ import (
 	"testing"
 	"time"
 
-	runapproval "github.com/samsaffron/term-llm/internal/app/runtime/approval"
-	"github.com/samsaffron/term-llm/internal/classify"
-	"github.com/samsaffron/term-llm/internal/classify/backends"
-	"github.com/samsaffron/term-llm/internal/config"
-	coreguardian "github.com/samsaffron/term-llm/internal/guardian"
-	"github.com/samsaffron/term-llm/internal/llm/core"
-	"github.com/samsaffron/term-llm/internal/llm/mockprovider"
-	"github.com/samsaffron/term-llm/internal/tools"
+	runapproval "github.com/term-llm/term-llm/internal/app/runtime/approval"
+	"github.com/term-llm/term-llm/internal/classify"
+	"github.com/term-llm/term-llm/internal/classify/backends"
+	"github.com/term-llm/term-llm/internal/config"
+	coreguardian "github.com/term-llm/term-llm/internal/guardian"
+	"github.com/term-llm/term-llm/internal/llm/core"
+	"github.com/term-llm/term-llm/internal/llm/mockprovider"
+	"github.com/term-llm/term-llm/internal/tools"
 )
 
 // guardianFallbackClassifyStub answers every question with one confidence so a

@@ -1,6 +1,6 @@
 package runtime
 
-import "github.com/samsaffron/term-llm/internal/ui"
+import "github.com/term-llm/term-llm/internal/ui"
 
 func SetEstimatedStatsCost(stats *ui.SessionStats, model string) {
 	if stats == nil {

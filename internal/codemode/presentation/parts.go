@@ -1,6 +1,6 @@
 package presentation
 
-import "github.com/samsaffron/term-llm/internal/llm/core"
+import "github.com/term-llm/term-llm/internal/llm/core"
 
 // ImageURLFunc materializes a base64-encoded inline image and returns a
 // browser-accessible URL. It is provided by the caller (e.g. the serve layer)

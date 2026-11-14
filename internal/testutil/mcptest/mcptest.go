@@ -10,7 +10,7 @@ import (
 	"testing"
 
 	sdkmcp "github.com/modelcontextprotocol/go-sdk/mcp"
-	internalmcp "github.com/samsaffron/term-llm/internal/mcp"
+	internalmcp "github.com/term-llm/term-llm/internal/mcp"
 )
 
 const ChildEnv = "TERM_LLM_SERVE_MCP_HANDLER_TEST_SERVER"

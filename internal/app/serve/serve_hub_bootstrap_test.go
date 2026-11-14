@@ -8,7 +8,7 @@ import (
 
 	"testing"
 
-	apphub "github.com/samsaffron/term-llm/internal/app/serve/hub"
+	apphub "github.com/term-llm/term-llm/internal/app/serve/hub"
 )
 
 func TestResolveHubBootstrapSecretNonInteractiveAndEnvScrub(t *testing.T) {

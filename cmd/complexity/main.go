@@ -8,7 +8,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/samsaffron/term-llm/internal/complexity"
+	"github.com/term-llm/term-llm/internal/complexity"
 )
 
 type baseline struct {

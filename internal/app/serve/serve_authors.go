@@ -4,8 +4,8 @@ import (
 	"context"
 	"net/http"
 
-	"github.com/samsaffron/term-llm/internal/app/serve/authorship"
-	"github.com/samsaffron/term-llm/internal/session"
+	"github.com/term-llm/term-llm/internal/app/serve/authorship"
+	"github.com/term-llm/term-llm/internal/session"
 )
 
 func identityID(ctx context.Context) string { return authorship.ViewerID(ctx) }

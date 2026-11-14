@@ -4,10 +4,10 @@ import (
 	"os"
 	"strings"
 
-	"github.com/samsaffron/term-llm/internal/app/runtime/bootstrap"
-	"github.com/samsaffron/term-llm/internal/config"
-	"github.com/samsaffron/term-llm/internal/providerspec"
-	"github.com/samsaffron/term-llm/internal/session"
+	"github.com/term-llm/term-llm/internal/app/runtime/bootstrap"
+	"github.com/term-llm/term-llm/internal/config"
+	"github.com/term-llm/term-llm/internal/providerspec"
+	"github.com/term-llm/term-llm/internal/session"
 )
 
 // ActiveLLMFlags returns the provider/model pair after caller overrides.

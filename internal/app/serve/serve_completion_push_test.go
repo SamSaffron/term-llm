@@ -18,9 +18,9 @@ import (
 	"time"
 
 	webpush "github.com/SherClockHolmes/webpush-go"
-	appnotify "github.com/samsaffron/term-llm/internal/app/notify"
-	"github.com/samsaffron/term-llm/internal/config"
-	"github.com/samsaffron/term-llm/internal/session"
+	appnotify "github.com/term-llm/term-llm/internal/app/notify"
+	"github.com/term-llm/term-llm/internal/config"
+	"github.com/term-llm/term-llm/internal/session"
 )
 
 func TestCompletionPushTimeoutDoesNotStarveOutbox(t *testing.T) {

@@ -5,9 +5,9 @@ import (
 	"errors"
 	"testing"
 
-	app "github.com/samsaffron/term-llm/internal/app/serve"
-	"github.com/samsaffron/term-llm/internal/config"
-	"github.com/samsaffron/term-llm/internal/testutil"
+	app "github.com/term-llm/term-llm/internal/app/serve"
+	"github.com/term-llm/term-llm/internal/config"
+	"github.com/term-llm/term-llm/internal/testutil"
 )
 
 func TestSessionInputPublicCoordinatorPreservesInternedSelection(t *testing.T) {

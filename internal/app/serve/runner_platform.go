@@ -3,9 +3,9 @@ package serve
 import (
 	"strings"
 
-	runpkg "github.com/samsaffron/term-llm/internal/run"
+	runpkg "github.com/term-llm/term-llm/internal/run"
 
-	"github.com/samsaffron/term-llm/internal/session"
+	"github.com/term-llm/term-llm/internal/session"
 )
 
 func templatePlatform(platform string) string {

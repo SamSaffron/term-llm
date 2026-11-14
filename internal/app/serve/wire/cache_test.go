@@ -4,7 +4,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/samsaffron/term-llm/internal/app/serve/wire"
+	"github.com/term-llm/term-llm/internal/app/serve/wire"
 )
 
 func TestConditionalJSONPreservesPrivateCachePolicy(t *testing.T) {

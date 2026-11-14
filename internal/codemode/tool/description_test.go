@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/samsaffron/term-llm/internal/codemode"
+	"github.com/term-llm/term-llm/internal/codemode"
 )
 
 // Execute the example agents actually see, rather than maintaining a separate copy.

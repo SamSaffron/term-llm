@@ -11,7 +11,7 @@ import (
 	"unicode"
 
 	"github.com/charmbracelet/x/ansi"
-	"github.com/samsaffron/term-llm/internal/process"
+	"github.com/term-llm/term-llm/internal/process"
 	"golang.org/x/term"
 )
 

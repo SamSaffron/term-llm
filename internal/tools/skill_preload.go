@@ -4,9 +4,9 @@ import (
 	"errors"
 	"fmt"
 
-	codemodetool "github.com/samsaffron/term-llm/internal/codemode/tool"
-	"github.com/samsaffron/term-llm/internal/llm/engine"
-	"github.com/samsaffron/term-llm/internal/skills"
+	codemodetool "github.com/term-llm/term-llm/internal/codemode/tool"
+	"github.com/term-llm/term-llm/internal/llm/engine"
+	"github.com/term-llm/term-llm/internal/skills"
 )
 
 // RegisterSkillScriptTools exposes normally scoped tools without executing or granting them.

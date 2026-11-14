@@ -3,7 +3,7 @@ package ui
 import (
 	"strings"
 
-	"github.com/samsaffron/term-llm/internal/termimage"
+	"github.com/term-llm/term-llm/internal/termimage"
 )
 
 // RenderInlineImage renders an image for normal inline/scrollback terminal

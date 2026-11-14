@@ -7,9 +7,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/samsaffron/term-llm/internal/app/ask"
-	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/spf13/cobra"
+	"github.com/term-llm/term-llm/internal/app/ask"
+	"github.com/term-llm/term-llm/internal/config"
 )
 
 func TestCaptureAskInvocationFreezesInputs(t *testing.T) {

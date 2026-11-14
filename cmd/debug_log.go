@@ -10,9 +10,9 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/samsaffron/term-llm/internal/config"
-	"github.com/samsaffron/term-llm/internal/debuglog"
 	"github.com/spf13/cobra"
+	"github.com/term-llm/term-llm/internal/config"
+	"github.com/term-llm/term-llm/internal/debuglog"
 	"gopkg.in/yaml.v3"
 )
 

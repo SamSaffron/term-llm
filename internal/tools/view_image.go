@@ -17,7 +17,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/samsaffron/term-llm/internal/llm/core"
+	"github.com/term-llm/term-llm/internal/llm/core"
 	xdraw "golang.org/x/image/draw"
 	_ "golang.org/x/image/webp" // WebP decode support
 )

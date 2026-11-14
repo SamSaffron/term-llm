@@ -7,16 +7,16 @@ import (
 	"strings"
 	"time"
 
-	appruntime "github.com/samsaffron/term-llm/internal/app/runtime"
-	runapproval "github.com/samsaffron/term-llm/internal/app/runtime/approval"
-	guardian "github.com/samsaffron/term-llm/internal/app/runtime/guardian"
-	"github.com/samsaffron/term-llm/internal/config"
-	"github.com/samsaffron/term-llm/internal/llm/core"
-	"github.com/samsaffron/term-llm/internal/llm/engine"
-	"github.com/samsaffron/term-llm/internal/restart"
-	platform "github.com/samsaffron/term-llm/internal/serve"
-	"github.com/samsaffron/term-llm/internal/skills"
-	"github.com/samsaffron/term-llm/internal/tools"
+	appruntime "github.com/term-llm/term-llm/internal/app/runtime"
+	runapproval "github.com/term-llm/term-llm/internal/app/runtime/approval"
+	guardian "github.com/term-llm/term-llm/internal/app/runtime/guardian"
+	"github.com/term-llm/term-llm/internal/config"
+	"github.com/term-llm/term-llm/internal/llm/core"
+	"github.com/term-llm/term-llm/internal/llm/engine"
+	"github.com/term-llm/term-llm/internal/restart"
+	platform "github.com/term-llm/term-llm/internal/serve"
+	"github.com/term-llm/term-llm/internal/skills"
+	"github.com/term-llm/term-llm/internal/tools"
 )
 
 const (

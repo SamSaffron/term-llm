@@ -7,7 +7,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/samsaffron/term-llm/internal/agents/gist"
+	"github.com/term-llm/term-llm/internal/agents/gist"
 )
 
 type githubGistClient interface {

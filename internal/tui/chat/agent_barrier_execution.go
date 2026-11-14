@@ -3,10 +3,10 @@ package chat
 import (
 	"context"
 
-	"github.com/samsaffron/term-llm/internal/llm/core"
-	"github.com/samsaffron/term-llm/internal/runboundary"
-	"github.com/samsaffron/term-llm/internal/session"
-	"github.com/samsaffron/term-llm/internal/tui/chat/agentbarrier"
+	"github.com/term-llm/term-llm/internal/llm/core"
+	"github.com/term-llm/term-llm/internal/runboundary"
+	"github.com/term-llm/term-llm/internal/session"
+	"github.com/term-llm/term-llm/internal/tui/chat/agentbarrier"
 )
 
 // Renew through settlement, independently of human cancellation.

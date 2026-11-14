@@ -4,8 +4,8 @@ import (
 	"context"
 	"time"
 
-	"github.com/samsaffron/term-llm/internal/cache"
-	"github.com/samsaffron/term-llm/internal/venice"
+	"github.com/term-llm/term-llm/internal/cache"
+	"github.com/term-llm/term-llm/internal/venice"
 )
 
 const veniceModelLookupTimeout = 5 * time.Second

@@ -4,8 +4,8 @@ import (
 	"slices"
 	"testing"
 
-	"github.com/samsaffron/term-llm/internal/config"
-	"github.com/samsaffron/term-llm/internal/llm/core"
+	"github.com/term-llm/term-llm/internal/config"
+	"github.com/term-llm/term-llm/internal/llm/core"
 )
 
 func allowedCatalogConfig(provider string, allowed []string) *config.Config {

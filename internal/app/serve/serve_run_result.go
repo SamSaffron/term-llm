@@ -3,7 +3,7 @@ package serve
 import (
 	"bytes"
 
-	"github.com/samsaffron/term-llm/internal/llm/core"
+	"github.com/term-llm/term-llm/internal/llm/core"
 )
 
 // serveRunResult is returned and retained by value. Its text must not use a

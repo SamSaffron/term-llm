@@ -3,7 +3,7 @@ package chat
 import (
 	"testing"
 
-	appserve "github.com/samsaffron/term-llm/internal/app/serve"
+	appserve "github.com/term-llm/term-llm/internal/app/serve"
 )
 
 func TestApplyChatSearchDefaultEnablesNewBareChats(t *testing.T) {

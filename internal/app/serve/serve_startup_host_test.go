@@ -13,9 +13,9 @@ import (
 	"testing"
 	"time"
 
-	runapproval "github.com/samsaffron/term-llm/internal/app/runtime/approval"
-	"github.com/samsaffron/term-llm/internal/config"
-	"github.com/samsaffron/term-llm/internal/tools"
+	runapproval "github.com/term-llm/term-llm/internal/app/runtime/approval"
+	"github.com/term-llm/term-llm/internal/config"
+	"github.com/term-llm/term-llm/internal/tools"
 )
 
 func TestServeStartupOptionsValidation(t *testing.T) {

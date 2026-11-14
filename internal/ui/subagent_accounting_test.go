@@ -4,7 +4,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/samsaffron/term-llm/internal/tools"
+	"github.com/term-llm/term-llm/internal/tools"
 )
 
 func TestSubagentAccountingSurvivesRemoval(t *testing.T) {

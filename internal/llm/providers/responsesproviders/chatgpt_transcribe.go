@@ -13,9 +13,9 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/samsaffron/term-llm/internal/credentials"
-	"github.com/samsaffron/term-llm/internal/llm/providers/transcription"
-	"github.com/samsaffron/term-llm/internal/oauth"
+	"github.com/term-llm/term-llm/internal/credentials"
+	"github.com/term-llm/term-llm/internal/llm/providers/transcription"
+	"github.com/term-llm/term-llm/internal/oauth"
 )
 
 // chatGPTTranscribeURL is the ChatGPT backend speech-to-text endpoint used by

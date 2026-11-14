@@ -10,15 +10,15 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/samsaffron/term-llm/internal/config"
-	"github.com/samsaffron/term-llm/internal/llm/core"
-	"github.com/samsaffron/term-llm/internal/llm/factory"
-	"github.com/samsaffron/term-llm/internal/llm/providers/anthropic"
-	"github.com/samsaffron/term-llm/internal/llm/providers/clibin"
-	"github.com/samsaffron/term-llm/internal/llm/providers/ollama"
-	"github.com/samsaffron/term-llm/internal/llm/providers/opencompat"
-	rp "github.com/samsaffron/term-llm/internal/llm/providers/responsesproviders"
-	"github.com/samsaffron/term-llm/internal/providerspec"
+	"github.com/term-llm/term-llm/internal/config"
+	"github.com/term-llm/term-llm/internal/llm/core"
+	"github.com/term-llm/term-llm/internal/llm/factory"
+	"github.com/term-llm/term-llm/internal/llm/providers/anthropic"
+	"github.com/term-llm/term-llm/internal/llm/providers/clibin"
+	"github.com/term-llm/term-llm/internal/llm/providers/ollama"
+	"github.com/term-llm/term-llm/internal/llm/providers/opencompat"
+	rp "github.com/term-llm/term-llm/internal/llm/providers/responsesproviders"
+	"github.com/term-llm/term-llm/internal/providerspec"
 )
 
 func TestNewProviderRejectsDisabledProvider(t *testing.T) {

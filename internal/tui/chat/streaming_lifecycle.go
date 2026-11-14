@@ -4,8 +4,8 @@ import (
 	"context"
 	"errors"
 
-	"github.com/samsaffron/term-llm/internal/llm/engine"
-	"github.com/samsaffron/term-llm/internal/session"
+	"github.com/term-llm/term-llm/internal/llm/engine"
+	"github.com/term-llm/term-llm/internal/session"
 )
 
 // claimStreamTurnLease takes the claim sendMessage made before its first write,

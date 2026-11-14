@@ -3,7 +3,7 @@ package config
 import (
 	"fmt"
 
-	"github.com/samsaffron/term-llm/internal/openaiapi"
+	"github.com/term-llm/term-llm/internal/openaiapi"
 )
 
 // OpenAIEndpoint returns this provider entry's OpenAI Platform endpoint:

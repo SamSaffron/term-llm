@@ -16,10 +16,10 @@ import (
 
 	"github.com/pion/turn/v5"
 	"github.com/pion/webrtc/v4"
-	"github.com/samsaffron/term-llm/internal/linkeddevices"
-	"github.com/samsaffron/term-llm/internal/linkeddevices/testdevice"
-	"github.com/samsaffron/term-llm/internal/peer"
-	"github.com/samsaffron/term-llm/internal/peerbroker"
+	"github.com/term-llm/term-llm/internal/linkeddevices"
+	"github.com/term-llm/term-llm/internal/linkeddevices/testdevice"
+	"github.com/term-llm/term-llm/internal/peer"
+	"github.com/term-llm/term-llm/internal/peerbroker"
 )
 
 type countedTURNPacketConn struct {

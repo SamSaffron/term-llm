@@ -3,8 +3,8 @@ package serve
 import (
 	"net"
 
-	"github.com/samsaffron/term-llm/internal/config"
-	runpkg "github.com/samsaffron/term-llm/internal/run"
+	"github.com/term-llm/term-llm/internal/config"
+	runpkg "github.com/term-llm/term-llm/internal/run"
 )
 
 type serveDeps struct {

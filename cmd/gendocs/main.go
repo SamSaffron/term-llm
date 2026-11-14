@@ -4,8 +4,8 @@ package main
 import (
 	"log"
 
-	"github.com/samsaffron/term-llm/cmd"
-	"github.com/samsaffron/term-llm/internal/docsgen"
+	"github.com/term-llm/term-llm/cmd"
+	"github.com/term-llm/term-llm/internal/docsgen"
 )
 
 func main() {

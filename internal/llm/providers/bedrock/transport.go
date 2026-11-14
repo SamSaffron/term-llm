@@ -17,9 +17,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/samsaffron/term-llm/internal/awsauth"
-	"github.com/samsaffron/term-llm/internal/buildinfo"
-	"github.com/samsaffron/term-llm/internal/llm/providers/anthropic"
+	"github.com/term-llm/term-llm/internal/awsauth"
+	"github.com/term-llm/term-llm/internal/buildinfo"
+	"github.com/term-llm/term-llm/internal/llm/providers/anthropic"
 )
 
 // bedrockAnthropicVersion is the anthropic_version Bedrock requires in the body.

@@ -6,8 +6,8 @@ import (
 	"sync"
 
 	tea "charm.land/bubbletea/v2"
-	"github.com/samsaffron/term-llm/internal/runtimeoutput"
-	tuichat "github.com/samsaffron/term-llm/internal/tui/chat"
+	"github.com/term-llm/term-llm/internal/runtimeoutput"
+	tuichat "github.com/term-llm/term-llm/internal/tui/chat"
 )
 
 // TUIWarningWriter routes background warnings raised while the chat TUI owns

@@ -7,9 +7,9 @@ import (
 	"testing"
 
 	tea "charm.land/bubbletea/v2"
-	"github.com/samsaffron/term-llm/internal/session"
-	worktreesui "github.com/samsaffron/term-llm/internal/tui/worktrees"
-	"github.com/samsaffron/term-llm/internal/worktree"
+	"github.com/term-llm/term-llm/internal/session"
+	worktreesui "github.com/term-llm/term-llm/internal/tui/worktrees"
+	"github.com/term-llm/term-llm/internal/worktree"
 )
 
 func TestWorktreeCommandMetadataUsesBrowseOnly(t *testing.T) {

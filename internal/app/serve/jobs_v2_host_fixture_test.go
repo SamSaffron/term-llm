@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	servejobs "github.com/samsaffron/term-llm/internal/app/serve/jobs"
+	servejobs "github.com/term-llm/term-llm/internal/app/serve/jobs"
 )
 
 type jobsV2HostRunnerFunc func(context.Context, jobsV2Job, progressWriter) (jobsV2RunResult, error)

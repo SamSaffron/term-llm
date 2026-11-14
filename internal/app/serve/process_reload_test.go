@@ -2,9 +2,9 @@ package serve
 
 import (
 	"context"
-	"github.com/samsaffron/term-llm/internal/app/reload"
-	"github.com/samsaffron/term-llm/internal/process"
-	"github.com/samsaffron/term-llm/internal/tools"
+	"github.com/term-llm/term-llm/internal/app/reload"
+	"github.com/term-llm/term-llm/internal/process"
+	"github.com/term-llm/term-llm/internal/tools"
 	"os"
 	"os/exec"
 	"reflect"

@@ -8,8 +8,8 @@ import (
 	"runtime/debug"
 	"strings"
 
-	appruntime "github.com/samsaffron/term-llm/internal/app/runtime"
-	"github.com/samsaffron/term-llm/internal/restart"
+	appruntime "github.com/term-llm/term-llm/internal/app/runtime"
+	"github.com/term-llm/term-llm/internal/restart"
 )
 
 func (s *serveServer) handleSessionRuntimeCompact(w http.ResponseWriter, r *http.Request, sessionID string) {

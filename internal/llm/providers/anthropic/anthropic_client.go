@@ -13,8 +13,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/samsaffron/term-llm/internal/buildinfo"
-	"github.com/samsaffron/term-llm/internal/llm/core/stream"
+	"github.com/term-llm/term-llm/internal/buildinfo"
+	"github.com/term-llm/term-llm/internal/llm/core/stream"
 	"golang.org/x/net/http/httpguts"
 )
 

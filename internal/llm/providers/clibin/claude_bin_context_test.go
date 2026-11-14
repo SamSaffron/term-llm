@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/samsaffron/term-llm/internal/llm/core"
+	"github.com/term-llm/term-llm/internal/llm/core"
 )
 
 func claudeAssistantUsageLine(id, parent string, input, cacheRead, cacheWrite int) string {

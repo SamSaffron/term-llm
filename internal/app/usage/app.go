@@ -12,12 +12,12 @@ import (
 	"text/tabwriter"
 	"time"
 
-	"github.com/samsaffron/term-llm/internal/config"
-	githubcopilot "github.com/samsaffron/term-llm/internal/copilot"
-	"github.com/samsaffron/term-llm/internal/llm/providerusage"
-	"github.com/samsaffron/term-llm/internal/ui"
-	usagedata "github.com/samsaffron/term-llm/internal/usage"
 	"github.com/spf13/cobra"
+	"github.com/term-llm/term-llm/internal/config"
+	githubcopilot "github.com/term-llm/term-llm/internal/copilot"
+	"github.com/term-llm/term-llm/internal/llm/providerusage"
+	"github.com/term-llm/term-llm/internal/ui"
+	usagedata "github.com/term-llm/term-llm/internal/usage"
 	"golang.org/x/term"
 )
 

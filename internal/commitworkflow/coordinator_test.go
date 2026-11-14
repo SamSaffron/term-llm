@@ -9,8 +9,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/samsaffron/term-llm/internal/gitcommit"
-	runpkg "github.com/samsaffron/term-llm/internal/run"
+	"github.com/term-llm/term-llm/internal/gitcommit"
+	runpkg "github.com/term-llm/term-llm/internal/run"
 )
 
 type fakeRunner struct {

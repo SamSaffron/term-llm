@@ -5,9 +5,9 @@ import (
 	"sync"
 	"time"
 
-	apphub "github.com/samsaffron/term-llm/internal/app/serve/hub"
-	"github.com/samsaffron/term-llm/internal/hub"
-	"github.com/samsaffron/term-llm/internal/restart"
+	apphub "github.com/term-llm/term-llm/internal/app/serve/hub"
+	"github.com/term-llm/term-llm/internal/hub"
+	"github.com/term-llm/term-llm/internal/restart"
 )
 
 const (

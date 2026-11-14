@@ -1,8 +1,8 @@
 package chat
 
 import (
-	"github.com/samsaffron/term-llm/internal/llm/core"
-	"github.com/samsaffron/term-llm/internal/runboundary"
+	"github.com/term-llm/term-llm/internal/llm/core"
+	"github.com/term-llm/term-llm/internal/runboundary"
 )
 
 // captureProviderContext exports the live provider's opaque transport state

@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/samsaffron/term-llm/internal/textmatch"
+	"github.com/term-llm/term-llm/internal/textmatch"
 )
 
 // MatchLevel indicates which matching strategy succeeded.

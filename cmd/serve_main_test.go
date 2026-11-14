@@ -1,8 +1,8 @@
 package cmd
 
 import (
-	"github.com/samsaffron/term-llm/internal/testutil/mcptest"
-	"github.com/samsaffron/term-llm/internal/testutil/procenv"
+	"github.com/term-llm/term-llm/internal/testutil/mcptest"
+	"github.com/term-llm/term-llm/internal/testutil/procenv"
 	"os"
 	"testing"
 )

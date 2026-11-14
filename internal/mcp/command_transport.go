@@ -9,7 +9,7 @@ import (
 	"time"
 
 	sdkmcp "github.com/modelcontextprotocol/go-sdk/mcp"
-	"github.com/samsaffron/term-llm/internal/procutil"
+	"github.com/term-llm/term-llm/internal/procutil"
 )
 
 const defaultCommandTerminateDuration = 5 * time.Second

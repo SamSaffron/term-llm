@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/samsaffron/term-llm/internal/session"
+	"github.com/term-llm/term-llm/internal/session"
 )
 
 // A sidebar shared with a busy terminal can hold hundreds of ask runs between

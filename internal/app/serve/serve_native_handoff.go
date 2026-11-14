@@ -12,7 +12,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/samsaffron/term-llm/internal/passkeyauth"
+	"github.com/term-llm/term-llm/internal/passkeyauth"
 )
 
 // Native app handoff (PKCE-style, RFC 7636 S256):

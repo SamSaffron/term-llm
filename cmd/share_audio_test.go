@@ -8,12 +8,12 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/samsaffron/term-llm/internal/config"
-	"github.com/samsaffron/term-llm/internal/llm/core"
-	"github.com/samsaffron/term-llm/internal/session"
-	"github.com/samsaffron/term-llm/internal/share"
-	"github.com/samsaffron/term-llm/internal/testutil/mediafixture"
 	"github.com/spf13/cobra"
+	"github.com/term-llm/term-llm/internal/config"
+	"github.com/term-llm/term-llm/internal/llm/core"
+	"github.com/term-llm/term-llm/internal/session"
+	"github.com/term-llm/term-llm/internal/share"
+	"github.com/term-llm/term-llm/internal/testutil/mediafixture"
 )
 
 func addShareAudioFixture(t *testing.T, store session.Store, id string) int64 {

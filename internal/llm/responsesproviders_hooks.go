@@ -1,8 +1,8 @@
 package llm
 
 import (
-	"github.com/samsaffron/term-llm/internal/llm/providers/responses"
-	rp "github.com/samsaffron/term-llm/internal/llm/providers/responsesproviders"
+	"github.com/term-llm/term-llm/internal/llm/providers/responses"
+	rp "github.com/term-llm/term-llm/internal/llm/providers/responsesproviders"
 )
 
 // The Responses-dependent providers (OpenAI, ChatGPT, Copilot, Grok, OpenCode

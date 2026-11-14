@@ -15,15 +15,15 @@ import (
 	"testing"
 	"time"
 
-	"github.com/samsaffron/term-llm/internal/agents"
-	"github.com/samsaffron/term-llm/internal/app/runtime"
-	runapproval "github.com/samsaffron/term-llm/internal/app/runtime/approval"
-	"github.com/samsaffron/term-llm/internal/config"
-	"github.com/samsaffron/term-llm/internal/llm/core"
-	"github.com/samsaffron/term-llm/internal/llm/engine"
-	runpkg "github.com/samsaffron/term-llm/internal/run"
-	platform "github.com/samsaffron/term-llm/internal/serve"
-	"github.com/samsaffron/term-llm/internal/tools"
+	"github.com/term-llm/term-llm/internal/agents"
+	"github.com/term-llm/term-llm/internal/app/runtime"
+	runapproval "github.com/term-llm/term-llm/internal/app/runtime/approval"
+	"github.com/term-llm/term-llm/internal/config"
+	"github.com/term-llm/term-llm/internal/llm/core"
+	"github.com/term-llm/term-llm/internal/llm/engine"
+	runpkg "github.com/term-llm/term-llm/internal/run"
+	platform "github.com/term-llm/term-llm/internal/serve"
+	"github.com/term-llm/term-llm/internal/tools"
 )
 
 type compositionFakeRunner struct{}

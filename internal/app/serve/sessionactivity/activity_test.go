@@ -11,11 +11,11 @@ import (
 	"sync/atomic"
 	"testing"
 
-	servejobs "github.com/samsaffron/term-llm/internal/app/serve/jobs"
-	"github.com/samsaffron/term-llm/internal/linkeddevices"
-	"github.com/samsaffron/term-llm/internal/llm/core"
-	"github.com/samsaffron/term-llm/internal/session"
-	"github.com/samsaffron/term-llm/internal/tools"
+	servejobs "github.com/term-llm/term-llm/internal/app/serve/jobs"
+	"github.com/term-llm/term-llm/internal/linkeddevices"
+	"github.com/term-llm/term-llm/internal/llm/core"
+	"github.com/term-llm/term-llm/internal/session"
+	"github.com/term-llm/term-llm/internal/tools"
 )
 
 func activityStore(t *testing.T) *session.SQLiteStore {

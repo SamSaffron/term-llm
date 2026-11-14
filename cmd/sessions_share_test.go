@@ -9,12 +9,12 @@ import (
 	"testing"
 	"time"
 
-	sessionsapp "github.com/samsaffron/term-llm/internal/app/sessions"
-	"github.com/samsaffron/term-llm/internal/config"
-	"github.com/samsaffron/term-llm/internal/llm/core"
-	"github.com/samsaffron/term-llm/internal/session"
-	sharepkg "github.com/samsaffron/term-llm/internal/share"
 	"github.com/spf13/cobra"
+	sessionsapp "github.com/term-llm/term-llm/internal/app/sessions"
+	"github.com/term-llm/term-llm/internal/config"
+	"github.com/term-llm/term-llm/internal/llm/core"
+	"github.com/term-llm/term-llm/internal/session"
+	sharepkg "github.com/term-llm/term-llm/internal/share"
 )
 
 type sessionsSharePublisherMock struct {

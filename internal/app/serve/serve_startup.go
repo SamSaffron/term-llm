@@ -10,9 +10,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/samsaffron/term-llm/internal/app/serve/hubnode"
-	"github.com/samsaffron/term-llm/internal/passkeyauth"
-	"github.com/samsaffron/term-llm/internal/tools"
+	"github.com/term-llm/term-llm/internal/app/serve/hubnode"
+	"github.com/term-llm/term-llm/internal/passkeyauth"
+	"github.com/term-llm/term-llm/internal/tools"
 )
 
 type serveStartupResolution struct {

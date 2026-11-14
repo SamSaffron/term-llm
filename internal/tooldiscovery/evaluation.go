@@ -1,6 +1,6 @@
 package tooldiscovery
 
-import "github.com/samsaffron/term-llm/internal/mcp"
+import "github.com/term-llm/term-llm/internal/mcp"
 
 // SearchCatalogue runs the production lexical index without activating tools.
 // It is used by deterministic retrieval evaluation and diagnostics.

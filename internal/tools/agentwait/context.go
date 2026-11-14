@@ -4,7 +4,7 @@ package agentwait
 import (
 	"context"
 
-	"github.com/samsaffron/term-llm/internal/session"
+	"github.com/term-llm/term-llm/internal/session"
 )
 
 type agentWaitObserverKey struct{}

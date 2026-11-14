@@ -12,7 +12,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/samsaffron/term-llm/internal/embedding"
+	"github.com/term-llm/term-llm/internal/embedding"
 )
 
 func hasEmbeddingVectorBinaryMagic(payload []byte) bool {

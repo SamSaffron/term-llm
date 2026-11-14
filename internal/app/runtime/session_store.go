@@ -7,9 +7,9 @@ import (
 	"os"
 	"strings"
 
-	"github.com/samsaffron/term-llm/internal/config"
-	"github.com/samsaffron/term-llm/internal/session"
-	"github.com/samsaffron/term-llm/internal/terminalpolicy"
+	"github.com/term-llm/term-llm/internal/config"
+	"github.com/term-llm/term-llm/internal/session"
+	"github.com/term-llm/term-llm/internal/terminalpolicy"
 )
 
 // SessionStoreOverrides captures the command-level persistence flags.

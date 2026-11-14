@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/samsaffron/term-llm/internal/worktree"
+	"github.com/term-llm/term-llm/internal/worktree"
 )
 
 func TestConflictOfferAndPromptAreComplete(t *testing.T) {

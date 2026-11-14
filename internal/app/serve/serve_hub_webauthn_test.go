@@ -18,7 +18,7 @@ import (
 	"github.com/fxamacker/cbor/v2"
 	"github.com/go-webauthn/webauthn/protocol"
 	"github.com/go-webauthn/webauthn/webauthn"
-	"github.com/samsaffron/term-llm/internal/passkeyauth"
+	"github.com/term-llm/term-llm/internal/passkeyauth"
 )
 
 func hubTestAssertionCredential(t *testing.T) (*ecdsa.PrivateKey, webauthn.Credential) {

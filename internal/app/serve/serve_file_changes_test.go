@@ -12,9 +12,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/samsaffron/term-llm/internal/filetrack"
-	planpkg "github.com/samsaffron/term-llm/internal/plan"
-	"github.com/samsaffron/term-llm/internal/session"
+	"github.com/term-llm/term-llm/internal/filetrack"
+	planpkg "github.com/term-llm/term-llm/internal/plan"
+	"github.com/term-llm/term-llm/internal/session"
 )
 
 func newFileChangesTestServer(t *testing.T) (*serveServer, *filetrack.Store) {

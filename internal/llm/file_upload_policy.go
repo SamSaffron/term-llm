@@ -5,10 +5,10 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/samsaffron/term-llm/internal/config"
-	"github.com/samsaffron/term-llm/internal/llm/core"
-	"github.com/samsaffron/term-llm/internal/llm/filemime"
-	"github.com/samsaffron/term-llm/internal/llm/providers/responses"
+	"github.com/term-llm/term-llm/internal/config"
+	"github.com/term-llm/term-llm/internal/llm/core"
+	"github.com/term-llm/term-llm/internal/llm/filemime"
+	"github.com/term-llm/term-llm/internal/llm/providers/responses"
 )
 
 const defaultFileUploadMaxBytes int64 = 20 << 20

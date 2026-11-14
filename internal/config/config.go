@@ -10,8 +10,8 @@ import (
 	"time"
 
 	mapstructure "github.com/go-viper/mapstructure/v2"
-	"github.com/samsaffron/term-llm/internal/atomicfile"
-	"github.com/samsaffron/term-llm/internal/providerspec"
+	"github.com/term-llm/term-llm/internal/atomicfile"
+	"github.com/term-llm/term-llm/internal/providerspec"
 	"gopkg.in/yaml.v3"
 )
 

@@ -12,10 +12,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/samsaffron/term-llm/internal/credentials"
-	"github.com/samsaffron/term-llm/internal/grokprotocol"
-	rp "github.com/samsaffron/term-llm/internal/llm/providers/responsesproviders"
-	"github.com/samsaffron/term-llm/internal/providerhttp"
+	"github.com/term-llm/term-llm/internal/credentials"
+	"github.com/term-llm/term-llm/internal/grokprotocol"
+	rp "github.com/term-llm/term-llm/internal/llm/providers/responsesproviders"
+	"github.com/term-llm/term-llm/internal/providerhttp"
 )
 
 const (

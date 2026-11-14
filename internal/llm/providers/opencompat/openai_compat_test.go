@@ -14,7 +14,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/samsaffron/term-llm/internal/config"
+	"github.com/term-llm/term-llm/internal/config"
 )
 
 func TestDefaultHTTPClient_HasNoOverallTimeout(t *testing.T) {

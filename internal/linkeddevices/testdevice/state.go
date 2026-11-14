@@ -8,10 +8,10 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/samsaffron/term-llm/internal/fileprivacy"
+	"github.com/term-llm/term-llm/internal/fileprivacy"
 	"path/filepath"
 
-	"github.com/samsaffron/term-llm/internal/pairing"
+	"github.com/term-llm/term-llm/internal/pairing"
 )
 
 const stateVersion = 1

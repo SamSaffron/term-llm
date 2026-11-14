@@ -12,10 +12,10 @@ import (
 	"time"
 
 	webpush "github.com/SherClockHolmes/webpush-go"
-	appnotify "github.com/samsaffron/term-llm/internal/app/notify"
-	"github.com/samsaffron/term-llm/internal/notification"
-	"github.com/samsaffron/term-llm/internal/restart"
-	"github.com/samsaffron/term-llm/internal/session"
+	appnotify "github.com/term-llm/term-llm/internal/app/notify"
+	"github.com/term-llm/term-llm/internal/notification"
+	"github.com/term-llm/term-llm/internal/restart"
+	"github.com/term-llm/term-llm/internal/session"
 )
 
 type completionPushPayload = notification.Envelope

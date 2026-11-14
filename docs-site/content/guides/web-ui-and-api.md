@@ -787,7 +787,7 @@ Existing manually installed units are not overwritten automatically.
 ## Run as a systemd user service
 
 For a persistent Linux deployment, the repository includes a complete
-[`serve web` systemd example](https://github.com/samsaffron/term-llm/tree/main/examples/systemd-serve-web).
+[`serve web` systemd example](https://github.com/term-llm/term-llm/tree/main/examples/systemd-serve-web).
 It provides an interactive installer that finds the binary, generates a stable
 bearer token, optionally records provider and reverse-Hub credentials, writes
 and starts the user units, and prints the maintenance commands when it

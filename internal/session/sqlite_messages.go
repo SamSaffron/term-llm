@@ -10,10 +10,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/samsaffron/term-llm/internal/llm"
-	"github.com/samsaffron/term-llm/internal/llm/core"
-	planpkg "github.com/samsaffron/term-llm/internal/plan"
-	"github.com/samsaffron/term-llm/internal/session/notificationdb"
+	"github.com/term-llm/term-llm/internal/llm"
+	"github.com/term-llm/term-llm/internal/llm/core"
+	planpkg "github.com/term-llm/term-llm/internal/plan"
+	"github.com/term-llm/term-llm/internal/session/notificationdb"
 )
 
 func (s *SQLiteStore) AddMessage(ctx context.Context, sessionID string, msg *Message) error {

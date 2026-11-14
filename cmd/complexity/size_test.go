@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/samsaffron/term-llm/internal/complexity"
+	"github.com/term-llm/term-llm/internal/complexity"
 )
 
 func sizeReport(files ...complexity.File) complexity.Report { return complexity.Report{Files: files} }

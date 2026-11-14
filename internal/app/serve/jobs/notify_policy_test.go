@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	appnotify "github.com/samsaffron/term-llm/internal/app/notify"
+	appnotify "github.com/term-llm/term-llm/internal/app/notify"
 )
 
 func TestTelegramAPIResponseErrorUsesHTTPStatusWhenErrorCodeMissing(t *testing.T) {

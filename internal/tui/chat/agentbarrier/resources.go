@@ -2,8 +2,8 @@ package agentbarrier
 
 import (
 	"context"
-	"github.com/samsaffron/term-llm/internal/session"
-	"github.com/samsaffron/term-llm/internal/tools"
+	"github.com/term-llm/term-llm/internal/session"
+	"github.com/term-llm/term-llm/internal/tools"
 )
 
 // NeedsResources fails closed when child state cannot be reconciled.

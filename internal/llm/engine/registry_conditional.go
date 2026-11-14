@@ -1,6 +1,6 @@
 package engine
 
-import "github.com/samsaffron/term-llm/internal/llm/core"
+import "github.com/term-llm/term-llm/internal/llm/core"
 
 // UnregisterIf atomically removes the expected instance or an idempotent refresh
 // of its explicit origin/binding. A different owner or binding is never deleted.

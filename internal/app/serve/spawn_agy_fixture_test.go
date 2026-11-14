@@ -16,11 +16,11 @@ import (
 	"sync/atomic"
 	"testing"
 
-	"github.com/samsaffron/term-llm/internal/agyproxy"
-	"github.com/samsaffron/term-llm/internal/config"
-	"github.com/samsaffron/term-llm/internal/llm/core"
-	runpkg "github.com/samsaffron/term-llm/internal/run"
-	"github.com/samsaffron/term-llm/internal/session"
+	"github.com/term-llm/term-llm/internal/agyproxy"
+	"github.com/term-llm/term-llm/internal/config"
+	"github.com/term-llm/term-llm/internal/llm/core"
+	runpkg "github.com/term-llm/term-llm/internal/run"
+	"github.com/term-llm/term-llm/internal/session"
 )
 
 // The subprocess uses the production authenticated CONNECT/TLS filtering proxy.

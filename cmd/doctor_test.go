@@ -8,8 +8,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/samsaffron/term-llm/internal/config"
-	"github.com/samsaffron/term-llm/internal/doctor"
+	"github.com/term-llm/term-llm/internal/config"
+	"github.com/term-llm/term-llm/internal/doctor"
 )
 
 func doctorTestChecks(t *testing.T) []doctor.Check {

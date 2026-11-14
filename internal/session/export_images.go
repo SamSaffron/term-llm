@@ -18,8 +18,8 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/samsaffron/term-llm/internal/llm/core"
-	"github.com/samsaffron/term-llm/internal/share"
+	"github.com/term-llm/term-llm/internal/llm/core"
+	"github.com/term-llm/term-llm/internal/share"
 	"golang.org/x/image/draw"
 	_ "golang.org/x/image/webp" // register WebP decoding for exported images
 )

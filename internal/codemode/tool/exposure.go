@@ -1,6 +1,6 @@
 package tool
 
-import "github.com/samsaffron/term-llm/internal/llm/core"
+import "github.com/term-llm/term-llm/internal/llm/core"
 
 // Script lifecycle tools are never nested capabilities.
 func (*Tool) CodeModeExposure() core.CodeModeExposure {

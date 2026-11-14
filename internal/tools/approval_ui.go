@@ -11,9 +11,9 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 	"github.com/muesli/reflow/wordwrap"
-	"github.com/samsaffron/term-llm/internal/terminalpolicy"
-	"github.com/samsaffron/term-llm/internal/terminaltext"
-	"github.com/samsaffron/term-llm/internal/tuiutil"
+	"github.com/term-llm/term-llm/internal/terminalpolicy"
+	"github.com/term-llm/term-llm/internal/terminaltext"
+	"github.com/term-llm/term-llm/internal/tuiutil"
 	"golang.org/x/term"
 )
 

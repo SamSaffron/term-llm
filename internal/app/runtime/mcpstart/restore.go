@@ -5,7 +5,7 @@ import (
 	"io"
 	"strings"
 
-	"github.com/samsaffron/term-llm/internal/mcp"
+	"github.com/term-llm/term-llm/internal/mcp"
 )
 
 // CleanSelection validates explicit CLI selections but repairs implicit defaults

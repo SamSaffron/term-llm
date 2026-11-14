@@ -6,7 +6,7 @@ import (
 	"sync"
 	"time"
 
-	planpkg "github.com/samsaffron/term-llm/internal/plan"
+	planpkg "github.com/term-llm/term-llm/internal/plan"
 )
 
 // WarnFunc is a function that logs warnings.

@@ -7,9 +7,9 @@ import (
 	"os"
 	"strings"
 
-	"github.com/samsaffron/term-llm/internal/config"
-	"github.com/samsaffron/term-llm/internal/embedding"
-	memorydb "github.com/samsaffron/term-llm/internal/memory"
+	"github.com/term-llm/term-llm/internal/config"
+	"github.com/term-llm/term-llm/internal/embedding"
+	memorydb "github.com/term-llm/term-llm/internal/memory"
 )
 
 func (opts MineOptions) runMemoryEmbedPhase(ctx context.Context, cfg *config.Config, store *memorydb.Store) (int, error) {

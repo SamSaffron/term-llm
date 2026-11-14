@@ -1,6 +1,6 @@
 package clibin
 
-import "github.com/samsaffron/term-llm/internal/llm/core"
+import "github.com/term-llm/term-llm/internal/llm/core"
 
 func equalSlice(a, b []string) bool {
 	if len(a) != len(b) {

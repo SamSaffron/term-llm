@@ -8,9 +8,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/samsaffron/term-llm/internal/llm/core"
-	"github.com/samsaffron/term-llm/internal/mcp"
 	"github.com/spf13/cobra"
+	"github.com/term-llm/term-llm/internal/llm/core"
+	"github.com/term-llm/term-llm/internal/mcp"
 )
 
 func TestMCPStatusReportsStaticAuthWithoutSecrets(t *testing.T) {

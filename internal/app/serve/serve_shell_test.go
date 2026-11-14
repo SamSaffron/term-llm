@@ -18,10 +18,10 @@ import (
 	"testing"
 	"time"
 
-	serveshell "github.com/samsaffron/term-llm/internal/app/serve/shell"
-	"github.com/samsaffron/term-llm/internal/session"
-	"github.com/samsaffron/term-llm/internal/tools"
-	"github.com/samsaffron/term-llm/internal/worktree"
+	serveshell "github.com/term-llm/term-llm/internal/app/serve/shell"
+	"github.com/term-llm/term-llm/internal/session"
+	"github.com/term-llm/term-llm/internal/tools"
+	"github.com/term-llm/term-llm/internal/worktree"
 )
 
 type shellCreateResponse struct {

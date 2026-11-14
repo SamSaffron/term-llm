@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/samsaffron/term-llm/internal/app/serve/approvalprompt"
-	"github.com/samsaffron/term-llm/internal/tools"
+	"github.com/term-llm/term-llm/internal/app/serve/approvalprompt"
+	"github.com/term-llm/term-llm/internal/tools"
 )
 
 var (

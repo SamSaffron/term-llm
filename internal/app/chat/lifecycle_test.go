@@ -4,8 +4,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/samsaffron/term-llm/internal/lifecycle"
-	"github.com/samsaffron/term-llm/internal/termhost"
+	"github.com/term-llm/term-llm/internal/lifecycle"
+	"github.com/term-llm/term-llm/internal/termhost"
 )
 
 type forcedCleanupReporter struct {

@@ -3,7 +3,7 @@ package serve
 import (
 	"net/http"
 
-	"github.com/samsaffron/term-llm/internal/passkeyauth"
+	"github.com/term-llm/term-llm/internal/passkeyauth"
 )
 
 func (s *browserPasskeyHandler) hasGrantSession(r *http.Request, grants *passkeyauth.Grants, cookieName string) bool {

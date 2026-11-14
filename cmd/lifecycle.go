@@ -3,11 +3,11 @@ package cmd
 import (
 	"encoding/json"
 	"fmt"
-	appchat "github.com/samsaffron/term-llm/internal/app/chat"
+	appchat "github.com/term-llm/term-llm/internal/app/chat"
 
-	"github.com/samsaffron/term-llm/internal/config"
-	"github.com/samsaffron/term-llm/internal/termhost"
 	"github.com/spf13/cobra"
+	"github.com/term-llm/term-llm/internal/config"
+	"github.com/term-llm/term-llm/internal/termhost"
 )
 
 var lifecycleStatusJSON bool

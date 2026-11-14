@@ -6,14 +6,14 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	apphub "github.com/samsaffron/term-llm/internal/app/serve/hub"
+	apphub "github.com/term-llm/term-llm/internal/app/serve/hub"
 	"io"
 	"net/http"
 	"net/url"
 	"strings"
 	"time"
 
-	"github.com/samsaffron/term-llm/internal/hub"
+	"github.com/term-llm/term-llm/internal/hub"
 )
 
 // Cross-node delegation: a node asks the hub to run a prompt as a jobs-v2 LLM

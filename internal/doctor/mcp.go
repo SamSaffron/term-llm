@@ -10,7 +10,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/samsaffron/term-llm/internal/mcp"
+	"github.com/term-llm/term-llm/internal/mcp"
 )
 
 // MCPCheck validates mcp.json without starting any server.

@@ -7,7 +7,7 @@ import (
 	"reflect"
 	"testing"
 
-	"github.com/samsaffron/term-llm/internal/llm/core"
+	"github.com/term-llm/term-llm/internal/llm/core"
 )
 
 func TestSessionInputRefreshTransactionContract(t *testing.T) {

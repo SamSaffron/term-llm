@@ -6,7 +6,7 @@ import (
 	"runtime"
 	"strings"
 
-	"github.com/samsaffron/term-llm/internal/input"
+	"github.com/term-llm/term-llm/internal/input"
 )
 
 // ShouldUseUnifiedDiff determines if unified diff format should be used.

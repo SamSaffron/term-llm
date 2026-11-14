@@ -5,13 +5,13 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/samsaffron/term-llm/internal/config"
-	"github.com/samsaffron/term-llm/internal/llm/core"
-	"github.com/samsaffron/term-llm/internal/llm/providers/anthropic"
-	"github.com/samsaffron/term-llm/internal/llm/providers/clibin"
-	"github.com/samsaffron/term-llm/internal/llm/providers/ollama"
-	"github.com/samsaffron/term-llm/internal/llm/providers/opencompat"
-	rp "github.com/samsaffron/term-llm/internal/llm/providers/responsesproviders"
+	"github.com/term-llm/term-llm/internal/config"
+	"github.com/term-llm/term-llm/internal/llm/core"
+	"github.com/term-llm/term-llm/internal/llm/providers/anthropic"
+	"github.com/term-llm/term-llm/internal/llm/providers/clibin"
+	"github.com/term-llm/term-llm/internal/llm/providers/ollama"
+	"github.com/term-llm/term-llm/internal/llm/providers/opencompat"
+	rp "github.com/term-llm/term-llm/internal/llm/providers/responsesproviders"
 )
 
 // ModelEntry describes a model available through a specific provider.

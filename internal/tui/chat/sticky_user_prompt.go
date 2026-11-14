@@ -7,7 +7,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
-	renderchat "github.com/samsaffron/term-llm/internal/render/chat"
+	renderchat "github.com/term-llm/term-llm/internal/render/chat"
 )
 
 const minStickyPromptCells = 4

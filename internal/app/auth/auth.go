@@ -8,10 +8,10 @@ import (
 	"time"
 
 	"charm.land/huh/v2"
-	githubcopilot "github.com/samsaffron/term-llm/internal/copilot"
-	"github.com/samsaffron/term-llm/internal/credentials"
-	"github.com/samsaffron/term-llm/internal/llm/providers/responsesproviders"
 	"github.com/spf13/cobra"
+	githubcopilot "github.com/term-llm/term-llm/internal/copilot"
+	"github.com/term-llm/term-llm/internal/credentials"
+	"github.com/term-llm/term-llm/internal/llm/providers/responsesproviders"
 	"golang.org/x/term"
 )
 

@@ -7,8 +7,8 @@ import (
 	"runtime"
 	"strconv"
 
-	pprofserver "github.com/samsaffron/term-llm/internal/pprof"
 	"github.com/spf13/cobra"
+	pprofserver "github.com/term-llm/term-llm/internal/pprof"
 )
 
 var pprofDuration int

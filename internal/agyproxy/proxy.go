@@ -29,7 +29,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/samsaffron/term-llm/internal/mitmca"
+	"github.com/term-llm/term-llm/internal/mitmca"
 )
 
 const (

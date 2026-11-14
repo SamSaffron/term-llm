@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 
-	"github.com/samsaffron/term-llm/internal/linkeddevices"
+	"github.com/term-llm/term-llm/internal/linkeddevices"
 )
 
 // decodeLiveStart shares ordinary SDP validation while applying linked admission

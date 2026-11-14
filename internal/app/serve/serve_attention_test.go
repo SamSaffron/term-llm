@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/samsaffron/term-llm/internal/session"
+	"github.com/term-llm/term-llm/internal/session"
 )
 
 func attentionHandlerFixture(t *testing.T) (*serveServer, *session.SQLiteStore, string, session.AttentionState) {

@@ -6,7 +6,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/samsaffron/term-llm/internal/cliwire"
+	"github.com/term-llm/term-llm/internal/cliwire"
 )
 
 const cliWireStopTimeout = 5 * time.Second

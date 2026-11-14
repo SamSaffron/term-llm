@@ -12,9 +12,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/samsaffron/term-llm/internal/config"
-	"github.com/samsaffron/term-llm/internal/hostfacts"
-	"github.com/samsaffron/term-llm/internal/session"
+	"github.com/term-llm/term-llm/internal/config"
+	"github.com/term-llm/term-llm/internal/hostfacts"
+	"github.com/term-llm/term-llm/internal/session"
 )
 
 // templateVarPattern matches simple {{variable}} tokens, allowing optional whitespace inside delimiters.

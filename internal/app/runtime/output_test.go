@@ -3,7 +3,7 @@ package runtime
 import (
 	"testing"
 
-	"github.com/samsaffron/term-llm/internal/llm/core"
+	"github.com/term-llm/term-llm/internal/llm/core"
 )
 
 func TestRunnerOutputTaggedDiscardBeforeNewTurnOutput(t *testing.T) {

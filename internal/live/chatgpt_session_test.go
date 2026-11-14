@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/samsaffron/term-llm/internal/config"
+	"github.com/term-llm/term-llm/internal/config"
 )
 
 // Codex's V3/frameless protocol uses the V1 voice family. Its V2 default,

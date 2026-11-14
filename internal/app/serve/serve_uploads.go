@@ -10,7 +10,7 @@ import (
 	"strings"
 	"unicode"
 
-	"github.com/samsaffron/term-llm/internal/app/uploads"
+	"github.com/term-llm/term-llm/internal/app/uploads"
 )
 
 // handleUpload serves files written by saveUploadedBytes from the first-party

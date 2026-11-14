@@ -4,8 +4,8 @@ import (
 	"context"
 	"regexp"
 
-	"github.com/samsaffron/term-llm/internal/grepsearch"
-	"github.com/samsaffron/term-llm/internal/llm/core"
+	"github.com/term-llm/term-llm/internal/grepsearch"
+	"github.com/term-llm/term-llm/internal/llm/core"
 )
 
 // executePlainGrep is the unchanged ordinary search path, including enrichment.

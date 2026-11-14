@@ -9,8 +9,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/samsaffron/term-llm/internal/credentials"
 	"github.com/spf13/cobra"
+	"github.com/term-llm/term-llm/internal/credentials"
 )
 
 func TestFormatExpiry(t *testing.T) {

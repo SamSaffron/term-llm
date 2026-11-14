@@ -7,7 +7,7 @@ import (
 	"errors"
 	"log"
 
-	bitset "github.com/samsaffron/term-llm/internal/qrcode/bitset"
+	bitset "github.com/term-llm/term-llm/internal/qrcode/bitset"
 )
 
 // Data encoding.

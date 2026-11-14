@@ -6,8 +6,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/samsaffron/term-llm/cmd"
-	"github.com/samsaffron/term-llm/internal/docsgen"
+	"github.com/term-llm/term-llm/cmd"
+	"github.com/term-llm/term-llm/internal/docsgen"
 )
 
 func TestReferenceDocsUpToDate(t *testing.T) {

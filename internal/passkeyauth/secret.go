@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/samsaffron/term-llm/internal/fileprivacy"
+	"github.com/term-llm/term-llm/internal/fileprivacy"
 )
 
 // ReadPrivateSecretFile reads an operator-managed bootstrap/recovery secret

@@ -5,7 +5,7 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/samsaffron/term-llm/internal/llm/core"
+	"github.com/term-llm/term-llm/internal/llm/core"
 )
 
 // A cancelled stream context must not turn a failed run into a clean EOF. The

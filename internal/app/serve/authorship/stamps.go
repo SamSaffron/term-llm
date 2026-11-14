@@ -4,8 +4,8 @@ import (
 	"context"
 	"log"
 
-	"github.com/samsaffron/term-llm/internal/llm/core"
-	"github.com/samsaffron/term-llm/internal/session"
+	"github.com/term-llm/term-llm/internal/llm/core"
+	"github.com/term-llm/term-llm/internal/session"
 )
 
 // Initialize checks the directory once at startup. Tests/custom hosts may defer

@@ -9,9 +9,9 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/samsaffron/term-llm/internal/mcp"
-	"github.com/samsaffron/term-llm/internal/tooldiscovery"
-	"github.com/samsaffron/term-llm/internal/tooldiscovery/evalfixture"
+	"github.com/term-llm/term-llm/internal/mcp"
+	"github.com/term-llm/term-llm/internal/tooldiscovery"
+	"github.com/term-llm/term-llm/internal/tooldiscovery/evalfixture"
 )
 
 func main() {

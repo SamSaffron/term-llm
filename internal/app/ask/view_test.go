@@ -7,8 +7,8 @@ import (
 
 	"charm.land/huh/v2"
 	"charm.land/lipgloss/v2"
-	"github.com/samsaffron/term-llm/internal/testutil"
-	"github.com/samsaffron/term-llm/internal/ui"
+	"github.com/term-llm/term-llm/internal/testutil"
+	"github.com/term-llm/term-llm/internal/ui"
 )
 
 // TestApprovalScreen_ActualRender tests what ACTUALLY gets rendered during approval

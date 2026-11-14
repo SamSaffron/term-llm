@@ -9,8 +9,8 @@ import (
 	ossignal "os/signal"
 	"syscall"
 
-	"github.com/samsaffron/term-llm/internal/restart"
-	"github.com/samsaffron/term-llm/internal/widgets"
+	"github.com/term-llm/term-llm/internal/restart"
+	"github.com/term-llm/term-llm/internal/widgets"
 )
 
 // installWidgetStopSignal makes SIGUSR1 stop all widget subprocesses without

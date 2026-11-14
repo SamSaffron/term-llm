@@ -10,11 +10,11 @@ import (
 	"strings"
 	"testing"
 
-	appmemory "github.com/samsaffron/term-llm/internal/app/memory"
-	appruntime "github.com/samsaffron/term-llm/internal/app/runtime"
-	runapproval "github.com/samsaffron/term-llm/internal/app/runtime/approval"
-	"github.com/samsaffron/term-llm/internal/config"
-	"github.com/samsaffron/term-llm/internal/tools"
+	appmemory "github.com/term-llm/term-llm/internal/app/memory"
+	appruntime "github.com/term-llm/term-llm/internal/app/runtime"
+	runapproval "github.com/term-llm/term-llm/internal/app/runtime/approval"
+	"github.com/term-llm/term-llm/internal/config"
+	"github.com/term-llm/term-llm/internal/tools"
 )
 
 func sliceHasString(items []string, want string) bool {

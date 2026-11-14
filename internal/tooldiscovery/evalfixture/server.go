@@ -14,7 +14,7 @@ import (
 	"time"
 
 	sdkmcp "github.com/modelcontextprotocol/go-sdk/mcp"
-	"github.com/samsaffron/term-llm/internal/filelock"
+	"github.com/term-llm/term-llm/internal/filelock"
 )
 
 // RunServer runs one deterministic domain stdio MCP server. limit may expose a

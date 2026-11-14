@@ -3,7 +3,7 @@ package skills
 import (
 	"strings"
 
-	"github.com/samsaffron/term-llm/internal/runtimeoutput"
+	"github.com/term-llm/term-llm/internal/runtimeoutput"
 )
 
 // PromptAdditions returns explicit instructions and any discovery metadata not

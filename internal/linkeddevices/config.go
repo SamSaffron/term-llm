@@ -3,8 +3,8 @@ package linkeddevices
 import (
 	"strings"
 
-	"github.com/samsaffron/term-llm/internal/config"
-	"github.com/samsaffron/term-llm/internal/peerbroker"
+	"github.com/term-llm/term-llm/internal/config"
+	"github.com/term-llm/term-llm/internal/peerbroker"
 )
 
 // ServerOptionsFromConfig resolves the administrator-owned settings only when

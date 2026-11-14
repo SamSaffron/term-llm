@@ -3,7 +3,7 @@ package serve
 import (
 	"net/http"
 
-	"github.com/samsaffron/term-llm/internal/app/serve/hub"
+	"github.com/term-llm/term-llm/internal/app/serve/hub"
 )
 
 func (s *hubServer) hubPath(p string) string {

@@ -7,7 +7,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/samsaffron/term-llm/internal/config"
+	"github.com/term-llm/term-llm/internal/config"
 )
 
 // LiveOwner binds a call to a verified device and its trusted peer lifetime.

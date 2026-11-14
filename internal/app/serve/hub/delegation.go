@@ -6,7 +6,7 @@ import (
 	"strings"
 	"unicode"
 
-	corehub "github.com/samsaffron/term-llm/internal/hub"
+	corehub "github.com/term-llm/term-llm/internal/hub"
 )
 
 func PrioritizedActiveDelegations(records []corehub.Delegation, originID, targetID string) []corehub.Delegation {

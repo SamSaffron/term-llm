@@ -3,7 +3,7 @@ package session
 import (
 	"fmt"
 
-	"github.com/samsaffron/term-llm/internal/sqliteutil"
+	"github.com/term-llm/term-llm/internal/sqliteutil"
 )
 
 // schemaVersion is the current schema version.

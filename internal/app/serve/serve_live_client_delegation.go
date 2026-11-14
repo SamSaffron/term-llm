@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/samsaffron/term-llm/internal/live"
+	"github.com/term-llm/term-llm/internal/live"
 )
 
 // liveClientDelegationResult is one terminal answer for a client-owned

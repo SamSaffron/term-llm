@@ -6,7 +6,7 @@ import (
 	"strings"
 
 	tea "charm.land/bubbletea/v2"
-	"github.com/samsaffron/term-llm/internal/session"
+	"github.com/term-llm/term-llm/internal/session"
 )
 
 func (m *Model) handleTitleFallbackTick(msg titleFallbackTickMsg) (tea.Model, tea.Cmd) {

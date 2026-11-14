@@ -8,7 +8,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/samsaffron/term-llm/internal/llm/core"
+	"github.com/term-llm/term-llm/internal/llm/core"
 )
 
 // FallbackTranscriptIndexer adapts a Store without native revisioned transcript

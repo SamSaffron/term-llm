@@ -3,7 +3,7 @@ package chat
 import (
 	"testing"
 
-	"github.com/samsaffron/term-llm/internal/llm"
+	"github.com/term-llm/term-llm/internal/llm"
 )
 
 func benchStatusLineModel(width int) *Model {

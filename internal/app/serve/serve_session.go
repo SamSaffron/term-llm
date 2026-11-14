@@ -8,7 +8,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/samsaffron/term-llm/internal/session"
+	"github.com/term-llm/term-llm/internal/session"
 )
 
 const defaultServeSessionRetirementTimeout = 2 * time.Second

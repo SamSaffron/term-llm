@@ -7,8 +7,8 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/samsaffron/term-llm/internal/codemode"
-	"github.com/samsaffron/term-llm/internal/llm/core"
+	"github.com/term-llm/term-llm/internal/codemode"
+	"github.com/term-llm/term-llm/internal/llm/core"
 )
 
 // codeModeClientTools is separate from the engine registry: a cell pins one

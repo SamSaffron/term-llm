@@ -3,9 +3,9 @@ package responsesproviders
 import (
 	"context"
 
-	"github.com/samsaffron/term-llm/internal/config"
-	"github.com/samsaffron/term-llm/internal/llm/core"
-	"github.com/samsaffron/term-llm/internal/llm/providers/responses"
+	"github.com/term-llm/term-llm/internal/config"
+	"github.com/term-llm/term-llm/internal/llm/core"
+	"github.com/term-llm/term-llm/internal/llm/providers/responses"
 )
 
 func BuildResponsesInputWithFilePolicy(messages []Message, policy responses.FilePolicy) []responses.ResponsesInputItem {

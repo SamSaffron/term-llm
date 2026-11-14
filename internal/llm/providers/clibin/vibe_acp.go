@@ -11,11 +11,11 @@ import (
 	"sync"
 	"time"
 
-	"github.com/samsaffron/term-llm/internal/acp"
-	"github.com/samsaffron/term-llm/internal/cliwire"
-	"github.com/samsaffron/term-llm/internal/llm/core"
-	"github.com/samsaffron/term-llm/internal/procutil"
-	"github.com/samsaffron/term-llm/internal/runtimeoutput"
+	"github.com/term-llm/term-llm/internal/acp"
+	"github.com/term-llm/term-llm/internal/cliwire"
+	"github.com/term-llm/term-llm/internal/llm/core"
+	"github.com/term-llm/term-llm/internal/procutil"
+	"github.com/term-llm/term-llm/internal/runtimeoutput"
 )
 
 const (

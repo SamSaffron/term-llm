@@ -4,8 +4,8 @@ import (
 	"context"
 	"time"
 
-	"github.com/samsaffron/term-llm/internal/skills"
-	"github.com/samsaffron/term-llm/internal/tools"
+	"github.com/term-llm/term-llm/internal/skills"
+	"github.com/term-llm/term-llm/internal/tools"
 )
 
 // ChildRunKind identifies why a fresh child runtime was started.

@@ -440,7 +440,7 @@ providers:
   openrouter:
     model: openrouter/free
     fast_model: openrouter/free
-    app_url: https://github.com/samsaffron/term-llm
+    app_url: https://github.com/term-llm/term-llm
     app_title: term-llm
     # Optional privileged credential, resolved only for account usage analytics:
     management_key: ${OPENROUTER_MANAGEMENT_KEY}

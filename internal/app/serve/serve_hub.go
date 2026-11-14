@@ -9,8 +9,8 @@ import (
 	"sync/atomic"
 	"time"
 
-	apphub "github.com/samsaffron/term-llm/internal/app/serve/hub"
-	"github.com/samsaffron/term-llm/internal/hub"
+	apphub "github.com/term-llm/term-llm/internal/app/serve/hub"
+	"github.com/term-llm/term-llm/internal/hub"
 )
 
 // hubServer is the `term-llm serve hub` control plane: one pane of glass over

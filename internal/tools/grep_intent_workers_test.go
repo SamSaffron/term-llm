@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/samsaffron/term-llm/internal/greprerank"
+	"github.com/term-llm/term-llm/internal/greprerank"
 )
 
 func TestIntentBusyReturnsOrdinaryOutputWithoutExpansion(t *testing.T) {

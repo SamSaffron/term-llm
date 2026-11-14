@@ -1,7 +1,7 @@
 package cmd
 
 import (
-	servejobs "github.com/samsaffron/term-llm/internal/app/serve/jobs"
+	servejobs "github.com/term-llm/term-llm/internal/app/serve/jobs"
 	"time"
 )
 

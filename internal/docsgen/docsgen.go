@@ -10,12 +10,12 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/samsaffron/term-llm/internal/config"
-	"github.com/samsaffron/term-llm/internal/providerspec"
-	"github.com/samsaffron/term-llm/internal/secrettext"
-	"github.com/samsaffron/term-llm/internal/tools"
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
+	"github.com/term-llm/term-llm/internal/config"
+	"github.com/term-llm/term-llm/internal/providerspec"
+	"github.com/term-llm/term-llm/internal/secrettext"
+	"github.com/term-llm/term-llm/internal/tools"
 )
 
 // Page identifies a generated section in a reference page.

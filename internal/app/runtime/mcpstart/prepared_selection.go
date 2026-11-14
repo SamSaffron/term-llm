@@ -6,8 +6,8 @@ import (
 	"io"
 	"strings"
 
-	"github.com/samsaffron/term-llm/internal/llm/engine"
-	"github.com/samsaffron/term-llm/internal/mcp"
+	"github.com/term-llm/term-llm/internal/llm/engine"
+	"github.com/term-llm/term-llm/internal/mcp"
 )
 
 // ConfigLoader is the config-loading dependency shared by preparation and

@@ -1,6 +1,6 @@
 package ui
 
-import "github.com/samsaffron/term-llm/internal/terminaltext"
+import "github.com/term-llm/term-llm/internal/terminaltext"
 
 // ToolPhase contains display strings for a tool execution phase.
 type ToolPhase struct {

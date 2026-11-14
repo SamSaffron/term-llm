@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"strings"
 
-	servehttp "github.com/samsaffron/term-llm/internal/serve/http"
+	servehttp "github.com/term-llm/term-llm/internal/serve/http"
 )
 
 // GenerateToken creates the server's 32-byte URL-safe bearer credential.

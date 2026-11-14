@@ -5,7 +5,7 @@ import (
 	"os"
 	"testing"
 
-	"github.com/samsaffron/term-llm/internal/tsgen"
+	"github.com/term-llm/term-llm/internal/tsgen"
 )
 
 func TestAPITypesUpToDate(t *testing.T) {

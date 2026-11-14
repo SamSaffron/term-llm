@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/samsaffron/term-llm/internal/codemode"
+	"github.com/term-llm/term-llm/internal/codemode"
 )
 
 func TestCodeModeZeroMaxWaitPollsWithoutCancellation(t *testing.T) {

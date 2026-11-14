@@ -9,10 +9,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/samsaffron/term-llm/internal/jobs"
-	"github.com/samsaffron/term-llm/internal/llm/core"
-	"github.com/samsaffron/term-llm/internal/llm/engine"
-	toolpkg "github.com/samsaffron/term-llm/internal/tools"
+	"github.com/term-llm/term-llm/internal/jobs"
+	"github.com/term-llm/term-llm/internal/llm/core"
+	"github.com/term-llm/term-llm/internal/llm/engine"
+	toolpkg "github.com/term-llm/term-llm/internal/tools"
 )
 
 type StopWhen string

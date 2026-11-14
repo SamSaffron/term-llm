@@ -7,8 +7,8 @@ import (
 	"strings"
 	"testing"
 
-	llmstream "github.com/samsaffron/term-llm/internal/llm/core/stream"
-	"github.com/samsaffron/term-llm/internal/providerhttp"
+	llmstream "github.com/term-llm/term-llm/internal/llm/core/stream"
+	"github.com/term-llm/term-llm/internal/providerhttp"
 )
 
 const summaryPrefix = "[Context Compaction]\n"

@@ -10,8 +10,8 @@ import (
 	"testing"
 	"time"
 
-	progressive "github.com/samsaffron/term-llm/internal/app/runtime/progressive"
-	"github.com/samsaffron/term-llm/internal/llm/core"
+	progressive "github.com/term-llm/term-llm/internal/app/runtime/progressive"
+	"github.com/term-llm/term-llm/internal/llm/core"
 )
 
 func TestJobsV2OnceProgramRunLifecycle(t *testing.T) {

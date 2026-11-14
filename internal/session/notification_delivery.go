@@ -6,7 +6,7 @@ import (
 	"errors"
 	"time"
 
-	"github.com/samsaffron/term-llm/internal/session/notificationdb"
+	"github.com/term-llm/term-llm/internal/session/notificationdb"
 )
 
 func (s *SQLiteStore) UpdateNotificationPresence(ctx context.Context, p NotificationPresence) error {

@@ -4,9 +4,9 @@ import (
 	"context"
 	"time"
 
-	"github.com/samsaffron/term-llm/internal/llm/core"
-	"github.com/samsaffron/term-llm/internal/llm/engine"
-	"github.com/samsaffron/term-llm/internal/session/notificationdb"
+	"github.com/term-llm/term-llm/internal/llm/core"
+	"github.com/term-llm/term-llm/internal/llm/engine"
+	"github.com/term-llm/term-llm/internal/session/notificationdb"
 )
 
 // PendingSteering is a durable, not-yet-committed steering intent. It lives

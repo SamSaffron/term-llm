@@ -12,7 +12,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/samsaffron/term-llm/internal/app/serve/wire"
+	"github.com/term-llm/term-llm/internal/app/serve/wire"
 )
 
 func steeringBody(t *testing.T, canonical bool, payload any) string {

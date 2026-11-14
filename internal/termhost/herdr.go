@@ -5,7 +5,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/samsaffron/term-llm/internal/lifecycle"
+	"github.com/term-llm/term-llm/internal/lifecycle"
 )
 
 const (

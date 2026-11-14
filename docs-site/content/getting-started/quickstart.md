@@ -34,27 +34,27 @@ Prefer a terminal-only macOS install? Homebrew is still supported:
 brew install samsaffron/tap/term-llm
 ```
 
-The [shell installer](#linux) below and [release archives](https://github.com/samsaffron/term-llm/releases)
+The [shell installer](#linux) below and [release archives](https://github.com/term-llm/term-llm/releases)
 also remain supported on macOS.
 
 ### Linux
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/samsaffron/term-llm/main/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/term-llm/term-llm/main/install.sh | sh
 ```
 
-This downloads and executes the [shell installer](https://github.com/samsaffron/term-llm/blob/main/install.sh).
-Inspect it first if you prefer, or [download a release archive](https://github.com/samsaffron/term-llm/releases).
+This downloads and executes the [shell installer](https://github.com/term-llm/term-llm/blob/main/install.sh).
+Inspect it first if you prefer, or [download a release archive](https://github.com/term-llm/term-llm/releases).
 
 ### Windows
 
 In PowerShell:
 
 ```powershell
-irm https://raw.githubusercontent.com/samsaffron/term-llm/main/install.ps1 | iex
+irm https://raw.githubusercontent.com/term-llm/term-llm/main/install.ps1 | iex
 ```
 
-This downloads and executes the [PowerShell installer](https://github.com/samsaffron/term-llm/blob/main/install.ps1).
+This downloads and executes the [PowerShell installer](https://github.com/term-llm/term-llm/blob/main/install.ps1).
 Inspect it first if you prefer. See [Windows installation details](/getting-started/installation/#windows-powershell)
 for requirements and PATH instructions.
 

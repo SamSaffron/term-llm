@@ -5,7 +5,7 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/samsaffron/term-llm/internal/app/serve/sessionactivity"
+	"github.com/term-llm/term-llm/internal/app/serve/sessionactivity"
 )
 
 func (s *serveServer) handleSessionActivity(w http.ResponseWriter, r *http.Request, id, suffix string) {

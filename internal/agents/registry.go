@@ -9,7 +9,7 @@ import (
 	"sort"
 	"sync"
 
-	"github.com/samsaffron/term-llm/internal/config"
+	"github.com/term-llm/term-llm/internal/config"
 )
 
 // Registry manages agent discovery and resolution.

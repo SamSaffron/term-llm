@@ -3,7 +3,7 @@ package chat
 import (
 	tea "charm.land/bubbletea/v2"
 	"context"
-	"github.com/samsaffron/term-llm/internal/tools"
+	"github.com/term-llm/term-llm/internal/tools"
 )
 
 // ApprovalRequestMsg triggers an inline approval prompt.

@@ -7,11 +7,11 @@ import (
 	"path/filepath"
 	"testing"
 
-	appruntime "github.com/samsaffron/term-llm/internal/app/runtime"
-	"github.com/samsaffron/term-llm/internal/config"
-	"github.com/samsaffron/term-llm/internal/llm/mockprovider"
-	"github.com/samsaffron/term-llm/internal/mcp"
-	runpkg "github.com/samsaffron/term-llm/internal/run"
+	appruntime "github.com/term-llm/term-llm/internal/app/runtime"
+	"github.com/term-llm/term-llm/internal/config"
+	"github.com/term-llm/term-llm/internal/llm/mockprovider"
+	"github.com/term-llm/term-llm/internal/mcp"
+	runpkg "github.com/term-llm/term-llm/internal/run"
 )
 
 func TestMCPPolicyRunnerLoadsSelectionOnce(t *testing.T) {

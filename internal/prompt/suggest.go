@@ -5,7 +5,7 @@ import (
 	"os"
 	"runtime"
 
-	"github.com/samsaffron/term-llm/internal/input"
+	"github.com/term-llm/term-llm/internal/input"
 )
 
 // SuggestSystemPrompt returns the system prompt for command suggestions

@@ -6,7 +6,7 @@
 
 Terminal-first AI runtime for commands, chat, editing, tools, jobs, agents, and local workflows.
 
-[![Release](https://img.shields.io/github/v/release/samsaffron/term-llm?style=flat-square)](https://github.com/samsaffron/term-llm/releases)
+[![Release](https://img.shields.io/github/v/release/term-llm/term-llm?style=flat-square)](https://github.com/term-llm/term-llm/releases)
 
 Docs: **https://term-llm.com**
 
@@ -15,7 +15,7 @@ Docs: **https://term-llm.com**
 With the release installer (Linux/macOS):
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/samsaffron/term-llm/main/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/term-llm/term-llm/main/install.sh | sh
 ```
 
 Or with Homebrew:
@@ -27,13 +27,13 @@ brew install samsaffron/tap/term-llm
 On Windows (amd64), use the PowerShell installer:
 
 ```powershell
-irm https://raw.githubusercontent.com/samsaffron/term-llm/main/install.ps1 | iex
+irm https://raw.githubusercontent.com/term-llm/term-llm/main/install.ps1 | iex
 ```
 
 For a source build, clone the repository and build from its root. This requires Go, Node.js 24 or newer, npm, and Make:
 
 ```bash
-git clone https://github.com/samsaffron/term-llm.git
+git clone https://github.com/term-llm/term-llm.git
 cd term-llm
 make build
 ./term-llm version
@@ -41,7 +41,7 @@ make build
 
 `make build` installs the locked frontend dependencies when needed, generates the embedded web UI, and then builds the Go binary with the current version, commit, and UTC build time embedded. The generated frontend bundles are intentionally not checked into Git, so plain `go build` from a fresh checkout will fail until `make frontend` has run.
 
-`go install github.com/samsaffron/term-llm@latest` cannot build this repository: in addition to the generated frontend prerequisite, the application intentionally uses local `replace` directives for the owned Bubble Tea, Ultraviolet, and reflow modules. Use the installer/release archive or `make build` from a complete checkout.
+`go install github.com/term-llm/term-llm@latest` cannot build this repository: in addition to the generated frontend prerequisite, the application intentionally uses local `replace` directives for the owned Bubble Tea, Ultraviolet, and reflow modules. Use the installer/release archive or `make build` from a complete checkout.
 
 Shell completions are available for Bash, Zsh, Fish, and PowerShell. Fish users can install an auto-loaded completion file with:
 

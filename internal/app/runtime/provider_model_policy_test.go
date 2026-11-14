@@ -1,10 +1,10 @@
 package runtime
 
 import (
-	"github.com/samsaffron/term-llm/internal/agents"
-	"github.com/samsaffron/term-llm/internal/config"
-	"github.com/samsaffron/term-llm/internal/modelpolicy"
-	runpkg "github.com/samsaffron/term-llm/internal/run"
+	"github.com/term-llm/term-llm/internal/agents"
+	"github.com/term-llm/term-llm/internal/config"
+	"github.com/term-llm/term-llm/internal/modelpolicy"
+	runpkg "github.com/term-llm/term-llm/internal/run"
 	"strings"
 	"testing"
 )

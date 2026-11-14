@@ -16,7 +16,7 @@ adds no third-party production dependencies.
 ## Local changes
 
 - All library imports now use
-  `github.com/samsaffron/term-llm/internal/qrcode` and its subpackages. Existing
+  `github.com/term-llm/term-llm/internal/qrcode` and its subpackages. Existing
   package documentation is retained in `qrcode.go`, `bitset/bitset.go`, and
   `reedsolomon/reed_solomon.go`; there are no duplicate package comments.
 - Split upstream `version.go` into types/methods (`version.go`), format/version

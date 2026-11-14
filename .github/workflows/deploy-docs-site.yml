@@ -11,7 +11,7 @@ on:
 
 jobs:
   deploy:
-    if: github.repository == 'SamSaffron/term-llm'
+    if: github.repository == 'term-llm/term-llm'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7

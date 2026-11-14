@@ -14,7 +14,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/samsaffron/term-llm/internal/oauth"
+	"github.com/term-llm/term-llm/internal/oauth"
 )
 
 type grokCredentialRoundTripFunc func(*http.Request) (*http.Response, error)

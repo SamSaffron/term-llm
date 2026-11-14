@@ -1,8 +1,8 @@
 package cmd
 
 import (
-	appnotify "github.com/samsaffron/term-llm/internal/app/notify"
 	"github.com/spf13/cobra"
+	appnotify "github.com/term-llm/term-llm/internal/app/notify"
 )
 
 var notifyWebCmd = &cobra.Command{

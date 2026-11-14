@@ -7,7 +7,7 @@ import (
 	"path"
 	"sort"
 
-	"github.com/samsaffron/term-llm/internal/complexity"
+	"github.com/term-llm/term-llm/internal/complexity"
 )
 
 // sizeThreshold is the largest non-test file, in lines, that may exist without

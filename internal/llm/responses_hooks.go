@@ -3,10 +3,10 @@ package llm
 import (
 	"net/http"
 
-	"github.com/samsaffron/term-llm/internal/llm/debug"
-	"github.com/samsaffron/term-llm/internal/llm/filemime"
-	"github.com/samsaffron/term-llm/internal/llm/providers/responses"
-	"github.com/samsaffron/term-llm/internal/llm/schema"
+	"github.com/term-llm/term-llm/internal/llm/debug"
+	"github.com/term-llm/term-llm/internal/llm/filemime"
+	"github.com/term-llm/term-llm/internal/llm/providers/responses"
+	"github.com/term-llm/term-llm/internal/llm/schema"
 )
 
 // The Responses API client, wire types, request builders and WebSocket

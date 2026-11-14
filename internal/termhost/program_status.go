@@ -5,7 +5,7 @@ import (
 	"strings"
 	"unicode/utf8"
 
-	"github.com/samsaffron/term-llm/internal/lifecycle"
+	"github.com/term-llm/term-llm/internal/lifecycle"
 )
 
 // Herdr Core reports program status through its PTY, independently of the

@@ -1,6 +1,6 @@
 package engine
 
-import "github.com/samsaffron/term-llm/internal/llm/core"
+import "github.com/term-llm/term-llm/internal/llm/core"
 
 // journalFailedSyncTurn preserves outcomes already committed by an inline tool
 // provider even when its terminal error is not eligible for automatic recovery.

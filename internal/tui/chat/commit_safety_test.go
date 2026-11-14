@@ -9,7 +9,7 @@ import (
 
 	"charm.land/bubbles/v2/textarea"
 	tea "charm.land/bubbletea/v2"
-	"github.com/samsaffron/term-llm/internal/gitcommit"
+	"github.com/term-llm/term-llm/internal/gitcommit"
 )
 
 func TestCommitStagingCannotBeDismissedAndReviewCursorIsClamped(t *testing.T) {

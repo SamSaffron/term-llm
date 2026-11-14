@@ -3,7 +3,7 @@ package factory
 import (
 	"testing"
 
-	"github.com/samsaffron/term-llm/internal/providerspec"
+	"github.com/term-llm/term-llm/internal/providerspec"
 )
 
 // Every declared provider type needs a constructor and vice versa.

@@ -3,7 +3,7 @@ package llm
 import (
 	"strings"
 
-	"github.com/samsaffron/term-llm/internal/config"
+	"github.com/term-llm/term-llm/internal/config"
 )
 
 // IsKnownProviderModel reports whether the provider has catalog or configured

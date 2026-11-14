@@ -13,11 +13,11 @@ import (
 
 	"charm.land/bubbles/v2/key"
 	tea "charm.land/bubbletea/v2"
-	"github.com/samsaffron/term-llm/internal/llm/core"
-	"github.com/samsaffron/term-llm/internal/llm/engine"
-	"github.com/samsaffron/term-llm/internal/tools"
-	"github.com/samsaffron/term-llm/internal/tui/inspector"
-	sessionsui "github.com/samsaffron/term-llm/internal/tui/sessions"
+	"github.com/term-llm/term-llm/internal/llm/core"
+	"github.com/term-llm/term-llm/internal/llm/engine"
+	"github.com/term-llm/term-llm/internal/tools"
+	"github.com/term-llm/term-llm/internal/tui/inspector"
+	sessionsui "github.com/term-llm/term-llm/internal/tui/sessions"
 )
 
 // pasteCollapseThreshold is the minimum length (in characters) of a paste

@@ -1,8 +1,8 @@
 package cmd
 
 import (
-	usageapp "github.com/samsaffron/term-llm/internal/app/usage"
 	"github.com/spf13/cobra"
+	usageapp "github.com/term-llm/term-llm/internal/app/usage"
 )
 
 var usageOptions = usageapp.NewOptions()

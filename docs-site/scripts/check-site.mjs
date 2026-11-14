@@ -222,14 +222,14 @@ try {
   assert.ok(await page.locator("#install-windows").evaluate((el) => el === document.activeElement));
   for (const [os, command] of [
     ["macos", "brew install samsaffron/tap/term-llm"],
-    ["linux", "curl -fsSL https://raw.githubusercontent.com/samsaffron/term-llm/main/install.sh | sh"],
-    ["windows", "irm https://raw.githubusercontent.com/samsaffron/term-llm/main/install.ps1 | iex"],
+    ["linux", "curl -fsSL https://raw.githubusercontent.com/term-llm/term-llm/main/install.sh | sh"],
+    ["windows", "irm https://raw.githubusercontent.com/term-llm/term-llm/main/install.ps1 | iex"],
   ]) {
     await install.locator(`[data-install-os="${os}"]`).click();
     await page.locator(`#install-${os} [data-copy-text]`).first().click();
     assert.equal(await page.evaluate(() => navigator.clipboard.readText()), command);
     const script = os === "windows" ? "install.ps1" : "install.sh";
-    if (os !== "macos") assert.equal(await page.locator(`#install-${os}`).getByRole("link", { name: "Inspect the installer" }).getAttribute("href"), `https://github.com/samsaffron/term-llm/blob/main/${script}`);
+    if (os !== "macos") assert.equal(await page.locator(`#install-${os}`).getByRole("link", { name: "Inspect the installer" }).getAttribute("href"), `https://github.com/term-llm/term-llm/blob/main/${script}`);
     await accessible(`${os} installation`);
   }
   console.log("✓ OS installation links, commands, clipboard copy, and keyboard-operated ARIA tabs");

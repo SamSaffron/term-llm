@@ -4,8 +4,8 @@ import (
 	"fmt"
 	"image/color"
 
-	rendermarkdown "github.com/samsaffron/term-llm/internal/render/markdown"
-	"github.com/samsaffron/term-llm/internal/terminaltext"
+	rendermarkdown "github.com/term-llm/term-llm/internal/render/markdown"
+	"github.com/term-llm/term-llm/internal/terminaltext"
 )
 
 // colorHex converts a color.Color to a hex string (#rrggbb) for use with

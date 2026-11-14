@@ -4,9 +4,9 @@ import (
 	"encoding/json"
 	"strings"
 
-	"github.com/samsaffron/term-llm/internal/llm/core"
-	"github.com/samsaffron/term-llm/internal/reasoning"
-	"github.com/samsaffron/term-llm/internal/session"
+	"github.com/term-llm/term-llm/internal/llm/core"
+	"github.com/term-llm/term-llm/internal/reasoning"
+	"github.com/term-llm/term-llm/internal/session"
 )
 
 // CompactionBoundaryIndex mirrors the CLI's persisted sequence lookup and optional

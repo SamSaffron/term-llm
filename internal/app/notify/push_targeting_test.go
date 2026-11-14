@@ -16,8 +16,8 @@ import (
 	"testing"
 
 	webpush "github.com/SherClockHolmes/webpush-go"
-	"github.com/samsaffron/term-llm/internal/config"
-	"github.com/samsaffron/term-llm/internal/session"
+	"github.com/term-llm/term-llm/internal/config"
+	"github.com/term-llm/term-llm/internal/session"
 )
 
 type targetingStore struct {

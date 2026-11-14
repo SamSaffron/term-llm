@@ -7,8 +7,8 @@ import (
 	"log"
 	"net/http"
 
-	"github.com/samsaffron/term-llm/internal/llm/core"
-	"github.com/samsaffron/term-llm/internal/session"
+	"github.com/term-llm/term-llm/internal/llm/core"
+	"github.com/term-llm/term-llm/internal/session"
 )
 
 type sessionUndoRedoRequest struct {

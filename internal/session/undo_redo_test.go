@@ -11,8 +11,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/samsaffron/term-llm/internal/llm/core"
-	planpkg "github.com/samsaffron/term-llm/internal/plan"
+	"github.com/term-llm/term-llm/internal/llm/core"
+	planpkg "github.com/term-llm/term-llm/internal/plan"
 )
 
 func newUndoRedoSQLiteStore(t *testing.T) (*SQLiteStore, string) {

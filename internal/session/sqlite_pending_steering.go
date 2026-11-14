@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/samsaffron/term-llm/internal/llm/engine"
+	"github.com/term-llm/term-llm/internal/llm/engine"
 )
 
 func (s *SQLiteStore) SavePendingSteering(ctx context.Context, entry PendingSteering) error {

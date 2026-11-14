@@ -7,8 +7,8 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/samsaffron/term-llm/internal/llm/core"
-	"github.com/samsaffron/term-llm/internal/runtimeoutput"
+	"github.com/term-llm/term-llm/internal/llm/core"
+	"github.com/term-llm/term-llm/internal/runtimeoutput"
 )
 
 func (p *ClaudeBinProvider) recordTurnBoundary(req core.Request, resumedSessionID string, err error) {

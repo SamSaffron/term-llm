@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	appserver "github.com/samsaffron/term-llm/internal/app/serve/server"
+	appserver "github.com/term-llm/term-llm/internal/app/serve/server"
 )
 
 const (

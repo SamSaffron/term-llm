@@ -8,8 +8,8 @@ import (
 	"net/url"
 	"strings"
 
-	"github.com/samsaffron/term-llm/internal/pairing"
-	"github.com/samsaffron/term-llm/internal/qrcode"
+	"github.com/term-llm/term-llm/internal/pairing"
+	"github.com/term-llm/term-llm/internal/qrcode"
 )
 
 // Handler serves the owner-only API. The containing server must still apply

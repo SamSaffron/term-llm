@@ -6,7 +6,7 @@ import (
 	"io"
 	"strings"
 
-	internalreasoning "github.com/samsaffron/term-llm/internal/reasoning"
+	internalreasoning "github.com/term-llm/term-llm/internal/reasoning"
 )
 
 // TextStreamResult is the common output of one-shot helper conversations such

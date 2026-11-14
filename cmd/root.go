@@ -3,7 +3,7 @@ package cmd
 import (
 	"context"
 	"fmt"
-	"github.com/samsaffron/term-llm/internal/app/reload"
+	"github.com/term-llm/term-llm/internal/app/reload"
 	"io"
 	"log"
 	"os"
@@ -14,14 +14,14 @@ import (
 	"strings"
 	"time"
 
-	"github.com/samsaffron/term-llm/internal/exitcode"
-	pprofserver "github.com/samsaffron/term-llm/internal/pprof"
-	"github.com/samsaffron/term-llm/internal/process"
-	"github.com/samsaffron/term-llm/internal/restart"
-	"github.com/samsaffron/term-llm/internal/terminaltext"
-	"github.com/samsaffron/term-llm/internal/ui"
-	"github.com/samsaffron/term-llm/internal/update"
 	"github.com/spf13/cobra"
+	"github.com/term-llm/term-llm/internal/exitcode"
+	pprofserver "github.com/term-llm/term-llm/internal/pprof"
+	"github.com/term-llm/term-llm/internal/process"
+	"github.com/term-llm/term-llm/internal/restart"
+	"github.com/term-llm/term-llm/internal/terminaltext"
+	"github.com/term-llm/term-llm/internal/ui"
+	"github.com/term-llm/term-llm/internal/update"
 )
 
 func init() {

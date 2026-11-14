@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	rendermarkdown "github.com/samsaffron/term-llm/internal/render/markdown"
+	rendermarkdown "github.com/term-llm/term-llm/internal/render/markdown"
 )
 
 const testRenderWidth = 80

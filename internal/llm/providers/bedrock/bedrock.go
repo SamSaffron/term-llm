@@ -7,9 +7,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/samsaffron/term-llm/internal/awsauth"
-	"github.com/samsaffron/term-llm/internal/llm/core"
-	"github.com/samsaffron/term-llm/internal/llm/providers/anthropic"
+	"github.com/term-llm/term-llm/internal/awsauth"
+	"github.com/term-llm/term-llm/internal/llm/core"
+	"github.com/term-llm/term-llm/internal/llm/providers/anthropic"
 )
 
 // Provider implements Provider using AWS Bedrock with Anthropic Claude models.

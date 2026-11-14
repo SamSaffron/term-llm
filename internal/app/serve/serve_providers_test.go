@@ -7,7 +7,7 @@ import (
 	"slices"
 	"testing"
 
-	"github.com/samsaffron/term-llm/internal/config"
+	"github.com/term-llm/term-llm/internal/config"
 )
 
 // clearProviderCredentialEnv blanks every environment variable that can

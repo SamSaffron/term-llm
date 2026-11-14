@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/samsaffron/term-llm/internal/edit"
+	"github.com/term-llm/term-llm/internal/edit"
 )
 
 const editWildcardToken = "<<<elided>>>"

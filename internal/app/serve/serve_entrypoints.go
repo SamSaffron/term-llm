@@ -3,7 +3,7 @@ package serve
 import (
 	"context"
 
-	apphub "github.com/samsaffron/term-llm/internal/app/serve/hub"
+	apphub "github.com/term-llm/term-llm/internal/app/serve/hub"
 )
 
 // Run starts serve from captured invocation values without exposing host test seams.

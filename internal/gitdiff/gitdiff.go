@@ -13,7 +13,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/samsaffron/term-llm/internal/filetrack"
+	"github.com/term-llm/term-llm/internal/filetrack"
 )
 
 // Scope selects which Git states are compared.

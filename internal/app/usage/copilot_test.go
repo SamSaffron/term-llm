@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	githubcopilot "github.com/samsaffron/term-llm/internal/copilot"
+	githubcopilot "github.com/term-llm/term-llm/internal/copilot"
 )
 
 func TestWriteCopilotUsageTextShowsAICreditSummary(t *testing.T) {

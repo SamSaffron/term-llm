@@ -6,9 +6,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/samsaffron/term-llm/internal/credentials"
-	"github.com/samsaffron/term-llm/internal/oauth"
-	"github.com/samsaffron/term-llm/internal/runtimeoutput"
+	"github.com/term-llm/term-llm/internal/credentials"
+	"github.com/term-llm/term-llm/internal/oauth"
+	"github.com/term-llm/term-llm/internal/runtimeoutput"
 )
 
 func TestGrokPreflightCannotPromptInsideTUI(t *testing.T) {

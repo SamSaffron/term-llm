@@ -7,7 +7,7 @@ import (
 	"runtime"
 	"strings"
 
-	"github.com/samsaffron/term-llm/internal/worktree"
+	"github.com/term-llm/term-llm/internal/worktree"
 )
 
 // MatchesWorkspace reports whether an immutable session execution snapshot

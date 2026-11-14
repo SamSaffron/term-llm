@@ -7,9 +7,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/samsaffron/term-llm/internal/pathutil"
-	"github.com/samsaffron/term-llm/internal/procutil"
-	"github.com/samsaffron/term-llm/internal/shellcmd"
+	"github.com/term-llm/term-llm/internal/pathutil"
+	"github.com/term-llm/term-llm/internal/procutil"
+	"github.com/term-llm/term-llm/internal/shellcmd"
 )
 
 // Keep existing script hooks source-compatible while sharing bounded capture.

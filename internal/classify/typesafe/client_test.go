@@ -1,8 +1,8 @@
 package typesafe
 
 import (
-	"github.com/samsaffron/term-llm/internal/classify"
-	"github.com/samsaffron/term-llm/internal/classify/transport"
+	"github.com/term-llm/term-llm/internal/classify"
+	"github.com/term-llm/term-llm/internal/classify/transport"
 
 	"bytes"
 	"context"
@@ -17,7 +17,7 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/samsaffron/term-llm/internal/providerhttp"
+	"github.com/term-llm/term-llm/internal/providerhttp"
 )
 
 func TestClassifySendsAuthAndParsesPrimitives(t *testing.T) {

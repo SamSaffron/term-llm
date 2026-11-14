@@ -1,6 +1,6 @@
 package jobs
 
-import corejobs "github.com/samsaffron/term-llm/internal/jobs"
+import corejobs "github.com/term-llm/term-llm/internal/jobs"
 
 const (
 	exitReasonNatural    = corejobs.ExitReasonNatural

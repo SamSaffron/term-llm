@@ -4,8 +4,8 @@ import (
 	"context"
 	"path/filepath"
 
-	"github.com/samsaffron/term-llm/internal/pathutil"
-	"github.com/samsaffron/term-llm/internal/tools/gitidentity"
+	"github.com/term-llm/term-llm/internal/pathutil"
+	"github.com/term-llm/term-llm/internal/tools/gitidentity"
 )
 
 // canonicalFileApprovalPath enforces a write boundary before any workspace,

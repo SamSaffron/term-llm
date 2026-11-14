@@ -14,7 +14,7 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/samsaffron/term-llm/internal/config"
+	"github.com/term-llm/term-llm/internal/config"
 )
 
 // SessionOptions carries the provider-neutral inputs for a new live session.

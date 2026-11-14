@@ -5,7 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/samsaffron/term-llm/internal/contain"
+	"github.com/term-llm/term-llm/internal/contain"
 )
 
 // ContainResolver discovers nodes from local contain workspaces: each

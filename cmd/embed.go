@@ -7,9 +7,9 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/samsaffron/term-llm/internal/embedding"
-	"github.com/samsaffron/term-llm/internal/input"
 	"github.com/spf13/cobra"
+	"github.com/term-llm/term-llm/internal/embedding"
+	"github.com/term-llm/term-llm/internal/input"
 )
 
 var (

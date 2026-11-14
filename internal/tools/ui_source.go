@@ -10,10 +10,10 @@ import (
 	"sync"
 	"sync/atomic"
 
-	"github.com/samsaffron/term-llm/internal/buildinfo"
-	"github.com/samsaffron/term-llm/internal/llm/core"
-	"github.com/samsaffron/term-llm/internal/serveui"
-	"github.com/samsaffron/term-llm/internal/uisource"
+	"github.com/term-llm/term-llm/internal/buildinfo"
+	"github.com/term-llm/term-llm/internal/llm/core"
+	"github.com/term-llm/term-llm/internal/serveui"
+	"github.com/term-llm/term-llm/internal/uisource"
 )
 
 // UIExtensionControl is bound only by a web runtime. It exposes extension-only

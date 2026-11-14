@@ -253,7 +253,7 @@ still counts as explicit bearer configuration.
 ## Run as a systemd service
 
 An example unit lives at
-[`ops/systemd/term-llm-hub.service`](https://github.com/samsaffron/term-llm/blob/main/ops/systemd/term-llm-hub.service)
+[`ops/systemd/term-llm-hub.service`](https://github.com/term-llm/term-llm/blob/main/ops/systemd/term-llm-hub.service)
 so the Hub survives reboots and restarts on crashes. Copy it, adjust the
 `ExecStart` flags, give it the tokens, and enable it:
 
@@ -365,7 +365,7 @@ term-llm serve web --hub-url http://127.0.0.1:8090/ --hub-node-id jarvis --hub-n
 ```
 
 For a long-running Linux node, see the repository's
-[`serve web` systemd example](https://github.com/samsaffron/term-llm/tree/main/examples/systemd-serve-web).
+[`serve web` systemd example](https://github.com/term-llm/term-llm/tree/main/examples/systemd-serve-web).
 It includes an interactive installer with optional reverse connection and
 startup registration, including `TERM_LLM_HUB_REGISTRATION_TOKEN`, plus a daily
 check that restarts the node only after its installed binary changes.

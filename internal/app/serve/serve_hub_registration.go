@@ -10,10 +10,10 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/samsaffron/term-llm/internal/app/reload"
-	apphub "github.com/samsaffron/term-llm/internal/app/serve/hub"
-	"github.com/samsaffron/term-llm/internal/app/serve/hubnode"
-	"github.com/samsaffron/term-llm/internal/hub"
+	"github.com/term-llm/term-llm/internal/app/reload"
+	apphub "github.com/term-llm/term-llm/internal/app/serve/hub"
+	"github.com/term-llm/term-llm/internal/app/serve/hubnode"
+	"github.com/term-llm/term-llm/internal/hub"
 )
 
 const hubRegistrationTokenEnv = apphub.RegistrationTokenEnv

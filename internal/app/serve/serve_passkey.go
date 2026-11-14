@@ -9,8 +9,8 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/samsaffron/term-llm/internal/appdata"
-	"github.com/samsaffron/term-llm/internal/passkeyauth"
+	"github.com/term-llm/term-llm/internal/appdata"
+	"github.com/term-llm/term-llm/internal/passkeyauth"
 )
 
 func resolveWebPasskeyEndpoint(basePathExplicit bool, opts Options) (passkeyauth.Endpoint, error) {

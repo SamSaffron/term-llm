@@ -8,8 +8,8 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/samsaffron/term-llm/internal/app/serve/authorship"
-	"github.com/samsaffron/term-llm/internal/session"
+	"github.com/term-llm/term-llm/internal/app/serve/authorship"
+	"github.com/term-llm/term-llm/internal/session"
 )
 
 // SearchHandler validates and projects a filtered, attention-enriched session search page.

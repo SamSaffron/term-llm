@@ -8,10 +8,10 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/samsaffron/term-llm/internal/agents"
-	"github.com/samsaffron/term-llm/internal/agents/gist"
-	"github.com/samsaffron/term-llm/internal/config"
 	"github.com/spf13/cobra"
+	"github.com/term-llm/term-llm/internal/agents"
+	"github.com/term-llm/term-llm/internal/agents/gist"
+	"github.com/term-llm/term-llm/internal/config"
 	"gopkg.in/yaml.v3"
 )
 

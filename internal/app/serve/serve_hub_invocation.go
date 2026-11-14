@@ -1,5 +1,5 @@
 package serve
 
-import apphub "github.com/samsaffron/term-llm/internal/app/serve/hub"
+import apphub "github.com/term-llm/term-llm/internal/app/serve/hub"
 
 type hubDeps = apphub.Dependencies

@@ -4,8 +4,8 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/samsaffron/term-llm/internal/userservice"
 	"github.com/spf13/cobra"
+	"github.com/term-llm/term-llm/internal/userservice"
 )
 
 // ValidateAutostartArgs validates the optional service kind and required action.

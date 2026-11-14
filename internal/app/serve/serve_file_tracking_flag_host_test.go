@@ -3,8 +3,8 @@ package serve
 import (
 	"testing"
 
-	appruntime "github.com/samsaffron/term-llm/internal/app/runtime"
-	"github.com/samsaffron/term-llm/internal/config"
+	appruntime "github.com/term-llm/term-llm/internal/app/runtime"
+	"github.com/term-llm/term-llm/internal/config"
 )
 
 func TestApplyServeFileTrackingOverride(t *testing.T) {

@@ -6,7 +6,7 @@ import (
 	"slices"
 	"testing"
 
-	"github.com/samsaffron/term-llm/internal/llm/core"
+	"github.com/term-llm/term-llm/internal/llm/core"
 )
 
 // These tests are the executable form of the transcript replacement contract

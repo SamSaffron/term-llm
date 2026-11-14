@@ -10,10 +10,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/samsaffron/term-llm/internal/filetrack"
-	"github.com/samsaffron/term-llm/internal/gitdiff"
-	"github.com/samsaffron/term-llm/internal/session"
-	"github.com/samsaffron/term-llm/internal/worktree"
+	"github.com/term-llm/term-llm/internal/filetrack"
+	"github.com/term-llm/term-llm/internal/gitdiff"
+	"github.com/term-llm/term-llm/internal/session"
+	"github.com/term-llm/term-llm/internal/worktree"
 )
 
 func TestSessionFileChangesGitScopes(t *testing.T) {

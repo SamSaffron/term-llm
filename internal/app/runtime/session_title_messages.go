@@ -4,7 +4,7 @@ import (
 	"context"
 	"sort"
 
-	"github.com/samsaffron/term-llm/internal/session"
+	"github.com/term-llm/term-llm/internal/session"
 )
 
 const TitleMessagePageSize = 80

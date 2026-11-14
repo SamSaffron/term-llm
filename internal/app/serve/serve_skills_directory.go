@@ -6,8 +6,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/samsaffron/term-llm/internal/session"
-	"github.com/samsaffron/term-llm/internal/skills"
+	"github.com/term-llm/term-llm/internal/session"
+	"github.com/term-llm/term-llm/internal/skills"
 )
 
 func (s *serveServer) skillsForServeSession(sess *session.Session) *skills.Setup {

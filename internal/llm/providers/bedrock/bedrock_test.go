@@ -3,7 +3,7 @@ package bedrock
 import (
 	"testing"
 
-	"github.com/samsaffron/term-llm/internal/llm/providers/anthropic"
+	"github.com/term-llm/term-llm/internal/llm/providers/anthropic"
 )
 
 func TestResolveBedrockModelID(t *testing.T) {

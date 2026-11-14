@@ -9,8 +9,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/samsaffron/term-llm/internal/llm/mockprovider"
-	runpkg "github.com/samsaffron/term-llm/internal/run"
+	"github.com/term-llm/term-llm/internal/llm/mockprovider"
+	runpkg "github.com/term-llm/term-llm/internal/run"
 )
 
 func TestNotificationMainSkillHTTPAdmissionOwnsCompletion(t *testing.T) {

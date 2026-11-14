@@ -11,12 +11,12 @@ import (
 	"charm.land/bubbles/v2/spinner"
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
-	"github.com/samsaffron/term-llm/internal/image"
-	"github.com/samsaffron/term-llm/internal/input"
-	"github.com/samsaffron/term-llm/internal/signal"
-	"github.com/samsaffron/term-llm/internal/terminalpolicy"
-	"github.com/samsaffron/term-llm/internal/ui"
 	"github.com/spf13/cobra"
+	"github.com/term-llm/term-llm/internal/image"
+	"github.com/term-llm/term-llm/internal/input"
+	"github.com/term-llm/term-llm/internal/signal"
+	"github.com/term-llm/term-llm/internal/terminalpolicy"
+	"github.com/term-llm/term-llm/internal/ui"
 	"golang.org/x/term"
 )
 

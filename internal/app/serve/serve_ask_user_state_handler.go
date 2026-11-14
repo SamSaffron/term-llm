@@ -2,18 +2,18 @@ package serve
 
 import (
 	"context"
-	"github.com/samsaffron/term-llm/internal/app/serve/authorship"
+	"github.com/term-llm/term-llm/internal/app/serve/authorship"
 	"net/http"
 	"strings"
 
-	appruntime "github.com/samsaffron/term-llm/internal/app/runtime"
-	mcpstart "github.com/samsaffron/term-llm/internal/app/runtime/mcpstart"
-	"github.com/samsaffron/term-llm/internal/llm/core"
-	"github.com/samsaffron/term-llm/internal/llm/engine"
-	planpkg "github.com/samsaffron/term-llm/internal/plan"
-	"github.com/samsaffron/term-llm/internal/restart"
-	"github.com/samsaffron/term-llm/internal/session"
-	"github.com/samsaffron/term-llm/internal/tools"
+	appruntime "github.com/term-llm/term-llm/internal/app/runtime"
+	mcpstart "github.com/term-llm/term-llm/internal/app/runtime/mcpstart"
+	"github.com/term-llm/term-llm/internal/llm/core"
+	"github.com/term-llm/term-llm/internal/llm/engine"
+	planpkg "github.com/term-llm/term-llm/internal/plan"
+	"github.com/term-llm/term-llm/internal/restart"
+	"github.com/term-llm/term-llm/internal/session"
+	"github.com/term-llm/term-llm/internal/tools"
 )
 
 type webCurrentPlan struct {

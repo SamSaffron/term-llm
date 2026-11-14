@@ -9,10 +9,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/samsaffron/term-llm/internal/input"
-	"github.com/samsaffron/term-llm/internal/signal"
-	"github.com/samsaffron/term-llm/internal/video"
 	"github.com/spf13/cobra"
+	"github.com/term-llm/term-llm/internal/input"
+	"github.com/term-llm/term-llm/internal/signal"
+	"github.com/term-llm/term-llm/internal/video"
 )
 
 var (

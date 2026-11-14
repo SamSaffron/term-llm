@@ -4,7 +4,7 @@ import (
 	"strings"
 
 	tea "charm.land/bubbletea/v2"
-	sessionsui "github.com/samsaffron/term-llm/internal/tui/sessions"
+	sessionsui "github.com/term-llm/term-llm/internal/tui/sessions"
 )
 
 func (m *Model) openResumeBrowser() (tea.Model, tea.Cmd) {

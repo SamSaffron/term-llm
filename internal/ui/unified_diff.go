@@ -7,9 +7,9 @@ import (
 	"strings"
 	"unicode/utf8"
 
-	"github.com/samsaffron/term-llm/internal/llm/core"
-	"github.com/samsaffron/term-llm/internal/terminaltext"
 	diff "github.com/shogoki/gotextdiff"
+	"github.com/term-llm/term-llm/internal/llm/core"
+	"github.com/term-llm/term-llm/internal/terminaltext"
 )
 
 // PrintUnifiedDiff prints a clean unified diff between old and new content

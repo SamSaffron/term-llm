@@ -4,7 +4,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/samsaffron/term-llm/internal/testutil"
+	"github.com/term-llm/term-llm/internal/testutil"
 )
 
 func TestNewStreamingResponseWriterNoTimeoutReturnsOriginal(t *testing.T) {

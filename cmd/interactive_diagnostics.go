@@ -4,8 +4,8 @@ import (
 	"fmt"
 	"io"
 
-	"github.com/samsaffron/term-llm/internal/config"
-	"github.com/samsaffron/term-llm/internal/runtimeoutput"
+	"github.com/term-llm/term-llm/internal/config"
+	"github.com/term-llm/term-llm/internal/runtimeoutput"
 )
 
 // startInteractiveDiagnostics must run before the renderer takes ownership.

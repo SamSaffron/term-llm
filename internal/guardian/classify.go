@@ -8,7 +8,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/samsaffron/term-llm/internal/classify"
+	"github.com/term-llm/term-llm/internal/classify"
 )
 
 // ClassifyClient supports one stateless, multi-question policy assessment.

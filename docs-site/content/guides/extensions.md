@@ -170,8 +170,8 @@ When exact readable source is unavailable, the resolver tries published source: 
 New releases publish:
 
 ```text
-https://github.com/samsaffron/term-llm/releases/download/vX.Y.Z/term-llm-ui-source.tar.gz
-https://github.com/samsaffron/term-llm/releases/download/vX.Y.Z/checksums.txt
+https://github.com/term-llm/term-llm/releases/download/vX.Y.Z/term-llm-ui-source.tar.gz
+https://github.com/term-llm/term-llm/releases/download/vX.Y.Z/checksums.txt
 ```
 
 Downloads are checksum-verified and cached under `$XDG_CACHE_HOME/term-llm/ui-source/` (default `~/.cache/term-llm/ui-source/`). Release metadata has a 24-hour freshness window; verified archives are content-addressed beneath `releases/<tag>/<sha256>/`. References are decompressed lazily in memory; explicit tool extraction writes a new approved workspace directory. Deleting the cache is safe. Offline/rate-limited requests use cached or compiled references. Older releases without the new artifact are skipped.

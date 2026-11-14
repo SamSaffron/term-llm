@@ -7,7 +7,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	memorydb "github.com/samsaffron/term-llm/internal/memory"
+	memorydb "github.com/term-llm/term-llm/internal/memory"
 )
 
 var (

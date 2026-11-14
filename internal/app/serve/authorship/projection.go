@@ -3,9 +3,9 @@ package authorship
 import (
 	"context"
 
-	"github.com/samsaffron/term-llm/internal/llm/core"
-	"github.com/samsaffron/term-llm/internal/llm/engine"
-	"github.com/samsaffron/term-llm/internal/session"
+	"github.com/term-llm/term-llm/internal/llm/core"
+	"github.com/term-llm/term-llm/internal/llm/engine"
+	"github.com/term-llm/term-llm/internal/session"
 )
 
 func (d *Directory) MessageAuthors(store session.Store, messages []session.Message) map[string]*session.Author {

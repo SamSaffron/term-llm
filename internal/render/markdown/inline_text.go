@@ -5,7 +5,7 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/samsaffron/term-llm/internal/terminaltext"
+	"github.com/term-llm/term-llm/internal/terminaltext"
 )
 
 // backslashEscapeRe matches a backslash followed by an ASCII punctuation character.

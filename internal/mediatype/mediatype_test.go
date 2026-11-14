@@ -7,8 +7,8 @@ import (
 	"io"
 	"testing"
 
-	"github.com/samsaffron/term-llm/internal/mediatype"
-	"github.com/samsaffron/term-llm/internal/testutil/mediafixture"
+	"github.com/term-llm/term-llm/internal/mediatype"
+	"github.com/term-llm/term-llm/internal/testutil/mediafixture"
 )
 
 func TestFormatsAndInspection(t *testing.T) {

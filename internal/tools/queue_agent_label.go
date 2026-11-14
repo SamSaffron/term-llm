@@ -1,6 +1,6 @@
 package tools
 
-import "github.com/samsaffron/term-llm/internal/formatutil"
+import "github.com/term-llm/term-llm/internal/formatutil"
 
 // queueAgentLabelSchema advertises the optional presentation label.
 func queueAgentLabelSchema() map[string]any {

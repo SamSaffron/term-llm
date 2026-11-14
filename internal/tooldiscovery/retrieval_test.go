@@ -3,8 +3,8 @@ package tooldiscovery
 import (
 	"testing"
 
-	"github.com/samsaffron/term-llm/internal/mcp"
-	"github.com/samsaffron/term-llm/internal/tooldiscovery/evalfixture"
+	"github.com/term-llm/term-llm/internal/mcp"
+	"github.com/term-llm/term-llm/internal/tooldiscovery/evalfixture"
 )
 
 func TestMultiOperationQueryRetrievesDistinctRequiredTools(t *testing.T) {

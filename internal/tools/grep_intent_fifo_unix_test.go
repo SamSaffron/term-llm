@@ -12,8 +12,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/samsaffron/term-llm/internal/config"
-	"github.com/samsaffron/term-llm/internal/grepsearch"
+	"github.com/term-llm/term-llm/internal/config"
+	"github.com/term-llm/term-llm/internal/grepsearch"
 )
 
 func TestIntentGoExpansionSkipsFIFOWithoutWriter(t *testing.T) {

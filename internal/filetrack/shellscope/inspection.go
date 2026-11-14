@@ -14,7 +14,7 @@ import (
 	"time"
 
 	"github.com/bmatcuk/doublestar/v4"
-	"github.com/samsaffron/term-llm/internal/tools/gitidentity"
+	"github.com/term-llm/term-llm/internal/tools/gitidentity"
 )
 
 const (

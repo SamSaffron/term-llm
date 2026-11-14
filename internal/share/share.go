@@ -18,8 +18,8 @@ import (
 	"unicode"
 	"unicode/utf8"
 
-	"github.com/samsaffron/term-llm/internal/agents/gist"
-	"github.com/samsaffron/term-llm/internal/runtimeoutput"
+	"github.com/term-llm/term-llm/internal/agents/gist"
+	"github.com/term-llm/term-llm/internal/runtimeoutput"
 )
 
 const (

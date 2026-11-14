@@ -11,7 +11,7 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/samsaffron/term-llm/internal/session"
+	"github.com/term-llm/term-llm/internal/session"
 )
 
 func listStatusAttention(ctx context.Context, store session.AttentionStore, kind session.AttentionKind) map[string]session.AttentionItem {

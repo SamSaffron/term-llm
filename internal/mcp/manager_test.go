@@ -20,8 +20,8 @@ import (
 	"time"
 
 	mcpSDK "github.com/modelcontextprotocol/go-sdk/mcp"
-	"github.com/samsaffron/term-llm/internal/llm/core"
-	mcpoauth "github.com/samsaffron/term-llm/internal/mcp/oauth"
+	"github.com/term-llm/term-llm/internal/llm/core"
+	mcpoauth "github.com/term-llm/term-llm/internal/mcp/oauth"
 )
 
 const runMCPManagerTestServerEnv = "TERM_LLM_MCP_MANAGER_TEST_SERVER"

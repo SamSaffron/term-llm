@@ -3,8 +3,8 @@ package serve
 import (
 	"testing"
 
-	"github.com/samsaffron/term-llm/internal/agents"
-	"github.com/samsaffron/term-llm/internal/config"
+	"github.com/term-llm/term-llm/internal/agents"
+	"github.com/term-llm/term-llm/internal/config"
 )
 
 func TestResolveSettingsNoSearchDisablesAgentSearch(t *testing.T) {

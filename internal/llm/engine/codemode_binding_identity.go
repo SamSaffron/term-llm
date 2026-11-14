@@ -1,6 +1,6 @@
 package engine
 
-import "github.com/samsaffron/term-llm/internal/llm/core"
+import "github.com/term-llm/term-llm/internal/llm/core"
 
 // codeModeExecutionSnapshot captures instance and generation together. Reading
 // them separately could pair an old tool's schema with a replacement's binding.

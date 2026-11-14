@@ -11,10 +11,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/samsaffron/term-llm/internal/mcp"
-	mcpoauth "github.com/samsaffron/term-llm/internal/mcp/oauth"
-	internalauth "github.com/samsaffron/term-llm/internal/oauth"
 	"github.com/spf13/cobra"
+	"github.com/term-llm/term-llm/internal/mcp"
+	mcpoauth "github.com/term-llm/term-llm/internal/mcp/oauth"
+	internalauth "github.com/term-llm/term-llm/internal/oauth"
 )
 
 var (

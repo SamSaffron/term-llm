@@ -8,7 +8,7 @@ import (
 	"testing"
 
 	tea "charm.land/bubbletea/v2"
-	"github.com/samsaffron/term-llm/internal/image"
+	"github.com/term-llm/term-llm/internal/image"
 )
 
 func TestShouldUseImageSpinner(t *testing.T) {

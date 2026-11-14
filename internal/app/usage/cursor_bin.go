@@ -17,8 +17,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/samsaffron/term-llm/internal/llm/providerusage"
 	"github.com/spf13/pflag"
+	"github.com/term-llm/term-llm/internal/llm/providerusage"
 )
 
 const cursorBinUsageURL = "https://api2.cursor.sh/aiserver.v1.DashboardService/GetCurrentPeriodUsage"

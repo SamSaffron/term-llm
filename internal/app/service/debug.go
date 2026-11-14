@@ -6,8 +6,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/samsaffron/term-llm/internal/userservice"
 	"github.com/spf13/cobra"
+	"github.com/term-llm/term-llm/internal/userservice"
 )
 
 func serviceDebug(cmd *cobra.Command, format string, args ...any) {

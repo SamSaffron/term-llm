@@ -6,8 +6,8 @@ import (
 	"net/http"
 	"strings"
 
-	bootstrap "github.com/samsaffron/term-llm/internal/app/runtime/bootstrap"
-	"github.com/samsaffron/term-llm/internal/session"
+	bootstrap "github.com/term-llm/term-llm/internal/app/runtime/bootstrap"
+	"github.com/term-llm/term-llm/internal/session"
 )
 
 type createWebSessionRequest struct {

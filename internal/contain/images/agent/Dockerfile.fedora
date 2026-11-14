@@ -140,10 +140,10 @@ RUN echo 'eval "$(mise activate bash)"' >> /etc/bashrc && \
 
 # Install term-llm from the official release installer.
 RUN if [ "${TERM_LLM_VERSION}" = "latest" ]; then \
-      curl -fsSL https://raw.githubusercontent.com/samsaffron/term-llm/main/install.sh | \
+      curl -fsSL https://raw.githubusercontent.com/term-llm/term-llm/main/install.sh | \
         TERM_LLM_INSTALL_DIR=/usr/local/bin sh; \
     else \
-      curl -fsSL https://raw.githubusercontent.com/samsaffron/term-llm/main/install.sh | \
+      curl -fsSL https://raw.githubusercontent.com/term-llm/term-llm/main/install.sh | \
         TERM_LLM_INSTALL_DIR=/usr/local/bin sh -s -- --version "${TERM_LLM_VERSION}"; \
     fi
 
@@ -167,7 +167,7 @@ RUN sudo -Hu agent bash -c 'curl -fsSL https://claude.ai/install.sh | bash' && \
 # The running agent is built on top of term-llm; exposing the source at the
 # conventional ~/source/term-llm path makes that relationship easy to inspect.
 RUN sudo -Hu agent mkdir -p /home/agent/source && \
-    sudo -Hu agent git clone https://github.com/samsaffron/term-llm.git /home/agent/source/term-llm && \
+    sudo -Hu agent git clone https://github.com/term-llm/term-llm.git /home/agent/source/term-llm && \
     if [ "${TERM_LLM_VERSION}" != "latest" ]; then \
       cd /home/agent/source/term-llm && \
       sudo -Hu agent git checkout "${TERM_LLM_VERSION}" || sudo -Hu agent git checkout "v${TERM_LLM_VERSION}" || true; \

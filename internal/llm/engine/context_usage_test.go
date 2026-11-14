@@ -5,7 +5,7 @@ import (
 	"io"
 	"testing"
 
-	"github.com/samsaffron/term-llm/internal/llm/core"
+	"github.com/term-llm/term-llm/internal/llm/core"
 )
 
 // A provider that manages its own context reports occupancy for display. The

@@ -11,9 +11,9 @@ import (
 	"testing"
 	"time"
 
-	codemodetool "github.com/samsaffron/term-llm/internal/codemode/tool"
-	"github.com/samsaffron/term-llm/internal/llm/core"
-	"github.com/samsaffron/term-llm/internal/llm/engine"
+	codemodetool "github.com/term-llm/term-llm/internal/codemode/tool"
+	"github.com/term-llm/term-llm/internal/llm/core"
+	"github.com/term-llm/term-llm/internal/llm/engine"
 )
 
 func typedLeaseFixture(t *testing.T, ctx context.Context) (context.Context, *serveServer, *responseRun, *typedClientToolRunner, func()) {
