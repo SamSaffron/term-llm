@@ -228,6 +228,14 @@
   cursor: default;
 }
 
+.side-question-send svg {
+  display: block;
+  flex: none;
+  width: 1rem;
+  height: 1rem;
+  margin: auto;
+}
+
 .side-question-stop {
   display: inline-flex;
   flex: none;

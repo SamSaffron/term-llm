@@ -184,10 +184,28 @@
   padding: 1rem;
 }
 
+/* A floated full-width legend lays out inside the fieldset like a block, so the
+   card's padding and border wrap it instead of the native legend notch. */
 .ask-user-question-text {
-  margin: 0 0 0.9rem;
+  display: block;
+  float: left;
+  width: 100%;
+  margin: 0;
+  padding: 0 0 0.75rem;
   font-size: 1.02rem;
   font-weight: 700;
   line-height: 1.45;
   color: var(--text);
+}
+
+.ask-user-question .ask-user-option {
+  margin-bottom: 0.45rem;
+}
+
+.ask-user-custom {
+  display: grid;
+  gap: 0.4rem;
+  margin-top: 0.65rem;
+  color: var(--text-muted);
+  font-size: 0.82rem;
 }
