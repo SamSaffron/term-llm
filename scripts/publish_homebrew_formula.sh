@@ -10,8 +10,7 @@ fi
 
 tag=$1
 checksums_file=$2
-# The tap is a separate repository; it did not move with term-llm/term-llm.
-repository=${HOMEBREW_TAP_REPOSITORY:-SamSaffron/homebrew-tap}
+repository=${HOMEBREW_TAP_REPOSITORY:-term-llm/homebrew-tap}
 script_dir=$(CDPATH='' cd -- "$(dirname "$0")" && pwd)
 
 tmp_dir=$(mktemp -d)

@@ -21,7 +21,7 @@ curl -fsSL https://raw.githubusercontent.com/term-llm/term-llm/main/install.sh |
 Or with Homebrew:
 
 ```bash
-brew install samsaffron/tap/term-llm
+brew install term-llm/tap/term-llm
 ```
 
 On Windows (amd64), use the PowerShell installer:

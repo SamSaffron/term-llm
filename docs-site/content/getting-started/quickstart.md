@@ -31,7 +31,7 @@ Open a new Terminal window, or run `source ~/.zprofile` in your current Zsh sess
 Prefer a terminal-only macOS install? Homebrew is still supported:
 
 ```bash
-brew install samsaffron/tap/term-llm
+brew install term-llm/tap/term-llm
 ```
 
 The [shell installer](#linux) below and [release archives](https://github.com/term-llm/term-llm/releases)

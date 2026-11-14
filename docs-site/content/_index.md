@@ -115,7 +115,7 @@ install:
   title: "Install and ask a first question."
   description: "Every release includes the browser workspace. There is nothing else to install."
   mac_download: "https://term-llm.com/mac/download"
-  homebrew: "brew install samsaffron/tap/term-llm"
+  homebrew: "brew install term-llm/tap/term-llm"
   shell: "curl -fsSL https://raw.githubusercontent.com/term-llm/term-llm/main/install.sh | sh"
   powershell: "irm https://raw.githubusercontent.com/term-llm/term-llm/main/install.ps1 | iex"
   trial: 'term-llm ask "Explain git rebase in three sentences"'

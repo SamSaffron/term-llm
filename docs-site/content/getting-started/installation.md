@@ -91,7 +91,7 @@ prints a command to add it. Open a new terminal after changing `PATH`.
 ### Homebrew
 
 ```bash
-brew install samsaffron/tap/term-llm
+brew install term-llm/tap/term-llm
 ```
 
 Homebrew installs the correct release binary for Apple Silicon or Intel macOS. Future stable releases are available through `brew upgrade term-llm`.

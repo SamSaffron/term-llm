@@ -221,7 +221,7 @@ try {
   await page.keyboard.press("Tab");
   assert.ok(await page.locator("#install-windows").evaluate((el) => el === document.activeElement));
   for (const [os, command] of [
-    ["macos", "brew install samsaffron/tap/term-llm"],
+    ["macos", "brew install term-llm/tap/term-llm"],
     ["linux", "curl -fsSL https://raw.githubusercontent.com/term-llm/term-llm/main/install.sh | sh"],
     ["windows", "irm https://raw.githubusercontent.com/term-llm/term-llm/main/install.ps1 | iex"],
   ]) {
