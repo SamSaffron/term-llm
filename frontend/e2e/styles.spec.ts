@@ -467,3 +467,268 @@ test('tool group icons centre on the tool name in any font', async ({ page }) =>
     expect(Math.abs(offset), font).toBeLessThanOrEqual(1);
   }
 });
+
+// The touch branch is a media query, so each Playwright project (desktop mouse,
+// mobile touch) covers its own side of it.
+const touchMedia = '(hover: none), (pointer: coarse)';
+
+test('composer, Send and side-question glyphs keep their own sizes beside the shared icon size', async ({
+  page,
+}) => {
+  await page.setContent(`<meta name="viewport" content="width=device-width, initial-scale=1"><footer class="composer"><div class="composer-inner"><div class="composer-box">
+    <button class="composer-icon-btn attach-btn" aria-label="Add"><svg aria-hidden="true"></svg></button>
+    <textarea class="prompt" rows="1" aria-label="Message"></textarea>
+    <div class="composer-actions">
+      <button class="composer-icon-btn voice-btn" aria-label="Record"><svg aria-hidden="true"></svg></button>
+      <button class="send-btn" id="idle" aria-label="Send"><svg class="arrow"></svg><span class="spinner"></span></button>
+      <button class="send-btn loading" id="loading" aria-label="Sending"><svg class="arrow"></svg><span class="spinner"></span></button>
+      <button class="send-btn loading stop" id="stop" aria-label="Stop"><svg class="arrow"></svg><span class="spinner"></span></button>
+    </div>
+  </div></div></footer>
+  <form class="side-question-composer"><input aria-label="Side question"><button class="side-question-send" aria-label="Ask"><svg aria-hidden="true"></svg></button></form>
+  <button class="icon-btn" aria-label="Close"><svg aria-hidden="true"></svg></button>`);
+  await page.addStyleTag({ content: css });
+  const touch = await page.evaluate((query) => matchMedia(query).matches, touchMedia);
+  for (const width of [360, 1440]) {
+    await page.setViewportSize({ width, height: 900 });
+    const glyphs = await page.evaluate(() =>
+      Object.fromEntries(
+        [
+          ['attach', '.attach-btn svg'],
+          ['voice', '.voice-btn svg'],
+          ['send', '#idle svg'],
+          ['sending', '#loading svg'],
+          ['stop', '#stop svg'],
+          ['side', '.side-question-send svg'],
+          ['shared', '.icon-btn svg'],
+        ].map(([name, selector]) => {
+          const svg = document.querySelector(selector)!;
+          const style = getComputedStyle(svg);
+          const box = svg.getBoundingClientRect();
+          const button = svg.parentElement!.getBoundingClientRect();
+          return [
+            name,
+            {
+              display: style.display,
+              flexShrink: style.flexShrink,
+              width: parseFloat(style.width),
+              height: parseFloat(style.height),
+              centerOffset: Math.max(
+                Math.abs(box.left + box.width / 2 - (button.left + button.width / 2)),
+                Math.abs(box.top + box.height / 2 - (button.top + button.height / 2)),
+              ),
+            },
+          ];
+        }),
+      ),
+    );
+    for (const name of ['attach', 'voice', 'send', 'stop']) {
+      expect(glyphs[name], `${name} at ${width}px`).toMatchObject({
+        display: 'block',
+        flexShrink: '0',
+      });
+      expect(glyphs[name].width).toBeCloseTo(17.6, 1);
+      expect(glyphs[name].height).toBeCloseTo(17.6, 1);
+    }
+    // A running Send shows only its spinner; Stop shows its square glyph again.
+    expect(glyphs.sending.display).toBe('none');
+    expect(glyphs.side).toMatchObject({ display: 'block', flexShrink: '0', width: 16, height: 16 });
+    expect(glyphs.side.centerOffset).toBeLessThanOrEqual(0.5);
+    expect(glyphs.shared).toMatchObject({ display: 'block', flexShrink: '0' });
+    expect(glyphs.shared.width).toBeCloseTo(16.8, 1);
+
+    const controlSize = touch || width <= 700 ? 44 : 32;
+    for (const selector of ['.attach-btn', '.voice-btn', '#idle']) {
+      const box = await page.locator(selector).boundingBox();
+      expect(box!.width, `${selector} at ${width}px`).toBeCloseTo(controlSize, 0);
+      expect(box!.height, `${selector} at ${width}px`).toBeCloseTo(controlSize, 0);
+    }
+    const composerPadding = await page
+      .locator('.composer')
+      .evaluate((element) => getComputedStyle(element).paddingInlineStart);
+    if (width <= 430) expect(composerPadding).toBe('6.4px');
+  }
+});
+
+test('goal and approval chips keep their widths, insets, clipping and status colours', async ({
+  page,
+}) => {
+  const objective = 'Review the interface and keep every change behaviour-preserving '.repeat(6);
+  await page.setContent(`<meta name="viewport" content="width=device-width, initial-scale=1"><footer class="composer"><div class="composer-inner">
+    <button class="approval-mode-chip approval-mode-prompt"><span class="approval-mode-chip-label">Approvals</span> · ${objective}</button>
+    <button class="approval-mode-chip approval-mode-yolo"><span class="approval-mode-chip-label">Approvals</span> · Yolo for this chat</button>
+    <button class="goal-chip goal-active" id="goal"><span class="goal-chip-label">Goal</span> · active · ${objective}</button>
+    <div class="composer-binding-error" role="alert">This project is unavailable.</div>
+    <div class="composer-box"><textarea class="prompt" rows="1" aria-label="Message"></textarea></div>
+  </div></footer>`);
+  await page.addStyleTag({ content: css });
+  for (const width of [360, 768, 1440]) {
+    await page.setViewportSize({ width, height: 900 });
+    const layout = await page.evaluate(() => {
+      const inner = document.querySelector('.composer-inner')!.getBoundingClientRect();
+      const measure = (selector: string) => {
+        const element = document.querySelector(selector)!;
+        const box = element.getBoundingClientRect();
+        const style = getComputedStyle(element);
+        return {
+          left: box.left - inner.left,
+          width: box.width,
+          marginBottom: style.marginBottom,
+          clipped: element.scrollWidth > element.clientWidth,
+          clip: [style.overflowX, style.textOverflow, style.whiteSpace].join(' '),
+        };
+      };
+      const label = getComputedStyle(document.querySelector('.goal-chip-label')!);
+      return {
+        innerWidth: inner.width,
+        text: getComputedStyle(document.querySelector('#goal')!).color,
+        approval: measure('.approval-mode-prompt'),
+        goal: measure('#goal'),
+        error: measure('.composer-binding-error'),
+        label: { color: label.color, weight: label.fontWeight },
+      };
+    });
+    expect(layout.approval.left).toBeCloseTo(0, 1);
+    expect(layout.approval.width).toBeCloseTo(Math.min(620, layout.innerWidth), 1);
+    expect(layout.approval.marginBottom).toBe('7.2px');
+    // The goal chip is inset by 0.3rem on each side and may use the whole row.
+    expect(layout.goal.left).toBeCloseTo(4.8, 1);
+    expect(layout.goal.width).toBeCloseTo(layout.innerWidth - 9.6, 1);
+    expect(layout.goal.marginBottom).toBe('7.2px');
+    expect(layout.error.left).toBeCloseTo(4.8, 1);
+    for (const chip of [layout.approval, layout.goal]) {
+      expect(chip.clip).toBe('hidden ellipsis nowrap');
+      expect(chip.clipped).toBe(true);
+    }
+    expect(layout.label).toEqual({ color: layout.text, weight: '700' });
+  }
+
+  const tone = (status: string) =>
+    page.locator('#goal').evaluate((element, value) => {
+      element.setAttribute('class', `goal-chip goal-${value}`);
+      const style = getComputedStyle(element);
+      return `${style.borderTopColor} ${style.backgroundColor}`;
+    }, status);
+  const active = await tone('active');
+  const paused = await tone('paused');
+  expect(paused).not.toBe(active);
+  expect(await tone('blocked')).toBe(paused);
+  expect(await tone('budget_limited')).toBe(paused);
+  const prompt = await page
+    .locator('.approval-mode-prompt')
+    .evaluate((element) => getComputedStyle(element).borderTopColor);
+  const yolo = await page
+    .locator('.approval-mode-yolo')
+    .evaluate((element) => getComputedStyle(element).borderTopColor);
+  expect(yolo).not.toBe(prompt);
+});
+
+test('ask-user questions keep their card, floated legend and option spacing; other modal fieldsets stay reset', async ({
+  page,
+}) => {
+  const option = (label: string) =>
+    `<label class="modal-choice ask-user-option"><input type="radio" name="q"><span><strong>${label}</strong><small>Description</small></span></label>`;
+  await page.setContent(`<meta name="viewport" content="width=device-width, initial-scale=1"><div class="modal-overlay"><div class="modal" role="dialog">
+    <fieldset class="ask-user-question">
+      <legend class="ask-user-question-text"><strong>Scope: </strong>Which feature family should be consolidated first, before anything else is changed?</legend>
+      ${option('Composer')}${option('Approvals')}
+      <label class="ask-user-custom"><span>Other</span><textarea></textarea></label>
+    </fieldset>
+    <fieldset class="approval-options"><legend>Approval scope</legend>
+      <label class="modal-choice approval-option"><input type="radio" name="a"><span><strong>Once</strong></span></label>
+    </fieldset>
+  </div></div>`);
+  await page.addStyleTag({ content: css });
+  for (const width of [360, 1440]) {
+    await page.setViewportSize({ width, height: 900 });
+    for (const disabled of [false, true]) {
+      await page.locator('.ask-user-question').evaluate((element, value) => {
+        (element as HTMLFieldSetElement).disabled = value;
+      }, disabled);
+      const layout = await page.evaluate(() => {
+        const question = document.querySelector('.ask-user-question')!;
+        const legend = document.querySelector('.ask-user-question-text')!;
+        const custom = document.querySelector('.ask-user-custom')!;
+        const scope = document.querySelector('.approval-options')!;
+        const questionStyle = getComputedStyle(question);
+        const legendStyle = getComputedStyle(legend);
+        const customStyle = getComputedStyle(custom);
+        const scopeStyle = getComputedStyle(scope);
+        const questionBox = question.getBoundingClientRect();
+        const legendBox = legend.getBoundingClientRect();
+        const padding = parseFloat(questionStyle.paddingLeft);
+        return {
+          card: [
+            questionStyle.borderTopWidth,
+            questionStyle.borderTopStyle,
+            questionStyle.marginTop,
+          ],
+          padding,
+          legend: [
+            legendStyle.float,
+            legendStyle.display,
+            legendStyle.marginTop,
+            legendStyle.marginBottom,
+            legendStyle.paddingBottom,
+          ],
+          // A floated legend sits inside the card padding instead of cutting the border.
+          legendTop: legendBox.top - questionBox.top - 1,
+          legendWidth: legendBox.width,
+          contentWidth: questionBox.width - 2 - 2 * padding,
+          options: [...document.querySelectorAll('.ask-user-option')].map(
+            (element) => getComputedStyle(element).marginBottom,
+          ),
+          custom: [
+            customStyle.display,
+            customStyle.rowGap,
+            customStyle.marginTop,
+            customStyle.fontSize,
+          ],
+          scope: [
+            scopeStyle.borderTopStyle,
+            scopeStyle.paddingTop,
+            scopeStyle.marginTop,
+            scopeStyle.minWidth,
+          ],
+        };
+      });
+      const label = `${width}px${disabled ? ' disabled' : ''}`;
+      expect(layout.card, label).toEqual(['1px', 'solid', '12px']);
+      expect(layout.padding, label).toBeCloseTo(width <= 767 ? 14.4 : 16, 1);
+      expect(layout.legend, label).toEqual(['left', 'block', '0px', '0px', '12px']);
+      expect(layout.legendTop, label).toBeCloseTo(layout.padding, 1);
+      expect(layout.legendWidth, label).toBeCloseTo(layout.contentWidth, 1);
+      expect(layout.options, label).toEqual(['7.2px', '7.2px']);
+      expect(layout.custom, label).toEqual(['grid', '6.4px', '10.4px', '13.12px']);
+      expect(layout.scope, label).toEqual(['none', '0px', '12px', '0px']);
+    }
+  }
+});
+
+test('touch tablets keep 44px composer controls above the narrow breakpoint', async ({
+  browser,
+}) => {
+  const context = await browser.newContext({
+    viewport: { width: 1024, height: 768 },
+    hasTouch: true,
+    isMobile: true,
+  });
+  try {
+    const page = await context.newPage();
+    await page.setContent(`<meta name="viewport" content="width=device-width, initial-scale=1"><footer class="composer"><div class="composer-inner"><div class="composer-box">
+      <button class="composer-icon-btn attach-btn" aria-label="Add"><svg aria-hidden="true"></svg></button>
+      <textarea class="prompt" rows="1" aria-label="Message"></textarea>
+      <div class="composer-actions"><button class="send-btn" aria-label="Send"><svg class="arrow"></svg></button></div>
+    </div></div></footer>`);
+    await page.addStyleTag({ content: css });
+    expect(await page.evaluate((query) => matchMedia(query).matches, touchMedia)).toBe(true);
+    expect(await page.evaluate(() => innerWidth)).toBeGreaterThan(700);
+    for (const name of ['Add', 'Send']) {
+      const box = await page.getByRole('button', { name }).boundingBox();
+      expect(box!.width, name).toBeCloseTo(44, 0);
+      expect(box!.height, name).toBeCloseTo(44, 0);
+    }
+  } finally {
+    await context.close();
+  }
+});

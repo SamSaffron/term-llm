@@ -307,6 +307,10 @@
   display: none;
 }
 
+.pending-steering-banner {
+  width: calc(100% - 0.6rem);
+}
+
 .pending-steering .pending-steering-icon {
   flex-shrink: 0;
   font-style: normal;
@@ -423,6 +427,12 @@
   font-weight: 600;
 }
 
+.slash-command-option strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .mention-completion-match {
   color: var(--accent);
   text-decoration: underline;
@@ -459,6 +469,14 @@
   color: var(--text);
 }
 
+.composer-icon-btn svg,
+.send-btn svg {
+  display: block;
+  flex: none;
+  width: 1.1rem;
+  height: 1.1rem;
+}
+
 .interaction-attention-banner {
   width: 100%;
   margin-bottom: 0.45rem;
@@ -491,16 +509,23 @@
   font: inherit;
   font-size: 0.82rem;
   cursor: pointer;
-  max-width: min(620px, 100%);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
 
 .approval-mode-chip {
+  max-width: min(620px, 100%);
   margin-bottom: 0.45rem;
   border-color: rgb(245 158 11 / 45%);
   background: rgb(245 158 11 / 13%);
+}
+
+/* Inset like the steering banner and binding error, so its full width stays
+   inside the composer column. */
+.goal-chip {
+  max-width: calc(100% - 0.6rem);
+  margin: 0 0.3rem 0.45rem;
 }
 
 .approval-mode-chip.approval-mode-yolo {
@@ -511,6 +536,10 @@
 .approval-mode-chip-label,
 .goal-chip-label {
   font-weight: 700;
+}
+
+.goal-chip-label {
+  color: var(--text);
 }
 
 .goal-chip.hidden {
@@ -527,6 +556,15 @@
 .goal-chip.goal-budget_limited {
   border-color: rgb(245 158 11 / 38%);
   background: rgb(245 158 11 / 13%);
+}
+
+.composer-binding-error {
+  margin: 0 0.3rem 0.45rem;
+  padding: 0.55rem 0.7rem;
+  border: 1px solid color-mix(in srgb, var(--danger) 35%, var(--border));
+  border-radius: 8px;
+  color: var(--danger);
+  font-size: 0.82rem;
 }
 
 .goal-objective-input {
@@ -827,6 +865,20 @@
 
   .prompt {
     padding-inline: 6px;
+  }
+}
+
+/* Touch screens keep 44px controls at every width, not only in the narrow
+   layout above. */
+@media (hover: none), (pointer: coarse) {
+  .composer-box {
+    --composer-control-size: 44px;
+  }
+}
+
+@media (width <= 430px) {
+  .composer {
+    padding-inline: calc(0.4rem + var(--safe-right)) calc(0.4rem + var(--safe-left));
   }
 }
 
