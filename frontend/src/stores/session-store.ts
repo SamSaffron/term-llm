@@ -506,6 +506,9 @@ export class SessionStore {
         ? (incoming.activeRun ?? existing.activeRun)
         : incoming.activeRun,
       usage: incoming.usage || existing.usage,
+      // The server never clears a session's agent, so a row that omits it is
+      // missing data, not a change.
+      agent: incoming.agent || existing.agent,
       contextUsage:
         incoming.contextUsage === undefined ? existing.contextUsage : incoming.contextUsage,
       goal: incoming.goal ?? existing.goal,

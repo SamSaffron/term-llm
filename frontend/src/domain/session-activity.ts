@@ -6,18 +6,17 @@ const short = (value: string, max = 76) =>
 const instructional =
   /\b(?:READ[- ]ONLY|PLANNING ONLY|user (?:asks|selected)|Your Mission|you are|parent will|prior .*worker|do not|no code edits|implement request fully|task context)\b/i;
 
-export function agentIdentity(child: StatsChild): string {
+/** The agent's configured name as written (`developer`, `codebase`), or '' when unknown. */
+export function agentName(child: StatsChild): string {
   const prefixed = child.title.match(/^\s*@([^:]+):/);
-  const role = plain(child.agent || prefixed?.[1]).replace(/^@/, '');
-  return child.kind === 'skill_run'
-    ? 'Skill'
-    : role
-      ? role[0].toUpperCase() + role.slice(1)
-      : 'Agent';
+  return plain(child.agent || prefixed?.[1]).replace(/^@/, '');
 }
 
-/** Short labels only: injected task/system prompts are never used as row bodies. */
-export function taskLabel(child: StatsChild): string {
+/**
+ * Short task summary, or '' when only an injected task/system prompt is
+ * available: those are never used as row bodies.
+ */
+export function taskSummary(child: StatsChild): string {
   const title = plain(child.title).replace(/^@[^:]+:\s*/, '');
   const summary = plain(child.task_summary);
   if (summary && summary.length <= 76 && !instructional.test(summary)) return summary;
@@ -25,8 +24,7 @@ export function taskLabel(child: StatsChild): string {
   const file = `${title} ${summary}`.match(
     /\b(?:[\w.-]+\/)+[\w.-]+\.(?:[cm]?[jt]sx?|go|rb|py|rs|html|css|sql)\b/,
   );
-  if (file) return short(file[0], 60);
-  return `${agentIdentity(child)} task`;
+  return file ? short(file[0], 60) : '';
 }
 
 export function statePresentation(state: string, live = false) {
@@ -126,6 +124,8 @@ export interface ActivityRow {
   key: string;
   kind: 'agent' | 'job';
   title: string;
+  /** Configured agent name for agent rows; shown beside the task summary. */
+  agent?: string;
   subtitle: string;
   sessionId?: string;
   runId?: string;
@@ -147,10 +147,9 @@ export function activityRows(snapshot: ActivitySnapshot | null, now = Date.now()
       return {
         key: `agent:${child.session_id}`,
         kind: 'agent',
-        title: taskLabel(child),
-        subtitle: [plain(child.model) || agentIdentity(child), agentMetrics(child, now)]
-          .filter(Boolean)
-          .join(' · '),
+        title: taskSummary(child),
+        agent: agentName(child) || 'agent',
+        subtitle: [plain(child.model), agentMetrics(child, now)].filter(Boolean).join(' · '),
         sessionId: child.session_id,
         state,
         active: child.live === true,

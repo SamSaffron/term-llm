@@ -1,20 +1,26 @@
 import { describe, expect, it } from 'vitest';
 import { activityCell, activityChild, activitySnapshot } from '../test/activity-fixtures';
-import { activityRows, agentMetrics, statePresentation, taskLabel } from './session-activity';
+import {
+  activityRows,
+  agentMetrics,
+  agentName,
+  statePresentation,
+  taskSummary,
+} from './session-activity';
 
 describe('native session activity presentation', () => {
-  it('uses short task labels, never injected prompt dumps or personal model aliases', () => {
-    expect(taskLabel(activityChild())).toBe('Fix navigation');
+  it('uses short task summaries, never injected prompt dumps or personal model aliases', () => {
+    expect(taskSummary(activityChild())).toBe('Fix navigation');
     expect(
-      taskLabel(
+      taskSummary(
         activityChild({
           title: '@reviewer: Your Mission: do not edit any code',
           task_summary: 'You are a worker. Read all files.',
         }),
       ),
-    ).toBe('Developer task');
+    ).toBe('');
     expect(
-      taskLabel(
+      taskSummary(
         activityChild({
           title: 'Your Mission: do not edit code',
           task_summary: 'Read frontend/src/main.tsx before continuing',
@@ -22,6 +28,20 @@ describe('native session activity presentation', () => {
       ),
     ).toBe('Read frontend/src/main.tsx before continuing');
     expect(activityRows(activitySnapshot())[0].subtitle).toContain('provider:real-model');
+  });
+
+  it('names each agent row by its configured agent, separate from the task', () => {
+    expect(agentName(activityChild({ agent: 'codebase' }))).toBe('codebase');
+    expect(agentName(activityChild({ agent: '', title: '@reviewer: Check diff' }))).toBe(
+      'reviewer',
+    );
+    const [row] = activityRows(
+      activitySnapshot({
+        agents: [activityChild({ agent: 'codebase', model: '', title: 'You are a worker' })],
+      }),
+    );
+    expect(row).toMatchObject({ agent: 'codebase', title: '' });
+    expect(row.subtitle).not.toMatch(/codebase|Codebase/);
   });
 
   it('adds only the four disjoint usage counters and uses approximate elapsed wall-clock', () => {

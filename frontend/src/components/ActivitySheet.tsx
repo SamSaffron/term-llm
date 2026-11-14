@@ -45,6 +45,28 @@ function LifecycleIcon({ name }: { name: string }) {
   );
 }
 
+/** The conversation whose activity is shown: its agent heads the subagent list. */
+function ActivityRoot({ scope }: { scope: string }) {
+  const store = useStore();
+  const session = store.activeSession.value;
+  if (!session || store.draftActive.value || session.id !== scope) return null;
+  const model = [session.activeProvider, session.activeModel].filter(Boolean).join(':');
+  return (
+    <div class="activity-root">
+      <span class="activity-root-icon" aria-hidden="true">
+        <Icon name="bot" />
+      </span>
+      <span class="activity-copy">
+        <span class="activity-label">
+          <span class="activity-agent">{session.agent || 'chat'}</span>{' '}
+          <span class="activity-root-here">this chat</span>
+        </span>
+        {model && <span class="activity-meta">{model}</span>}
+      </span>
+    </div>
+  );
+}
+
 export function ActivitySheet({ onClose }: { onClose: () => void }) {
   const store = useStore();
   const childStore = store.childSessionStore;
@@ -92,22 +114,29 @@ export function ActivitySheet({ onClose }: { onClose: () => void }) {
         />
       ) : (
         <>
-          <p class="activity-summary">
-            {activeCount
-              ? `${activeCount} active`
-              : uncertain
-                ? 'Activity status unknown'
-                : 'All finished'}{' '}
-            {uncertain ? '· May be incomplete or out of date · ' : '· '}This conversation and its
-            children
-          </p>
+          <ActivityRoot scope={scope} />
           <div class="activity-list">
             {(['agent', 'job'] as const).map((kind) => {
               const group = rows.filter((row) => row.kind === kind);
               if (!group.length) return null;
+              const title = kind === 'agent' ? 'Subagents' : 'Jobs';
+              const active = group.filter((row) => row.active).length;
               return (
-                <section key={kind} aria-label={kind === 'agent' ? 'Agents' : 'Jobs'}>
-                  <h3 class="activity-section-title">{kind === 'agent' ? 'Agents' : 'Jobs'}</h3>
+                <section key={kind} aria-label={title}>
+                  <h3 class="activity-section-title">
+                    <span>{title}</span>
+                    {!uncertain && (
+                      <span class="activity-section-count">
+                        <span class="visually-hidden">, </span>
+                        {[
+                          active && `${active} active`,
+                          active < group.length && `${group.length - active} done`,
+                        ]
+                          .filter(Boolean)
+                          .join(' · ')}
+                      </span>
+                    )}
+                  </h3>
                   {group.map((row) => {
                     const content = (
                       <>
@@ -121,8 +150,19 @@ export function ActivitySheet({ onClose }: { onClose: () => void }) {
                           <LifecycleIcon name={row.state.icon} />
                         </span>
                         <span class="activity-copy">
-                          <span class="activity-label">{row.title}</span>
-                          <span class="activity-meta">{row.subtitle}</span>
+                          <span class="activity-label">
+                            {row.agent ? (
+                              <>
+                                <span class="activity-agent">{row.agent}</span>{' '}
+                                <span class={`activity-task${row.title ? '' : ' empty'}`}>
+                                  {row.title || 'no summary'}
+                                </span>
+                              </>
+                            ) : (
+                              row.title
+                            )}
+                          </span>
+                          {row.subtitle && <span class="activity-meta">{row.subtitle}</span>}
                           <span class="visually-hidden">
                             {row.kind === 'job' ? 'Job run' : 'Agent'}
                           </span>

@@ -485,7 +485,7 @@ func (s *SQLiteStore) Sidebar(ctx context.Context, opts SidebarOptions) ([]Sideb
 			SELECT `+s.createdByColumn("s")+` AS created_by, s.id, s.number, s.name, s.summary, s.generated_short_title,
 			       s.generated_long_title, s.title_source, s.provider,
 			       COALESCE(s.provider_key, '') AS provider_key, s.model, s.mode,
-			       COALESCE(NULLIF(TRIM(s.origin), ''), 'tui') AS origin, s.archived,
+			       COALESCE(NULLIF(TRIM(s.origin), ''), 'tui') AS origin, COALESCE(s.agent, '') AS agent, s.archived,
 			       COALESCE(s.pinned, FALSE) AS pinned, `+s.pinOrderCol("s")+` AS pin_order, s.message_count, s.transcript_rev,
 			       s.status, COALESCE(s.worktree_dir, '') AS worktree_dir, COALESCE(s.project_id, '') AS project_id,
 			       COALESCE(p.name, '') AS project_name, s.created_at, s.updated_at, s.last_message_at, s.last_user_message_at,
@@ -505,7 +505,7 @@ func (s *SQLiteStore) Sidebar(ctx context.Context, opts SidebarOptions) ([]Sideb
 			WHERE s.parent_id IS NULL `+archiveClause+`
 		)
 		SELECT created_by, id, number, name, summary, generated_short_title, generated_long_title,
-		       title_source, provider, provider_key, model, mode, origin, archived, pinned, pin_order,
+		       title_source, provider, provider_key, model, mode, origin, agent, archived, pinned, pin_order,
 		       message_count, transcript_rev, status, worktree_dir, project_id, project_name,
 		       created_at, updated_at, last_message_at, last_user_message_at, group_count, rn, activity_rn
 		FROM ranked WHERE rn <= ? OR activity_rn = 1
@@ -522,7 +522,7 @@ func (s *SQLiteStore) Sidebar(ctx context.Context, opts SidebarOptions) ([]Sideb
 		var lastMessage, lastUserMessage sql.NullTime
 		var groupCount, rank, activityRank int
 		if err := rows.Scan(&sum.CreatedBy, &sum.ID, &number, &sum.Name, &sum.Summary, &shortTitle, &longTitle,
-			&titleSource, &sum.Provider, &sum.ProviderKey, &sum.Model, &mode, &origin,
+			&titleSource, &sum.Provider, &sum.ProviderKey, &sum.Model, &mode, &origin, &sum.Agent,
 			&sum.Archived, &sum.Pinned, &pinOrder, &sum.MessageCount, &sum.TranscriptRev, &status,
 			&sum.WorktreeDir, &projectID, &sum.ProjectName, &sum.CreatedAt, &sum.UpdatedAt,
 			&lastMessage, &lastUserMessage, &groupCount, &rank, &activityRank); err != nil {

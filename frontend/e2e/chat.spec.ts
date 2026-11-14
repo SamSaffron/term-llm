@@ -1896,7 +1896,8 @@ test('Activity shows agents and jobs without scripts or usage help', async ({ pa
   const trigger = page.getByRole('button', { name: 'Activity: 2 active', exact: true });
   await trigger.click();
   const dialog = page.getByRole('dialog', { name: 'Activity', exact: true });
-  await expect(dialog.getByRole('region', { name: 'Agents', exact: true })).toBeVisible();
+  await expect(dialog.getByRole('region', { name: 'Subagents', exact: true })).toBeVisible();
+  await expect(dialog.locator('.activity-row').first()).toContainText('developer Fix navigation');
   await expect(dialog.getByRole('region', { name: 'Jobs', exact: true })).toBeVisible();
   await expect(dialog.getByRole('region', { name: 'Scripts', exact: true })).toHaveCount(0);
   await expect(dialog.getByText('cm_running')).toHaveCount(0);

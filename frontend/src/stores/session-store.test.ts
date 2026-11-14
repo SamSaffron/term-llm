@@ -528,6 +528,21 @@ describe('SessionStore', () => {
     }
   });
 
+  it('keeps the agent when an incoming row omits it', () => {
+    const store = new AppStore(testConfig);
+    try {
+      const current = testSession({ agent: 'developer' });
+      expect(store.sessionStore.mergeSession(current, testSession({ agent: '' })).agent).toBe(
+        'developer',
+      );
+      expect(
+        store.sessionStore.mergeSession(current, testSession({ agent: 'codebase' })).agent,
+      ).toBe('codebase');
+    } finally {
+      store.dispose();
+    }
+  });
+
   it('resets attention watermarks when the node store identity changes', () => {
     const store = new AppStore(testConfig);
     try {

@@ -2,7 +2,7 @@ import { fireEvent, render, screen, waitFor, within } from '@testing-library/pre
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { StoreContext } from '../app/context';
 import { AppStore } from '../stores/app-store';
-import { testConfig } from '../stores/store-test-fixtures';
+import { testConfig, testSession } from '../stores/store-test-fixtures';
 import { activityCell, activityChild, activitySnapshot } from '../test/activity-fixtures';
 import { ActivityGlyph, ActivityMeter } from './ActivityMeter';
 import { ActivitySheet } from './ActivitySheet';
@@ -46,9 +46,10 @@ describe('native ActivityMeter', () => {
     mount(<ActivityMeter />);
     fireEvent.click(screen.getByRole('button', { name: 'Activity: 2 active' }));
     const dialog = await screen.findByRole('dialog', { name: 'Activity' });
-    expect(dialog).toHaveTextContent('2 active');
-    expect(within(dialog).getByRole('region', { name: 'Agents' })).toBeVisible();
-    expect(within(dialog).getByRole('region', { name: 'Jobs' })).toBeVisible();
+    const agents = within(dialog).getByRole('region', { name: 'Subagents' });
+    const jobs = within(dialog).getByRole('region', { name: 'Jobs' });
+    expect(within(agents).getByRole('heading')).toHaveTextContent(/^Subagents, 1 active$/);
+    expect(within(jobs).getByRole('heading')).toHaveTextContent(/^Jobs, 1 active$/);
     expect(within(dialog).queryByRole('region', { name: 'Scripts' })).toBeNull();
     expect(dialog).not.toHaveTextContent('cm_script');
     expect(dialog).not.toHaveTextContent('cm_done');
@@ -156,7 +157,7 @@ describe('native ActivitySheet', () => {
     const { container } = mount(<ActivitySheet onClose={vi.fn()} />);
     expect(
       [...container.querySelectorAll('.activity-label')].map((node) => node.textContent),
-    ).toEqual(['Review work', 'Failed work', 'Remote report']);
+    ).toEqual(['developer Review work', 'developer Failed work', 'Remote report']);
     expect(screen.getByRole('img', { name: 'Waiting' })).toBeInTheDocument();
     expect(screen.getByRole('img', { name: 'Failed' })).toBeInTheDocument();
     expect(screen.getByText('actual-job-model · Job')).toBeInTheDocument();
@@ -165,6 +166,46 @@ describe('native ActivitySheet', () => {
     expect(container.querySelector('details')).toBeNull();
     expect(screen.getByRole('button', { name: /Remote report/ })).toBeInTheDocument();
     expect(screen.queryByText(/Advanced/)).toBeNull();
+  });
+
+  it("heads the list with this chat's agent and counts each section without a summary sentence", () => {
+    setup();
+    store.sessions.value = [
+      testSession({
+        id: 'parent',
+        agent: 'developer',
+        activeProvider: 'claude-bin',
+        activeModel: 'opus-max',
+      }),
+    ];
+    store.activeSessionId.value = 'parent';
+    store.draftActive.value = false;
+    store.childSessionStore.activity.value = activitySnapshot({
+      agents: [
+        activityChild({ session_id: 'a', agent: 'codebase', title: 'Find the agent' }),
+        activityChild({
+          session_id: 'b',
+          live: false,
+          state: 'complete',
+          title: 'You are a worker',
+        }),
+      ],
+    });
+    const { container } = mount(<ActivitySheet onClose={vi.fn()} />);
+    const root = container.querySelector('.activity-root');
+    expect(root).toHaveTextContent('developer this chat');
+    expect(root).toHaveTextContent('claude-bin:opus-max');
+    expect(screen.getByRole('heading', { name: /Subagents/ })).toHaveTextContent(
+      'Subagents, 1 active · 1 done',
+    );
+    expect(
+      [...container.querySelectorAll('.activity-row .activity-label')].map(
+        (node) => node.textContent,
+      ),
+    ).toEqual(['codebase Find the agent', 'developer no summary']);
+    expect(container).not.toHaveTextContent(/All finished|children|Developer task/);
+    store.draftActive.value = true;
+    return waitFor(() => expect(container.querySelector('.activity-root')).toBeNull());
   });
 
   it('uses native selection only for trusted local sessions from job details', async () => {

@@ -29,10 +29,58 @@
   min-height: 44px;
 }
 
-.activity-panel .activity-summary {
+/* This conversation heads the list; its subagents follow below a hairline. */
+.activity-root {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 0 14px;
+  border-bottom: 1px solid #eff1f4;
+}
+
+.activity-root-icon {
+  width: 32px;
+  height: 32px;
+  flex: none;
+  display: grid;
+  place-items: center;
+  border: 1px solid #dfe2e6;
+  border-radius: 9px;
+  background: #f6f7f9;
+  color: #4b5260;
+}
+
+.activity-root-icon svg {
+  width: 18px;
+  height: 18px;
+}
+
+.activity-root .activity-agent {
+  font-size: 15px;
+}
+
+.activity-root-here {
+  font-size: 12px;
+  font-weight: 400;
   color: #6b7280;
-  font-size: 13px;
-  margin: 0 0 19px;
+}
+
+.activity-agent {
+  font-family: var(--font-mono);
+  font-variant-ligatures: none;
+  font-size: 13.5px;
+  font-weight: 600;
+  margin-right: 0.2em;
+}
+
+.activity-task {
+  font-weight: 400;
+  color: #4b5260;
+}
+
+.activity-task.empty {
+  color: #6b7280;
+  font-style: italic;
 }
 
 .activity-row {
@@ -195,12 +243,22 @@
 }
 
 .activity-section-title {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
   color: #6b7280;
   font-size: 11px;
   font-weight: 600;
   letter-spacing: 0.05em;
   text-transform: uppercase;
   margin: 17px 0 4px;
+}
+
+.activity-section-count {
+  font-size: 12px;
+  font-weight: 500;
+  letter-spacing: 0;
+  text-transform: none;
 }
 
 .activity-back {
