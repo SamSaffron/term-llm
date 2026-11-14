@@ -1,6 +1,6 @@
 import { cycleThinking, detailsShortcutLabel } from '../domain/thinking';
 import { useThinkingShortcut } from '../hooks/use-thinking-shortcut';
-import { signal, type ReadonlySignal } from '@preact/signals';
+import { computed, signal, type ReadonlySignal } from '@preact/signals';
 import type { ComponentType } from 'preact';
 import { rushActive } from '../domain/steering';
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'preact/hooks';
@@ -772,10 +772,19 @@ function ConversationComposer() {
   const sendPending = store.sendPending.value;
   const sendBlocked = store.sendBlocked.value;
   const thinkingCommandReady = /^\/(thinking|reasoning)(?:\s|$)/i.test(store.prompt.value.trim());
-  const unconfirmedSend =
-    store.pendingIntents.value[store.activeSessionId.value]?.some(
-      (intent) => intent.state === 'unconfirmed',
-    ) || store.runEngine.activeProjection.value?.run.status === 'unconfirmed';
+  // Subscribe to the status predicate, not every streamed projection update.
+  const unconfirmedSend = useMemo(
+    () =>
+      computed(
+        () =>
+          Boolean(
+            store.pendingIntents.value[store.activeSessionId.value]?.some(
+              (intent) => intent.state === 'unconfirmed',
+            ),
+          ) || store.runEngine.activeProjection.value?.run.status === 'unconfirmed',
+      ),
+    [store],
+  ).value;
   // A restored or hydrating workspace is editable, but nothing is sent (or
   // started) until startup is authoritative.
   const connecting = store.workspaceShown.value && !store.startupDone.value;

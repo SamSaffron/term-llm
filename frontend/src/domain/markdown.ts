@@ -250,11 +250,24 @@ const MATH = [
   { expression: /\\\[([\s\S]+?)\\\]/g, display: true },
   { expression: /\\\((.+?)\\\)/g, display: false },
 ];
+// Bound synchronous highlighting work; larger blocks retain their full plain text.
+// Measured in UTF-16 code units, including the rendered code's trailing newline.
+const MAX_HIGHLIGHT_CHARACTERS = 50_000;
 let highlightPromise: Promise<typeof import('./rich-highlight')> | null = null;
 let katexPromise: Promise<typeof import('./rich-katex')> | null = null;
 
+function highlightLanguage(block: HTMLElement): string {
+  if (block.dataset.highlighted) return '';
+  const language = [...block.classList]
+    .map((name) => /^language-(.+)$/.exec(name)?.[1] || '')
+    .find(Boolean);
+  return language && (block.textContent?.length || 0) <= MAX_HIGHLIGHT_CHARACTERS ? language : '';
+}
+
 export function needsHighlight(root: HTMLElement): boolean {
-  return Boolean(root.querySelector('pre code'));
+  return [...root.querySelectorAll<HTMLElement>('pre code')].some((block) =>
+    Boolean(highlightLanguage(block)),
+  );
 }
 export function needsKatex(value: string): boolean {
   return /\$\$[\s\S]+?\$\$|\\\[[\s\S]+?\\\]|\\\(.+?\\\)/.test(value);
@@ -279,10 +292,9 @@ export async function decorateRichContent(
     const { highlight } = code;
     root.querySelectorAll<HTMLElement>('pre code').forEach((block) => {
       if (block.dataset.highlighted) return;
-      const language = [...block.classList]
-        .map((name) => /^language-(.+)$/.exec(name)?.[1] || '')
-        .find(Boolean);
-      if (language && !highlight.getLanguage(language)) {
+      const language = highlightLanguage(block);
+      // Never auto-detect unlabelled code or spend highlighting work on huge blocks.
+      if (!language || !highlight.getLanguage(language)) {
         block.dataset.highlighted = 'yes';
         return;
       }

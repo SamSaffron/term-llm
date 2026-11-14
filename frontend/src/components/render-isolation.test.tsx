@@ -11,6 +11,7 @@ import { Transcript } from './Transcript';
 import { Sidebar } from './Sidebar';
 import { DiffSidebar } from './Panels';
 import { Composer } from './Composer';
+import * as clipboard from '../platform/clipboard';
 import { VoiceOperation, type VoiceSnapshot } from '../platform/voice';
 
 let renders: ReturnType<typeof observeRenders> | undefined;
@@ -204,6 +205,122 @@ describe('render isolation', () => {
     await act(() => textUpdate(store, 's1', 'next'));
     expect(counts.count('MessageRow:s1-a')).toBeGreaterThan(0);
     for (const id of ['u1', 'a1', 't1']) expect(counts.count(`MessageRow:${id}`)).toBe(0);
+  });
+
+  it('keeps stable rows in the active turn isolated and copies the latest full response', async () => {
+    const store = createStore();
+    const copy = vi.spyOn(clipboard, 'copyText').mockResolvedValue(undefined);
+    const counts = observe();
+    const publishText = (content: string) => {
+      const projection = store.runs.peek().s1;
+      store.runs.value = {
+        ...store.runs.peek(),
+        s1: {
+          ...projection,
+          messages: [
+            {
+              id: 'a2',
+              role: 'assistant',
+              content,
+              responseId: 'r1',
+              created: 4,
+              assistantSegmentOrdinal: 1,
+            },
+          ],
+        },
+      };
+    };
+    // Durable and live segments belong to the same response and user turn.
+    store.sessions.value = [
+      testSession({
+        messages: store.sessions.peek()[0].messages.map((message) => ({
+          ...message,
+          responseId: message.role === 'user' ? undefined : 'r1',
+        })),
+      }),
+    ];
+    const { container } = render(
+      <StoreContext.Provider value={store}>
+        <Transcript />
+      </StoreContext.Provider>,
+    );
+    expect(container.querySelector('[data-message-id="a1"] .turn-copy-btn')).not.toBeNull();
+    await act(() => publishText('First live segment'));
+    // The copy action follows the newest assistant segment.
+    expect(container.querySelector('[data-message-id="a1"] .turn-copy-btn')).toBeNull();
+    expect(container.querySelector('[data-message-id="a2"] .turn-copy-btn')).not.toBeNull();
+    counts.clear();
+    await act(() => publishText('Latest live segment'));
+    expect(counts.count('MessageRow:a2')).toBeGreaterThan(0);
+    for (const id of ['u1', 'a1', 't1']) expect(counts.count(`MessageRow:${id}`)).toBe(0);
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Copy response' }));
+    });
+    expect(copy).toHaveBeenCalledWith('Earlier answer\n\nLatest live segment');
+  });
+
+  it('does not rerender the composer for text deltas but reflects unconfirmed status', async () => {
+    const store = createStore();
+    const counts = observe();
+    render(
+      <StoreContext.Provider value={store}>
+        <Composer />
+      </StoreContext.Provider>,
+    );
+    expect(counts.count('ConversationComposer')).toBeGreaterThan(0);
+    counts.clear();
+    await act(() => textUpdate(store, 's1', 'More text'));
+    expect(counts.count('ConversationComposer')).toBe(0);
+    await act(() => {
+      const projection = store.runs.peek().s1;
+      store.runs.value = {
+        ...store.runs.peek(),
+        s1: { ...projection, run: { ...projection.run, status: 'unconfirmed' } },
+      };
+    });
+    expect(counts.count('ConversationComposer')).toBeGreaterThan(0);
+    expect(screen.getByRole('button', { name: 'Send unconfirmed' })).toBeDisabled();
+    await act(() => {
+      const projection = store.runs.peek().s1;
+      store.runs.value = {
+        ...store.runs.peek(),
+        s1: { ...projection, run: { ...projection.run, status: 'streaming' } },
+      };
+    });
+    expect(screen.queryByRole('button', { name: 'Send unconfirmed' })).not.toBeInTheDocument();
+  });
+
+  it('tracks unconfirmed intents across session switches without subscribing to text deltas', async () => {
+    const store = createStore();
+    store.pendingIntents.value = {
+      s2: [
+        {
+          id: 'pending',
+          clientMessageId: 'client',
+          content: 'Possibly sent',
+          created: 1,
+          state: 'unconfirmed',
+        },
+      ],
+    };
+    const counts = observe();
+    render(
+      <StoreContext.Provider value={store}>
+        <Composer />
+      </StoreContext.Provider>,
+    );
+    expect(screen.queryByRole('button', { name: 'Check status' })).not.toBeInTheDocument();
+    await act(() => {
+      store.activeSessionId.value = 's2';
+    });
+    expect(screen.getByRole('button', { name: 'Check status' })).toBeInTheDocument();
+    counts.clear();
+    await act(() => textUpdate(store, 's2', 'Still streaming'));
+    expect(counts.count('ConversationComposer')).toBe(0);
+    await act(() => {
+      store.pendingIntents.value = {};
+    });
+    expect(screen.queryByRole('button', { name: 'Check status' })).not.toBeInTheDocument();
   });
 
   it('refreshes timestamps without executing message rows or the transcript', async () => {
